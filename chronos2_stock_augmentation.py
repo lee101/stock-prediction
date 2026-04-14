@@ -107,6 +107,17 @@ class AugConfig:
     # Magnitude for injected outliers (in units of local rolling std).
     outlier_magnitude: float = 5.0
 
+    # Gap injection: with this probability, add a sudden price gap at a random
+    # bar in context (all 4 OHLC channels shifted by +/- gap_magnitude * prev_close).
+    # Simulates overnight gap-up/gap-down events (news, earnings, macro surprises).
+    # The gap persists for all subsequent bars (level shift), so the model must learn
+    # to track absolute levels through discontinuities.
+    # Set to 0 to disable.
+    gap_inject_prob: float = 0.0
+
+    # Gap magnitude as a fraction of the local mean (e.g., 0.05 = ±5% gap).
+    gap_magnitude_frac: float = 0.05
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -247,6 +258,21 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                     sign = 1.0 if random.random() > 0.5 else -1.0
                     task_context[:, pos] = (task_context[:, pos]
                                             + sign * cfg.outlier_magnitude * per_ch_std.squeeze(-1))
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 9. Gap injection: add a level-shift at a random bar (overnight gap sim) ---
+        if cfg.gap_inject_prob > 0 and random.random() < cfg.gap_inject_prob:
+            T = task_context.shape[-1]
+            if T >= 4:
+                # Random gap position (not at first bar so there's some pre-gap context)
+                gap_pos = random.randint(1, T - 1)
+                task_context = task_context.clone().float()
+                # Gap size: fraction of channel mean (fallback to 1e-4 if near-zero)
+                ch_mean = task_context[:, :gap_pos].float().abs().mean(dim=-1).clamp(min=1e-4)
+                sign = 1.0 if random.random() > 0.5 else -1.0
+                gap_shift = sign * cfg.gap_magnitude_frac * ch_mean  # (n_channels,)
+                # Apply gap to all bars from gap_pos onwards (persistent level shift)
+                task_context[:, gap_pos:] = task_context[:, gap_pos:] + gap_shift.unsqueeze(-1)
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets

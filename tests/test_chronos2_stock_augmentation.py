@@ -539,3 +539,100 @@ class TestAugmentedChronos2Dataset:
             mean_abs = float(ctx_finite.abs().mean())
             # After detrending a 100→200 trend, values should be much smaller
             assert mean_abs < 10.0, f"Expected detrended context to be close to 0, mean_abs={mean_abs:.2f}"
+
+    def test_gap_inject_creates_level_shift(self):
+        """Gap injection should produce a persistent level shift mid-context."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        rng = np.random.default_rng(42)
+        T = 200
+        # Flat price series (constant ~100) so any shift is clearly visible
+        inputs = []
+        for _ in range(10):
+            prices = np.full((4, T), 100.0, dtype=np.float32)
+            inputs.append({"target": prices})
+
+        # Use gap_inject_prob=1.0 so every sample gets a gap
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=64,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0,
+                time_dropout_rate=0.0,
+                gap_inject_prob=1.0, gap_magnitude_frac=0.10,
+            ),
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"]  # (batch, channels, T) or similar
+        # At least one sample should have non-constant context (gap changed values)
+        if ctx.numel() > 0:
+            flat_ctx = ctx.float().reshape(-1)
+            finite = flat_ctx[~torch.isnan(flat_ctx)]
+            # If gap was injected on a constant series, std should be > 0
+            assert float(finite.std()) > 0.0, "Gap inject should produce non-constant context"
+
+    def test_gap_inject_disabled_when_zero_prob(self):
+        """Gap injection disabled (prob=0) should not change constant series."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 100
+        inputs = [{"target": np.full((4, T), 100.0, dtype=np.float32)} for _ in range(5)]
+
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=32,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0,
+                time_dropout_rate=0.0, gap_inject_prob=0.0,
+            ),
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        finite = ctx[~torch.isnan(ctx)]
+        # No augmentation → all values should be ~100.0
+        assert float(finite.std()) < 1e-3, "No gap inject should leave constant series unchanged"
+
+    def test_gap_inject_not_applied_in_val_mode(self):
+        """Gap injection should be skipped in validation mode."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 100
+        inputs = [{"target": np.full((4, T), 100.0, dtype=np.float32)} for _ in range(5)]
+
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=32,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.VALIDATION,
+            aug_config=AugConfig(gap_inject_prob=1.0, gap_magnitude_frac=0.10),
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        finite = ctx[~torch.isnan(ctx)]
+        # Val mode: no augmentation → constant series
+        assert float(finite.std()) < 1e-3, "Val mode should not apply gap inject"

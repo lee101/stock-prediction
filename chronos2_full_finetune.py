@@ -593,6 +593,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Prob of injecting 1-3 extreme bars into context (crash robustness). 0=off")
     p.add_argument("--outlier-magnitude", type=float, default=5.0,
                    help="Outlier magnitude in units of local std (default: 5.0)")
+    p.add_argument("--gap-inject-prob", type=float, default=0.0,
+                   help="Prob of injecting overnight price gap (level shift) into context. 0=off")
+    p.add_argument("--gap-magnitude-frac", type=float, default=0.05,
+                   help="Gap size as fraction of channel mean (default: 0.05 = 5%%)")
     p.add_argument("--no-return-variants", action="store_true")
     p.add_argument("--no-sliding",  action="store_true",
                    help="Disable hourly sliding-window daily aggregations")
@@ -647,6 +651,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         time_warp_prob=args.time_warp_prob,
         outlier_inject_prob=getattr(args, "outlier_inject_prob", 0.0),
         outlier_magnitude=getattr(args, "outlier_magnitude", 5.0),
+        gap_inject_prob=getattr(args, "gap_inject_prob", 0.0),
+        gap_magnitude_frac=getattr(args, "gap_magnitude_frac", 0.05),
         add_return_variants=not args.no_return_variants,
         sliding_daily_offsets=[] if args.no_sliding else [0, 1, 2, 3, 4, 5, 6],
     )

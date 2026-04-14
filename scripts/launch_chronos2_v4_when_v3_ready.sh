@@ -189,5 +189,46 @@ if [[ -n "$V4_PID" ]]; then
         echo "[$(date -u +%H:%M:%SZ)] Launching v6 (ctx=1024, all augs + outlier_inject)..."
         bash scripts/launch_chronos2_v6.sh
         echo "[$(date -u +%H:%M:%SZ)] v6 launched. PID: $(cat .chronos2_v6_pid 2>/dev/null)"
+
+        # -----------------------------------------------------------------------
+        # Wait for v6 then calibrate and launch v7
+        # -----------------------------------------------------------------------
+        V6_PID="$(cat .chronos2_v6_pid 2>/dev/null)"
+        if [[ -n "$V6_PID" ]]; then
+            echo "[$(date -u +%H:%M:%SZ)] Waiting for v6 (PID $V6_PID) to complete before launching v7..."
+            while kill -0 "$V6_PID" 2>/dev/null; do
+                sleep 180
+            done
+            echo "[$(date -u +%H:%M:%SZ)] v6 complete. Running v6 calibration + benchmark..."
+
+            V6_CKPT="chronos2_finetuned/stocks_all_v6/finetuned-ckpt"
+            if [[ -d "$V6_CKPT" ]]; then
+                python chronos2_linear_calibration.py \
+                    --model-id     "$V6_CKPT" \
+                    --cal-data-dir trainingdata \
+                    --output-path  "$V6_CKPT/calibration.json" \
+                    --max-shift-bps 20 \
+                    --min-gap-bps   2 \
+                    --grid-steps   25 \
+                    --cal-bars     120 \
+                    --max-windows  5000 \
+                    --batch-size   32 \
+                    --per-symbol \
+                    --hyperparams-dir hyperparams/chronos2_v6 \
+                    2>&1 | tee chronos2_calibration_v6.log
+
+                python benchmark_chronos2.py \
+                    --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                    --model-id "$V6_CKPT" \
+                    --context-length 1024 \
+                    --batch-size 64 \
+                    --update-hyperparams \
+                    2>&1 | tee chronos2_benchmark_v6.log
+            fi
+
+            echo "[$(date -u +%H:%M:%SZ)] Launching v7 (ctx=1024, gap_inject=0.15, lr=3e-5)..."
+            bash scripts/launch_chronos2_v7.sh
+            echo "[$(date -u +%H:%M:%SZ)] v7 launched. PID: $(cat .chronos2_v7_pid 2>/dev/null)"
+        fi
     fi
 fi
