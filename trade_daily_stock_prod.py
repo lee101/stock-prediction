@@ -3743,7 +3743,7 @@ def run_backtest(
                     for symbol in set(portfolio_positions) | set(desired)
                 },
                 portfolio_value=equity,
-                buying_power=max(0.0, cash * float(buying_power_multiplier)),
+                buying_power=max(0.0, equity * float(buying_power_multiplier)),
                 total_allocation_pct=total_allocation_pct,
             )
             for pos_symbol, (qty, entry_price) in list(portfolio_positions.items()):
@@ -3797,7 +3797,7 @@ def run_backtest(
                 signal,
                 base_allocation_pct=allocation_pct,
                 sizing_mode=allocation_sizing_mode,
-                min_open_confidence=DEFAULT_MIN_OPEN_CONFIDENCE,
+                min_open_confidence=min_open_confidence,
             )
             buy_price = prices[signal.symbol] * (1.0 + entry_offset_bps / 10_000.0)
             qty = compute_target_qty_from_values(
