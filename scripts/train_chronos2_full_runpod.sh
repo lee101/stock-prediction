@@ -216,17 +216,19 @@ fi
 
 CKPT="${OUTPUT_DIR}/finetuned-ckpt"
 
-# --- Run linear calibration ---
+# --- Run linear calibration (global + per-symbol) ---
 echo ""
-echo "Running buy/sell threshold calibration..."
+echo "Running buy/sell threshold calibration (global + per-symbol)..."
 python chronos2_linear_calibration.py \
     --model-id       "$CKPT" \
     --cal-data-dir   trainingdata \
     --output-path    "${CKPT}/calibration.json" \
-    --max-shift-bps  8 \
+    --max-shift-bps  20 \
     --min-gap-bps    2 \
     --grid-steps     25 \
-    --max-windows    5000
+    --max-windows    5000 \
+    --per-symbol \
+    --hyperparams-dir "hyperparams/chronos2_${TAG}"
 echo "Calibration done: ${CKPT}/calibration.json"
 
 # --- Upload calibration to R2 ---

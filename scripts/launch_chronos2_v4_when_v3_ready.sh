@@ -50,30 +50,19 @@ if [[ ! -d "$V3_CKPT" ]]; then
     exit 1
 fi
 
-echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (long-only)..."
+echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (long-only + short-allowed + per-symbol)..."
 python chronos2_linear_calibration.py \
     --model-id     "$V3_CKPT" \
     --cal-data-dir trainingdata \
     --output-path  "$V3_CKPT/calibration.json" \
-    --max-shift-bps 8 \
+    --max-shift-bps 20 \
     --min-gap-bps   2 \
     --grid-steps   25 \
     --max-windows  5000 \
     --batch-size   32 \
+    --per-symbol \
+    --hyperparams-dir hyperparams/chronos2_v3 \
     2>&1 | tee chronos2_calibration_v3.log
-
-echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (short-allowed)..."
-python chronos2_linear_calibration.py \
-    --model-id     "$V3_CKPT" \
-    --cal-data-dir trainingdata \
-    --output-path  "$V3_CKPT/calibration_short.json" \
-    --max-shift-bps 8 \
-    --min-gap-bps   2 \
-    --grid-steps   25 \
-    --max-windows  5000 \
-    --batch-size   32 \
-    --allow-short \
-    2>&1 | tee chronos2_calibration_v3_short.log
 
 # -----------------------------------------------------------------------
 # Step 3: Benchmark v3 vs v2 on key symbols (same-period comparison)

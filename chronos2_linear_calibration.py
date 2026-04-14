@@ -9,29 +9,43 @@ to improve trading performance. This script:
    - Predicted quantiles (q10, q50, q90) for the close price
    - Actual future close prices
 
-2. Fits a simple linear threshold model that maps raw predictions to
-   buy/sell signals:
-     signal_pct = w * predicted_return_q50 + b
-     buy  if signal_pct >  buy_threshold
-     sell if signal_pct < -sell_threshold
+2. Fits a threshold model that maps raw predictions to buy/sell signals:
+     signal = w * predicted_return_q50
+     buy   if signal > buy_threshold
+     sell  if signal < -sell_threshold  (allow_short=True)
+     exit  if signal < -sell_threshold  (allow_short=False)
 
    where predicted_return = (q50_pred - close_now) / close_now
 
-3. Constraints:
-   - buy_threshold  ∈ [-max_shift_bps, +max_shift_bps]  (default: 8 bps)
-   - sell_threshold ∈ [-max_shift_bps, +max_shift_bps]  (default: 8 bps)
-   - sell_threshold > buy_threshold - min_gap  (ensure sell > buy for profitability)
-   - If allow_short=False: sell signals are capped at "exit long" only
+3. Optionally filters by uncertainty: skip trades when
+     uncertainty = (q90 - q10) / prev_close > confidence_threshold
+   This forces the model to only trade when the quantile interval is narrow.
 
-4. Saves calibration params to JSON, compatible with the Chronos2 wrapper.
+4. Two-phase grid search: coarse pass over ±max_shift_bps, then fine pass
+   (±2bps around best) for precise threshold placement.
+
+5. Per-symbol mode: calibrate each symbol independently and save per-symbol
+   JSONs under hyperparams/chronos2/{SYM}_calibration.json.
+
+Constraints:
+   - buy_threshold, sell_threshold ∈ [-max_shift_bps, +max_shift_bps]
+   - sell_threshold > buy_threshold - min_gap
+   - If allow_short=False: sell capped at "exit long"
 
 Usage:
     python chronos2_linear_calibration.py \\
-        --model-id chronos2_finetuned/stocks_all_v1/finetuned-ckpt \\
+        --model-id chronos2_finetuned/stocks_all_v3/finetuned-ckpt \\
         --cal-data-dir trainingdata \\
-        --output-path chronos2_finetuned/stocks_all_v1/calibration.json \\
-        --max-shift-bps 8 \\
+        --output-path chronos2_finetuned/stocks_all_v3/finetuned-ckpt/calibration.json \\
+        --max-shift-bps 20 \\
         --allow-short
+
+    # Per-symbol calibration:
+    python chronos2_linear_calibration.py \\
+        --model-id chronos2_finetuned/stocks_all_v3/finetuned-ckpt \\
+        --cal-data-dir trainingdata \\
+        --per-symbol \\
+        --hyperparams-dir hyperparams/chronos2
 """
 
 from __future__ import annotations
@@ -39,9 +53,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -77,6 +91,10 @@ class CalibrationParams:
     # Whether shorting is permitted
     allow_short: bool = False
 
+    # Uncertainty (confidence) filter: skip trades when
+    # (q90 - q10) / prev_close > confidence_threshold (0 = disabled)
+    confidence_threshold: float = 0.0
+
     # Source model
     model_id: str = ""
 
@@ -91,8 +109,17 @@ class CalibrationParams:
     def from_dict(cls, d: dict) -> "CalibrationParams":
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
-    def apply(self, predicted_return: float) -> str:
-        """Return 'buy', 'sell', or 'hold'."""
+    def apply(self, predicted_return: float, uncertainty: float = 0.0) -> str:
+        """
+        Return 'buy', 'sell', 'exit', or 'hold'.
+
+        Args:
+            predicted_return: (q50 - prev_close) / prev_close
+            uncertainty: (q90 - q10) / prev_close  — skip if above confidence_threshold
+        """
+        # Confidence filter: hold if model is too uncertain
+        if self.confidence_threshold > 0.0 and uncertainty > self.confidence_threshold:
+            return "hold"
         signal = predicted_return * self.signal_weight + self.signal_bias
         if signal > self.buy_threshold:
             return "buy"
@@ -116,17 +143,18 @@ def collect_predictions(
     torch_dtype_str: str = "bfloat16",
     max_windows: int = 5000,
     batch_size: int = 32,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
     """
     Run model inference on sliding windows of each series.
     Batches windows together for efficient GPU utilization.
 
     Returns:
-        q10: (N,) predicted 10th percentile of close
-        q50: (N,) predicted 50th percentile (median)
-        q90: (N,) predicted 90th percentile
-        actual: (N,) actual close at the next timestep
-        prev_close: (N,) close at the last context bar (to compute returns)
+        q10:       (N,) predicted 10th percentile of close
+        q50:       (N,) predicted 50th percentile (median)
+        q90:       (N,) predicted 90th percentile
+        actual:    (N,) actual close at the next timestep
+        prev_close:(N,) close at the last context bar (to compute returns)
+        symbols:   [N]  symbol name for each window (empty string if unknown)
     """
     import torch
 
@@ -150,15 +178,16 @@ def collect_predictions(
     except Exception:
         i10, i50, i90 = 0, 10, 20  # fallback indices
 
-    all_q10, all_q50, all_q90, all_actual, all_prev = [], [], [], [], []
+    all_q10, all_q50, all_q90, all_actual, all_prev, all_syms = [], [], [], [], [], []
     window_count = 0
 
     # Collect all windows first, then process in batches
     pending_ctx: List[Any] = []
-    pending_labels: List[Tuple[float, float]] = []  # (fut_close, ctx_close)
+    pending_labels: List[Tuple[float, float, str]] = []  # (fut_close, ctx_close, symbol)
 
     for s in series_list:
         arr = s["target"]  # (4, T)
+        sym = s.get("symbol", "")
         T = arr.shape[-1]
         if T < context_length + prediction_length:
             continue
@@ -172,7 +201,7 @@ def collect_predictions(
             ctx_close = float(arr[3, start - 1])
 
             pending_ctx.append(torch.from_numpy(ctx_arr).float())
-            pending_labels.append((fut_close, ctx_close))
+            pending_labels.append((fut_close, ctx_close, sym))
             window_count += 1
 
         if window_count >= max_windows:
@@ -190,7 +219,7 @@ def collect_predictions(
         except Exception:
             continue
 
-        for j, (pred_t, (fut_close, ctx_close)) in enumerate(zip(preds, batch_labels)):
+        for j, (pred_t, (fut_close, ctx_close, sym)) in enumerate(zip(preds, batch_labels)):
             pred_np = pred_t.detach().cpu().numpy()  # (4, n_quantiles, pred_len)
             if pred_np.ndim != 3 or pred_np.shape[0] < 4:
                 continue
@@ -199,6 +228,7 @@ def collect_predictions(
             all_q90.append(float(pred_np[3, i90, 0]))
             all_actual.append(fut_close)
             all_prev.append(ctx_close)
+            all_syms.append(sym)
 
     print(f"Collected {len(all_actual)} calibration windows")
     return (
@@ -207,6 +237,7 @@ def collect_predictions(
         np.array(all_q90, dtype=np.float64),
         np.array(all_actual, dtype=np.float64),
         np.array(all_prev, dtype=np.float64),
+        all_syms,
     )
 
 
@@ -221,6 +252,8 @@ def compute_sharpe(
     sell_thresh: float,
     allow_short: bool,
     fee_bps: float = 10.0,
+    uncertainties: Optional[np.ndarray] = None,
+    confidence_threshold: float = 0.0,
 ) -> float:
     """
     Compute Sharpe-like score for a given threshold pair on in-sample data.
@@ -229,17 +262,23 @@ def compute_sharpe(
     A "hold" day (flat) earns 0. P&L is collected as a daily series over all
     windows (including flat days) so the denominator reflects real volatility.
 
-    signals:        predicted returns (q50 - prev_close) / prev_close
-    actual_returns: (actual_close - prev_close) / prev_close
+    Args:
+        signals:              predicted returns (q50 - prev_close) / prev_close
+        actual_returns:       (actual_close - prev_close) / prev_close
+        uncertainties:        (q90 - q10) / prev_close per window (optional)
+        confidence_threshold: skip trade if uncertainty > this value (0 = disabled)
     """
     fee = fee_bps / 10_000.0
     pnl: List[float] = []
     position = 0  # 0=flat, 1=long, -1=short
     n_trades = 0
+    use_conf = confidence_threshold > 0.0 and uncertainties is not None
 
-    for sig, ret in zip(signals, actual_returns):
-        # Determine desired position from signal
-        if sig > buy_thresh:
+    for i, (sig, ret) in enumerate(zip(signals, actual_returns)):
+        # Confidence filter: force flat if model is uncertain
+        if use_conf and uncertainties[i] > confidence_threshold:  # type: ignore[index]
+            desired = 0
+        elif sig > buy_thresh:
             desired = 1
         elif allow_short and sig < -sell_thresh:
             desired = -1
@@ -272,6 +311,47 @@ def compute_sharpe(
     return float(mean / std * np.sqrt(252))  # annualise roughly
 
 
+def _run_grid(
+    predicted_return: np.ndarray,
+    actual_return: np.ndarray,
+    uncertainties: np.ndarray,
+    thresh_vals: np.ndarray,
+    weight_vals: List[float],
+    conf_vals: List[float],
+    allow_short: bool,
+    min_gap: float,
+    fee_bps: float,
+) -> Tuple[float, float, float, float, float]:
+    """Inner grid search loop. Returns (best_sharpe, best_buy, best_sell, best_weight, best_conf)."""
+    best_sharpe = -999.0
+    best_buy = 0.0
+    best_sell = 0.0
+    best_weight = 1.0
+    best_conf = 0.0
+
+    for w in weight_vals:
+        scaled_return = predicted_return * w
+        for buy_t in thresh_vals:
+            for sell_t in thresh_vals:
+                if allow_short and sell_t < buy_t - min_gap:
+                    continue
+                for conf in conf_vals:
+                    sharpe = compute_sharpe(
+                        scaled_return, actual_return, float(buy_t), float(sell_t),
+                        allow_short=allow_short, fee_bps=fee_bps,
+                        uncertainties=uncertainties,
+                        confidence_threshold=float(conf),
+                    )
+                    if sharpe > best_sharpe:
+                        best_sharpe = sharpe
+                        best_buy = float(buy_t)
+                        best_sell = float(sell_t)
+                        best_weight = float(w)
+                        best_conf = float(conf)
+
+    return best_sharpe, best_buy, best_sell, best_weight, best_conf
+
+
 def fit_calibration(
     q10: np.ndarray,
     q50: np.ndarray,
@@ -279,63 +359,75 @@ def fit_calibration(
     actual: np.ndarray,
     prev_close: np.ndarray,
     *,
-    max_shift_bps: float = 8.0,
+    max_shift_bps: float = 20.0,
     min_gap_bps: float = 2.0,
     allow_short: bool = False,
     fee_bps: float = 10.0,
     grid_steps: int = 17,
     search_signal_weight: bool = True,
+    search_confidence: bool = True,
     model_id: str = "",
 ) -> CalibrationParams:
     """
-    Grid-search over (signal_weight, buy_threshold, sell_threshold) to maximise
-    Sharpe ratio on the calibration set.
+    Two-phase grid-search over (signal_weight, buy_threshold, sell_threshold,
+    confidence_threshold) to maximise Sharpe ratio on the calibration set.
 
-    signal_weight scales the raw predicted return before thresholding:
-      signal = (q50 - prev_close) / prev_close * signal_weight
-      buy  when signal > buy_threshold
-      sell when signal < -sell_threshold  (with allow_short=True)
-      exit when signal < -sell_threshold  (without allow_short)
+    Phase 1 — coarse search over ±max_shift_bps with grid_steps points.
+    Phase 2 — fine search ±2bps around the best found in phase 1.
 
-    Threshold range: ±max_shift_bps around 0.
-    Constraint: sell_threshold > buy_threshold - min_gap (no accidental straddle).
+    signal_weight scales the raw predicted return before thresholding.
+    confidence_threshold filters high-uncertainty bars (wide q90-q10 interval).
 
-    Returns CalibrationParams with the best-found thresholds.
+    Constraint: sell_threshold > buy_threshold - min_gap.
     """
     eps = 1e-8
     predicted_return = (q50 - prev_close) / (np.abs(prev_close) + eps)
     actual_return    = (actual - prev_close) / (np.abs(prev_close) + eps)
+    uncertainties    = (q90 - q10) / (np.abs(prev_close) + eps)
 
     max_shift = max_shift_bps / 10_000.0
     min_gap   = min_gap_bps   / 10_000.0
 
-    # Grid over thresholds in fractional return space
-    thresh_vals = np.linspace(-max_shift, max_shift, grid_steps)
-
-    # Signal weight candidates: sub-1 = less sensitive, >1 = more sensitive
+    # --- Coarse phase ---
+    thresh_vals_coarse = np.linspace(-max_shift, max_shift, grid_steps)
     weight_vals = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
 
-    best_sharpe  = -999.0
-    best_buy     = 0.0
-    best_sell    = 0.0
-    best_weight  = 1.0
+    # Confidence threshold: 0 = disabled, else % of prev_close
+    # Grid over uncertainty percentiles: 25th, 50th, 75th, 100th (no filter)
+    if search_confidence and len(uncertainties) > 10:
+        pcts = np.percentile(uncertainties, [25, 50, 75])
+        conf_vals: List[float] = [0.0] + [float(p) for p in pcts]
+    else:
+        conf_vals = [0.0]
 
-    for w in weight_vals:
-        scaled_return = predicted_return * w
-        for buy_t in thresh_vals:
-            for sell_t in thresh_vals:
-                # Constraint: sell_t must be larger than buy_t - min_gap
-                if allow_short and sell_t < buy_t - min_gap:
-                    continue
-                sharpe = compute_sharpe(
-                    scaled_return, actual_return, float(buy_t), float(sell_t),
-                    allow_short=allow_short, fee_bps=fee_bps,
-                )
-                if sharpe > best_sharpe:
-                    best_sharpe = sharpe
-                    best_buy    = float(buy_t)
-                    best_sell   = float(sell_t)
-                    best_weight = float(w)
+    best_sharpe, best_buy, best_sell, best_weight, best_conf = _run_grid(
+        predicted_return, actual_return, uncertainties,
+        thresh_vals_coarse, weight_vals, conf_vals,
+        allow_short, min_gap, fee_bps,
+    )
+
+    # --- Fine phase: ±2bps around best, 17 points each ---
+    fine_bps = 2.0 / 10_000.0
+    thresh_fine = np.linspace(
+        max(-max_shift, best_buy - fine_bps),
+        min( max_shift, best_buy + fine_bps),
+        17,
+    )
+    sell_fine = np.linspace(
+        max(-max_shift, best_sell - fine_bps),
+        min( max_shift, best_sell + fine_bps),
+        17,
+    )
+    # Combine both ranges for both buy and sell
+    thresh_both = np.unique(np.concatenate([thresh_fine, sell_fine]))
+
+    sharpe2, buy2, sell2, weight2, conf2 = _run_grid(
+        predicted_return, actual_return, uncertainties,
+        thresh_both, [best_weight], [best_conf],
+        allow_short, min_gap, fee_bps,
+    )
+    if sharpe2 > best_sharpe:
+        best_sharpe, best_buy, best_sell, best_weight, best_conf = sharpe2, buy2, sell2, weight2, conf2
 
     params = CalibrationParams(
         signal_weight=best_weight,
@@ -343,6 +435,7 @@ def fit_calibration(
         buy_threshold=best_buy,
         sell_threshold=best_sell,
         allow_short=allow_short,
+        confidence_threshold=best_conf,
         model_id=model_id,
         n_cal_windows=len(actual),
         cal_sharpe=best_sharpe,
@@ -354,10 +447,17 @@ def fit_calibration(
 # Main
 # ---------------------------------------------------------------------------
 
+def _print_params(params: CalibrationParams) -> None:
+    conf_str = f"  conf={params.confidence_threshold*1e4:.1f}bps" if params.confidence_threshold > 0 else ""
+    print(f"  buy={params.buy_threshold*1e4:.1f}bps  sell={params.sell_threshold*1e4:.1f}bps"
+          f"  weight={params.signal_weight:.2f}{conf_str}  sharpe={params.cal_sharpe:.3f}"
+          f"  allow_short={params.allow_short}  n={params.n_cal_windows}")
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Calibrate Chronos2 buy/sell thresholds")
     p.add_argument("--model-id",    required=True,
-                   help="Model path or HF id (e.g. chronos2_finetuned/stocks_all_v1/finetuned-ckpt)")
+                   help="Model path or HF id (e.g. chronos2_finetuned/stocks_all_v3/finetuned-ckpt)")
     p.add_argument("--cal-data-dir", default="trainingdata",
                    help="Directory of CSV files to use as calibration data (default: trainingdata/)")
     p.add_argument("--output-path", default=None,
@@ -366,7 +466,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--device-map", default="cuda")
     p.add_argument("--torch-dtype", default="bfloat16")
     p.add_argument("--max-windows", type=int, default=5000)
-    p.add_argument("--max-shift-bps", type=float, default=8.0)
+    p.add_argument("--max-shift-bps", type=float, default=20.0,
+                   help="Search range ±N bps around 0 (default: 20)")
     p.add_argument("--min-gap-bps",   type=float, default=2.0)
     p.add_argument("--fee-bps",       type=float, default=10.0)
     p.add_argument("--allow-short",   action="store_true")
@@ -375,6 +476,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="GPU batch size for inference (default: 32)")
     p.add_argument("--no-search-signal-weight", action="store_true",
                    help="Fix signal_weight=1.0, only search thresholds (faster)")
+    p.add_argument("--no-search-confidence", action="store_true",
+                   help="Disable uncertainty/confidence filter search")
+    p.add_argument("--per-symbol", action="store_true",
+                   help="Calibrate each symbol independently and save per-symbol JSONs")
+    p.add_argument("--hyperparams-dir", default="hyperparams/chronos2",
+                   help="Directory to write per-symbol calibration JSONs (default: hyperparams/chronos2)")
+    p.add_argument("--min-windows-per-symbol", type=int, default=30,
+                   help="Minimum windows to fit per-symbol calibration (default: 30)")
     return p.parse_args(argv)
 
 
@@ -385,9 +494,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not cal_dir.exists():
         print(f"ERROR: calibration data dir not found: {cal_dir}")
         return 1
-
-    output_path = Path(args.output_path) if args.output_path else Path(args.model_id) / "calibration.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load calibration series
     print(f"Loading calibration series from {cal_dir} ...")
@@ -401,15 +507,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cal_series = []
     for s in all_series:
         arr = s["target"]
+        sym = s.get("symbol", "")
         T = arr.shape[-1]
         n_cal = min(60, T - args.context_length)
         if n_cal > 0:
-            cal_series.append({"target": arr[:, -(args.context_length + n_cal):]})
+            cal_series.append({"target": arr[:, -(args.context_length + n_cal):], "symbol": sym})
 
     print(f"Using {len(cal_series)} series for calibration")
 
-    # Collect predictions
-    q10, q50, q90, actual, prev_close = collect_predictions(
+    # Collect predictions (one pass — reuse for global + per-symbol)
+    q10, q50, q90, actual, prev_close, symbols = collect_predictions(
         model_id=args.model_id,
         series_list=cal_series,
         context_length=args.context_length,
@@ -423,30 +530,67 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Too few calibration windows ({len(actual)}); cannot fit calibration.")
         return 1
 
-    # Fit calibration
     search_w = not getattr(args, "no_search_signal_weight", False)
-    print(f"Fitting calibration ({len(actual)} windows, max_shift={args.max_shift_bps}bps"
-          f"{', weight-search' if search_w else ''}) ...")
-    params = fit_calibration(
-        q10=q10, q50=q50, q90=q90,
-        actual=actual, prev_close=prev_close,
+    search_c = not getattr(args, "no_search_confidence", False)
+    fit_kwargs: Dict[str, Any] = dict(
         max_shift_bps=args.max_shift_bps,
         min_gap_bps=args.min_gap_bps,
-        allow_short=args.allow_short,
         fee_bps=args.fee_bps,
         grid_steps=args.grid_steps,
         search_signal_weight=search_w,
+        search_confidence=search_c,
         model_id=args.model_id,
     )
 
-    print(f"Best thresholds: buy={params.buy_threshold*1e4:.1f}bps  "
-          f"sell={params.sell_threshold*1e4:.1f}bps  "
-          f"weight={params.signal_weight:.2f}  "
-          f"sharpe={params.cal_sharpe:.3f}  "
-          f"allow_short={params.allow_short}")
+    # ---- Global calibration ----
+    output_path = (Path(args.output_path) if args.output_path
+                   else Path(args.model_id) / "calibration.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    print(f"\nFitting global calibration ({len(actual)} windows, ±{args.max_shift_bps}bps"
+          f"{', weight-search' if search_w else ''}"
+          f"{', conf-search' if search_c else ''}) ...")
+    params = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                             prev_close=prev_close, allow_short=args.allow_short, **fit_kwargs)
+    print("Global result:"); _print_params(params)
     output_path.write_text(json.dumps(params.to_dict(), indent=2))
-    print(f"Saved calibration → {output_path}")
+    print(f"Saved → {output_path}")
+
+    # Short variant
+    if not args.allow_short:
+        out_short = output_path.parent / "calibration_short.json"
+        params_short = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                                       prev_close=prev_close, allow_short=True, **fit_kwargs)
+        print("Short variant:"); _print_params(params_short)
+        out_short.write_text(json.dumps(params_short.to_dict(), indent=2))
+        print(f"Saved → {out_short}")
+
+    # ---- Per-symbol calibration ----
+    if args.per_symbol:
+        syms_arr = np.array(symbols)
+        unique_syms = [s for s in sorted(set(symbols)) if s]
+        print(f"\nPer-symbol calibration for {len(unique_syms)} symbols ...")
+        hp_dir = Path(args.hyperparams_dir)
+        hp_dir.mkdir(parents=True, exist_ok=True)
+
+        n_saved = 0
+        for sym in unique_syms:
+            mask = syms_arr == sym
+            n = int(mask.sum())
+            if n < args.min_windows_per_symbol:
+                continue
+            sym_params = fit_calibration(
+                q10=q10[mask], q50=q50[mask], q90=q90[mask],
+                actual=actual[mask], prev_close=prev_close[mask],
+                allow_short=args.allow_short, **fit_kwargs,
+            )
+            sym_out = hp_dir / f"{sym}_calibration.json"
+            sym_out.write_text(json.dumps(sym_params.to_dict(), indent=2))
+            n_saved += 1
+            if n_saved <= 5 or sym_params.cal_sharpe > params.cal_sharpe + 0.05:
+                print(f"  {sym:8s} (n={n:4d}):"); _print_params(sym_params)
+
+        print(f"Saved {n_saved} per-symbol calibrations → {hp_dir}/")
 
     return 0
 

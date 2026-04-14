@@ -40,7 +40,8 @@ case "$VARIANT" in
   J) TP=0.04; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon between I(0.03) and D(0.05)
   K) TP=0.02; STEPS=15000000; EXTRA_FLAGS=(--weight-decay 0.005) ;;  # AdamW+wd: C with regularization
   L) TP=0.05; STEPS=15000000; EXTRA_FLAGS=(--weight-decay 0.005) ;;  # AdamW+wd at D's trade-penalty
-  *) echo "Unknown variant $VARIANT (use C D E F G H I J K L)"; exit 1 ;;
+  R) TP=0.05; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon); VAL="pufferlib_market/data/screened32_recent_val.bin" ;;  # D-equiv but recent val (Dec-Apr 2026)
+  *) echo "Unknown variant $VARIANT (use C D E F G H I J K L R)"; exit 1 ;;
 esac
 
 SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}

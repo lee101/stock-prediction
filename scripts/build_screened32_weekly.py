@@ -128,17 +128,17 @@ def build_weekly_augmented(
     base_recent_val = tmp_dir / "base_recent_val.bin"
 
     print("\n=== Building base weekly binaries ===")
-    for out, start, end, label in [
-        (base_train, train_start, train_end, "train"),
-        (base_val, val_start, val_end, "val"),
-        (base_recent_val, recent_val_start, recent_val_end, "recent_val"),
+    for out, start, end, label, min_w in [
+        (base_train, train_start, train_end, "train", 26),
+        (base_val, val_start, val_end, "val", 20),
+        (base_recent_val, recent_val_start, recent_val_end, "recent_val", 10),
     ]:
         if out.exists():
             print(f"  {label}: exists, skip")
             continue
         print(f"  {label}: {start} → {end}")
         _export_weekly(symbols=symbols, data_root=data_root, output_path=out,
-                       start_date=start, end_date=end, min_weeks=26, chronos_cache=chronos_cache)
+                       start_date=start, end_date=end, min_weeks=min_w, chronos_cache=chronos_cache)
 
     print(f"\n=== Applying {len(vol_scales)} vol scales to train ===")
     train_shards: list[Path] = []
