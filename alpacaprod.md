@@ -204,6 +204,58 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
+### 2026-04-14 04:23 UTC — Upgraded to 11-model ensemble (+D_s57 +I_s3×2) — CURRENT PRODUCTION
+
+**Service restarted 04:23 UTC** (PID 2922795) to activate 11-model. Next tick Mon ~13:35 UTC.
+
+#### Current champion: screened32 11-model ensemble (+D_s57 +I_s3 doubled)
+- **Checkpoints**: `prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, D_s81, **D_s57**, **I_s3×2**)
+- **I_s3 doubled**: same checkpoint added twice → 2x weight in softmax averaging (≡ weighted ensemble with w=2/11)
+
+**D_s57 profile**: tp=0.05 Muon, individual OOS neg=29/100, med=5.83%, sort=10.19
+**Why D_s57**: Bear-resistant — fixes 1 bear window and improves tail protection
+**Why I_s3 doubled**: Bear-resistant — I_s3 with 2x weight reduces crash losses
+
+**11-model vs 9-model (exhaustive 263 windows, lag=2, binary fills, fee=10bps, slip=5bps):**
+- **11m**: med=17.79%, p10=+5.96%, neg=12/263, sort=29.41
+- 9m: med=17.48%, p10=+5.14%, neg=17/263, sort=30.19
+- Net: med+0.31%, p10+0.82%, neg-5 (30% fewer losses), sort-0.78
+
+**100-window sampled**: med=17.58%, p10=5.64%, neg=6/100, sort=29.77 (vs 9m: 17.82%/5.09%/8/30.34)
+**Bear windows (Apr 2026 tariff crash, idx 249-260)**: 6/8 negative (vs 8/8 for 8m, 8/8 for 9m)
+
+| Model | Median | P10 | Neg/100 | Sortino | Notes |
+|-------|--------|-----|---------|---------|-------|
+| ...9-model (+D_s81) | +17.82% | +5.09% | 8 | 30.34 | prev prod 2026-04-14 03:10 |
+| **11-model (+D_s57 +I_s3×2)** | **+17.58%** | **+5.64%** | **6** | **29.77** | **CURRENT 2026-04-14 04:23** |
+
+---
+
+### 2026-04-14 04:30 UTC — Service restarted with 9-model; D/s92 exhaustive test results
+
+**Service restarted 03:21 UTC** (PID 1810243) to activate 9-model.
+
+**D/s92 exhaustive research** (10.70% med ind, 20/100 neg — best new D seed ever):
+- 10-model (add D_s92): med=16.35%, p10=5.68%, neg=17/263, sort=28.32 → costs -1.13% med, +0.54% p10
+- D_s3→D_s92 swap: med=15.48%, p10=4.60%, neg=15/263, sort=26.87 → -2.00% med (too costly)
+- D_s14→D_s92 swap: med=11.86%, p10=2.04%, neg=19/263 → much worse
+- **Verdict**: D/s92 exceptional individually but too correlated/dominant in ensemble. D_s81 remains best 9th.
+
+**Other 10th model candidates tested** (all vs 9m baseline: 17.82% med, 5.09% p10, 8/100 neg):
+- G/s2 (8.63% med, 20/100 neg): 9m→ med=15.43%, p10=1.22% — hurts
+- U/s2 update100 (8.04% med, 15/100 neg): med=16.06%, p10=2.69% — hurts
+- T/s2 (5.56% med, 22/100 neg): med=15.50%, p10=2.57%, neg=9/100 — hurts+new crash window
+- v2/D/s3 (7.99% med, 20/100 neg): med=16.51%, p10=3.08% — hurts
+- I/s2 (7.07% med, 17/100 neg): med=16.12%, p10=2.69% — hurts
+
+**New sweeps started (2026-04-14)**:
+- **P variant** (50-day episodes matching eval window): seeds 1-20 — testing short-horizon training
+- **Q variant** (h=2048 wider MLP, Muon tp=0.05): seeds 1-5 — testing capacity increase  
+- **F extended** (AdamW tp=0.05): seeds 8-20 — AdamW diversity at D's trade-penalty
+- monitor_sweeps.sh updated to test vs **9-model ensemble** (was 8-model)
+
+---
+
 ### 2026-04-14 03:10 UTC — +D_s81 added (9-model, CURRENT PRODUCTION)
 
 #### Current champion: screened32 9-model ensemble (+D_s81)
@@ -231,7 +283,8 @@ Picks top-K models by trailing return, follows their signal.
 | screened32 8-model (+D_s28) | +14.42% | +2.33% | 8 | 23.33 | deployed ~15:17 UTC |
 | screened32 8-model (D_s13→D_s42 swap) | +15.81% | +5.14% | 7 | 27.65 | deployed ~16:54 UTC |
 | screened32 8-model (D_s5→I_s3 swap) | +18.17% | +5.07% | 8 | 30.67 | deployed 2026-04-13 22:11 UTC |
-| **screened32 9-model (+D_s81)** | **+17.82%** | **+5.09%** | **8** | **30.34** | **CURRENT 2026-04-14 03:10 UTC** |
+| screened32 9-model (+D_s81) | +17.82% | +5.09% | 8 | 30.34 | prev prod 2026-04-14 03:10 UTC |
+| **screened32 11-model (+D_s57 +I_s3×2)** | **+17.58%** | **+5.64%** | **6** | **29.77** | **CURRENT 2026-04-14 04:23 UTC** |
 
 Exhaustive 263w eval (previous 8-model with D_s42/D_s5): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
 Exhaustive 263w eval (current 8-model with I_s3): neg=17/263, med=17.77%, p10=+4.75%, sort=30.61
