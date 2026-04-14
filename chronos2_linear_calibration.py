@@ -150,10 +150,15 @@ def collect_predictions(
     torch_dtype_str: str = "bfloat16",
     max_windows: int = 5000,
     batch_size: int = 32,
+    shuffle: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
     """
     Run model inference on sliding windows of each series.
     Batches windows together for efficient GPU utilization.
+
+    By default (shuffle=True), samples windows round-robin across all series so
+    that max_windows windows are spread over as many symbols as possible rather
+    than exhausting the first few alphabetical symbols.
 
     Returns:
         q10:       (N,) predicted 10th percentile of close
@@ -186,31 +191,47 @@ def collect_predictions(
         i10, i50, i90 = 0, 10, 20  # fallback indices
 
     all_q10, all_q50, all_q90, all_actual, all_prev, all_syms = [], [], [], [], [], []
-    window_count = 0
 
-    # Collect all windows first, then process in batches
+    # Collect all windows first, then process in batches.
+    # Build per-series window lists, then interleave (round-robin) to maximise symbol diversity.
     pending_ctx: List[Any] = []
     pending_labels: List[Tuple[float, float, str]] = []  # (fut_close, ctx_close, symbol)
 
+    # Build per-series candidate windows
+    per_series_windows: List[List[Tuple]] = []
     for s in series_list:
         arr = s["target"]  # (4, T)
         sym = s.get("symbol", "")
         T = arr.shape[-1]
         if T < context_length + prediction_length:
             continue
-
+        wins = []
         for start in range(context_length, T - prediction_length + 1, prediction_length):
-            if window_count >= max_windows:
-                break
-
             ctx_arr = arr[:, start - context_length : start]
             fut_close = float(arr[3, start])
             ctx_close = float(arr[3, start - 1])
+            wins.append((ctx_arr, fut_close, ctx_close, sym))
+        if wins:
+            per_series_windows.append(wins)
 
+    if shuffle:
+        import random as _rng
+        _rng.shuffle(per_series_windows)
+
+    # Round-robin across series: take 1 window per series per round until max_windows.
+    # This ensures diverse symbol coverage even when max_windows << total windows.
+    window_count = 0
+    max_per_series = max((len(w) for w in per_series_windows), default=0)
+    for w_idx in range(max_per_series):
+        for series_wins in per_series_windows:
+            if window_count >= max_windows:
+                break
+            if w_idx >= len(series_wins):
+                continue
+            ctx_arr, fut_close, ctx_close, sym = series_wins[w_idx]
             pending_ctx.append(torch.from_numpy(ctx_arr).float())
             pending_labels.append((fut_close, ctx_close, sym))
             window_count += 1
-
         if window_count >= max_windows:
             break
 
