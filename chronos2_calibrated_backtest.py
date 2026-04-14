@@ -63,11 +63,14 @@ def run_backtest(
     symbols: List[str],
     params: CalibrationParams,
     fee_bps: float = 10.0,
+    hl_mid: Optional[np.ndarray] = None,
 ) -> Dict:
     """
     Run calibrated backtest on collected predictions.
 
     Returns dict with overall and per-symbol stats.
+    hl_mid: optional (N,) array of (predicted_high_q50 + predicted_low_q50)/2;
+        used when params.midpoint_weight > 0
     """
     eps = 1e-8
     pred_ret = (q50 - prev_close) / (np.abs(prev_close) + eps)
@@ -75,8 +78,14 @@ def run_backtest(
     unc      = (q90 - q10) / (np.abs(prev_close) + eps)
     skewness = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
 
-    # Signal: weighted median return + optional skewness component
-    signals = pred_ret * params.signal_weight + skewness * params.skew_weight + params.signal_bias
+    # OHLC midpoint return signal
+    mid_ret = np.zeros_like(pred_ret)
+    if hl_mid is not None and params.midpoint_weight != 0.0:
+        mid_ret = (hl_mid - prev_close) / (np.abs(prev_close) + eps)
+
+    # Signal: weighted median return + optional skewness + optional midpoint component
+    signals = (pred_ret * params.signal_weight + skewness * params.skew_weight
+               + mid_ret * params.midpoint_weight + params.signal_bias)
 
     # Vectorised position computation (same logic as _run_grid in calibration)
     desired = np.zeros(len(signals), dtype=np.int8)
@@ -229,7 +238,7 @@ def main(argv=None) -> int:
 
     # Collect predictions for primary model
     print(f"\nRunning inference for: {args.model_id}")
-    q10, q50, q90, actual, prev_close, symbols = collect_predictions(
+    q10, q50, q90, actual, prev_close, hl_mid, symbols = collect_predictions(
         model_id=args.model_id,
         series_list=test_series,
         context_length=args.context_length,
@@ -237,11 +246,12 @@ def main(argv=None) -> int:
         torch_dtype_str=args.torch_dtype,
         max_windows=args.max_windows,
         batch_size=args.batch_size,
+        include_hl_mid=True,
     )
 
     # Primary model backtest
     params = _load_calibration(args.model_id, args.calibration)
-    stats = run_backtest(q10, q50, q90, actual, prev_close, symbols, params, args.fee_bps)
+    stats = run_backtest(q10, q50, q90, actual, prev_close, symbols, params, args.fee_bps, hl_mid)
 
     print("\n=== Primary model ===")
     _print_stats(stats, args.model_id.split("/")[-2] if "/" in args.model_id else args.model_id)
@@ -257,7 +267,7 @@ def main(argv=None) -> int:
     # Compare model
     if args.compare_model:
         print(f"\nRunning inference for compare: {args.compare_model}")
-        q10c, q50c, q90c, actualc, prev_c, symsc = collect_predictions(
+        q10c, q50c, q90c, actualc, prev_c, hl_mid_c, symsc = collect_predictions(
             model_id=args.compare_model,
             series_list=test_series,
             context_length=args.context_length,
@@ -265,9 +275,10 @@ def main(argv=None) -> int:
             torch_dtype_str=args.torch_dtype,
             max_windows=args.max_windows,
             batch_size=args.batch_size,
+            include_hl_mid=True,
         )
         params_c = _load_calibration(args.compare_model, None)
-        stats_c = run_backtest(q10c, q50c, q90c, actualc, prev_c, symsc, params_c, args.fee_bps)
+        stats_c = run_backtest(q10c, q50c, q90c, actualc, prev_c, symsc, params_c, args.fee_bps, hl_mid_c)
 
         print("\n=== Compare model ===")
         _print_stats(stats_c, args.compare_model.split("/")[-2] if "/" in args.compare_model else args.compare_model)

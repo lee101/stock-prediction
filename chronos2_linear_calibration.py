@@ -285,7 +285,8 @@ def collect_predictions(
     shuffle: bool = True,
     extra_series_list: Optional[List[dict]] = None,
     extra_max_windows: int = 2000,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    include_hl_mid: bool = False,
+):
     """
     Run model inference on sliding windows of each series.
     Batches windows together for efficient GPU utilization.
@@ -297,13 +298,12 @@ def collect_predictions(
     extra_series_list: optional second series set (e.g. OOS test set) that is
         collected in the same model pass. Access via the returned tag array.
 
-    Returns:
-        q10:       (N,) predicted 10th percentile of close
-        q50:       (N,) predicted 50th percentile (median)
-        q90:       (N,) predicted 90th percentile
-        actual:    (N,) actual close at the next timestep
-        prev_close:(N,) close at the last context bar (to compute returns)
-        symbols:   [N]  symbol name for each window (empty string if unknown)
+    include_hl_mid: if True, returns 7-tuple with hl_mid as 6th element.
+
+    Returns (include_hl_mid=False):
+        q10, q50, q90, actual, prev_close, symbols
+    Returns (include_hl_mid=True):
+        q10, q50, q90, actual, prev_close, hl_mid, symbols
     """
     import torch
 
@@ -346,9 +346,15 @@ def collect_predictions(
     if extra_series_list is not None:
         tags_arr = np.array(tags)
         mask0 = tags_arr == 0
+        prim_syms = [s for s, t in zip(syms, tags) if t == 0]
+        if include_hl_mid:
+            return (q10[mask0], q50[mask0], q90[mask0], actual[mask0],
+                    prev_close[mask0], hl_mid[mask0], prim_syms)
         return (q10[mask0], q50[mask0], q90[mask0], actual[mask0],
-                prev_close[mask0], [s for s, t in zip(syms, tags) if t == 0])
+                prev_close[mask0], prim_syms)
 
+    if include_hl_mid:
+        return q10, q50, q90, actual, prev_close, hl_mid, syms
     return q10, q50, q90, actual, prev_close, syms
 
 
