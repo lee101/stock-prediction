@@ -19,6 +19,7 @@ from pufferlib_market.intrabar_replay import (
     IntraBarFill,
     build_hourly_marketsim_trace,
     replay_intrabar,
+    simulate_daily_policy_intrabar,
 )
 
 
@@ -259,3 +260,73 @@ def test_render_mp4_smoke(tmp_path: Path) -> None:
     render_mp4(trace, out, num_pairs=1, fps=4, frames_per_bar=1, title="intrabar test")
     assert out.exists()
     assert out.stat().st_size > 1024
+
+
+def test_simulate_daily_policy_intrabar_hold_days_zero_on_day_after_buying() -> None:
+    """hold_days in obs[base+3] must be 0 on the first decision after buying.
+
+    Bug: `day_idx - pos_open_day` was used, giving 1 on day-1-after-buying,
+    but C env shows hold_hours=0 on that step.  Fix: subtract 1 from elapsed days.
+    """
+    # 3 daily bars, 1 symbol, flat price 100
+    data = _make_mktd(num_days=3, num_symbols=1)
+
+    # 3 days with 2 hourly bars each (10am and 11am), spread across 3 calendar days.
+    ts_d0 = pd.Timestamp("2026-01-01T10:00:00Z")
+    ts_d1 = pd.Timestamp("2026-01-02T10:00:00Z")
+    ts_d2 = pd.Timestamp("2026-01-03T10:00:00Z")
+    hourly_index = pd.DatetimeIndex(
+        [ts_d0, ts_d0 + pd.Timedelta(hours=1),
+         ts_d1, ts_d1 + pd.Timedelta(hours=1),
+         ts_d2, ts_d2 + pd.Timedelta(hours=1)],
+        tz="UTC",
+    )
+    N = len(hourly_index)
+    hourly = HourlyOHLC(
+        index=hourly_index,
+        symbols=["SYM0"],
+        open={"SYM0": np.full(N, 100.0)},
+        high={"SYM0": np.full(N, 101.0)},
+        low={"SYM0": np.full(N, 99.0)},
+        close={"SYM0": np.full(N, 100.0)},
+        tradable={"SYM0": np.ones(N, dtype=bool)},
+    )
+
+    # Capture hold_days from obs[base+3] at each policy call.
+    # S=1, F=16 → base=16, obs[19]=hold_days/max_steps.
+    S, F = 1, 16
+    base = S * F
+    max_steps = 2
+    hold_days_obs: list[float] = []
+    call_count = [0]
+
+    def _policy(obs: np.ndarray) -> int:
+        hold_days_obs.append(float(obs[base + 3]))
+        call_count[0] += 1
+        return 1  # always buy SYM0
+
+    simulate_daily_policy_intrabar(
+        data=data,
+        policy_fn=_policy,
+        hourly=hourly,
+        start_date="2026-01-01",
+        max_steps=max_steps,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+    )
+
+    assert call_count[0] >= 2, f"expected >=2 policy calls, got {call_count[0]}"
+
+    # Day 0 (buy): hold_days=0 → obs shows 0.0
+    assert hold_days_obs[0] == pytest.approx(0.0 / max_steps), (
+        f"day 0 buy: expected hold_days=0/max_steps=0.0, got {hold_days_obs[0]:.4f}"
+    )
+
+    # Day 1 (first day after buying): C env shows hold_hours=0 → hold_days must be 0.
+    # Bug would give day_idx(1) - pos_open_day(0) = 1 → obs shows 1/max_steps = 0.5
+    assert hold_days_obs[1] == pytest.approx(0.0 / max_steps), (
+        f"day 1 after buying: expected hold_days=0/max_steps=0.0, got {hold_days_obs[1]:.4f} "
+        "(off-by-one: should be 0 not 1)"
+    )
