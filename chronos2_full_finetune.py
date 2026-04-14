@@ -601,6 +601,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Prob of injecting random linear trend into context. 0=off")
     p.add_argument("--trend-magnitude-frac", type=float, default=0.10,
                    help="Trend magnitude as fraction of channel mean (default: 0.10 = 10%%)")
+    p.add_argument("--vol-regime-prob", type=float, default=0.0,
+                   help="Prob of applying volatility regime shift (second half scaled by random mult). 0=off")
+    p.add_argument("--vol-regime-max-mult", type=float, default=4.0,
+                   help="Max volatility multiplier for regime shift (default: 4.0)")
+    p.add_argument("--mean-reversion-prob", type=float, default=0.0,
+                   help="Prob of overlaying damped sinusoidal mean-reversion on context. 0=off")
+    p.add_argument("--mean-reversion-amplitude", type=float, default=0.03,
+                   help="Oscillation amplitude as fraction of channel mean (default: 0.03 = 3%%)")
     p.add_argument("--no-return-variants", action="store_true")
     p.add_argument("--no-sliding",  action="store_true",
                    help="Disable hourly sliding-window daily aggregations")
@@ -659,6 +667,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         gap_magnitude_frac=getattr(args, "gap_magnitude_frac", 0.05),
         trend_inject_prob=getattr(args, "trend_inject_prob", 0.0),
         trend_magnitude_frac=getattr(args, "trend_magnitude_frac", 0.10),
+        vol_regime_prob=getattr(args, "vol_regime_prob", 0.0),
+        vol_regime_max_mult=getattr(args, "vol_regime_max_mult", 4.0),
+        mean_reversion_prob=getattr(args, "mean_reversion_prob", 0.0),
+        mean_reversion_amplitude=getattr(args, "mean_reversion_amplitude", 0.03),
         add_return_variants=not args.no_return_variants,
         sliding_daily_offsets=[] if args.no_sliding else [0, 1, 2, 3, 4, 5, 6],
     )

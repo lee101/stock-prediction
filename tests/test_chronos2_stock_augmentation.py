@@ -700,3 +700,142 @@ class TestAugmentedChronos2Dataset:
         ctx = batch["context"].float()
         finite = ctx[~torch.isnan(ctx)]
         assert float(finite.std()) < 1e-3, "Zero prob should leave series unchanged"
+
+    def test_vol_regime_changes_volatility(self):
+        """Vol regime aug should produce different volatility in second half vs first half."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        rng = np.random.default_rng(42)
+        # Use a long series so context is always T bars
+        T_series = T * 4  # 4 full non-overlapping windows
+        inputs = [{"target": (100.0 + rng.normal(0, 1.0, (4, T_series))).astype(np.float32)}
+                  for _ in range(8)]
+
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            gap_inject_prob=0.0, trend_inject_prob=0.0,
+            vol_regime_prob=1.0, vol_regime_max_mult=4.0, mean_reversion_prob=0.0,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1,
+            batch_size=4, output_patch_size=16,
+            mode=DatasetMode.TRAIN, aug_config=aug,
+        )
+        # Collect several long-enough batches
+        ratios = []
+        for i, batch in enumerate(ds):
+            if i >= 10:
+                break
+            ctx = batch["context"].float()
+            if ctx.shape[-1] < T:
+                continue   # skip short contexts
+            split = T // 2
+            first_std = float(ctx[..., :split].reshape(-1).std())
+            second_std = float(ctx[..., split:].reshape(-1).std())
+            if first_std > 0 and not np.isnan(first_std) and not np.isnan(second_std):
+                ratios.append(second_std / first_std)
+
+        assert len(ratios) >= 1, "Need at least one full-length batch"
+        # With vol_regime_max_mult=4, the ratio should deviate from 1 in at least some samples
+        # (could be close to 1 if multiplier=1.0 was drawn, but mean should vary)
+        assert not all(abs(r - 1.0) < 0.01 for r in ratios), \
+            f"Vol regime should change relative volatility; got ratios={ratios}"
+
+    def test_vol_regime_disabled_when_zero_prob(self):
+        """No vol regime when prob=0 and constant input stays constant."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 50.0, dtype=np.float32)} for _ in range(10)]
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=T,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+                gap_inject_prob=0.0, trend_inject_prob=0.0,
+                vol_regime_prob=0.0, mean_reversion_prob=0.0,
+            ),
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        finite = ctx[~torch.isnan(ctx)]
+        assert float(finite.std()) < 1e-3, "Zero vol_regime_prob should leave constant series unchanged"
+
+    def test_mean_reversion_adds_oscillation(self):
+        """Mean-reversion aug should produce oscillating pattern on constant series."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        # Constant series — only mean_reversion can add oscillation
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(20)]
+
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            gap_inject_prob=0.0, trend_inject_prob=0.0, vol_regime_prob=0.0,
+            mean_reversion_prob=1.0,   # always apply
+            mean_reversion_amplitude=0.05,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=T,
+            prediction_length=1,
+            batch_size=8,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=aug,
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()  # (..., T)
+        finite = ctx[~torch.isnan(ctx)]
+        # With amplitude=0.05 and mean=100, std across time should be > 0.5
+        assert float(finite.std()) > 0.5, \
+            "Mean-reversion aug should add visible oscillation (std > 0.5)"
+
+    def test_mean_reversion_not_in_val_mode(self):
+        """Mean-reversion aug should NOT be applied in validation mode."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(10)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            mean_reversion_prob=1.0, mean_reversion_amplitude=0.05,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=T,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.VALIDATION,   # val mode
+            aug_config=aug,
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        finite = ctx[~torch.isnan(ctx)]
+        assert float(finite.std()) < 1e-3, "Val mode should not apply mean_reversion_aug"

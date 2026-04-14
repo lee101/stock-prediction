@@ -766,8 +766,8 @@ class TestStep2Signal:
         )
         assert params is not None
         assert not np.isnan(params.buy_threshold)
-        # step2_weight is searched from [0.0, 0.5, 1.0]
-        assert params.step2_weight in (0.0, 0.5, 1.0)
+        # step2_weight is searched from [0.0, 0.5, 1.0, 2.0] (coarse) + phase-4 fine range
+        assert params.step2_weight >= 0.0
 
     def test_run_grid_with_step2_returns_8_tuple(self):
         """_run_grid with step2 data should return 8-tuple and may pick non-zero weight."""

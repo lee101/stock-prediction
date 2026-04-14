@@ -42,9 +42,23 @@ done
 echo "[$(date -u +%H:%M:%SZ)] v3 training complete."
 
 # -----------------------------------------------------------------------
-# Step 2: Calibrate v3 (long-only + short variants, with signal_weight search)
+# SWA: Average last 3 checkpoints for v3
 # -----------------------------------------------------------------------
 V3_CKPT="chronos2_finetuned/stocks_all_v3/finetuned-ckpt"
+V3_SWA="chronos2_finetuned/stocks_all_v3/swa-ckpt"
+if [[ -d "chronos2_finetuned/stocks_all_v3/trainer_workspace" ]]; then
+    echo "[$(date -u +%H:%M:%SZ)] Creating v3 SWA checkpoint (average last 3)..."
+    python scripts/average_checkpoints.py \
+        --trainer-workspace chronos2_finetuned/stocks_all_v3/trainer_workspace \
+        --output "$V3_SWA" \
+        --n-last 3 \
+        --copy-chronos-config "$V3_CKPT" \
+        2>&1 | tee chronos2_swa_v3.log || echo "[WARN] SWA failed, continuing with finetuned-ckpt only"
+fi
+
+# -----------------------------------------------------------------------
+# Step 2: Calibrate v3 (long-only + short variants, with signal_weight search)
+# -----------------------------------------------------------------------
 if [[ ! -d "$V3_CKPT" ]]; then
     echo "[$(date -u +%H:%M:%SZ)] ERROR: v3 checkpoint not found at $V3_CKPT"
     exit 1
@@ -83,6 +97,24 @@ python chronos2_linear_calibration.py \
     --hyperparams-dir hyperparams/chronos2_v3 \
     --no-search-signal-weight \
     2>&1 | tee chronos2_calibration_v3_persym.log
+
+# SWA calibration (if SWA ckpt exists)
+if [[ -d "$V3_SWA" ]]; then
+    echo "[$(date -u +%H:%M:%SZ)] Running v3 SWA calibration..."
+    python chronos2_linear_calibration.py \
+        --model-id     "$V3_SWA" \
+        --cal-data-dir trainingdata \
+        --output-path  "$V3_SWA/calibration.json" \
+        --max-shift-bps 20 \
+        --min-gap-bps   2 \
+        --grid-steps   25 \
+        --cal-bars     120 \
+        --max-windows  5000 \
+        --batch-size   32 \
+        --prediction-length 2 \
+        --also-calmar \
+        2>&1 | tee chronos2_calibration_v3_swa.log
+fi
 
 # -----------------------------------------------------------------------
 # Step 3: Benchmark v3 vs v2 on key symbols (same-period comparison)
@@ -138,9 +170,16 @@ if [[ -n "$V4_PID" ]]; then
     while kill -0 "$V4_PID" 2>/dev/null; do
         sleep 180
     done
-    echo "[$(date -u +%H:%M:%SZ)] v4 complete. Running v4 calibration + benchmark..."
+    echo "[$(date -u +%H:%M:%SZ)] v4 complete. Running v4 SWA + calibration + benchmark..."
 
     V4_CKPT="chronos2_finetuned/stocks_all_v4/finetuned-ckpt"
+    V4_SWA="chronos2_finetuned/stocks_all_v4/swa-ckpt"
+    if [[ -d "chronos2_finetuned/stocks_all_v4/trainer_workspace" ]]; then
+        python scripts/average_checkpoints.py \
+            --trainer-workspace chronos2_finetuned/stocks_all_v4/trainer_workspace \
+            --output "$V4_SWA" --n-last 3 \
+            --copy-chronos-config "$V4_CKPT" 2>&1 | tee chronos2_swa_v4.log || true
+    fi
     if [[ -d "$V4_CKPT" ]]; then
         python chronos2_linear_calibration.py \
             --model-id     "$V4_CKPT" \
@@ -157,6 +196,16 @@ if [[ -n "$V4_PID" ]]; then
             --also-calmar \
             --hyperparams-dir hyperparams/chronos2_v4 \
             2>&1 | tee chronos2_calibration_v4.log
+
+        if [[ -d "$V4_SWA" ]]; then
+            python chronos2_linear_calibration.py \
+                --model-id "$V4_SWA" --cal-data-dir trainingdata \
+                --output-path "$V4_SWA/calibration.json" \
+                --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                --prediction-length 2 --also-calmar \
+                2>&1 | tee chronos2_calibration_v4_swa.log || true
+        fi
 
         python benchmark_chronos2.py \
             --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
@@ -180,9 +229,16 @@ if [[ -n "$V4_PID" ]]; then
         while kill -0 "$V5_PID" 2>/dev/null; do
             sleep 180
         done
-        echo "[$(date -u +%H:%M:%SZ)] v5 complete. Running v5 calibration + benchmark..."
+        echo "[$(date -u +%H:%M:%SZ)] v5 complete. Running v5 SWA + calibration + benchmark..."
 
         V5_CKPT="chronos2_finetuned/stocks_all_v5/finetuned-ckpt"
+        V5_SWA="chronos2_finetuned/stocks_all_v5/swa-ckpt"
+        if [[ -d "chronos2_finetuned/stocks_all_v5/trainer_workspace" ]]; then
+            python scripts/average_checkpoints.py \
+                --trainer-workspace chronos2_finetuned/stocks_all_v5/trainer_workspace \
+                --output "$V5_SWA" --n-last 3 \
+                --copy-chronos-config "$V5_CKPT" 2>&1 | tee chronos2_swa_v5.log || true
+        fi
         if [[ -d "$V5_CKPT" ]]; then
             python chronos2_linear_calibration.py \
                 --model-id     "$V5_CKPT" \
@@ -200,6 +256,15 @@ if [[ -n "$V4_PID" ]]; then
                 --hyperparams-dir hyperparams/chronos2_v5 \
                 2>&1 | tee chronos2_calibration_v5.log
 
+            if [[ -d "${V5_SWA:-}" ]]; then
+                python chronos2_linear_calibration.py \
+                    --model-id "$V5_SWA" --cal-data-dir trainingdata \
+                    --output-path "$V5_SWA/calibration.json" \
+                    --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                    --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                    --prediction-length 2 --also-calmar \
+                    2>&1 | tee chronos2_calibration_v5_swa.log || true
+            fi
             python benchmark_chronos2.py \
                 --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
                 --model-id "$V5_CKPT" \
@@ -222,9 +287,16 @@ if [[ -n "$V4_PID" ]]; then
             while kill -0 "$V6_PID" 2>/dev/null; do
                 sleep 180
             done
-            echo "[$(date -u +%H:%M:%SZ)] v6 complete. Running v6 calibration + benchmark..."
+            echo "[$(date -u +%H:%M:%SZ)] v6 complete. Running v6 SWA + calibration + benchmark..."
 
             V6_CKPT="chronos2_finetuned/stocks_all_v6/finetuned-ckpt"
+            V6_SWA="chronos2_finetuned/stocks_all_v6/swa-ckpt"
+            if [[ -d "chronos2_finetuned/stocks_all_v6/trainer_workspace" ]]; then
+                python scripts/average_checkpoints.py \
+                    --trainer-workspace chronos2_finetuned/stocks_all_v6/trainer_workspace \
+                    --output "$V6_SWA" --n-last 3 \
+                    --copy-chronos-config "$V6_CKPT" 2>&1 | tee chronos2_swa_v6.log || true
+            fi
             if [[ -d "$V6_CKPT" ]]; then
                 python chronos2_linear_calibration.py \
                     --model-id     "$V6_CKPT" \
@@ -241,6 +313,16 @@ if [[ -n "$V4_PID" ]]; then
                     --also-calmar \
                     --hyperparams-dir hyperparams/chronos2_v6 \
                     2>&1 | tee chronos2_calibration_v6.log
+
+                if [[ -d "${V6_SWA:-}" ]]; then
+                    python chronos2_linear_calibration.py \
+                        --model-id "$V6_SWA" --cal-data-dir trainingdata \
+                        --output-path "$V6_SWA/calibration.json" \
+                        --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                        --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                        --prediction-length 2 --also-calmar \
+                        2>&1 | tee chronos2_calibration_v6_swa.log || true
+                fi
 
                 python benchmark_chronos2.py \
                     --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
@@ -264,9 +346,17 @@ if [[ -n "$V4_PID" ]]; then
                 while kill -0 "$V7_PID" 2>/dev/null; do
                     sleep 180
                 done
-                echo "[$(date -u +%H:%M:%SZ)] v7 complete. Running v7 calibration + benchmark..."
+                echo "[$(date -u +%H:%M:%SZ)] v7 complete. Running v7 SWA + calibration + benchmark..."
 
                 V7_CKPT="chronos2_finetuned/stocks_all_v7/finetuned-ckpt"
+                V7_SWA="chronos2_finetuned/stocks_all_v7/swa-ckpt"
+                if [[ -d "chronos2_finetuned/stocks_all_v7/trainer_workspace" ]]; then
+                    python scripts/average_checkpoints.py \
+                        --trainer-workspace chronos2_finetuned/stocks_all_v7/trainer_workspace \
+                        --output "$V7_SWA" --n-last 3 \
+                        --copy-chronos-config "$V7_CKPT" 2>&1 | tee chronos2_swa_v7.log || true
+                fi
+
                 if [[ -d "$V7_CKPT" ]]; then
                     python chronos2_linear_calibration.py \
                         --model-id     "$V7_CKPT" \
@@ -284,6 +374,16 @@ if [[ -n "$V4_PID" ]]; then
                         --hyperparams-dir hyperparams/chronos2_v7 \
                         2>&1 | tee chronos2_calibration_v7.log
 
+                    if [[ -d "${V7_SWA:-}" ]]; then
+                        python chronos2_linear_calibration.py \
+                            --model-id "$V7_SWA" --cal-data-dir trainingdata \
+                            --output-path "$V7_SWA/calibration.json" \
+                            --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                            --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                            --prediction-length 2 --also-calmar \
+                            2>&1 | tee chronos2_calibration_v7_swa.log || true
+                    fi
+
                     python benchmark_chronos2.py \
                         --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
                         --model-id "$V7_CKPT" \
@@ -296,6 +396,124 @@ if [[ -n "$V4_PID" ]]; then
                 echo "[$(date -u +%H:%M:%SZ)] Launching v8 (ctx=1024, trend_inject=0.15, all augs)..."
                 bash scripts/launch_chronos2_v8.sh
                 echo "[$(date -u +%H:%M:%SZ)] v8 launched. PID: $(cat .chronos2_v8_pid 2>/dev/null)"
+
+                # -----------------------------------------------------------------------
+                # Wait for v8 then calibrate and launch v9
+                # -----------------------------------------------------------------------
+                V8_PID="$(cat .chronos2_v8_pid 2>/dev/null)"
+                if [[ -n "$V8_PID" ]]; then
+                    echo "[$(date -u +%H:%M:%SZ)] Waiting for v8 (PID $V8_PID) to complete before launching v9..."
+                    while kill -0 "$V8_PID" 2>/dev/null; do
+                        sleep 180
+                    done
+                    echo "[$(date -u +%H:%M:%SZ)] v8 complete. Running v8 SWA + calibration + benchmark..."
+
+                    V8_CKPT="chronos2_finetuned/stocks_all_v8/finetuned-ckpt"
+                    V8_SWA="chronos2_finetuned/stocks_all_v8/swa-ckpt"
+                    if [[ -d "chronos2_finetuned/stocks_all_v8/trainer_workspace" ]]; then
+                        python scripts/average_checkpoints.py \
+                            --trainer-workspace chronos2_finetuned/stocks_all_v8/trainer_workspace \
+                            --output "$V8_SWA" --n-last 3 \
+                            --copy-chronos-config "$V8_CKPT" 2>&1 | tee chronos2_swa_v8.log || true
+                    fi
+
+                    if [[ -d "$V8_CKPT" ]]; then
+                        python chronos2_linear_calibration.py \
+                            --model-id     "$V8_CKPT" \
+                            --cal-data-dir trainingdata \
+                            --output-path  "$V8_CKPT/calibration.json" \
+                            --max-shift-bps 20 \
+                            --min-gap-bps   2 \
+                            --grid-steps   25 \
+                            --cal-bars     120 \
+                            --max-windows  5000 \
+                            --batch-size   32 \
+                            --per-symbol \
+                            --prediction-length 2 \
+                            --also-calmar \
+                            --hyperparams-dir hyperparams/chronos2_v8 \
+                            2>&1 | tee chronos2_calibration_v8.log
+
+                        if [[ -d "${V8_SWA:-}" ]]; then
+                            python chronos2_linear_calibration.py \
+                                --model-id "$V8_SWA" --cal-data-dir trainingdata \
+                                --output-path "$V8_SWA/calibration.json" \
+                                --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                                --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                                --prediction-length 2 --also-calmar \
+                                2>&1 | tee chronos2_calibration_v8_swa.log || true
+                        fi
+
+                        python benchmark_chronos2.py \
+                            --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                            --model-id "$V8_CKPT" \
+                            --context-length 1024 \
+                            --batch-size 64 \
+                            --update-hyperparams \
+                            2>&1 | tee chronos2_benchmark_v8.log
+                    fi
+
+                    echo "[$(date -u +%H:%M:%SZ)] Launching v9 (ctx=1024, vol_regime=0.15, mean_reversion=0.10)..."
+                    bash scripts/launch_chronos2_v9.sh
+                    echo "[$(date -u +%H:%M:%SZ)] v9 launched. PID: $(cat .chronos2_v9_pid 2>/dev/null)"
+
+                    # -----------------------------------------------------------------------
+                    # Wait for v9 then calibrate
+                    # -----------------------------------------------------------------------
+                    V9_PID="$(cat .chronos2_v9_pid 2>/dev/null)"
+                    if [[ -n "$V9_PID" ]]; then
+                        echo "[$(date -u +%H:%M:%SZ)] Waiting for v9 (PID $V9_PID) to complete..."
+                        while kill -0 "$V9_PID" 2>/dev/null; do
+                            sleep 180
+                        done
+                        echo "[$(date -u +%H:%M:%SZ)] v9 complete. Running v9 SWA + calibration + benchmark..."
+
+                        V9_CKPT="chronos2_finetuned/stocks_all_v9/finetuned-ckpt"
+                        V9_SWA="chronos2_finetuned/stocks_all_v9/swa-ckpt"
+                        if [[ -d "chronos2_finetuned/stocks_all_v9/trainer_workspace" ]]; then
+                            python scripts/average_checkpoints.py \
+                                --trainer-workspace chronos2_finetuned/stocks_all_v9/trainer_workspace \
+                                --output "$V9_SWA" --n-last 3 \
+                                --copy-chronos-config "$V9_CKPT" 2>&1 | tee chronos2_swa_v9.log || true
+                        fi
+
+                        if [[ -d "$V9_CKPT" ]]; then
+                            python chronos2_linear_calibration.py \
+                                --model-id     "$V9_CKPT" \
+                                --cal-data-dir trainingdata \
+                                --output-path  "$V9_CKPT/calibration.json" \
+                                --max-shift-bps 20 \
+                                --min-gap-bps   2 \
+                                --grid-steps   25 \
+                                --cal-bars     120 \
+                                --max-windows  5000 \
+                                --batch-size   32 \
+                                --per-symbol \
+                                --prediction-length 2 \
+                                --also-calmar \
+                                --hyperparams-dir hyperparams/chronos2_v9 \
+                                2>&1 | tee chronos2_calibration_v9.log
+
+                            if [[ -d "${V9_SWA:-}" ]]; then
+                                python chronos2_linear_calibration.py \
+                                    --model-id "$V9_SWA" --cal-data-dir trainingdata \
+                                    --output-path "$V9_SWA/calibration.json" \
+                                    --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                                    --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                                    --prediction-length 2 --also-calmar \
+                                    2>&1 | tee chronos2_calibration_v9_swa.log || true
+                            fi
+
+                            python benchmark_chronos2.py \
+                                --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                                --model-id "$V9_CKPT" \
+                                --context-length 1024 \
+                                --batch-size 64 \
+                                --update-hyperparams \
+                                2>&1 | tee chronos2_benchmark_v9.log
+                        fi
+                    fi
+                fi
             fi
         fi
     fi

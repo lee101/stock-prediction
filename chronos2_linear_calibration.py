@@ -884,12 +884,13 @@ def fit_calibration(
     else:
         conf_vals = [0.0]
 
-    # Skew weight search: [0, 0.5, 1.0, 2.0] — 0 means disabled
-    skew_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0]
-    # Midpoint weight: search [0, 0.5, 1.0] if midpoint data available, else [0.0] only
-    midpoint_weight_vals: List[float] = [0.0, 0.5, 1.0] if midpoint_return is not None else [0.0]
-    # Step2 weight: search [0, 0.5, 1.0] if step2 data available, else [0.0] only
-    step2_weight_vals_: List[float] = [0.0, 0.5, 1.0] if step2_return_arr is not None else [0.0]
+    # Skew weight search: includes negative values — allows contrarian skew signal
+    # (e.g. right-skewed prediction → actually bearish, so negative weight fits that)
+    skew_weight_vals: List[float] = [-1.0, -0.5, 0.0, 0.5, 1.0, 2.0]
+    # Midpoint weight: search [0, 0.5, 1.0, 2.0] if midpoint data available, else [0.0] only
+    midpoint_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0] if midpoint_return is not None else [0.0]
+    # Step2 weight: search [0, 0.5, 1.0, 2.0] if step2 data available, else [0.0] only
+    step2_weight_vals_: List[float] = [0.0, 0.5, 1.0, 2.0] if step2_return_arr is not None else [0.0]
 
     grid_kwargs = dict(allow_short=allow_short, min_gap=min_gap, fee_bps=fee_bps,
                        skewness=skewness, use_sortino=use_sortino, use_calmar=use_calmar,
@@ -945,6 +946,33 @@ def fit_calibration(
         if sharpe3 > best_sharpe:
             best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
                 sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3)
+
+    # --- Phase 4: fine-tune skew/midpoint/step2 weights around best values ---
+    # Uses ±50% around coarse-search best in 7 steps each to avoid local minima.
+    def _fine_weight_range(center: float, n: int = 7) -> List[float]:
+        """Return n evenly spaced values around center covering ±50% range (clamped ≥ -2)."""
+        lo = max(-2.0, center * 0.5 - 0.25)
+        hi = center * 1.5 + 0.25
+        if lo >= hi:
+            return [center]
+        return list(np.linspace(lo, hi, n))
+
+    skew_fine  = _fine_weight_range(best_skew_w)
+    mid_fine   = _fine_weight_range(best_mid_w)  if midpoint_return  is not None else [0.0]
+    s2w_fine   = _fine_weight_range(best_s2w)    if step2_return_arr is not None else [0.0]
+
+    sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4 = _run_grid(
+        predicted_return, actual_return, uncertainties,
+        np.array([best_buy, best_sell]),
+        [best_weight], [best_conf],
+        skew_weight_vals=skew_fine,
+        midpoint_weight_vals=mid_fine,
+        step2_weight_vals=s2w_fine,
+        **grid_kwargs,  # type: ignore[arg-type]
+    )
+    if sharpe4 > best_sharpe:
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
+            sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4)
 
     params = CalibrationParams(
         signal_weight=best_weight,

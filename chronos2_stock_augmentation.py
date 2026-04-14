@@ -129,6 +129,29 @@ class AugConfig:
     # E.g. 0.10 = trend can reach ±10% of price over the full context.
     trend_magnitude_frac: float = 0.10
 
+    # Volatility regime shift: with this probability, split context at a random
+    # mid-point and multiply the second half (more recent) by a random volatility
+    # multiplier.  Simulates GARCH-like volatility clustering (calm period →
+    # turbulent period or vice versa) and teaches the model to adapt its uncertainty
+    # estimate to the recent volatility regime.
+    # Set to 0 to disable.
+    vol_regime_prob: float = 0.0
+
+    # Max volatility multiplier for regime shift.  The multiplier is drawn uniformly
+    # in [1/vol_regime_max_mult, vol_regime_max_mult] on a log scale, so both
+    # compression (calmer) and expansion (more volatile) are equally likely.
+    vol_regime_max_mult: float = 4.0
+
+    # Mean-reversion injection: with this probability, overlay a damped sinusoidal
+    # oscillation on the context (all channels scaled equally).  Simulates
+    # range-bound / oscillating market regimes and teaches the model that short-term
+    # moves are often partially reversed.
+    # Set to 0 to disable.
+    mean_reversion_prob: float = 0.0
+
+    # Amplitude of injected oscillation as a fraction of the channel mean.
+    mean_reversion_amplitude: float = 0.03
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -300,6 +323,46 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                                       dtype=task_context.dtype)  # (T,)
                 trend = sign * cfg.trend_magnitude_frac * ch_mean.unsqueeze(-1) * ramp  # (n_ch, T)
                 task_context = task_context + trend
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 11. Volatility regime shift ---
+        # Multiply the second half of context by a random vol multiplier.
+        # Simulates GARCH-like volatility clustering (calmer → turbulent or reverse).
+        if cfg.vol_regime_prob > 0 and random.random() < cfg.vol_regime_prob:
+            T = task_context.shape[-1]
+            if T >= 8:
+                # Split point uniformly in [T//4, 3*T//4]
+                split = random.randint(T // 4, 3 * T // 4)
+                task_context = task_context.clone().float()
+                # Log-uniform multiplier: exp(U(-log(max_mult), log(max_mult)))
+                log_mult = (random.random() * 2 - 1.0) * math.log(cfg.vol_regime_max_mult)
+                multiplier = math.exp(log_mult)
+                # Shift the second half around its own mean, scale, then shift back.
+                # This preserves the level (no sudden jump) while changing volatility.
+                chunk = task_context[:, split:]
+                ch_mean = chunk.mean(dim=-1, keepdim=True)
+                task_context[:, split:] = (chunk - ch_mean) * multiplier + ch_mean
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 12. Mean-reversion injection ---
+        # Overlay a damped sinusoidal oscillation on all channels.
+        # Simulates range-bound markets; teaches the model that short moves revert.
+        if cfg.mean_reversion_prob > 0 and random.random() < cfg.mean_reversion_prob:
+            T = task_context.shape[-1]
+            if T >= 8:
+                task_context = task_context.clone().float()
+                ch_mean = task_context.abs().mean(dim=-1).clamp(min=1e-4)  # (n_channels,)
+                # Random period: between T/8 and T/2 bars
+                period = random.uniform(T / 8.0, T / 2.0)
+                # Random phase
+                phase = random.uniform(0, 2 * math.pi)
+                t = torch.arange(T, dtype=torch.float32, device=task_context.device)
+                oscillation = torch.sin(2 * math.pi * t / period + phase)  # (T,)
+                # Damping: oscillation decays to zero at end of context (most recent)
+                # — so the model sees the full amplitude only in older bars
+                damping = torch.linspace(1.0, 0.0, T, device=task_context.device)
+                osc = oscillation * damping * cfg.mean_reversion_amplitude  # (T,)
+                task_context = task_context + ch_mean.unsqueeze(-1) * osc.unsqueeze(0)
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets
