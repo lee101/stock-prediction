@@ -204,6 +204,22 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
+### 2026-04-14 05:10 UTC — 13-model search: 12m ensemble is optimal (no improvement found)
+
+**13-model search exhaustive results** (vs 12m: neg=10/263, med=18.87%, p10=7.88%, sort=32.35):
+- 13m+D_s60 (neg=32): neg=10, med=18.85%, p10=7.66% — NO IMPROVEMENT (noise-level)
+- 13m+D_s92 (neg=20): neg=12, med=18.94%, p10=7.54% — WORSE (neg+2, p10-0.34%)
+- 13m+D_s97 (neg=15): neg=15, med=17.18% — MUCH WORSE
+- All other candidates (D_s67,D_s22,D_s68,D_s72,D_s82,D_s24,D_s109,D_s114): all worse on exhaustive
+
+**Pattern**: every 13th model candidate tried either (a) has same/worse metrics in exhaustive 263w eval or (b) looked good in 100w sampling but failed exhaustive. The 12m ensemble is near-optimal for the current model pool.
+
+**Ongoing**: I/s28 showing promising training (0/50 neg at u50+u100, score 6.8%→29.0%). Training completes ~05:30 UTC. If OOS neg<10, will test as 13th.
+
+**Runners active**: I runner v3 (s28-50), U runner v3 (s9-20), D sweep (s100+)
+
+---
+
 ### 2026-04-14 04:41 UTC — Upgraded to 12-model ensemble (+D_s57 +I_s3×2 +D_s64) — CURRENT PRODUCTION
 
 **Service restarted 04:41 UTC** (PID 3541435) to activate 12-model. Next tick Mon ~13:35 UTC.
