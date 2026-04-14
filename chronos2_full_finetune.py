@@ -589,6 +589,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Prob of zeroing one random OHLC channel in context (robustness). 0=off")
     p.add_argument("--time-warp-prob", type=float, default=0.0,
                    help="Prob of random time-warp on context (temporal invariance). 0=off")
+    p.add_argument("--outlier-inject-prob", type=float, default=0.0,
+                   help="Prob of injecting 1-3 extreme bars into context (crash robustness). 0=off")
+    p.add_argument("--outlier-magnitude", type=float, default=5.0,
+                   help="Outlier magnitude in units of local std (default: 5.0)")
     p.add_argument("--no-return-variants", action="store_true")
     p.add_argument("--no-sliding",  action="store_true",
                    help="Disable hourly sliding-window daily aggregations")
@@ -641,6 +645,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         detrend_context=args.detrend,
         channel_dropout_prob=args.channel_dropout_prob,
         time_warp_prob=args.time_warp_prob,
+        outlier_inject_prob=getattr(args, "outlier_inject_prob", 0.0),
+        outlier_magnitude=getattr(args, "outlier_magnitude", 5.0),
         add_return_variants=not args.no_return_variants,
         sliding_daily_offsets=[] if args.no_sliding else [0, 1, 2, 3, 4, 5, 6],
     )

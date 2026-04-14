@@ -147,4 +147,44 @@ if [[ -n "$V4_PID" ]]; then
     echo "[$(date -u +%H:%M:%SZ)] Launching v5 (ctx=1024, channel_dropout, time_warp)..."
     bash scripts/launch_chronos2_v5.sh
     echo "[$(date -u +%H:%M:%SZ)] v5 launched. PID: $(cat .chronos2_v5_pid 2>/dev/null)"
+
+    # -----------------------------------------------------------------------
+    # Wait for v5 then calibrate and launch v6
+    # -----------------------------------------------------------------------
+    V5_PID="$(cat .chronos2_v5_pid 2>/dev/null)"
+    if [[ -n "$V5_PID" ]]; then
+        echo "[$(date -u +%H:%M:%SZ)] Waiting for v5 (PID $V5_PID) to complete before launching v6..."
+        while kill -0 "$V5_PID" 2>/dev/null; do
+            sleep 180
+        done
+        echo "[$(date -u +%H:%M:%SZ)] v5 complete. Running v5 calibration + benchmark..."
+
+        V5_CKPT="chronos2_finetuned/stocks_all_v5/finetuned-ckpt"
+        if [[ -d "$V5_CKPT" ]]; then
+            python chronos2_linear_calibration.py \
+                --model-id     "$V5_CKPT" \
+                --cal-data-dir trainingdata \
+                --output-path  "$V5_CKPT/calibration.json" \
+                --max-shift-bps 20 \
+                --min-gap-bps   2 \
+                --grid-steps   25 \
+                --max-windows  5000 \
+                --batch-size   32 \
+                --per-symbol \
+                --hyperparams-dir hyperparams/chronos2_v5 \
+                2>&1 | tee chronos2_calibration_v5.log
+
+            python benchmark_chronos2.py \
+                --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                --model-id "$V5_CKPT" \
+                --context-length 1024 \
+                --batch-size 64 \
+                --update-hyperparams \
+                2>&1 | tee chronos2_benchmark_v5.log
+        fi
+
+        echo "[$(date -u +%H:%M:%SZ)] Launching v6 (ctx=1024, all augs + outlier_inject)..."
+        bash scripts/launch_chronos2_v6.sh
+        echo "[$(date -u +%H:%M:%SZ)] v6 launched. PID: $(cat .chronos2_v6_pid 2>/dev/null)"
+    fi
 fi

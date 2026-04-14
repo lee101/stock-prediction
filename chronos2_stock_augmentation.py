@@ -98,6 +98,15 @@ class AugConfig:
     # Set to 0 to disable.
     time_warp_prob: float = 0.0
 
+    # Outlier injection: with this probability, replace 1-3 random context bars
+    # with extreme moves (outlier_magnitude * local_std). Teaches crash/spike
+    # robustness and prevents the model from being overconfident.
+    # Set to 0 to disable.
+    outlier_inject_prob: float = 0.0
+
+    # Magnitude for injected outliers (in units of local rolling std).
+    outlier_magnitude: float = 5.0
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -220,6 +229,24 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                     task_context = torch.cat([task_context, pad], dim=-1)
                 elif new_T > T:
                     task_context = task_context[:, :T]
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 8. Outlier injection: replace 1-3 random bars with extreme moves ---
+        if cfg.outlier_inject_prob > 0 and random.random() < cfg.outlier_inject_prob:
+            T = task_context.shape[-1]
+            if T >= 10:
+                # Compute per-channel local std from finite values
+                ctx_np = task_context.float()
+                # std across time per channel; fallback to 1e-4 for constant channels
+                per_ch_std = ctx_np.std(dim=-1, keepdim=True).clamp(min=1e-4)
+                n_outliers = random.randint(1, min(3, T // 5))
+                positions = random.sample(range(T), n_outliers)
+                task_context = task_context.clone().float()
+                for pos in positions:
+                    # Each outlier bar: multiply by a random sign and outlier_magnitude
+                    sign = 1.0 if random.random() > 0.5 else -1.0
+                    task_context[:, pos] = (task_context[:, pos]
+                                            + sign * cfg.outlier_magnitude * per_ch_std.squeeze(-1))
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets

@@ -249,6 +249,75 @@ def collect_predictions(
 
 
 # ---------------------------------------------------------------------------
+# Ensemble inference
+# ---------------------------------------------------------------------------
+
+def collect_ensemble_predictions(
+    model_ids: List[str],
+    series_list: List[dict],
+    context_length: int = 512,
+    prediction_length: int = 1,
+    device_map: str = "cuda",
+    torch_dtype_str: str = "bfloat16",
+    max_windows: int = 5000,
+    batch_size: int = 32,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    """
+    Run inference with multiple models and average their quantile predictions.
+
+    Loads each model sequentially (to avoid GPU OOM), collects predictions,
+    then returns the per-quantile average across all models.
+
+    Returns same signature as collect_predictions():
+        q10, q50, q90, actual, prev_close, symbols
+    """
+    if len(model_ids) == 1:
+        return collect_predictions(
+            model_ids[0], series_list, context_length, prediction_length,
+            device_map, torch_dtype_str, max_windows, batch_size,
+        )
+
+    all_q10_runs: List[np.ndarray] = []
+    all_q50_runs: List[np.ndarray] = []
+    all_q90_runs: List[np.ndarray] = []
+    actual_ref = None
+    prev_ref = None
+    syms_ref = None
+
+    for mid in model_ids:
+        print(f"\n[Ensemble] Collecting predictions from: {mid}")
+        q10, q50, q90, actual, prev, syms = collect_predictions(
+            mid, series_list, context_length, prediction_length,
+            device_map, torch_dtype_str, max_windows, batch_size,
+        )
+        all_q10_runs.append(q10)
+        all_q50_runs.append(q50)
+        all_q90_runs.append(q90)
+        if actual_ref is None:
+            actual_ref = actual
+            prev_ref = prev
+            syms_ref = syms
+        else:
+            # Sanity check: all models should produce same number of windows
+            if len(actual) != len(actual_ref):  # type: ignore[arg-type]
+                print(f"WARNING: {mid} produced {len(actual)} windows vs {len(actual_ref)} — truncating to min")
+                n = min(len(actual), len(actual_ref))  # type: ignore[arg-type]
+                all_q10_runs[-1] = q10[:n]
+                all_q50_runs[-1] = q50[:n]
+                all_q90_runs[-1] = q90[:n]
+                actual_ref = actual_ref[:n]
+                prev_ref = prev_ref[:n]  # type: ignore[index]
+                syms_ref = syms_ref[:n]  # type: ignore[index]
+
+    # Average quantiles across models (approximate ensemble median)
+    q10_avg = np.mean(all_q10_runs, axis=0)
+    q50_avg = np.mean(all_q50_runs, axis=0)
+    q90_avg = np.mean(all_q90_runs, axis=0)
+
+    return q10_avg, q50_avg, q90_avg, actual_ref, prev_ref, syms_ref  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
 # Grid-search calibration
 # ---------------------------------------------------------------------------
 
@@ -531,6 +600,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Directory to write per-symbol calibration JSONs (default: hyperparams/chronos2)")
     p.add_argument("--min-windows-per-symbol", type=int, default=30,
                    help="Minimum windows to fit per-symbol calibration (default: 30)")
+    p.add_argument("--ensemble-models", nargs="*", default=None,
+                   help="Additional model IDs to ensemble with --model-id (quantile averaging)")
     return p.parse_args(argv)
 
 
@@ -563,13 +634,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"Using {len(cal_series)} series for calibration")
 
     # Collect predictions (one pass — reuse for global + per-symbol)
-    q10, q50, q90, actual, prev_close, symbols = collect_predictions(
-        model_id=args.model_id,
+    # If --ensemble-models given, average quantiles across all models
+    ensemble_ids = [args.model_id] + (args.ensemble_models or [])
+    collect_fn = collect_ensemble_predictions if len(ensemble_ids) > 1 else collect_predictions
+    collect_kwargs: dict = dict(
         series_list=cal_series,
         context_length=args.context_length,
         device_map=args.device_map,
         torch_dtype_str=args.torch_dtype,
         max_windows=args.max_windows,
+    )
+    if len(ensemble_ids) > 1:
+        print(f"Ensemble mode: averaging predictions from {len(ensemble_ids)} models")
+        collect_kwargs["model_ids"] = ensemble_ids
+    else:
+        collect_kwargs["model_id"] = args.model_id
+
+    q10, q50, q90, actual, prev_close, symbols = collect_fn(
+        **collect_kwargs,
         batch_size=args.batch_size,
     )
 
