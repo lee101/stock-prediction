@@ -155,6 +155,23 @@ print('R2 upload complete')
 fi
 
 # -----------------------------------------------------------------------
+# Step 4.5: Refresh training data + rebuild cache before v4 launch
+# -----------------------------------------------------------------------
+echo "[$(date -u +%H:%M:%SZ)] Refreshing last 5 days of Alpaca data before v4 training..."
+python scripts/download_alpaca_stocks.py --refresh-days 5 --batch-size 10 \
+    2>&1 | tee chronos2_data_refresh_before_v4.log || echo "[WARN] Data refresh failed (non-fatal)"
+
+echo "[$(date -u +%H:%M:%SZ)] Rebuilding training cache from refreshed CSVs..."
+rm -f .cache/chronos2_train_data_full.npz
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from chronos2_stock_augmentation import load_all_series
+series = load_all_series('trainingdata', cache_path='.cache/chronos2_train_data_full.npz', min_length=100)
+print(f'Cache rebuilt: {len(series)} series')
+" 2>&1 | tee chronos2_cache_rebuild_v4.log
+echo "[$(date -u +%H:%M:%SZ)] Cache rebuild complete."
+
+# -----------------------------------------------------------------------
 # Step 5: Launch v4
 # -----------------------------------------------------------------------
 echo "[$(date -u +%H:%M:%SZ)] Launching v4 (ctx=1024, 200k steps, grad_accum=2)..."
@@ -631,6 +648,66 @@ if [[ -n "$V4_PID" ]]; then
                                         --batch-size 64 \
                                         --update-hyperparams \
                                         2>&1 | tee chronos2_benchmark_v11.log
+
+                                    # -------------------------------------------------------------------
+                                    # Launch v12 after v11 completes (prediction_length=2 training)
+                                    # -------------------------------------------------------------------
+                                    echo "[$(date -u +%H:%M:%SZ)] Launching v12 (pred_len=2, full augs)..."
+                                    bash scripts/launch_chronos2_v12.sh
+
+                                    V12_PID="$(cat .chronos2_v12_pid 2>/dev/null)"
+                                    if [[ -n "$V12_PID" ]]; then
+                                        echo "[$(date -u +%H:%M:%SZ)] Waiting for v12 (PID $V12_PID) to complete..."
+                                        while kill -0 "$V12_PID" 2>/dev/null; do
+                                            sleep 180
+                                        done
+                                        echo "[$(date -u +%H:%M:%SZ)] v12 complete. Running v12 SWA + calibration + benchmark..."
+
+                                        V12_CKPT="chronos2_finetuned/stocks_all_v12/finetuned-ckpt"
+                                        V12_SWA="chronos2_finetuned/stocks_all_v12/swa-ckpt"
+                                        if [[ -d "chronos2_finetuned/stocks_all_v12/trainer_workspace" ]]; then
+                                            python scripts/average_checkpoints.py \
+                                                --trainer-workspace chronos2_finetuned/stocks_all_v12/trainer_workspace \
+                                                --output "$V12_SWA" --n-last 3 \
+                                                --copy-chronos-config "$V12_CKPT" 2>&1 | tee chronos2_swa_v12.log || true
+                                        fi
+
+                                        if [[ -d "$V12_CKPT" ]]; then
+                                            python chronos2_linear_calibration.py \
+                                                --model-id     "$V12_CKPT" \
+                                                --cal-data-dir trainingdata \
+                                                --output-path  "$V12_CKPT/calibration.json" \
+                                                --max-shift-bps 20 \
+                                                --min-gap-bps   2 \
+                                                --grid-steps   25 \
+                                                --cal-bars     120 \
+                                                --max-windows  5000 \
+                                                --batch-size   32 \
+                                                --per-symbol \
+                                                --prediction-length 2 \
+                                                --also-calmar \
+                                                --hyperparams-dir hyperparams/chronos2_v12 \
+                                                2>&1 | tee chronos2_calibration_v12.log
+
+                                            if [[ -d "${V12_SWA:-}" ]]; then
+                                                python chronos2_linear_calibration.py \
+                                                    --model-id "$V12_SWA" --cal-data-dir trainingdata \
+                                                    --output-path "$V12_SWA/calibration.json" \
+                                                    --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                                                    --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                                                    --prediction-length 2 --also-calmar \
+                                                    2>&1 | tee chronos2_calibration_v12_swa.log || true
+                                            fi
+
+                                            python benchmark_chronos2.py \
+                                                --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                                                --model-id "$V12_CKPT" \
+                                                --context-length 1024 \
+                                                --batch-size 64 \
+                                                --update-hyperparams \
+                                                2>&1 | tee chronos2_benchmark_v12.log
+                                        fi
+                                    fi
                                 fi
                             fi
                         fi

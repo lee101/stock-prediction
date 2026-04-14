@@ -751,89 +751,89 @@ def _run_grid(
                             else:
                                 force_flat = None
 
-                        if allow_short:
-                            # desired[buy_i, sell_i, n]:
-                            #   +1 if eff_sig[n] > thresh[buy_i]
-                            #   -1 if eff_sig[n] < -thresh[sell_i]  and not long
-                            #    0 otherwise
-                            long_mask  = eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]       # (B, N)
-                            short_mask = eff_sig[np.newaxis, :] < -thresh_vals[:, np.newaxis]      # (B, N)
+                            if allow_short:
+                                # desired[buy_i, sell_i, n]:
+                                #   +1 if eff_sig[n] > thresh[buy_i]
+                                #   -1 if eff_sig[n] < -thresh[sell_i]  and not long
+                                #    0 otherwise
+                                long_mask  = eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]       # (B, N)
+                                short_mask = eff_sig[np.newaxis, :] < -thresh_vals[:, np.newaxis]      # (B, N)
 
-                            # desired (B, B, N) int8 — broadcast buy dim first, then overlay short
-                            desired = long_mask[:, np.newaxis, :].astype(np.int8)                  # (B, 1, N) → (B, B, N)
-                            only_short = short_mask[np.newaxis, :, :] & ~long_mask[:, np.newaxis, :]  # (B, B, N)
-                            desired = desired - only_short.astype(np.int8)
+                                # desired (B, B, N) int8 — broadcast buy dim first, then overlay short
+                                desired = long_mask[:, np.newaxis, :].astype(np.int8)                  # (B, 1, N) → (B, B, N)
+                                only_short = short_mask[np.newaxis, :, :] & ~long_mask[:, np.newaxis, :]  # (B, B, N)
+                                desired = desired - only_short.astype(np.int8)
 
-                            if force_flat is not None:
-                                desired[:, :, force_flat] = 0
+                                if force_flat is not None:
+                                    desired[:, :, force_flat] = 0
 
-                            position = np.empty_like(desired)
-                            position[:, :, 0] = 0
-                            position[:, :, 1:] = desired[:, :, :-1]
+                                position = np.empty_like(desired)
+                                position[:, :, 0] = 0
+                                position[:, :, 1:] = desired[:, :, :-1]
 
-                            # Reset position at symbol boundaries (prevents cross-symbol carry-over)
-                            if boundaries is not None and len(boundaries) > 0:
-                                position[:, :, boundaries] = 0
+                                # Reset position at symbol boundaries (prevents cross-symbol carry-over)
+                                if boundaries is not None and len(boundaries) > 0:
+                                    position[:, :, boundaries] = 0
 
-                            transitions = position != desired                                       # (B, B, N)
-                            n_trades    = transitions.sum(axis=-1)                                 # (B, B)
+                                transitions = position != desired                                       # (B, B, N)
+                                n_trades    = transitions.sum(axis=-1)                                 # (B, B)
 
-                            pnl = np.where(position == 1,  actual_return,
-                                           np.where(position == -1, -actual_return, 0.0))         # (B, B, N)
-                            pnl = pnl - transitions.astype(np.float64) * fee
+                                pnl = np.where(position == 1,  actual_return,
+                                               np.where(position == -1, -actual_return, 0.0))         # (B, B, N)
+                                pnl = pnl - transitions.astype(np.float64) * fee
 
-                            valid = valid_mask_2d  # type: ignore[assignment]
-                            score_grid = _score_pnl(pnl, n_trades, valid, use_sortino, use_calmar)
+                                valid = valid_mask_2d  # type: ignore[assignment]
+                                score_grid = _score_pnl(pnl, n_trades, valid, use_sortino, use_calmar)
 
-                            best_idx = np.unravel_index(np.argmax(score_grid), score_grid.shape)
-                            best_here = float(score_grid[best_idx])
-                            if best_here > best_sharpe:
-                                best_sharpe  = best_here
-                                best_buy     = float(thresh_vals[best_idx[0]])
-                                best_sell    = float(thresh_vals[best_idx[1]])
-                                best_weight  = float(w)
-                                best_conf    = float(conf)
-                                best_skew_w  = float(sw)
-                                best_mid_w   = float(mw)
-                                best_step2_w = float(s2w)
-                                best_ic_w    = float(icw)
+                                best_idx = np.unravel_index(np.argmax(score_grid), score_grid.shape)
+                                best_here = float(score_grid[best_idx])
+                                if best_here > best_sharpe:
+                                    best_sharpe  = best_here
+                                    best_buy     = float(thresh_vals[best_idx[0]])
+                                    best_sell    = float(thresh_vals[best_idx[1]])
+                                    best_weight  = float(w)
+                                    best_conf    = float(conf)
+                                    best_skew_w  = float(sw)
+                                    best_mid_w   = float(mw)
+                                    best_step2_w = float(s2w)
+                                    best_ic_w    = float(icw)
 
-                        else:
-                            # Long-only: sell_thresh has no effect → only need (B, N)
-                            desired_1d = (eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]).astype(np.int8)  # (B, N)
+                            else:
+                                # Long-only: sell_thresh has no effect → only need (B, N)
+                                desired_1d = (eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]).astype(np.int8)  # (B, N)
 
-                            if force_flat is not None:
-                                desired_1d[:, force_flat] = 0
+                                if force_flat is not None:
+                                    desired_1d[:, force_flat] = 0
 
-                            position_1d = np.empty_like(desired_1d)
-                            position_1d[:, 0] = 0
-                            position_1d[:, 1:] = desired_1d[:, :-1]
+                                position_1d = np.empty_like(desired_1d)
+                                position_1d[:, 0] = 0
+                                position_1d[:, 1:] = desired_1d[:, :-1]
 
-                            # Reset position at symbol boundaries
-                            if boundaries is not None and len(boundaries) > 0:
-                                position_1d[:, boundaries] = 0
+                                # Reset position at symbol boundaries
+                                if boundaries is not None and len(boundaries) > 0:
+                                    position_1d[:, boundaries] = 0
 
-                            transitions_1d = position_1d != desired_1d                             # (B, N)
-                            n_trades_1d    = transitions_1d.sum(axis=-1)                           # (B,)
+                                transitions_1d = position_1d != desired_1d                             # (B, N)
+                                n_trades_1d    = transitions_1d.sum(axis=-1)                           # (B,)
 
-                            pnl_1d = np.where(position_1d == 1, actual_return, 0.0)               # (B, N)
-                            pnl_1d = pnl_1d - transitions_1d.astype(np.float64) * fee
+                                pnl_1d = np.where(position_1d == 1, actual_return, 0.0)               # (B, N)
+                                pnl_1d = pnl_1d - transitions_1d.astype(np.float64) * fee
 
-                            valid_1d = np.ones(B, dtype=bool)
-                            score_1d = _score_pnl(pnl_1d, n_trades_1d, valid_1d, use_sortino, use_calmar)  # (B,)
+                                valid_1d = np.ones(B, dtype=bool)
+                                score_1d = _score_pnl(pnl_1d, n_trades_1d, valid_1d, use_sortino, use_calmar)  # (B,)
 
-                            best_i = int(np.argmax(score_1d))
-                            best_here = float(score_1d[best_i])
-                            if best_here > best_sharpe:
-                                best_sharpe  = best_here
-                                best_buy     = float(thresh_vals[best_i])
-                                best_sell    = float(thresh_vals[best_i])   # sell_thresh unused
-                                best_weight  = float(w)
-                                best_conf    = float(conf)
-                                best_skew_w  = float(sw)
-                                best_mid_w   = float(mw)
-                                best_step2_w = float(s2w)
-                                best_ic_w    = float(icw)
+                                best_i = int(np.argmax(score_1d))
+                                best_here = float(score_1d[best_i])
+                                if best_here > best_sharpe:
+                                    best_sharpe  = best_here
+                                    best_buy     = float(thresh_vals[best_i])
+                                    best_sell    = float(thresh_vals[best_i])   # sell_thresh unused
+                                    best_weight  = float(w)
+                                    best_conf    = float(conf)
+                                    best_skew_w  = float(sw)
+                                    best_mid_w   = float(mw)
+                                    best_step2_w = float(s2w)
+                                    best_ic_w    = float(icw)
 
     return best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_step2_w, best_ic_w
 
@@ -1073,6 +1073,23 @@ def fit_calibration(
             best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
                 sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6, icw6)
         print(f"  [P6  conf ] score={best_sharpe:.4f}  conf={best_conf*1e4:.1f}bps")
+
+    # --- Phase 7: Re-search thresholds + signal_weight after confidence refinement ---
+    # Confidence filtering changes the effective distribution of active windows, which
+    # means the optimal thresholds/weight may shift after P6.  Do a final joint search
+    # over the fine threshold grid and ±15% weight range at the settled conf value.
+    if search_confidence:
+        sharpe7, buy7, sell7, weight7, conf7, skew7, mid7, s2w7, icw7 = _run_grid(
+            predicted_return, actual_return, uncertainties,
+            thresh_both, w_ultra if search_signal_weight else [best_weight], [best_conf],
+            skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
+            step2_weight_vals=[best_s2w], ic_weight_vals=[best_icw],
+            **grid_kwargs,  # type: ignore[arg-type]
+        )
+        if sharpe7 > best_sharpe:
+            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
+                sharpe7, buy7, sell7, weight7, conf7, skew7, mid7, s2w7, icw7)
+        print(f"  [P7  re-thr] score={best_sharpe:.4f}  buy={best_buy*1e4:.2f}bps  w={best_weight:.4f}")
 
     print(f"  [FINAL    ] score={best_sharpe:.4f}  buy={best_buy*1e4:.2f}bps  sell={best_sell*1e4:.2f}bps"
           f"  w={best_weight:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}  s2w={best_s2w:.3f}"
