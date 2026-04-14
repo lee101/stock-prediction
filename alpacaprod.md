@@ -305,7 +305,12 @@ Picks top-K models by trailing return, follows their signal.
 | screened32 8-model (D_s5→I_s3 swap) | +18.17% | +5.07% | 8 | 30.67 | deployed 2026-04-13 22:11 UTC |
 | screened32 9-model (+D_s81) | +17.82% | +5.09% | 8 | 30.34 | prev prod 2026-04-14 03:10 UTC |
 | screened32 11-model (+D_s57 +I_s3×2) | +17.58% | +5.64% | 6 | 29.77 | prev 2026-04-14 04:23 UTC |
-| **screened32 12-model (+D_s64)** | **+19.84%** | **+5.34%** | **6** | **34.07** | **CURRENT 2026-04-14 04:41 UTC** |
+| screened32 12-model (+D_s64) | +19.84% | +5.34% | 6 | 34.07 | deployed 2026-04-14 04:41 UTC |
+| **screened32 13-model (+D_s27)** | **+19.08%** | **+5.34%** | **6** | **34.30** | **CURRENT 2026-04-14 05:07 UTC** |
+
+**Exhaustive 263w (13-model)**: med=19.02%, p10=8.11%, neg=10/263, sort=33.31
+
+**CRITICAL: API keys expired (401) — service running but not trading live. Update env_real.py lines 38-39 (prod keys) to restore live trading.**
 
 Exhaustive 263w eval (previous 8-model with D_s42/D_s5): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
 Exhaustive 263w eval (current 8-model with I_s3): neg=17/263, med=17.77%, p10=+4.75%, sort=30.61
@@ -1402,10 +1407,26 @@ sudo systemctl daemon-reload && sudo systemctl enable --now xgb-daily-trader
 sudo journalctl -u xgb-daily-trader -f
 ```
 
+**April 2026 tariff crash validation (2026-04-14):**
+- Crash window (2026-03-17 → 2026-04-10): total=**+10.5%**, max_dd=**5.9%**, Sharpe=**3.66**, dir_acc=71%
+- RL 13-model ensemble had 6/8 negative windows during the same crash period
+- XGBoost OUTPERFORMED the RL ensemble during the crash
+
+**Multi-window OOS (2026-04-14, extended):**
+- 37 windows, 1 neg, median=22.65%, p10=12.95%, Sortino=8.24
+- OOS covers 2024-01-02 → 2026-03-30 (tariff crash start included)
+- Today's picks (2026-04-14 dry run): **MU** (score=0.82), **META** (score=0.77)
+
+**Paper deployment status (2026-04-14):**
+- systemd service deployed: `xgb-daily-trader.service` (ALP_PAPER=1)
+- **STATUS: BLOCKED by API key expiry** (401 on paper endpoint too)
+- **ACTION NEEDED**: Set `ALP_KEY_ID_PAPER` and `ALP_SECRET_KEY_PAPER` env vars with valid paper keys from alpaca.markets
+- Scoring works offline (local CSV fallback confirmed)
+
 **Remaining gates before going live:**
-1. Paper trading 1–2 weeks to verify order flow + EOD sell timing
-2. marketsim validation at `decision_lag=2`, binary fills (adaptor needed — xgbnew uses own backtest)
-3. Remove `ALP_PAPER=1` from service file when ready
+1. Fix paper API keys → verify paper order flow for 1+ weeks
+2. Remove `ALP_PAPER=1` from service file for live trading
+3. Cannot run simultaneously with RL ensemble (Alpaca singleton constraint)
 
 ---
 
