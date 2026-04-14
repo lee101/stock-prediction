@@ -204,25 +204,21 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
-### 2026-04-13 22:11 UTC — D_s5→I_s3 swap deployed (CURRENT PRODUCTION)
+### 2026-04-14 03:10 UTC — +D_s81 added (9-model, CURRENT PRODUCTION)
 
-#### Current champion: screened32 8-model ensemble (D_s5→I_s3 swap)
-- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, **I_s3**, D_s2, D_s14, D_s28)
+#### Current champion: screened32 9-model ensemble (+D_s81)
+- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, **D_s81**)
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: restarted at 2026-04-13 22:11 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
 - **Value estimate gate**: -1.0 (disabled). Confidence gate 5% is the meaningful filter.
 
-**Swap rationale**: Pruning test confirmed D_s5 (individual neg=42) is a drag on ensemble.
-- 7-model (no D_s5): med=16.85% p10=4.65% neg=8/100 sort=27.87 (+1.04% med vs baseline)
-- I_s3 profile: tp=0.03 Muon, individual OOS neg=8/100, med=6.64%
-- 8-model (D_s5→I_s3): med=18.17% p10=5.07% neg=8/100 sort=30.67 (vs 15.81% baseline)
-
-**100-win**: med +2.36%, sort +3.02, p10 +0.66% (neg 7→8).
-**263-win exhaustive**: med=17.77% p10=4.75% neg=17/263 sort=30.61 worst=-16.24%
-vs old 263-win: med=15.28% p10=2.72% neg=15/263 sort=26.52
-Net: med+2.49% p10+2.03% sort+4.09 (cost: neg 15→17/263, mostly crash-period windows).
+**D_s81 profile**: tp=0.05 Muon, individual OOS neg=17/100, med=6.12%, sort=12.95
+**Addition rationale**: Best 9th model found after testing 50+ candidates:
+- 9-model+D_s81 exhaustive 263w: med=17.48%, p10=+5.14%, neg=17/263, sort=30.19
+- vs 8-model exhaustive: med=17.77%, p10=+4.75%, neg=17/263, sort=30.61
+- Net: p10+0.39% (better tail protection), same neg=17/263, med-0.29% (noise-level)
+- 100-window: med=17.82%, p10=5.09%, neg=8/100 (delta vs baseline: -0.35%, +0.02%, ±0)
 
 **Ensemble evolution (all evals: 100 sampled windows from 263 candidates, lag=2, binary fills, fee=10bps, slip=5bps):**
 
@@ -234,7 +230,8 @@ Net: med+2.49% p10+2.03% sort+4.09 (cost: neg 15→17/263, mostly crash-period w
 | screened32 7-model (+D_s14) | +13.08% | +0.72% | 8 | 19.88 | deployed ~14:10 UTC |
 | screened32 8-model (+D_s28) | +14.42% | +2.33% | 8 | 23.33 | deployed ~15:17 UTC |
 | screened32 8-model (D_s13→D_s42 swap) | +15.81% | +5.14% | 7 | 27.65 | deployed ~16:54 UTC |
-| **screened32 8-model (D_s5→I_s3 swap)** | **+18.17%** | **+5.07%** | **8** | **30.67** | **CURRENT ~22:11 UTC** |
+| screened32 8-model (D_s5→I_s3 swap) | +18.17% | +5.07% | 8 | 30.67 | deployed 2026-04-13 22:11 UTC |
+| **screened32 9-model (+D_s81)** | **+17.82%** | **+5.09%** | **8** | **30.34** | **CURRENT 2026-04-14 03:10 UTC** |
 
 Exhaustive 263w eval (previous 8-model with D_s42/D_s5): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
 Exhaustive 263w eval (current 8-model with I_s3): neg=17/263, med=17.77%, p10=+4.75%, sort=30.61
@@ -354,6 +351,16 @@ sudo systemctl restart daily-rl-trader.service
 - **Round-robin + sort-by-symbol sampling**: diverse symbol coverage, grouped for valid Sortino
 - **Ensemble inference**: `collect_ensemble_predictions()` for multi-model average
 
+#### Calibration improvements (2026-04-14 session 2)
+- **Phase 3 fix**: Phase 3 now uses fine threshold grid (thresh_both) instead of [best_buy,best_sell] — enables joint threshold+weight search
+- **Phase 5**: ultra-fine joint search ±1bps thresholds + ±15% signal_weight after Phase 4
+- **Phase 6**: fine confidence threshold search at 10 percentile points (was 4) after weights settled
+- **Per-phase logging**: prints score/params after each of 6 phases for diagnostics
+- **OOS boundary fix**: evaluate_params now passes symbols= → resets position at symbol boundaries (was missing, causing small inconsistency with fit_calibration)
+- **Negative skew_weight search**: [-1.0, -0.5, 0.0, 0.5, 1.0, 2.0] — contrarian skew discovery
+- **Extended midpoint/step2 weight search**: [0, 0.5, 1.0, 2.0] each
+- **SWA exp_decay**: average_checkpoints.py now supports --exp-decay for exponential weighting of checkpoints (recent = higher weight)
+
 #### Training run: stocks_all_v1 (DONE)
 - Config: 30k steps, batch=256, ctx=512, lr=5e-5, full, bfloat16, no Muon
 - Result: MAE% **2.49%** (slightly worse than baseline 2.45% — stale data cache)
@@ -371,7 +378,7 @@ sudo systemctl restart daily-rl-trader.service
   - `amp_log_std=0.45`, `freq_subsample_prob=0.15`, `noise_frac=0.003`, `dropout_rate=0.03`, `seed=123`
 - **Resumed** from checkpoint-20000; restarted with batch=128+grad_accum=2 after GPU OOM at step 23000
 - Watcher: `scripts/launch_chronos2_v4_when_v3_ready.sh` (PID 2575045)
-- Status: step ~23000/100000
+- Status: step ~30000/100000 (~30%, ~10h remaining at ~2 it/s)
 
 #### Training run: stocks_all_v4 (PLANNED — launches automatically after v3)
 - Config: ctx=1024, 200k steps, grad_accum=2, batch=128, Muon, seed=42
@@ -385,7 +392,16 @@ sudo systemctl restart daily-rl-trader.service
 #### Training run: stocks_all_v7 (PLANNED — launches after v6)
 - Config: ctx=1024, 200k steps, gap_inject=0.15, lr=3e-5, all augs, seed=45
 
-#### Augmentation roadmap (v2→v7):
+#### Training run: stocks_all_v8 (PLANNED — launches after v7)
+- Config: ctx=1024, 200k steps, trend_inject=0.15, gap_inject=0.15, all augs, seed=46
+
+#### Training run: stocks_all_v9 (PLANNED — launches after v8)
+- Config: ctx=1024, 200k steps, vol_regime=0.15, mean_reversion=0.10, seed=47
+
+#### Training run: stocks_all_v10 (PLANNED — launches after v9)
+- Config: ctx=1024, 200k steps, earnings_shock=0.10, all v9 augs, seed=59
+
+#### Augmentation roadmap (v2→v10):
 | Version | Extra augmentations vs v2 |
 |---------|--------------------------|
 | v3 | freq_subsample=0.15, amp_log_std=0.45 |
@@ -393,6 +409,9 @@ sudo systemctl restart daily-rl-trader.service
 | v5 | + channel_dropout=0.15, time_warp=0.15 |
 | v6 | + outlier_inject=0.10, freq_subsample=0.15 (full suite) |
 | v7 | + gap_inject=0.15, lr=3e-5 |
+| v8 | + trend_inject=0.15 |
+| v9 | + vol_regime=0.15, mean_reversion=0.10 |
+| v10 | + earnings_shock=0.10 (sudden ±5-15% move + continuation/reversion) |
 
 #### RunPod training (for larger GPU / longer runs):
 ```bash
