@@ -39,6 +39,8 @@ run_one() {
         --val-eval-windows 50 \
         --val-decision-lag 2 \
         --cpu \
+        --save-every 100 \
+        --max-periodic-checkpoints 10 \
         --checkpoint-dir "$ckdir" $extra > "${ckdir}/train.log" 2>&1 || true
 
     echo "[$(date -u +%FT%TZ)] DONE training $tag (exit=$?)"

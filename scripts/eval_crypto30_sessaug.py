@@ -107,7 +107,10 @@ def main():
     for subdir in sorted(SESSAUG_DIR.iterdir()):
         if not subdir.is_dir():
             continue
-        for pt_name in ["val_best.pt", "best.pt", "final.pt"]:
+        # Check standard checkpoints + periodic update_*.pt files
+        pt_names = ["val_best.pt", "best.pt", "final.pt"]
+        pt_names += sorted([f.name for f in subdir.glob("update_*.pt")])
+        for pt_name in pt_names:
             ckpt = subdir / pt_name
             if not ckpt.exists():
                 continue
