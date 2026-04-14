@@ -1737,6 +1737,7 @@ def _get_or_create_meta_selector(
     top_k: int = 1,
     lookback: int = 3,
     device: str = "cpu",
+    max_drawdown_filter: float = 0.05,
 ) -> "MetaSelector":
     global _META_SELECTOR_INSTANCE
     if _META_SELECTOR_INSTANCE is not None:
@@ -1750,9 +1751,11 @@ def _get_or_create_meta_selector(
         lookback=lookback,
         device=device,
         state_path=state_path,
+        max_drawdown_filter=max_drawdown_filter,
     )
     _META_SELECTOR_INSTANCE = sel
-    logger.info("MetaSelector created: %d models, top_k=%d, lookback=%d", len(sel.names), top_k, lookback)
+    logger.info("MetaSelector created: %d models, top_k=%d, lookback=%d, dd_filter=%.0f%%",
+                len(sel.names), top_k, lookback, max_drawdown_filter * 100)
     return sel
 
 

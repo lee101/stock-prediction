@@ -134,6 +134,34 @@ class TestMetaSelector:
         for name in sel2.names:
             assert len(sel2.model_equity[name]) == len(sel.model_equity[name])
 
+    def test_drawdown_filter_skips_model_in_drawdown(self, checkpoints):
+        symbols = [f"SYM{i}" for i in range(12)]
+        sel = MetaSelector(checkpoints, symbols, top_k=1, lookback=3, max_drawdown_filter=0.05)
+        # model_a: in 10% drawdown (peak 11000, current 9900)
+        sel.model_equity["model_a"] = [10000, 10500, 11000, 10500, 10000, 9900]
+        # model_b: small drawdown, still within 5%
+        sel.model_equity["model_b"] = [10000, 10100, 10200, 10300, 10250, 10200]
+        # model_c: losing badly
+        sel.model_equity["model_c"] = [10000, 9500, 9000, 8500, 8000, 7500]
+        features = np.random.randn(12, 16).astype(np.float32)
+        prices = {f"SYM{i}": 100.0 for i in range(12)}
+        sig = sel.get_meta_signal(features, prices)
+        # model_b should be selected (not in drawdown, model_a is in >5% DD)
+        assert "model_b" in sig.selected_models
+
+    def test_drawdown_filter_fallback_when_all_filtered(self, checkpoints):
+        symbols = [f"SYM{i}" for i in range(12)]
+        sel = MetaSelector(checkpoints, symbols, top_k=1, lookback=3, max_drawdown_filter=0.01)
+        # All models in significant drawdown
+        sel.model_equity["model_a"] = [10000, 10500, 10000, 9500, 9000]
+        sel.model_equity["model_b"] = [10000, 10300, 9800, 9500, 9200]
+        sel.model_equity["model_c"] = [10000, 10200, 9700, 9300, 8900]
+        features = np.random.randn(12, 16).astype(np.float32)
+        prices = {f"SYM{i}": 100.0 for i in range(12)}
+        sig = sel.get_meta_signal(features, prices)
+        # Should fallback to unfiltered selection (select best momentum)
+        assert len(sig.selected_models) == 1
+
     def test_warmup_skips_if_already_run(self, checkpoints, tmp_path):
         symbols = [f"SYM{i}" for i in range(12)]
         sel = MetaSelector(checkpoints, symbols, top_k=1, lookback=3)

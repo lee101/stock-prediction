@@ -71,12 +71,14 @@ class MetaSelector:
         fee_rate: float = 0.001,
         device: str = "cpu",
         state_path: Path | None = None,
+        max_drawdown_filter: float = 0.05,
     ):
         self.symbols = list(symbols)
         self.top_k = top_k
         self.lookback = lookback
         self.fee_rate = fee_rate
         self.device = device
+        self.max_drawdown_filter = max_drawdown_filter
         self.checkpoint_paths = [Path(p) for p in checkpoint_paths]
         self.state_path = state_path
 
@@ -126,6 +128,7 @@ class MetaSelector:
             "symbols": self.symbols,
             "lookback": self.lookback,
             "top_k": self.top_k,
+            "max_drawdown_filter": self.max_drawdown_filter,
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(data, indent=2))
@@ -250,8 +253,9 @@ class MetaSelector:
         self._step_models(features, prices)
         self._save_state()
 
-        # Select top-K by trailing momentum
+        # Select top-K by trailing momentum with drawdown filter
         model_returns = {}
+        model_in_drawdown = {}
         for name in self.names:
             eq = self.model_equity[name]
             lb = min(self.lookback, len(eq) - 1)
@@ -261,11 +265,26 @@ class MetaSelector:
                 ret = 0.0
             model_returns[name] = ret
 
-        sorted_models = sorted(self.names, key=lambda n: model_returns[n], reverse=True)
+            # Check recent drawdown (20-day window)
+            recent = eq[-min(20, len(eq)):]
+            if len(recent) > 1:
+                peak = max(recent)
+                dd = (peak - recent[-1]) / max(peak, 1e-8)
+            else:
+                dd = 0.0
+            model_in_drawdown[name] = dd > self.max_drawdown_filter
+
+        # Filter out models in drawdown, fallback to unfiltered if all filtered
+        eligible = [n for n in self.names if not model_in_drawdown[n]]
+        if not eligible:
+            eligible = list(self.names)
+        sorted_models = sorted(eligible, key=lambda n: model_returns[n], reverse=True)
         selected = sorted_models[:self.top_k]
 
-        log.info("meta selected: %s (returns: %s)",
-                 selected, {n: f"{model_returns[n]:+.2%}" for n in selected})
+        n_filtered = sum(1 for v in model_in_drawdown.values() if v)
+        log.info("meta selected: %s (returns: %s, %d/%d filtered by dd>%.0f%%)",
+                 selected, {n: f"{model_returns[n]:+.2%}" for n in selected},
+                 n_filtered, len(self.names), self.max_drawdown_filter * 100)
 
         return MetaSignal(
             selected_models=selected,
