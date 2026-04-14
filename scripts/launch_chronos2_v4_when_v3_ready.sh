@@ -58,6 +58,7 @@ python chronos2_linear_calibration.py \
     --max-shift-bps 20 \
     --min-gap-bps   2 \
     --grid-steps   25 \
+    --cal-bars     120 \
     --max-windows  5000 \
     --batch-size   32 \
     --per-symbol \
@@ -129,6 +130,7 @@ if [[ -n "$V4_PID" ]]; then
             --max-shift-bps 20 \
             --min-gap-bps   2 \
             --grid-steps   25 \
+            --cal-bars     120 \
             --max-windows  5000 \
             --batch-size   32 \
             --per-symbol \
@@ -168,6 +170,7 @@ if [[ -n "$V4_PID" ]]; then
                 --max-shift-bps 20 \
                 --min-gap-bps   2 \
                 --grid-steps   25 \
+                --cal-bars     120 \
                 --max-windows  5000 \
                 --batch-size   32 \
                 --per-symbol \

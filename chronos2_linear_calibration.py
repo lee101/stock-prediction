@@ -701,6 +701,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Directory to write per-symbol calibration JSONs (default: hyperparams/chronos2)")
     p.add_argument("--min-windows-per-symbol", type=int, default=30,
                    help="Minimum windows to fit per-symbol calibration (default: 30)")
+    p.add_argument("--cal-bars", type=int, default=120,
+                   help="Number of calibration bars (val set) per series before test split (default: 120)")
     p.add_argument("--ensemble-models", nargs="*", default=None,
                    help="Additional model IDs to ensemble with --model-id (quantile averaging)")
     return p.parse_args(argv)
@@ -722,19 +724,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     print(f"Loaded {len(all_series)} series")
 
-    # Use VAL set (bars -120 to -60) for calibration to avoid leakage with test set (last 60 bars).
-    # Training excludes last 120 bars (val=60 + test=60), so this is genuinely held-out.
-    # The backtest uses the TEST set (last 60 bars) for true OOS evaluation.
+    # Use VAL set for calibration to avoid leakage with test set (last 60 bars).
+    # Test set = last 60 bars (never touched by calibration).
+    # Calibration set = up to --cal-bars before the test window (default 120).
+    # Using more cal bars (2–3× test set) reduces overfitting to a single regime.
+    cal_bars = args.cal_bars
+    test_bars = 60
     cal_series = []
     for s in all_series:
         arr = s["target"]
         sym = s.get("symbol", "")
         T = arr.shape[-1]
-        # Need at least context_length + 1 cal bar + 60 test bars reserved
-        n_cal = min(60, T - args.context_length - 60)
+        # Need at least context_length + 1 cal bar + test_bars reserved
+        n_cal = min(cal_bars, T - args.context_length - test_bars)
         if n_cal > 0:
-            # Slice: leave last 60 bars for OOS test; use 60 bars before that as cal targets
-            cal_arr = arr[:, -(args.context_length + n_cal + 60) : -60]
+            # Slice: leave last test_bars for OOS test; use n_cal bars before that as cal targets
+            cal_arr = arr[:, -(args.context_length + n_cal + test_bars) : -test_bars]
             cal_series.append({"target": cal_arr, "symbol": sym})
 
     print(f"Using {len(cal_series)} series for calibration")
