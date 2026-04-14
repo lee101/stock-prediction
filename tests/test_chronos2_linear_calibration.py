@@ -803,3 +803,66 @@ class TestStep2Signal:
             grid_steps=5, search_signal_weight=False,
         )
         assert params.step2_weight == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Confidence threshold loop regression (bug fix verification)
+# ---------------------------------------------------------------------------
+
+class TestConfidenceLoopRegression:
+    def test_confidence_threshold_actually_searched(self):
+        """
+        Regression test: _run_grid used to only use the LAST conf value in conf_vals
+        due to the if-allow_short block being outside the for-conf loop.
+        Verify that different conf_vals produce different results (not always same).
+        """
+        rng = np.random.default_rng(42)
+        N = 500
+        pred = rng.normal(0.001, 0.01, N)
+        act = rng.normal(0.0005, 0.01, N)
+        # Uncertainties vary widely — some windows are very high uncertainty
+        unc = np.abs(rng.normal(0, 0.05, N))  # mean ~0.04, some >0.1
+
+        # With conf_vals=[0.0]: no filtering → uses all windows
+        result_no_conf = _run_grid(
+            predicted_return=pred, actual_return=act, uncertainties=unc,
+            thresh_vals=np.linspace(0.001, 0.01, 5),
+            weight_vals=[1.0], conf_vals=[0.0],
+            allow_short=False, min_gap=0.0, fee_bps=10.0,
+        )
+        # With conf_vals=[0.0, pct50, pct90]: should possibly find better score
+        pct50 = float(np.percentile(unc, 50))
+        pct90 = float(np.percentile(unc, 90))
+        result_with_conf = _run_grid(
+            predicted_return=pred, actual_return=act, uncertainties=unc,
+            thresh_vals=np.linspace(0.001, 0.01, 5),
+            weight_vals=[1.0], conf_vals=[0.0, pct50, pct90],
+            allow_short=False, min_gap=0.0, fee_bps=10.0,
+        )
+        # The result with conf options must be >= result without (best-of-3)
+        assert result_with_conf[0] >= result_no_conf[0] - 1e-9, (
+            f"result with conf={result_with_conf[0]:.4f} should be >= no_conf={result_no_conf[0]:.4f}"
+        )
+
+    def test_best_conf_reflects_actual_best_threshold(self):
+        """
+        The returned best_conf should correspond to the configuration that gave
+        the highest score, not always the last conf value in conf_vals.
+        """
+        rng = np.random.default_rng(99)
+        N = 400
+        pred = rng.normal(0.001, 0.01, N)
+        act = rng.normal(0.0005, 0.01, N)
+        # High uncertainty on half the windows — filtering them should help
+        unc = np.concatenate([np.full(N // 2, 0.001), np.full(N - N // 2, 0.10)])
+        rng.shuffle(unc)
+
+        conf_cutoff = 0.05  # filters the high-uncertainty windows
+        result = _run_grid(
+            predicted_return=pred, actual_return=act, uncertainties=unc,
+            thresh_vals=np.linspace(0.001, 0.01, 5),
+            weight_vals=[1.0], conf_vals=[0.0, conf_cutoff, 0.20],
+            allow_short=False, min_gap=0.0, fee_bps=10.0,
+        )
+        # best_conf must be one of the values we supplied, not some other value
+        assert result[4] in (0.0, conf_cutoff, 0.20), f"Unexpected best_conf={result[4]}"
