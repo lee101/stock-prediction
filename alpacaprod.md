@@ -92,13 +92,16 @@ Picks top-K models by trailing return, follows their signal.
 
 **Full sweep results (I variant, full OOS 100 windows):**
 - I/s3: 8.73% neg=8 ★ (deployed), I/s2: 7.07% neg=17 (not additive to ensemble)
-- I/s1: 0.89%, I/s4: -5.35%, I/s5: 2.56%, I/s6: -1.79%, I/s7: -2.14% neg=55 (all bad)
-- I/s8: best_neg=20, diverging
+- I/s1: 0.89%, I/s4: -5.35%, I/s5: 2.56%, I/s6: -1.79%, I/s7: -2.14%, I/s8: -1.17%
+- I/s9: 1.19%, I/s10: 1.21% — both bad despite 12.4%/9.5% aug val peaks with 0-9 neg
+- Pattern: I seeds fail reliably on full OOS except s2 and s3. Aug val unreliable.
 
-**J variant (Muon + tp=0.04, COMPLETELY NEW) — first seed in progress:**
-- J/s1 val progression: neg=23 → 13 → 4 → **1** → 4 → 8 (best_neg=1 at step ~250/457)
-- J/s1 first_val neg=23 (within range of D_s2=26, D_s28=32 which became prod models!)
-- OOS eval pending (training ~2-3 hours remaining)
+**J variant results (Muon + tp=0.04, full OOS 100 windows):**
+- J/s1: 0.45% neg=49 (terrible despite best_neg=1 aug val at step ~250)
+- J/s2: 4.65% neg=30 (despite 22.5% aug val peak — bull overfitting)
+- J/s3: training
+- K/s1 (AdamW+wd=0.005): 1.27% neg=37 (bad despite 13.2% aug val 0 neg)
+- L/s1,s2 (AdamW+wd tp=0.05): both bad aug val, likely bad OOS
 
 **Ensemble test summary (D/s67 not additive):**
 - 9-model +D67: 16.54%/5.71%/8neg (lower median than prod 18.17%)
