@@ -1,6 +1,6 @@
 #!/bin/bash
 # Auto-monitor and eval all sweep seeds that have finished training.
-# Tests anchors (neg<25) in the current 8-model production ensemble.
+# Tests anchors (neg<25) in the current 13-model production ensemble.
 # Usage: nohup bash scripts/monitor_sweeps.sh > /tmp/monitor_sweeps.log 2>&1 &
 
 set -u
@@ -11,7 +11,7 @@ FULL_VAL="pufferlib_market/data/screened32_single_offset_val_full.bin"
 LOG="pufferlib_market/checkpoints/monitor_sweeps.log"
 ANCHOR_THRESH=25   # neg/100 threshold for "anchor" evaluation
 
-# Current 8-model production ensemble (updated 2026-04-13: D_s5->I_s3 swap)
+# Current 13-model production ensemble (updated 2026-04-14 v4: +D_s57 +I_s3x2 +D_s64 +D_s27)
 PROD_PRIMARY="pufferlib_market/prod_ensemble_screened32/C_s7.pt"
 PROD_EXTRAS=(
   "pufferlib_market/prod_ensemble_screened32/D_s16.pt"
@@ -21,6 +21,11 @@ PROD_EXTRAS=(
   "pufferlib_market/prod_ensemble_screened32/D_s2.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s14.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s28.pt"
+  "pufferlib_market/prod_ensemble_screened32/D_s81.pt"
+  "pufferlib_market/prod_ensemble_screened32/D_s57.pt"
+  "pufferlib_market/prod_ensemble_screened32/I_s3.pt"   # doubled for 2x weight
+  "pufferlib_market/prod_ensemble_screened32/D_s64.pt"
+  "pufferlib_market/prod_ensemble_screened32/D_s27.pt"
 )
 
 eval_one() {
@@ -58,7 +63,7 @@ echo "" | tee -a "$LOG"
 echo "[$(date -u +%FT%TZ)] === Monitor sweep run ===" | tee -a "$LOG"
 
 # v1 sweeps
-for variant in C D E F G H I J K L; do
+for variant in A B C D E F G H I J K L M N P R S T U V W X Y Z; do
   sweep_dir="pufferlib_market/checkpoints/screened32_sweep/${variant}"
   lb="$sweep_dir/leaderboard_fulloos.csv"
   [ -d "$sweep_dir" ] || continue
@@ -208,7 +213,7 @@ echo "" | tee -a "$LOG"
 
 # Print current leaderboard (anchors only)
 echo "=== CURRENT ANCHORS (neg < $ANCHOR_THRESH) ===" | tee -a "$LOG"
-for variant in C D E F G H I J K L; do
+for variant in A B C D E F G H I J K L M N P R S T U V W X Y Z; do
   lb="pufferlib_market/checkpoints/screened32_sweep/${variant}/leaderboard_fulloos.csv"
   [ -f "$lb" ] && awk -F, -v thresh="$ANCHOR_THRESH" 'NR>1 && $7+0 < thresh {print}' "$lb" | sort -t, -k4 -rn | while read line; do echo "  $line" | tee -a "$LOG"; done
 done
