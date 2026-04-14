@@ -36,9 +36,31 @@ sudo supervisorctl reread && sudo supervisorctl update && sudo supervisorctl sta
 sudo supervisorctl restart crypto30-daily
 ```
 
-#### Status: DRY-RUN -- testing for 1 week before going live
-- First signal (2026-04-14): long_INJUSD conf=0.28, value=2.83
+#### Status: DRY-RUN -- supervisor installed, running
+- Signal 1 (2026-04-14 ~10pm UTC): long_INJUSD conf=0.28, value=2.83
+- Signal 2 (2026-04-14 ~1pm UTC): rotated INJ->TRX, long_TRXUSD conf=0.28
 - MATICUSDT renamed to POLUSDT, internal name MATICUSD preserved for model compat
+
+#### Walk-forward analysis (2026-04-14)
+- 33 x 30d windows, 5d stride: mean=+11.27%, median=-0.81%, 48% positive
+- Returns highly concentrated in bull periods (windows 14-18: +43% to +103%)
+- BTC MA15 regime filter: full-period +91.86% (vs +81.36%), DD 13.79% (vs 24.16%)
+- At 20bps slip, filter wins (+62.25% vs +57.41%)
+- Walk-forward with filter inconclusive (MA needs lookback beyond window)
+- Artifacts: `scripts/crypto30_walkforward.py`, `scripts/crypto30_regime_filter.py`
+
+#### Ensemble methods (2026-04-14)
+- softmax_avg (mask AFTER softmax): +81.36% -- CURRENT, BEST
+- softmax_avg_masked (mask BEFORE): +17.11% -- 4.8x worse!
+- majority_vote: +7.73%, max_confidence: +3.28%, geometric_avg: +2.30%
+- Masking order is CRITICAL. Always softmax on raw logits, then mask, then argmax.
+
+#### Training in progress (2026-04-14)
+- 3 CPU jobs on sessaug data (31500d = 15x augmented): base_s1, base_s2, wd01_s1
+- ~4% complete (step 75-80/1831), ~17h remaining
+- Insight: prod ensemble uses models at updates 150/400/750/1800 (different convergence stages)
+- Batch 2 script ready with cosine LR + entropy annealing + obs-norm + clip-vloss
+- Diverse stages training script ready (save-every-25, 20 periodic checkpoints)
 
 #### Meta-selector evaluation (2026-04-14): NOT useful for crypto30
 - Tested meta-selection (momentum-based model switching) on 21 crypto30 models
@@ -47,6 +69,16 @@ sudo supervisorctl restart crypto30-daily
 - 21-model meta: +7.61% best (far worse). Individual models all negative.
 - **Conclusion**: keep 4-model softmax ensemble. Do NOT use meta-selector for crypto30.
 - Artifact: `scripts/meta_strategy_crypto30_backtest.py`
+
+---
+
+### 2026-04-14 — Stock Backtest Bugfixes (trade_daily_stock_prod.py)
+
+Two bugs fixed in `run_backtest()`:
+1. **Confidence gate bypass**: `resolved_signal_allocation_pct` was passing `DEFAULT_MIN_OPEN_CONFIDENCE` instead of the parameter `min_open_confidence` when using `confidence_scaled` sizing mode
+2. **Leverage no-op**: Multi-position backtest used `cash * buying_power_multiplier` instead of `equity * buying_power_multiplier`, making leverage ineffective when capital was deployed in positions
+
+Both fixes are minimal (1 line each). All 6 existing backtest tests pass.
 
 ---
 
