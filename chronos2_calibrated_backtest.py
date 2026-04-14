@@ -231,7 +231,7 @@ def main(argv=None) -> int:
         print("ERROR: No series found"); return 1
     print(f"Loaded {len(all_series)} series")
 
-    # Use last 60 bars as test (same split as calibration)
+    # Use TEST set (last 60 bars) — calibration uses bars -120:-60, so this is true OOS.
     test_series = []
     for s in all_series:
         arr = s["target"]

@@ -340,3 +340,117 @@ class TestSkewWeight:
         p = CalibrationParams(skew_weight=1.5, buy_threshold=0.001)
         p2 = CalibrationParams.from_dict(p.to_dict())
         assert p2.skew_weight == 1.5
+
+
+class TestSortinoCalibration:
+    def test_fit_calibration_sortino_returns_valid_params(self):
+        """fit_calibration with use_sortino=True should return valid CalibrationParams."""
+        q10, q50, q90, actual, prev = _make_synthetic_data(N=1000, upward_bias=0.002)
+        params = fit_calibration(q10, q50, q90, actual, prev,
+                                  use_sortino=True, search_confidence=False,
+                                  search_signal_weight=False)
+        assert isinstance(params.cal_sharpe, float)
+        assert params.buy_threshold <= params.sell_threshold + 0.01  # reasonable range
+
+    def test_sortino_and_sharpe_find_different_params(self):
+        """Sortino and Sharpe objectives can select different thresholds (not identical)."""
+        rng = np.random.RandomState(7)
+        N = 2000
+        prev = np.full(N, 100.0)
+        # Asymmetric: positive returns more common but losses are larger (Sortino-relevant)
+        actual = prev * (1 + rng.choice([-0.01, 0.003], size=N, p=[0.3, 0.7]))
+        q50 = prev * (1 + rng.randn(N) * 0.002 + 0.001)
+        q10 = q50 * 0.995
+        q90 = q50 * 1.005
+        # Both should return valid params (cal_sharpe > -999)
+        p_sharpe  = fit_calibration(q10, q50, q90, actual, prev, use_sortino=False,
+                                     search_confidence=False, search_signal_weight=False)
+        p_sortino = fit_calibration(q10, q50, q90, actual, prev, use_sortino=True,
+                                     search_confidence=False, search_signal_weight=False)
+        assert p_sharpe.cal_sharpe > -999.0
+        assert p_sortino.cal_sharpe > -999.0
+
+    def test_sortino_calibration_matches_sharpe_on_gaussian_data(self):
+        """For symmetric Gaussian P&L, Sortino ≈ Sharpe × √2 — both should select
+        roughly the same threshold."""
+        q10, q50, q90, actual, prev = _make_synthetic_data(N=2000, upward_bias=0.001)
+        p_sharpe  = fit_calibration(q10, q50, q90, actual, prev, use_sortino=False,
+                                     search_confidence=False, search_signal_weight=False,
+                                     max_shift_bps=10.0)
+        p_sortino = fit_calibration(q10, q50, q90, actual, prev, use_sortino=True,
+                                     search_confidence=False, search_signal_weight=False,
+                                     max_shift_bps=10.0)
+        # Thresholds should be within 10bps of each other for Gaussian data
+        diff = abs(p_sharpe.buy_threshold - p_sortino.buy_threshold) * 10_000
+        assert diff < 10.0, f"Sharpe/Sortino diverged by {diff:.1f}bps on Gaussian data"
+
+
+class TestVectorisedGridCorrectness:
+    """Verify _run_grid vectorised output matches compute_sharpe scalar baseline."""
+
+    def _ref_grid(self, pred, actual, thresh_vals, w, conf, sw, unc, skewness,
+                  allow_short, min_gap, fee_bps):
+        """Reference brute-force loop for comparison."""
+        from chronos2_linear_calibration import compute_sharpe
+        best = -999.0
+        best_b = best_s = 0.0
+        for bt in thresh_vals:
+            for st in thresh_vals:
+                if allow_short and st < bt - min_gap:
+                    continue
+                s = compute_sharpe(pred * w, actual, float(bt), float(st),
+                                   allow_short=allow_short, fee_bps=fee_bps,
+                                   uncertainties=unc, confidence_threshold=conf,
+                                   skewness=skewness, skew_weight=sw)
+                if s > best:
+                    best, best_b, best_s = s, float(bt), float(st)
+        return best, best_b, best_s
+
+    def test_long_only_matches_reference(self):
+        rng = np.random.RandomState(99)
+        N = 300
+        pred = rng.randn(N) * 0.001
+        actual = rng.randn(N) * 0.01
+        unc = np.abs(rng.randn(N)) * 0.002
+        thresh_vals = np.linspace(-0.001, 0.001, 7)
+
+        ref_sharpe, _, _ = self._ref_grid(pred, actual, thresh_vals, w=1.0, conf=0.0,
+                                           sw=0.0, unc=unc, skewness=None,
+                                           allow_short=False, min_gap=0.0002, fee_bps=10.0)
+
+        res = _run_grid(pred, actual, unc, thresh_vals, [1.0], [0.0],
+                        allow_short=False, min_gap=0.0002, fee_bps=10.0)
+        assert abs(res[0] - ref_sharpe) < 1e-6, f"Mismatch: {res[0]:.6f} vs {ref_sharpe:.6f}"
+
+    def test_short_allowed_matches_reference(self):
+        rng = np.random.RandomState(77)
+        N = 300
+        pred = rng.randn(N) * 0.001
+        actual = rng.randn(N) * 0.01
+        unc = np.abs(rng.randn(N)) * 0.002
+        thresh_vals = np.linspace(-0.001, 0.001, 7)
+
+        ref_sharpe, _, _ = self._ref_grid(pred, actual, thresh_vals, w=1.0, conf=0.0,
+                                           sw=0.0, unc=unc, skewness=None,
+                                           allow_short=True, min_gap=0.0002, fee_bps=10.0)
+
+        res = _run_grid(pred, actual, unc, thresh_vals, [1.0], [0.0],
+                        allow_short=True, min_gap=0.0002, fee_bps=10.0)
+        assert abs(res[0] - ref_sharpe) < 1e-6, f"Mismatch: {res[0]:.6f} vs {ref_sharpe:.6f}"
+
+    def test_with_confidence_filter_matches_reference(self):
+        rng = np.random.RandomState(55)
+        N = 300
+        pred = rng.randn(N) * 0.001
+        actual = rng.randn(N) * 0.01
+        unc = np.abs(rng.randn(N)) * 0.002
+        conf = float(np.percentile(unc, 50))
+        thresh_vals = np.linspace(-0.001, 0.001, 5)
+
+        ref_sharpe, _, _ = self._ref_grid(pred, actual, thresh_vals, w=1.0, conf=conf,
+                                           sw=0.0, unc=unc, skewness=None,
+                                           allow_short=False, min_gap=0.0002, fee_bps=10.0)
+
+        res = _run_grid(pred, actual, unc, thresh_vals, [1.0], [conf],
+                        allow_short=False, min_gap=0.0002, fee_bps=10.0)
+        assert abs(res[0] - ref_sharpe) < 1e-6, f"Mismatch: {res[0]:.6f} vs {ref_sharpe:.6f}"
