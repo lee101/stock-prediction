@@ -80,12 +80,17 @@ class CalibrationParams:
     # Additive bias on the signal (default: 0.0)
     signal_bias: float = 0.0
 
+    # Weight on quantile skewness component: (q90-q50)-(q50-q10) / prev_close
+    # Positive skew_weight means we add upside-skewed predictions' signal bonus.
+    # 0.0 = disabled (default for backward compatibility)
+    skew_weight: float = 0.0
+
     # Buy threshold in fractional return space
-    # If predicted_return * signal_weight + signal_bias > buy_threshold: go long
+    # If signal > buy_threshold: go long
     buy_threshold: float = 0.001   # 10 bps default
 
     # Sell/exit threshold
-    # If predicted_return * signal_weight + signal_bias < -sell_threshold: sell/short
+    # If signal < -sell_threshold: sell/short (or exit long)
     sell_threshold: float = 0.001  # 10 bps default
 
     # Whether shorting is permitted
@@ -109,18 +114,20 @@ class CalibrationParams:
     def from_dict(cls, d: dict) -> "CalibrationParams":
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
-    def apply(self, predicted_return: float, uncertainty: float = 0.0) -> str:
+    def apply(self, predicted_return: float, uncertainty: float = 0.0,
+              skewness: float = 0.0) -> str:
         """
         Return 'buy', 'sell', 'exit', or 'hold'.
 
         Args:
             predicted_return: (q50 - prev_close) / prev_close
             uncertainty: (q90 - q10) / prev_close  — skip if above confidence_threshold
+            skewness: ((q90-q50) - (q50-q10)) / prev_close  — optional tail skew signal
         """
         # Confidence filter: hold if model is too uncertain
         if self.confidence_threshold > 0.0 and uncertainty > self.confidence_threshold:
             return "hold"
-        signal = predicted_return * self.signal_weight + self.signal_bias
+        signal = predicted_return * self.signal_weight + skewness * self.skew_weight + self.signal_bias
         if signal > self.buy_threshold:
             return "buy"
         if self.allow_short and signal < -self.sell_threshold:
@@ -254,6 +261,8 @@ def compute_sharpe(
     fee_bps: float = 10.0,
     uncertainties: Optional[np.ndarray] = None,
     confidence_threshold: float = 0.0,
+    skewness: Optional[np.ndarray] = None,
+    skew_weight: float = 0.0,
 ) -> float:
     """
     Compute Sharpe-like score for a given threshold pair on in-sample data.
@@ -273,14 +282,17 @@ def compute_sharpe(
     position = 0  # 0=flat, 1=long, -1=short
     n_trades = 0
     use_conf = confidence_threshold > 0.0 and uncertainties is not None
+    use_skew = skew_weight != 0.0 and skewness is not None
 
     for i, (sig, ret) in enumerate(zip(signals, actual_returns)):
+        # Add skewness component to signal if enabled
+        effective_sig = sig + (float(skewness[i]) * skew_weight if use_skew else 0.0)  # type: ignore[index]
         # Confidence filter: force flat if model is uncertain
         if use_conf and uncertainties[i] > confidence_threshold:  # type: ignore[index]
             desired = 0
-        elif sig > buy_thresh:
+        elif effective_sig > buy_thresh:
             desired = 1
-        elif allow_short and sig < -sell_thresh:
+        elif allow_short and effective_sig < -sell_thresh:
             desired = -1
         else:
             desired = 0
@@ -321,13 +333,21 @@ def _run_grid(
     allow_short: bool,
     min_gap: float,
     fee_bps: float,
-) -> Tuple[float, float, float, float, float]:
-    """Inner grid search loop. Returns (best_sharpe, best_buy, best_sell, best_weight, best_conf)."""
+    skewness: Optional[np.ndarray] = None,
+    skew_weight_vals: Optional[List[float]] = None,
+) -> Tuple[float, float, float, float, float, float]:
+    """
+    Inner grid search loop.
+    Returns (best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_weight).
+    """
     best_sharpe = -999.0
     best_buy = 0.0
     best_sell = 0.0
     best_weight = 1.0
     best_conf = 0.0
+    best_skew_w = 0.0
+
+    _skew_vals: List[float] = skew_weight_vals if skew_weight_vals else [0.0]
 
     for w in weight_vals:
         scaled_return = predicted_return * w
@@ -336,20 +356,24 @@ def _run_grid(
                 if allow_short and sell_t < buy_t - min_gap:
                     continue
                 for conf in conf_vals:
-                    sharpe = compute_sharpe(
-                        scaled_return, actual_return, float(buy_t), float(sell_t),
-                        allow_short=allow_short, fee_bps=fee_bps,
-                        uncertainties=uncertainties,
-                        confidence_threshold=float(conf),
-                    )
-                    if sharpe > best_sharpe:
-                        best_sharpe = sharpe
-                        best_buy = float(buy_t)
-                        best_sell = float(sell_t)
-                        best_weight = float(w)
-                        best_conf = float(conf)
+                    for sw in _skew_vals:
+                        sharpe = compute_sharpe(
+                            scaled_return, actual_return, float(buy_t), float(sell_t),
+                            allow_short=allow_short, fee_bps=fee_bps,
+                            uncertainties=uncertainties,
+                            confidence_threshold=float(conf),
+                            skewness=skewness,
+                            skew_weight=float(sw),
+                        )
+                        if sharpe > best_sharpe:
+                            best_sharpe = sharpe
+                            best_buy = float(buy_t)
+                            best_sell = float(sell_t)
+                            best_weight = float(w)
+                            best_conf = float(conf)
+                            best_skew_w = float(sw)
 
-    return best_sharpe, best_buy, best_sell, best_weight, best_conf
+    return best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w
 
 
 def fit_calibration(
@@ -384,6 +408,8 @@ def fit_calibration(
     predicted_return = (q50 - prev_close) / (np.abs(prev_close) + eps)
     actual_return    = (actual - prev_close) / (np.abs(prev_close) + eps)
     uncertainties    = (q90 - q10) / (np.abs(prev_close) + eps)
+    # Skewness: positive = right-tail heavy (upside surprise potential)
+    skewness         = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
 
     max_shift = max_shift_bps / 10_000.0
     min_gap   = min_gap_bps   / 10_000.0
@@ -393,17 +419,21 @@ def fit_calibration(
     weight_vals = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
 
     # Confidence threshold: 0 = disabled, else % of prev_close
-    # Grid over uncertainty percentiles: 25th, 50th, 75th, 100th (no filter)
+    # Grid over uncertainty percentiles: 25th, 50th, 75th (+ no filter)
     if search_confidence and len(uncertainties) > 10:
         pcts = np.percentile(uncertainties, [25, 50, 75])
         conf_vals: List[float] = [0.0] + [float(p) for p in pcts]
     else:
         conf_vals = [0.0]
 
-    best_sharpe, best_buy, best_sell, best_weight, best_conf = _run_grid(
+    # Skew weight search: [0, 0.5, 1.0, 2.0] — 0 means disabled
+    skew_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0]
+
+    best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_vals_coarse, weight_vals, conf_vals,
         allow_short, min_gap, fee_bps,
+        skewness=skewness, skew_weight_vals=skew_weight_vals,
     )
 
     # --- Fine phase: ±2bps around best, 17 points each ---
@@ -421,17 +451,34 @@ def fit_calibration(
     # Combine both ranges for both buy and sell
     thresh_both = np.unique(np.concatenate([thresh_fine, sell_fine]))
 
-    sharpe2, buy2, sell2, weight2, conf2 = _run_grid(
+    sharpe2, buy2, sell2, weight2, conf2, skew2 = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_both, [best_weight], [best_conf],
         allow_short, min_gap, fee_bps,
+        skewness=skewness, skew_weight_vals=[best_skew_w],
     )
     if sharpe2 > best_sharpe:
-        best_sharpe, best_buy, best_sell, best_weight, best_conf = sharpe2, buy2, sell2, weight2, conf2
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = (
+            sharpe2, buy2, sell2, weight2, conf2, skew2)
+
+    # --- Phase 3: refine signal_weight around best (±40% in 9 steps) ---
+    if search_signal_weight:
+        w_fine = np.linspace(best_weight * 0.6, best_weight * 1.4, 9)
+        sharpe3, buy3, sell3, weight3, conf3, skew3 = _run_grid(
+            predicted_return, actual_return, uncertainties,
+            np.array([best_buy, best_sell]),
+            list(w_fine), [best_conf],
+            allow_short, min_gap, fee_bps,
+            skewness=skewness, skew_weight_vals=[best_skew_w],
+        )
+        if sharpe3 > best_sharpe:
+            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = (
+                sharpe3, buy3, sell3, weight3, conf3, skew3)
 
     params = CalibrationParams(
         signal_weight=best_weight,
         signal_bias=0.0,
+        skew_weight=best_skew_w,
         buy_threshold=best_buy,
         sell_threshold=best_sell,
         allow_short=allow_short,

@@ -72,9 +72,10 @@ def run_backtest(
     pred_ret = (q50 - prev_close) / (np.abs(prev_close) + eps)
     act_ret  = (actual - prev_close) / (np.abs(prev_close) + eps)
     unc      = (q90 - q10) / (np.abs(prev_close) + eps)
+    skewness = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
 
-    # Signal weights applied
-    signals = pred_ret * params.signal_weight + params.signal_bias
+    # Signal: weighted median return + optional skewness component
+    signals = pred_ret * params.signal_weight + skewness * params.skew_weight + params.signal_bias
     uncertainties = unc
 
     fee = fee_bps / 10_000.0

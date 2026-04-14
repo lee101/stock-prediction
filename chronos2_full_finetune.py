@@ -362,6 +362,7 @@ def train(
     wandb_project: Optional[str] = None,
     wandb_run_name: Optional[str] = None,
     wandb_entity: Optional[str] = None,
+    resume_from_checkpoint: Optional[str] = None,
 ) -> Any:
     """
     Fine-tune pipeline on train_series with early stopping via val_series.
@@ -530,8 +531,10 @@ def train(
         print("Using Muon optimizer (Newton-Schulz orthogonalized momentum)")
 
     print(f"Training for {num_steps:,} steps | batch={batch_size} | lr={learning_rate:.2e}")
+    if resume_from_checkpoint:
+        print(f"Resuming from checkpoint: {resume_from_checkpoint}")
     t0 = time.time()
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint or None)
     elapsed = time.time() - t0
     print(f"Training complete in {elapsed/60:.1f} min")
 
@@ -609,6 +612,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="W&B run name (default: auto-generated from tag/timestamp)")
     p.add_argument("--wandb-entity", default=None,
                    help="W&B entity/team name")
+    p.add_argument("--resume-from-checkpoint", default=None,
+                   help="Path to a trainer checkpoint dir to resume training from "
+                        "(e.g. chronos2_finetuned/stocks_all_v3/trainer_workspace/checkpoint-20000)")
+    p.add_argument("--skip-baseline-eval", action="store_true",
+                   help="Skip the baseline MAE eval (auto-set when --resume-from-checkpoint is given)")
     return p.parse_args(argv)
 
 
@@ -675,16 +683,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Pick series long enough to have context_length + prediction_length bars
     min_eval_len = args.context_length + args.prediction_length
     eval_series = [s for s in all_series if s["target"].shape[-1] >= min_eval_len][:100]
-    if not args.eval_mae_only:
-        print(f"Evaluating baseline on {len(eval_series)} series ...")
-    mae_base, mae_pct_base, n_base = _eval_mae_on_series(
-        pipeline, eval_series,
-        args.context_length, args.prediction_length
+    skip_eval = bool(getattr(args, "skip_baseline_eval", False)) or bool(
+        getattr(args, "resume_from_checkpoint", None)
     )
-    if n_base > 0:
-        print(f"Baseline val MAE: {mae_base:.4f}  MAE%: {mae_pct_base:.2f}%  (n={n_base})")
+    if args.eval_mae_only or not skip_eval:
+        if not args.eval_mae_only:
+            print(f"Evaluating baseline on {len(eval_series)} series ...")
+        mae_base, mae_pct_base, n_base = _eval_mae_on_series(
+            pipeline, eval_series,
+            args.context_length, args.prediction_length
+        )
+        if n_base > 0:
+            print(f"Baseline val MAE: {mae_base:.4f}  MAE%: {mae_pct_base:.2f}%  (n={n_base})")
+        else:
+            print("Baseline eval: no valid windows (series too short for context_length)")
     else:
-        print("Baseline eval: no valid windows (series too short for context_length)")
+        print("Skipping baseline eval (resuming from checkpoint)")
+        mae_base, mae_pct_base, n_base = 0.0, 0.0, 0
 
     if args.eval_mae_only:
         return 0
@@ -713,6 +728,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         wandb_project=getattr(args, "wandb_project", None),
         wandb_run_name=getattr(args, "wandb_run_name", None),
         wandb_entity=getattr(args, "wandb_entity", None),
+        resume_from_checkpoint=getattr(args, "resume_from_checkpoint", None),
     )
 
     # --- Post-train eval (same eval_series as baseline for fair comparison) ---

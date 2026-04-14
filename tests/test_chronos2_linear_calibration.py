@@ -154,13 +154,13 @@ class TestFitCalibration:
         assert params.sell_threshold <=  max_frac + 1e-9
 
     def test_signal_weight_search_finds_plausible_weight(self):
-        """Signal weight should be one of the pre-defined candidates."""
+        """Signal weight search should find a positive weight."""
         q10, q50, q90, actual, prev = _make_synthetic_data(N=2000)
         params = fit_calibration(q10, q50, q90, actual, prev,
                                   search_signal_weight=True)
-        # weight must come from [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
-        expected_weights = {0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0}
-        assert params.signal_weight in expected_weights
+        # Phase 3 refines around best coarse weight, so exact value may not be preset
+        # but must be positive (model signal should be used positively)
+        assert params.signal_weight > 0.0
 
     def test_no_signal_weight_search_fixed_at_one(self):
         q10, q50, q90, actual, prev = _make_synthetic_data()
@@ -279,3 +279,64 @@ class TestFitCalibration:
             allow_short=False, fee_bps=1.0,
         )
         assert sharpe_normal > 1.0
+
+
+class TestSkewWeight:
+    def test_skew_weight_field_default_zero(self):
+        """skew_weight defaults to 0 (backward compat)."""
+        p = CalibrationParams()
+        assert p.skew_weight == 0.0
+
+    def test_apply_with_skewness_no_effect_when_zero_weight(self):
+        """skew_weight=0 means skewness has no effect on the signal."""
+        p = CalibrationParams(buy_threshold=0.001, skew_weight=0.0)
+        # Strong skewness but weight=0 → should still evaluate on predicted_return
+        assert p.apply(0.002, skewness=10.0) == "buy"
+        assert p.apply(0.0005, skewness=10.0) == "hold"
+
+    def test_apply_with_skewness_positive_weight_boosts_signal(self):
+        """Positive skew_weight + positive skewness boosts signal → more buys."""
+        p_no_skew = CalibrationParams(buy_threshold=0.001, skew_weight=0.0)
+        p_with_skew = CalibrationParams(buy_threshold=0.001, skew_weight=0.5)
+        # predicted_return=0.0005 is below buy_threshold normally
+        assert p_no_skew.apply(0.0005, skewness=0.002) == "hold"
+        # but with skew_weight=0.5: signal = 0.0005 + 0.5*0.002 = 0.0015 > 0.001 → buy
+        assert p_with_skew.apply(0.0005, skewness=0.002) == "buy"
+
+    def test_fit_calibration_returns_skew_weight(self):
+        """fit_calibration should return a CalibrationParams with skew_weight field."""
+        q10, q50, q90, actual, prev = _make_synthetic_data(N=1000)
+        params = fit_calibration(q10, q50, q90, actual, prev)
+        assert hasattr(params, "skew_weight")
+        assert isinstance(params.skew_weight, float)
+
+    def test_compute_sharpe_skewness_enables_trading_when_median_silent(self):
+        """When skewness is strongly predictive and threshold is above median, skew unlocks trades."""
+        rng = np.random.RandomState(99)
+        N = 500
+        signals = np.zeros(N)  # median signal is zero — no trades without skewness
+        # skewness: positive → stock will go up strongly
+        skewness = np.abs(rng.randn(N)) * 0.005  # all positive skewness (consistently right-skewed)
+        actual = skewness * 1.5  # actual correlated with skewness (no noise for clean signal)
+
+        # Without skew: signals=0 < buy_thresh=0.002 → no trades → -999
+        sharpe_no_skew = compute_sharpe(
+            signals, actual, buy_thresh=0.002, sell_thresh=0.002,
+            allow_short=False, fee_bps=1.0,
+            skewness=skewness, skew_weight=0.0,
+        )
+        assert sharpe_no_skew == -999.0
+
+        # With skew: signal = 0 + skew_weight * skewness > buy_thresh → trades fire and win
+        sharpe_with_skew = compute_sharpe(
+            signals, actual, buy_thresh=0.002, sell_thresh=0.002,
+            allow_short=False, fee_bps=1.0,
+            skewness=skewness, skew_weight=1.0,
+        )
+        assert sharpe_with_skew > 0.0
+
+    def test_from_dict_roundtrip_with_skew_weight(self):
+        """skew_weight should survive to_dict/from_dict roundtrip."""
+        p = CalibrationParams(skew_weight=1.5, buy_threshold=0.001)
+        p2 = CalibrationParams.from_dict(p.to_dict())
+        assert p2.skew_weight == 1.5
