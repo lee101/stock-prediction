@@ -957,6 +957,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Minimum windows to fit per-symbol calibration (default: 30)")
     p.add_argument("--cal-bars", type=int, default=120,
                    help="Number of calibration bars (val set) per series before test split (default: 120)")
+    p.add_argument("--symbols-subset", nargs="*", default=None,
+                   help="If given, restrict calibration to only these symbols "
+                        "(useful for per-symbol mode to get enough windows per symbol)."
+                        " E.g.: --symbols-subset AAPL SPY GOOG TSLA META NVDA MSFT AMZN")
     p.add_argument("--ensemble-models", nargs="*", default=None,
                    help="Additional model IDs to ensemble with --model-id (quantile averaging)")
     return p.parse_args(argv)
@@ -977,6 +981,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("ERROR: No valid series found")
         return 1
     print(f"Loaded {len(all_series)} series")
+
+    # Optional: restrict to a subset of symbols (useful for per-symbol mode to get
+    # enough windows per symbol without loading thousands of irrelevant symbols)
+    symbols_subset = getattr(args, "symbols_subset", None)
+    if symbols_subset:
+        subset_set = set(symbols_subset)
+        all_series = [s for s in all_series if s.get("symbol", "") in subset_set]
+        print(f"Filtered to {len(all_series)} series matching --symbols-subset: {sorted(subset_set)}")
 
     # Use VAL set for calibration to avoid leakage with test set (last 60 bars).
     # Test set = last 60 bars (never touched by calibration).

@@ -612,3 +612,32 @@ class TestCalmarCalibration:
         # Should complete without error; weight may be small (≤0.25)
         assert params.signal_weight > 0.0
         assert not np.isnan(params.buy_threshold)
+
+
+# ---------------------------------------------------------------------------
+# symbols_subset filtering
+# ---------------------------------------------------------------------------
+
+class TestSymbolsSubsetFilter:
+    def test_parse_args_symbols_subset(self):
+        """--symbols-subset should parse into a list."""
+        from chronos2_linear_calibration import parse_args
+        import sys
+        args = parse_args(['--model-id', 'x', '--symbols-subset', 'AAPL', 'SPY', 'GOOG'])
+        assert args.symbols_subset == ['AAPL', 'SPY', 'GOOG']
+
+    def test_parse_args_no_symbols_subset_is_none(self):
+        """Without --symbols-subset, value should be None."""
+        from chronos2_linear_calibration import parse_args
+        args = parse_args(['--model-id', 'x'])
+        assert args.symbols_subset is None
+
+    def test_parse_args_calmar_flags(self):
+        """--use-calmar and --also-calmar flags should parse."""
+        from chronos2_linear_calibration import parse_args
+        args_u = parse_args(['--model-id', 'x', '--use-calmar'])
+        args_a = parse_args(['--model-id', 'x', '--also-calmar'])
+        assert args_u.use_calmar is True
+        assert args_u.also_calmar is False
+        assert args_a.also_calmar is True
+        assert args_a.use_calmar is False
