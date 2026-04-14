@@ -45,6 +45,7 @@ from chronos2_linear_calibration import (
     CalibrationParams,
     collect_predictions,
     compute_sharpe,
+    _get_boundaries,
 )
 from chronos2_stock_augmentation import load_all_series
 
@@ -88,6 +89,11 @@ def run_backtest(
     pos_arr = np.empty_like(desired)
     pos_arr[0] = 0
     pos_arr[1:] = desired[:-1]
+
+    # Reset position at symbol boundaries to avoid carry-over between symbols
+    boundaries = _get_boundaries(symbols)
+    if len(boundaries) > 0:
+        pos_arr[boundaries] = 0
 
     transitions = pos_arr != desired
     n_trades = int(transitions.sum())

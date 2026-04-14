@@ -229,6 +229,47 @@ if [[ -n "$V4_PID" ]]; then
             echo "[$(date -u +%H:%M:%SZ)] Launching v7 (ctx=1024, gap_inject=0.15, lr=3e-5)..."
             bash scripts/launch_chronos2_v7.sh
             echo "[$(date -u +%H:%M:%SZ)] v7 launched. PID: $(cat .chronos2_v7_pid 2>/dev/null)"
+
+            # -----------------------------------------------------------------------
+            # Wait for v7 then calibrate and launch v8
+            # -----------------------------------------------------------------------
+            V7_PID="$(cat .chronos2_v7_pid 2>/dev/null)"
+            if [[ -n "$V7_PID" ]]; then
+                echo "[$(date -u +%H:%M:%SZ)] Waiting for v7 (PID $V7_PID) to complete before launching v8..."
+                while kill -0 "$V7_PID" 2>/dev/null; do
+                    sleep 180
+                done
+                echo "[$(date -u +%H:%M:%SZ)] v7 complete. Running v7 calibration + benchmark..."
+
+                V7_CKPT="chronos2_finetuned/stocks_all_v7/finetuned-ckpt"
+                if [[ -d "$V7_CKPT" ]]; then
+                    python chronos2_linear_calibration.py \
+                        --model-id     "$V7_CKPT" \
+                        --cal-data-dir trainingdata \
+                        --output-path  "$V7_CKPT/calibration.json" \
+                        --max-shift-bps 20 \
+                        --min-gap-bps   2 \
+                        --grid-steps   25 \
+                        --cal-bars     120 \
+                        --max-windows  5000 \
+                        --batch-size   32 \
+                        --per-symbol \
+                        --hyperparams-dir hyperparams/chronos2_v7 \
+                        2>&1 | tee chronos2_calibration_v7.log
+
+                    python benchmark_chronos2.py \
+                        --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                        --model-id "$V7_CKPT" \
+                        --context-length 1024 \
+                        --batch-size 64 \
+                        --update-hyperparams \
+                        2>&1 | tee chronos2_benchmark_v7.log
+                fi
+
+                echo "[$(date -u +%H:%M:%SZ)] Launching v8 (ctx=1024, trend_inject=0.15, all augs)..."
+                bash scripts/launch_chronos2_v8.sh
+                echo "[$(date -u +%H:%M:%SZ)] v8 launched. PID: $(cat .chronos2_v8_pid 2>/dev/null)"
+            fi
         fi
     fi
 fi

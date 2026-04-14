@@ -636,3 +636,67 @@ class TestAugmentedChronos2Dataset:
         finite = ctx[~torch.isnan(ctx)]
         # Val mode: no augmentation → constant series
         assert float(finite.std()) < 1e-3, "Val mode should not apply gap inject"
+
+
+    def test_trend_inject_creates_linear_drift(self):
+        """Trend injection should add a monotone drift to the context."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(20)]
+
+        # Prob=1.0 ensures trend injection fires every time
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=T,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0,
+                time_dropout_rate=0.0, gap_inject_prob=0.0,
+                trend_inject_prob=1.0, trend_magnitude_frac=0.10,
+            ),
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        # With trend injected onto a constant=100 series, first and last bar should differ
+        finite = ctx[~torch.isnan(ctx)]
+        # Standard deviation > 0 (not a flat line anymore)
+        assert float(finite.std()) > 0.1, "Trend inject should add drift to constant series"
+
+    def test_trend_inject_disabled_when_zero_prob(self):
+        """No trend injection when prob=0."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(10)]
+
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=T,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0,
+                time_dropout_rate=0.0, gap_inject_prob=0.0,
+                trend_inject_prob=0.0,
+            ),
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        finite = ctx[~torch.isnan(ctx)]
+        assert float(finite.std()) < 1e-3, "Zero prob should leave series unchanged"

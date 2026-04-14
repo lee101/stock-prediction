@@ -118,6 +118,17 @@ class AugConfig:
     # Gap magnitude as a fraction of the local mean (e.g., 0.05 = ±5% gap).
     gap_magnitude_frac: float = 0.05
 
+    # Trend injection: with this probability, add a random smooth linear trend
+    # to all OHLC channels. Simulates trending markets; forces the model to extract
+    # relative patterns regardless of overall drift direction.
+    # E.g. 0.15 = 15% chance of a random trend per context window.
+    # Set to 0 to disable.
+    trend_inject_prob: float = 0.0
+
+    # Max magnitude of injected trend as a fraction of mean context value.
+    # E.g. 0.10 = trend can reach ±10% of price over the full context.
+    trend_magnitude_frac: float = 0.10
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -273,6 +284,22 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                 gap_shift = sign * cfg.gap_magnitude_frac * ch_mean  # (n_channels,)
                 # Apply gap to all bars from gap_pos onwards (persistent level shift)
                 task_context[:, gap_pos:] = task_context[:, gap_pos:] + gap_shift.unsqueeze(-1)
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 10. Trend injection: add random smooth linear trend to all channels ---
+        # Forces model to learn relative patterns regardless of overall market drift.
+        if cfg.trend_inject_prob > 0 and random.random() < cfg.trend_inject_prob:
+            T = task_context.shape[-1]
+            if T >= 4:
+                task_context = task_context.clone().float()
+                # Trend magnitude: fraction of channel mean, random sign, tapers as linear ramp
+                ch_mean = task_context.abs().mean(dim=-1).clamp(min=1e-4)  # (n_channels,)
+                sign = 1.0 if random.random() > 0.5 else -1.0
+                # Linear ramp from 0 to ±trend_magnitude_frac * ch_mean over full context
+                ramp = torch.linspace(0.0, 1.0, T, device=task_context.device,
+                                      dtype=task_context.dtype)  # (T,)
+                trend = sign * cfg.trend_magnitude_frac * ch_mean.unsqueeze(-1) * ramp  # (n_ch, T)
+                task_context = task_context + trend
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets
