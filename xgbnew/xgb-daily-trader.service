@@ -1,0 +1,41 @@
+# XGBoost daily open-to-close trader systemd service
+# Install: sudo cp xgbnew/xgb-daily-trader.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable xgb-daily-trader
+#          sudo systemctl start xgb-daily-trader
+#
+# Logs: sudo journalctl -u xgb-daily-trader -f
+#
+# Paper mode (default): set ALP_PAPER=1
+# Live mode: remove ALP_PAPER or set ALP_PAPER=0
+
+[Unit]
+Description=XGBoost Daily Open-to-Close Stock Trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=administrator
+WorkingDirectory=/nvme0n1-disk/code/stock-prediction
+
+# Paper mode by default — remove ALP_PAPER to trade live
+Environment=ALP_PAPER=1
+Environment=ALPACA_SERVICE_NAME=xgb_daily_trader
+
+ExecStart=/nvme0n1-disk/code/stock-prediction/.venv/bin/python -m xgbnew.live_trader \
+    --symbols-file symbol_lists/stocks_wide_1000_v1.txt \
+    --data-root trainingdata \
+    --model-path analysis/xgbnew_daily/live_model.pkl \
+    --top-n 2 \
+    --allocation 0.25 \
+    --loop \
+    --verbose
+
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

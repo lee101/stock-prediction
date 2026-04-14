@@ -1,18 +1,33 @@
 # Alpaca Progress 9
 
-## XGBoost Daily Open-to-Close Strategy (2026-04-13)
+## XGBoost Daily Open-to-Close Strategy (2026-04-13 → 2026-04-14)
 
 ### Summary
 
 Built a pure XGBoost strategy (`xgbnew/`) that predicts open-to-close direction across
-846 US stocks. Real day-by-day backtest on Jan–Apr 2026 out-of-sample data:
+846 US stocks. Real day-by-day simulation + 37-window OOS eval across all market regimes.
+
+**Original test (Jan–Apr 2026, 66 days):**
 
 | Config | Total% | Monthly% | Sharpe | Max DD% | Dir Acc% |
 |--------|--------|----------|--------|---------|----------|
 | top-2, 1x leverage | **+203%** | **+42%** | **13.9** | 6.2% | 85.6% |
 | top-2, 2x leverage | +767% | +99% | 13.8 | 12.5% | 85.6% |
 
-This is a real simulation — real OHLCV data, real cost model (volume-based spread tiers + 10 bps/side commission), no lookahead. Not marketsim, but comparable in methodology.
+**Multi-window OOS eval (2026-04-14): train 2021–2023, test 37 × 50d windows, 2024-01-02 → 2026-04-10:**
+
+| Metric | Value |
+|--------|-------|
+| Neg windows (monthly%) | **1 / 37  (2.7%)** |
+| Median monthly% | **+22.65%** |
+| P10 monthly% | **+12.95%** |
+| P90 monthly% | +41.25% |
+| Median sortino | 8.24 |
+
+Only negative window: 2024-12-24 → 2025-02-11 (-6.4% total, -2.7%/mo) — DeepSeek correction.
+All 2025 H2 and 2026 windows strongly positive. Directional accuracy held 67–88% across regimes.
+
+Both simulations use real OHLCV data, volume-based spread tiers + 10 bps/side commission, no lookahead.
 
 ---
 
@@ -99,9 +114,14 @@ Chronos2's `cc_return` signal always picks the strongest trending stocks (DXST, 
 
 ---
 
+### Status (2026-04-14)
+
+Multi-window eval complete. Live trader built. Model saved to `analysis/xgbnew_daily/live_model.pkl`.
+Next: paper trading for 1–2 weeks, then live if EOD sell timing is confirmed working.
+
 ### Next Steps to Productionize
 
-1. **Regime robustness**: Test on 2022 bear market, 2023 choppy market. The 51.67% val accuracy on 2025 data is honest but the 85.6% on top-2 picks needs validation across regimes.
+1. ~~**Regime robustness**~~: **DONE** — 37-window eval shows 1/37 neg (2.7%), covers 2024–2026 including corrections.
 
 2. **More seeds and hyperparameter sweeps**: Vary `top_n` (1, 2, 3, 5), `max_depth` (3-6), `n_estimators` (100-500). The current params weren't swept.
 

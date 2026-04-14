@@ -1211,16 +1211,29 @@ No RL, no neural policy — pure technical feature engineering + gradient boosti
 3. No Alpaca wrapper integration yet (needs singleton guard, death spiral guard, live open-price feed)
 4. Could complement the RL ensemble: RL system holds intraday positions, XGB makes one trade per day
 
-**To productionize:**
-```bash
-# 1. Run more robust eval across different market regimes
-python -m xgbnew.run_daily --symbols-file symbol_lists/stocks_wide_1000_v1.txt \
-    --data-root trainingdata --top-n 2 --leverage 1.0
+**Multi-window OOS eval (2026-04-14, real results):**
+- Train: 2021–2023, OOS: 2024-01-02 → 2026-04-10, **37 windows × 50d, stride 21d**
+- Neg windows: **1/37 (2.7%)** — only Dec 2024–Feb 2025 (DeepSeek correction), -2.7%/mo
+- Median monthly: **+22.65%**, P10: **+12.95%**, P90: +41.25%, Median sortino: 8.24
+- Results: `analysis/xgbnew_multiwindow/multiwindow_20260414_000845.json`
+- Model: `analysis/xgbnew_daily/live_model.pkl`
 
-# 2. Train on data through 2025-11-30 (use same train cutoff as screened32 v2 sweep)
-# 3. Add marketsim validation at lag=2, binary fills (adaptor needed — xgbnew uses own backtest)
-# 4. Wrap in alpaca_wrapper for live trading with singleton + death-spiral guards
+**Live trader ready** (`xgbnew/live_trader.py`, singleton guard via `src.alpaca_singleton`):
+```bash
+# Paper mode:
+ALP_PAPER=1 python -m xgbnew.live_trader --top-n 2 --loop
+# Dry run (score only):
+python -m xgbnew.live_trader --top-n 2 --dry-run
+# Deploy (paper first):
+sudo cp xgbnew/xgb-daily-trader.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now xgb-daily-trader
+sudo journalctl -u xgb-daily-trader -f
 ```
+
+**Remaining gates before going live:**
+1. Paper trading 1–2 weeks to verify order flow + EOD sell timing
+2. marketsim validation at `decision_lag=2`, binary fills (adaptor needed — xgbnew uses own backtest)
+3. Remove `ALP_PAPER=1` from service file when ready
 
 ---
 
