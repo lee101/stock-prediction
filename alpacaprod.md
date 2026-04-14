@@ -204,30 +204,33 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
-### 2026-04-14 04:23 UTC — Upgraded to 11-model ensemble (+D_s57 +I_s3×2) — CURRENT PRODUCTION
+### 2026-04-14 04:41 UTC — Upgraded to 12-model ensemble (+D_s57 +I_s3×2 +D_s64) — CURRENT PRODUCTION
 
-**Service restarted 04:23 UTC** (PID 2922795) to activate 11-model. Next tick Mon ~13:35 UTC.
+**Service restarted 04:41 UTC** (PID 3541435) to activate 12-model. Next tick Mon ~13:35 UTC.
 
-#### Current champion: screened32 11-model ensemble (+D_s57 +I_s3 doubled)
-- **Checkpoints**: `prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, D_s81, **D_s57**, **I_s3×2**)
-- **I_s3 doubled**: same checkpoint added twice → 2x weight in softmax averaging (≡ weighted ensemble with w=2/11)
+#### Current champion: screened32 12-model ensemble (+D_s57 +I_s3×2 +D_s64)
+- **Checkpoints**: `prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, D_s81, D_s57, I_s3×2, **D_s64**)
+- **I_s3 doubled**: same checkpoint added twice → 2x weight in softmax averaging (≡ weighted ensemble with w=2/12)
 
-**D_s57 profile**: tp=0.05 Muon, individual OOS neg=29/100, med=5.83%, sort=10.19
-**Why D_s57**: Bear-resistant — fixes 1 bear window and improves tail protection
-**Why I_s3 doubled**: Bear-resistant — I_s3 with 2x weight reduces crash losses
+**D_s57 profile**: tp=0.05 Muon, individual OOS neg=29/100, med=5.83%, sort=10.19 — bear-resistant
+**D_s64 profile**: tp=0.05 Muon, individual OOS neg=33/100, med=3.03%, sort=6.56 — diverse (high sort in ensemble)
 
-**11-model vs 9-model (exhaustive 263 windows, lag=2, binary fills, fee=10bps, slip=5bps):**
-- **11m**: med=17.79%, p10=+5.96%, neg=12/263, sort=29.41
+**12-model vs 9-model (exhaustive 263 windows, lag=2, binary fills, fee=10bps, slip=5bps):**
+- **12m**: med=18.87%, p10=+7.88%, neg=10/263, sort=32.35
+- 11m: med=17.79%, p10=+5.96%, neg=12/263, sort=29.41
 - 9m: med=17.48%, p10=+5.14%, neg=17/263, sort=30.19
-- Net: med+0.31%, p10+0.82%, neg-5 (30% fewer losses), sort-0.78
+- Net vs 9m: med+1.39%, p10+2.74%, neg-7 (41% fewer losses), sort+2.16
 
-**100-window sampled**: med=17.58%, p10=5.64%, neg=6/100, sort=29.77 (vs 9m: 17.82%/5.09%/8/30.34)
-**Bear windows (Apr 2026 tariff crash, idx 249-260)**: 6/8 negative (vs 8/8 for 8m, 8/8 for 9m)
+**100-window sampled**: med=19.84%, p10=5.34%, neg=6/100, sort=34.07
+**Bear windows (Apr 2026 tariff crash, idx 249-260)**: 6/8 negative (vs 8/8 for 8m/9m)
 
 | Model | Median | P10 | Neg/100 | Sortino | Notes |
 |-------|--------|-----|---------|---------|-------|
 | ...9-model (+D_s81) | +17.82% | +5.09% | 8 | 30.34 | prev prod 2026-04-14 03:10 |
-| **11-model (+D_s57 +I_s3×2)** | **+17.58%** | **+5.64%** | **6** | **29.77** | **CURRENT 2026-04-14 04:23** |
+| 11-model (+D_s57 +I_s3×2) | +17.58% | +5.64% | 6 | 29.77 | prev prod 2026-04-14 04:23 |
+| **12-model (+D_s57 +I_s3×2 +D_s64)** | **+19.84%** | **+5.34%** | **6** | **34.07** | **CURRENT 2026-04-14 04:41** |
+
+### 2026-04-14 04:23 UTC — 11-model ensemble (+D_s57 +I_s3×2) (superseded)
 
 ---
 
@@ -284,7 +287,8 @@ Picks top-K models by trailing return, follows their signal.
 | screened32 8-model (D_s13→D_s42 swap) | +15.81% | +5.14% | 7 | 27.65 | deployed ~16:54 UTC |
 | screened32 8-model (D_s5→I_s3 swap) | +18.17% | +5.07% | 8 | 30.67 | deployed 2026-04-13 22:11 UTC |
 | screened32 9-model (+D_s81) | +17.82% | +5.09% | 8 | 30.34 | prev prod 2026-04-14 03:10 UTC |
-| **screened32 11-model (+D_s57 +I_s3×2)** | **+17.58%** | **+5.64%** | **6** | **29.77** | **CURRENT 2026-04-14 04:23 UTC** |
+| screened32 11-model (+D_s57 +I_s3×2) | +17.58% | +5.64% | 6 | 29.77 | prev 2026-04-14 04:23 UTC |
+| **screened32 12-model (+D_s64)** | **+19.84%** | **+5.34%** | **6** | **34.07** | **CURRENT 2026-04-14 04:41 UTC** |
 
 Exhaustive 263w eval (previous 8-model with D_s42/D_s5): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
 Exhaustive 263w eval (current 8-model with I_s3): neg=17/263, med=17.77%, p10=+4.75%, sort=30.61
