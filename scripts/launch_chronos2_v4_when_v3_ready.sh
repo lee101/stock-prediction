@@ -67,7 +67,7 @@ python chronos2_linear_calibration.py \
 # -----------------------------------------------------------------------
 # Step 3: Benchmark v3 vs v2 on key symbols (same-period comparison)
 # -----------------------------------------------------------------------
-echo "[$(date -u +%H:%M:%SZ)] Benchmarking v3 on key symbols..."
+echo "[$(date -u +%H:%M:%SZ)] Benchmarking v3 on key symbols (MAE)..."
 python benchmark_chronos2.py \
     --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
     --model-id "$V3_CKPT" \
@@ -76,38 +76,16 @@ python benchmark_chronos2.py \
     --update-hyperparams \
     2>&1 | tee chronos2_benchmark_v3.log
 
-echo "[$(date -u +%H:%M:%SZ)] Benchmarking v2 for same-period comparison..."
-python benchmark_chronos2.py \
-    --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
-    --model-id "chronos2_finetuned/stocks_all_v2/finetuned-ckpt" \
-    --context-length 512 \
-    --batch-size 128 \
-    2>&1 | tee chronos2_benchmark_v2_fresh.log
-
-# Print quick comparison
-echo "[$(date -u +%H:%M:%SZ)] === v3 vs v2 comparison ==="
-python3 -c "
-import json, glob
-syms = ['AAPL', 'SPY', 'GOOG', 'TSLA', 'META', 'NVDA', 'MSFT', 'AMZN']
-print(f'{\"SYM\":6s} {\"V3_TEST\":>10s} {\"V2_TEST\":>10s} {\"DELTA\":>10s}')
-for sym in syms:
-    # Find most recent v3 result
-    v3_files = sorted(glob.glob(f'chronos2_benchmarks/{sym}/*bench*.json'))
-    v2_files = sorted(glob.glob(f'chronos2_benchmarks/{sym}/*fresh*.json'))
-    # fallback: just last two files
-    if len(v3_files) >= 2:
-        v3 = json.load(open(v3_files[-1]))
-        v2 = json.load(open(v3_files[-2]))
-    else:
-        print(f'{sym}: insufficient files')
-        continue
-    if isinstance(v3, list): v3 = v3[-1]
-    if isinstance(v2, list): v2 = v2[-1]
-    v3t = v3.get('test', v3.get('validation', {})).get('pct_return_mae', 0) * 100
-    v2t = v2.get('test', v2.get('validation', {})).get('pct_return_mae', 0) * 100
-    delta = v2t - v3t
-    print(f'{sym:6s} {v3t:10.3f}% {v2t:10.3f}% {delta:+10.3f}%')
-" || true
+echo "[$(date -u +%H:%M:%SZ)] Running calibrated backtest (v3 vs v2, Sharpe comparison)..."
+python chronos2_calibrated_backtest.py \
+    --model-id "$V3_CKPT" \
+    --compare-model "chronos2_finetuned/stocks_all_v2/finetuned-ckpt" \
+    --cal-data-dir trainingdata \
+    --max-windows 5000 \
+    --batch-size 32 \
+    --per-symbol \
+    --output "chronos2_finetuned/stocks_all_v3/backtest_vs_v2.json" \
+    2>&1 | tee chronos2_backtest_v3_vs_v2.log || true
 
 # -----------------------------------------------------------------------
 # Step 4: Upload v3 calibration to R2
