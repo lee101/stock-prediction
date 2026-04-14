@@ -36,8 +36,9 @@ class TestRunBacktest:
         q10, q50, q90, actual, prev, syms = _make_preds()
         params = CalibrationParams(buy_threshold=0.001, sell_threshold=0.001)
         stats = run_backtest(q10, q50, q90, actual, prev, syms, params)
-        for key in ("n_windows", "n_trades", "sharpe_annualized", "hold_rate",
-                    "win_rate", "bnh_sharpe_annualized", "pnl_30d_est_pct"):
+        for key in ("n_windows", "n_trades", "sharpe_annualized", "sortino_annualized",
+                    "max_drawdown_pct", "hold_rate", "win_rate",
+                    "bnh_sharpe_annualized", "bnh_sortino_annualized", "pnl_30d_est_pct"):
             assert key in stats, f"Missing key: {key}"
 
     def test_sharpe_positive_for_good_predictor(self):
@@ -96,3 +97,26 @@ class TestRunBacktest:
         stats = run_backtest(q10, q50, q90, actual, prev, syms, params)
         assert stats["n_trades"] == 0
         assert stats["hold_rate"] == pytest.approx(1.0)
+
+    def test_sortino_positive_for_profitable_strategy(self):
+        """Strategy with all winning trades → positive Sortino (no downside)."""
+        q10, q50, q90, actual, prev, syms = _make_preds(N=500, upward_bias=0.003)
+        params = CalibrationParams(buy_threshold=-0.001, sell_threshold=-0.001, signal_weight=1.0)
+        stats = run_backtest(q10, q50, q90, actual, prev, syms, params, fee_bps=1.0)
+        # With consistent upward bias, sortino should be positive
+        assert stats["sortino_annualized"] > 0.0
+
+    def test_max_drawdown_nonnegative(self):
+        """max_drawdown_pct should always be >= 0."""
+        q10, q50, q90, actual, prev, syms = _make_preds(N=300)
+        params = CalibrationParams(buy_threshold=0.001, sell_threshold=0.001)
+        stats = run_backtest(q10, q50, q90, actual, prev, syms, params)
+        assert stats["max_drawdown_pct"] >= 0.0
+
+    def test_bnh_sortino_present(self):
+        """Buy-and-hold Sortino should be in stats."""
+        q10, q50, q90, actual, prev, syms = _make_preds(N=200)
+        params = CalibrationParams(buy_threshold=0.001, sell_threshold=0.001)
+        stats = run_backtest(q10, q50, q90, actual, prev, syms, params)
+        assert "bnh_sortino_annualized" in stats
+        assert isinstance(stats["bnh_sortino_annualized"], float)

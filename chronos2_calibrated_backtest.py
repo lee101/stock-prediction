@@ -118,8 +118,21 @@ def run_backtest(
     pos_arr = np.array(positions)
     n = len(arr)
 
-    # Buy-and-hold Sharpe
+    # Sortino: downside deviation only
+    downside = arr[arr < 0]
+    downside_std = float(downside.std()) if len(downside) > 1 else 1e-10
+    sortino = float(arr.mean() / (downside_std + 1e-10) * np.sqrt(252))
+
+    # Max drawdown (cumulative)
+    cumpnl = np.cumsum(arr)
+    running_max = np.maximum.accumulate(cumpnl)
+    drawdowns = running_max - cumpnl
+    max_dd = float(drawdowns.max()) if len(drawdowns) > 0 else 0.0
+
+    # Buy-and-hold Sharpe + Sortino
     bnh_sharpe = float(act_ret.mean() / (act_ret.std() + 1e-10) * np.sqrt(252))
+    bnh_down = act_ret[act_ret < 0]
+    bnh_sortino = float(act_ret.mean() / (bnh_down.std() + 1e-10) * np.sqrt(252)) if len(bnh_down) > 1 else 0.0
 
     stats: Dict = {
         "n_windows": n,
@@ -129,7 +142,10 @@ def run_backtest(
         "short_rate": float((pos_arr == -1).mean()),
         "mean_daily_pnl_bps": float(arr.mean() * 10000),
         "sharpe_annualized": float(arr.mean() / (arr.std() + 1e-10) * np.sqrt(252)),
+        "sortino_annualized": sortino,
+        "max_drawdown_pct": float(max_dd * 100),
         "bnh_sharpe_annualized": bnh_sharpe,
+        "bnh_sortino_annualized": bnh_sortino,
         "win_rate": float((arr[arr != 0] > 0).mean()) if (arr != 0).any() else float("nan"),
         "pnl_30d_est_pct": float(arr.mean() * 30 * 100),  # rough monthly estimate
         "calibration": params.to_dict(),
@@ -147,9 +163,12 @@ def run_backtest(
                 continue
             sub = arr[mask]
             sub_act = act_ret[mask]
+            sub_down = sub[sub < 0]
+            sub_sortino = float(sub.mean() / (sub_down.std() + 1e-10) * np.sqrt(252)) if len(sub_down) > 1 else 0.0
             per_sym[sym] = {
                 "n": int(mask.sum()),
                 "sharpe": float(sub.mean() / (sub.std() + 1e-10) * np.sqrt(252)),
+                "sortino": sub_sortino,
                 "bnh_sharpe": float(sub_act.mean() / (sub_act.std() + 1e-10) * np.sqrt(252)),
                 "mean_daily_pnl_bps": float(sub.mean() * 10000),
                 "win_rate": float((sub[sub != 0] > 0).mean()) if (sub != 0).any() else float("nan"),
@@ -161,11 +180,14 @@ def run_backtest(
 
 def _print_stats(stats: Dict, label: str = "") -> None:
     prefix = f"[{label}] " if label else ""
+    win_r = stats.get('win_rate', float('nan'))
+    win_str = f"{win_r*100:.1f}%" if win_r == win_r else "N/A"  # NaN check
     print(f"{prefix}Sharpe={stats['sharpe_annualized']:.3f}  "
+          f"Sortino={stats.get('sortino_annualized', float('nan')):.3f}  "
+          f"MaxDD={stats.get('max_drawdown_pct', 0.0):.2f}%  "
           f"(BnH={stats['bnh_sharpe_annualized']:.3f})  "
           f"trades={stats['n_trades']}  hold={stats['hold_rate']*100:.1f}%  "
-          f"win_rate={stats.get('win_rate', float('nan'))*100:.1f}%  "
-          f"monthly≈{stats['pnl_30d_est_pct']:.2f}%  "
+          f"win={win_str}  monthly≈{stats['pnl_30d_est_pct']:.2f}%  "
           f"n={stats['n_windows']}")
 
 
