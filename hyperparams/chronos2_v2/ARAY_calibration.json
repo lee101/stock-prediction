@@ -1,0 +1,11 @@
+{
+  "signal_weight": 0.25,
+  "signal_bias": 0.0,
+  "buy_threshold": 0.0008333333333333331,
+  "sell_threshold": -0.002,
+  "allow_short": false,
+  "confidence_threshold": 0.13334318143072096,
+  "model_id": "chronos2_finetuned/stocks_all_v2/finetuned-ckpt",
+  "n_cal_windows": 60,
+  "cal_sharpe": -0.6273862203828113
+}

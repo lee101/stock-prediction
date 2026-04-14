@@ -75,46 +75,52 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
-### 2026-04-14 (latest update ~23:30 UTC) — Active sweep status
+### 2026-04-14 (latest update ~00:30 UTC) — Active sweep status
 
-**Active sweeps (RTX 5090, ~13-19k SPS):**
-- I variant (Muon + tp=0.03): s8 training (best_neg=20, diverging — likely bad)
-- D variant (Muon + tp=0.05): s72 training (best_neg=17, diverging — likely bad)
-- J variant (Muon + tp=0.04): s1 training at 321/457 steps (**best_neg=1** @ step ~250) ← most promising
-- Ext D sweep (train→Nov 2025): s7 training (to find more ext_D_s4-like seeds)
+**Active sweeps (RTX 5090, ~9-11k SPS each, 6 concurrent):**
+- D variant (Muon + tp=0.05): s77+ training; s70-76 all bad (neg=44-72); sweep losing steam
+- I variant (Muon + tp=0.03): s11 training; s1-10 done, only s2/s3 good
+- R variant (Muon + tp=0.05, recent val): s1 training (novel: trains on main data, validates on Dec2025-Apr2026 bear market)
+- Ext D sweep (train→Nov 2025): s10 training; s7=11.31%/5neg on bear market val, but fails full OOS (53/100 neg)
+- **Weekly C sweep** (new): s1 training with Chronos2 20-feat, max_steps=12 weekly bars (3 months/episode)
+- **Weekly D sweep** (new): s1 training; same Chronos2 features + Muon optimizer
 
 **Full sweep results (D variant, full OOS 100 windows):**
 - D/s42: 10.28% ★★ (deployed), D/s28: 7.95% ★★ (deployed), D/s67: 6.64% neg=7 (tested, not additive)
-- D/s1: 6.12%, D/s16: 5.49%, D/s57: 5.83% — lower tier
+- D/s57: 5.83% neg=29 (tested, not additive), D/s1: 6.12%, D/s16: 5.49% (both in prod)
 - D/s29-50 (except s42): ALL below 2.3%. D/s31,34,39,40,44,45-48 deeply negative.
-- D/s51-71: Only D/s57 (5.83%) and D/s67 (6.64%) meaningful. Rest mostly negative.
-- D/s72: in training, diverging
+- D/s51-71: Only D/s57 and D/s67 meaningful. Rest mostly negative.
+- D/s70-76: ALL bad (neg=44-72). Sweep saturation confirmed at 76+ seeds.
+- **9-model +D57**: 17.00%/5.34%/7neg (lower median, D57 not additive)
 
 **Full sweep results (I variant, full OOS 100 windows):**
 - I/s3: 8.73% neg=8 ★ (deployed), I/s2: 7.07% neg=17 (not additive to ensemble)
-- I/s1: 0.89%, I/s4: -5.35%, I/s5: 2.56%, I/s6: -1.79%, I/s7: -2.14%, I/s8: -1.17%
-- I/s9: 1.19%, I/s10: 1.21% — both bad despite 12.4%/9.5% aug val peaks with 0-9 neg
-- Pattern: I seeds fail reliably on full OOS except s2 and s3. Aug val unreliable.
+- I/s1-10: rest bad or marginal. Hit rate: 2/10 = 20%.
+- **9-model +I_s2**: 16.12%/2.69%/8neg (worse, I_s2 not additive)
 
-**J variant results (Muon + tp=0.04, full OOS 100 windows):**
-- J/s1: 0.45% neg=49 (terrible despite best_neg=1 aug val at step ~250)
-- J/s2: 4.65% neg=30 (despite 22.5% aug val peak — bull overfitting)
-- J/s3: training
-- K/s1 (AdamW+wd=0.005): 1.27% neg=37 (bad despite 13.2% aug val 0 neg)
-- L/s1,s2 (AdamW+wd tp=0.05): both bad aug val, likely bad OOS
+**J/K/L variants (Muon tp=0.04, AdamW+wd) — KILLED:**
+- J/s1: 0.45% neg=49, J/s2: 4.65% neg=30 — too many neg windows
+- K/s1: 1.27% neg=37, L/s1: 0.51% neg=47 — all failed OOS
+- Pattern: Early training val (best_neg=1) is unreliable predictor of full OOS neg
 
-**Ensemble test summary (D/s67 not additive):**
-- 9-model +D67: 16.54%/5.71%/8neg (lower median than prod 18.17%)
-- swap D3→D67: 14.17%/2.89%/7neg (much worse — D_s3 diversity is critical)
-→ D/s67 does not improve the prod ensemble despite 6.64% individual OOS
+**Ensemble test summary:**
+- Baseline 8-model (I_s3): 18.17%/5.07%/8neg full OOS
+- OLD 8-model (D_s5): 15.81%/4.41%/7neg full OOS (D_s5→I_s3 swap was correct)
+- 9-model +D67: 16.54%/5.71%/8neg (lower median than prod 18.17%) — not additive
+- 9-model +D57: 17.00%/5.34%/7neg — not additive (1.17% median drop)
+- 9-model +I_s2: 16.12%/2.69%/8neg — not additive
+- **Bear market (Dec2025-Apr2026, 30 windows)**: 10.39%/−8.66%/8neg (D_s5=9.79%/−6.98%/5neg)
+  → D_s5 had fewer bear market neg windows but I_s3 is better on full OOS. Keep I_s3.
 
 **Killed approaches (confirmed dead ends):**
 - E variant (Muon+tp=0.02): all neg=33-43 OOS. Done.
 - Leverage sweep: 1.5x → neg=48/100 OOS. Catastrophic.
 - v2 sweep: all neg=30-78 OOS. Done.
-- Ext models (trained→Nov 2025): mostly neg=11-30/30 on ext val. Only ext_D_s4 viable (neg=0/30 individual, but prod ensemble beats it at 22.66% vs 11.33%).
+- Ext models (trained→Nov 2025): ext_D_s7=11.31% on bear market BUT 53/100 neg on full OOS. Cannot use.
 - Cross features (20 feats, cross-symbol): D/s1-s4 all neg=42-66/100. Dead end.
 - GRU/transformer sweeps: previously confirmed worse than MLP.
+- Hourly data: screened32 symbols only have hourly data from 2024 onward (insufficient history for 32-sym hourly dataset). Only 3 symbols have pre-2022 hourly data.
+- J/K/L variants: all failed OOS. Killed at seed 2-3 to free GPU.
 
 **Slippage robustness (8-model prod ensemble, 100 windows):**
 - 5 bps: med=18.17%, p10=5.07%, neg=8/100, sort=30.67 (standard)
