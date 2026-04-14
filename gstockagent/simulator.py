@@ -167,15 +167,14 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
 
         eq = portfolio_value(state, prices)
 
-        # liquidation check: if equity <= 0, close all positions
-        if eq <= 0 and state.positions:
+        # liquidation check: if equity <= 0, wipe out
+        if eq <= 0:
             for sym in list(state.positions.keys()):
                 close_position(state, sym, prices.get(sym, 0), "liquidation", str(date.date()))
-            eq = state.cash
-            if eq <= 0:
-                state.equity_curve.append({"date": str(date.date()), "equity": max(0, eq)})
-                state.daily_returns.append(-1.0)
-                break
+            state.cash = 0
+            state.equity_curve.append({"date": str(date.date()), "equity": 0})
+            state.daily_returns.append(-1.0)
+            break
 
         # build positions dict for prompt
         pos_dict = {}
@@ -265,7 +264,7 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                 if abs(diff_qty) > target_qty * 0.05:
                     diff_notional = abs(diff_qty) * prices[sym]
                     fee = apply_fees(diff_notional, config.fee_bps)
-                    if diff_qty > 0 and spec["direction"] == "long":
+                    if diff_qty > 0:
                         cost = diff_qty * prices[sym] + fee
                         if cost > state.cash:
                             diff_qty = max(0, (state.cash - fee) / prices[sym])
@@ -273,9 +272,8 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                                 continue
                         state.cash -= diff_qty * prices[sym] + fee
                     else:
-                        state.cash -= fee
-                        if spec["direction"] == "long":
-                            state.cash -= diff_qty * prices[sym]
+                        # reducing position: return cash for longs, return margin for shorts
+                        state.cash += abs(diff_qty) * prices[sym] - fee
                     cur_pos.qty += diff_qty
                 v_exit, v_stop = validate_exit_stop(
                     cur_pos.entry_price, spec["exit_price"],
@@ -304,6 +302,15 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
             )
 
         eq = portfolio_value(state, prices)
+        # post-allocation liquidation check
+        if eq <= 0:
+            for sym in list(state.positions.keys()):
+                close_position(state, sym, prices.get(sym, 0), "liquidation", date_str)
+            state.cash = 0
+            state.equity_curve.append({"date": date_str, "equity": 0})
+            state.daily_returns.append(-1.0)
+            break
+
         daily_ret = (eq / prev_equity - 1) if prev_equity > 0 else 0
         state.equity_curve.append({"date": date_str, "equity": eq})
         state.daily_returns.append(daily_ret)

@@ -1,0 +1,58 @@
+[
+  {
+    "model": "gemini-3.1-lite",
+    "leverage": 0.5,
+    "variant": "default",
+    "return": -12.32,
+    "monthly": -3.62,
+    "max_dd": -14.73,
+    "sortino": -3.37,
+    "sharpe": -3.56,
+    "trades": 350,
+    "win_rate": 37.4,
+    "days": 102,
+    "final": 8767.73
+  },
+  {
+    "model": "gemini-3.1-lite",
+    "leverage": 0.5,
+    "variant": "concise",
+    "return": -20.96,
+    "monthly": -6.17,
+    "max_dd": -24.76,
+    "sortino": -3.59,
+    "sharpe": -3.35,
+    "trades": 321,
+    "win_rate": 38.3,
+    "days": 102,
+    "final": 7903.59
+  },
+  {
+    "model": "gemini-3.1-lite",
+    "leverage": 0.5,
+    "variant": "risk_averse",
+    "return": -8.05,
+    "monthly": -2.37,
+    "max_dd": -10.47,
+    "sortino": -3.44,
+    "sharpe": -3.35,
+    "trades": 220,
+    "win_rate": 42.3,
+    "days": 102,
+    "final": 9195.34
+  },
+  {
+    "model": "gemini-3.1-lite",
+    "leverage": 0.5,
+    "variant": "momentum",
+    "return": -32.03,
+    "monthly": -9.42,
+    "max_dd": -35.02,
+    "sortino": -4.93,
+    "sharpe": -5.65,
+    "trades": 302,
+    "win_rate": 43.7,
+    "days": 102,
+    "final": 6797.39
+  }
+]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test consistency across different prompt variants."""
+"""Test best combination: risk_averse prompt + RL signals."""
 import json
 import sys
 import time
@@ -19,31 +19,9 @@ SYMS = [
     "ATOM", "ALGO", "BCH", "TRX", "SHIB", "PEPE",
 ]
 
-OUT_FILE = Path(__file__).parent / "prompt_consistency_results.json"
+OUT_FILE = Path(__file__).parent / "best_combo_results.json"
 
-# alternative prompt templates
-PROMPT_VARIANTS = {
-    "default": None,  # uses the original build_prompt
-    "concise": """You manage a crypto portfolio on Binance.
-Date: {date} | Capital: ${capital:.2f} USDT | Max leverage: {leverage}x | Max positions: {max_positions}
-
-PRICES (7d):
-{price_table}
-
-FORECASTS (24h):
-{forecast_table}
-{rl_section}
-PORTFOLIO:
-{portfolio_table}
-
-Allocate capital for next 24h. For each position: allocation_pct, direction (long/short), exit_price, stop_price.
-Maximize Sortino ratio. Keep drawdowns under 10%.
-
-Respond ONLY with JSON:
-```json
-{{"allocations": {{"SYM": {{"allocation_pct": N, "direction": "long", "exit_price": X, "stop_price": Y}}}}, "reasoning": "brief"}}
-```""",
-    "risk_averse": """You are a conservative cryptocurrency portfolio manager on Binance.
+RISK_AVERSE_TEMPLATE = """You are a conservative cryptocurrency portfolio manager on Binance.
 Date: {date}
 Available capital: ${capital:.2f} USDT
 Max leverage: {leverage}x | Max positions: {max_positions}
@@ -68,30 +46,7 @@ RULES:
 Respond with ONLY a JSON object:
 ```json
 {{"allocations": {{"BTC": {{"allocation_pct": 10, "direction": "long", "exit_price": 70000, "stop_price": 68000}}}}, "reasoning": "brief explanation"}}
-```""",
-    "momentum": """You are an aggressive momentum-based crypto trader on Binance.
-Date: {date}
-Capital: ${capital:.2f} USDT | Leverage: {leverage}x | Max pos: {max_positions}
-
-PRICES:
-{price_table}
-
-FORECASTS:
-{forecast_table}
-{rl_section}
-PORTFOLIO:
-{portfolio_table}
-
-STRATEGY: Follow momentum. Overweight assets with strong 7d positive moves and bullish forecasts.
-Underweight or short assets with negative momentum. Use full allocation when signals are strong.
-Target: maximize absolute returns with Sortino > 2.
-
-JSON only:
-```json
-{{"allocations": {{"SYM": {{"allocation_pct": N, "direction": "long/short", "exit_price": X, "stop_price": Y}}}}, "reasoning": "brief"}}
-```""",
-}
-
+```"""
 
 _original_build_prompt = prompt_mod.build_prompt
 
@@ -121,53 +76,57 @@ def _make_variant_prompt(variant_template):
 
 def run():
     model = sys.argv[1] if len(sys.argv) > 1 else "gemini-3.1-lite"
-    leverage = float(sys.argv[2]) if len(sys.argv) > 2 else 0.5
     start, end = "2025-10-01", "2026-01-10"
+
+    configs = [
+        {"leverage": 0.5, "variant": "default", "rl": False},
+        {"leverage": 0.5, "variant": "default", "rl": True},
+        {"leverage": 0.5, "variant": "risk_averse", "rl": False},
+        {"leverage": 0.5, "variant": "risk_averse", "rl": True},
+        {"leverage": 1.0, "variant": "risk_averse", "rl": True},
+    ]
 
     existing = []
     if OUT_FILE.exists():
         existing = json.loads(OUT_FILE.read_text())
-    done_keys = {(r["model"], r["leverage"], r["variant"]) for r in existing}
+    done_keys = {(r["model"], r["leverage"], r["variant"], r["rl"]) for r in existing}
     results = list(existing)
 
-    for variant_name, template in PROMPT_VARIANTS.items():
-        key = (model, leverage, variant_name)
+    variant_fn = _make_variant_prompt(RISK_AVERSE_TEMPLATE)
+
+    for c in configs:
+        key = (model, c["leverage"], c["variant"], c["rl"])
         if key in done_keys:
-            print(f"SKIP {variant_name}")
+            print(f"SKIP {c}")
             continue
 
-        if template is not None:
-            variant_fn = _make_variant_prompt(template)
+        if c["variant"] == "risk_averse":
             prompt_mod.build_prompt = variant_fn
             sim_mod.build_prompt = variant_fn
         else:
             prompt_mod.build_prompt = _original_build_prompt
             sim_mod.build_prompt = _original_build_prompt
 
-        label = f"{model} lev={leverage} variant={variant_name}"
+        label = f"{model} lev={c['leverage']} {c['variant']} rl={c['rl']}"
         print(f"\n--- {label} ---", flush=True)
         t0 = time.time()
         try:
             cfg = GStockConfig(
-                symbols=SYMS, leverage=leverage, model=model,
+                symbols=SYMS, leverage=c["leverage"], model=model,
                 max_positions=5, initial_capital=10000,
             )
-            r = run_simulation(cfg, start, end, use_cache=True, verbose=False)
+            r = run_simulation(cfg, start, end, use_cache=True, verbose=False,
+                              use_rl_signals=c["rl"])
             if "error" in r:
                 print(f"  ERROR: {r['error']}")
                 continue
             row = {
-                "model": model,
-                "leverage": leverage,
-                "variant": variant_name,
-                "return": r["total_return_pct"],
-                "monthly": r["monthly_return_pct"],
-                "max_dd": r["max_drawdown_pct"],
-                "sortino": r["sortino"],
-                "sharpe": r["sharpe"],
-                "trades": r["n_trades"],
-                "win_rate": r["win_rate_pct"],
-                "days": r["n_days"],
+                "model": model, "leverage": c["leverage"],
+                "variant": c["variant"], "rl": c["rl"],
+                "return": r["total_return_pct"], "monthly": r["monthly_return_pct"],
+                "max_dd": r["max_drawdown_pct"], "sortino": r["sortino"],
+                "sharpe": r["sharpe"], "trades": r["n_trades"],
+                "win_rate": r["win_rate_pct"], "days": r["n_days"],
                 "final": r["final_equity"],
             }
             results.append(row)
@@ -187,16 +146,16 @@ def run():
     prompt_mod.build_prompt = _original_build_prompt
     sim_mod.build_prompt = _original_build_prompt
 
-    print("\n\n=== PROMPT CONSISTENCY ===")
+    print("\n\n=== BEST COMBO RESULTS ===")
     print(
-        f"{'Model':>14} {'Lev':>5} {'Variant':>12} {'Ret%':>8} {'Mo%':>7} "
+        f"{'Model':>14} {'Lev':>5} {'Variant':>12} {'RL':>5} {'Ret%':>8} {'Mo%':>7} "
         f"{'DD%':>7} {'Sort':>6} {'Shrp':>6} {'Trd':>5} {'WR%':>5}"
     )
-    print("-" * 85)
-    for r in sorted(results, key=lambda x: x["variant"]):
+    print("-" * 90)
+    for r in results:
         print(
             f"{r['model']:>14} {r['leverage']:>5.1f} {r['variant']:>12} "
-            f"{r['return']:>+7.1f} {r['monthly']:>+6.1f} "
+            f"{str(r['rl']):>5} {r['return']:>+7.1f} {r['monthly']:>+6.1f} "
             f"{r['max_dd']:>6.1f} {r['sortino']:>6.2f} {r['sharpe']:>6.2f} "
             f"{r['trades']:>5} {r['win_rate']:>5.1f}"
         )
