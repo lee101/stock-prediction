@@ -512,6 +512,67 @@ if [[ -n "$V4_PID" ]]; then
                                 --update-hyperparams \
                                 2>&1 | tee chronos2_benchmark_v9.log
                         fi
+
+                        echo "[$(date -u +%H:%M:%SZ)] Launching v10 (ctx=1024, earnings_shock=0.10)..."
+                        bash scripts/launch_chronos2_v10.sh
+                        echo "[$(date -u +%H:%M:%SZ)] v10 launched. PID: $(cat .chronos2_v10_pid 2>/dev/null)"
+
+                        # -------------------------------------------------------------------
+                        # Wait for v10 then calibrate
+                        # -------------------------------------------------------------------
+                        V10_PID="$(cat .chronos2_v10_pid 2>/dev/null)"
+                        if [[ -n "$V10_PID" ]]; then
+                            echo "[$(date -u +%H:%M:%SZ)] Waiting for v10 (PID $V10_PID) to complete..."
+                            while kill -0 "$V10_PID" 2>/dev/null; do
+                                sleep 180
+                            done
+                            echo "[$(date -u +%H:%M:%SZ)] v10 complete. Running v10 SWA + calibration + benchmark..."
+
+                            V10_CKPT="chronos2_finetuned/stocks_all_v10/finetuned-ckpt"
+                            V10_SWA="chronos2_finetuned/stocks_all_v10/swa-ckpt"
+                            if [[ -d "chronos2_finetuned/stocks_all_v10/trainer_workspace" ]]; then
+                                python scripts/average_checkpoints.py \
+                                    --trainer-workspace chronos2_finetuned/stocks_all_v10/trainer_workspace \
+                                    --output "$V10_SWA" --n-last 3 \
+                                    --copy-chronos-config "$V10_CKPT" 2>&1 | tee chronos2_swa_v10.log || true
+                            fi
+
+                            if [[ -d "$V10_CKPT" ]]; then
+                                python chronos2_linear_calibration.py \
+                                    --model-id     "$V10_CKPT" \
+                                    --cal-data-dir trainingdata \
+                                    --output-path  "$V10_CKPT/calibration.json" \
+                                    --max-shift-bps 20 \
+                                    --min-gap-bps   2 \
+                                    --grid-steps   25 \
+                                    --cal-bars     120 \
+                                    --max-windows  5000 \
+                                    --batch-size   32 \
+                                    --per-symbol \
+                                    --prediction-length 2 \
+                                    --also-calmar \
+                                    --hyperparams-dir hyperparams/chronos2_v10 \
+                                    2>&1 | tee chronos2_calibration_v10.log
+
+                                if [[ -d "${V10_SWA:-}" ]]; then
+                                    python chronos2_linear_calibration.py \
+                                        --model-id "$V10_SWA" --cal-data-dir trainingdata \
+                                        --output-path "$V10_SWA/calibration.json" \
+                                        --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                                        --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                                        --prediction-length 2 --also-calmar \
+                                        2>&1 | tee chronos2_calibration_v10_swa.log || true
+                                fi
+
+                                python benchmark_chronos2.py \
+                                    --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                                    --model-id "$V10_CKPT" \
+                                    --context-length 1024 \
+                                    --batch-size 64 \
+                                    --update-hyperparams \
+                                    2>&1 | tee chronos2_benchmark_v10.log
+                            fi
+                        fi
                     fi
                 fi
             fi

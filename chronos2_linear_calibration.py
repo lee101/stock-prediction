@@ -943,11 +943,12 @@ def fit_calibration(
             sharpe2, buy2, sell2, weight2, conf2, skew2, mid2, s2w2)
 
     # --- Phase 3: refine signal_weight around best (±40% in 9 steps) ---
+    # Use the fine threshold grid from Phase 2 for joint threshold+weight search.
     if search_signal_weight:
         w_fine = np.linspace(best_weight * 0.6, best_weight * 1.4, 9)
         sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3 = _run_grid(
             predicted_return, actual_return, uncertainties,
-            np.array([best_buy, best_sell]),
+            thresh_both,  # joint threshold+weight search (Phase 2 fine grid)
             list(w_fine), [best_conf],
             skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
             step2_weight_vals=[best_s2w],
@@ -985,6 +986,44 @@ def fit_calibration(
     if sharpe4 > best_sharpe:
         best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
             sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4)
+
+    # --- Phase 5: ultra-fine joint search ±1bps thresholds + ±15% signal_weight ---
+    # Final pass to escape any residual plateau after the 4-phase search.
+    ultra_fine_bps = 1.0 / 10_000.0
+    thresh_ultra_b = np.linspace(max(-max_shift, best_buy  - ultra_fine_bps),
+                                 min( max_shift, best_buy  + ultra_fine_bps), 9)
+    thresh_ultra_s = np.linspace(max(-max_shift, best_sell - ultra_fine_bps),
+                                 min( max_shift, best_sell + ultra_fine_bps), 9)
+    thresh_ultra = np.unique(np.concatenate([thresh_ultra_b, thresh_ultra_s]))
+    w_ultra = list(np.linspace(max(0.01, best_weight * 0.85), best_weight * 1.15, 5)) if search_signal_weight else [best_weight]
+
+    sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5 = _run_grid(
+        predicted_return, actual_return, uncertainties,
+        thresh_ultra, w_ultra, [best_conf],
+        skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
+        step2_weight_vals=[best_s2w],
+        **grid_kwargs,  # type: ignore[arg-type]
+    )
+    if sharpe5 > best_sharpe:
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
+            sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5)
+
+    # --- Phase 6: confidence threshold refinement at fixed best weights ---
+    # Fine-grain confidence search now that weights are settled.
+    if search_confidence and len(uncertainties) > 10:
+        pcts_fine = np.percentile(uncertainties, [10, 20, 30, 40, 50, 60, 70, 80, 90, 95])
+        conf_fine: List[float] = [0.0] + [float(p) for p in pcts_fine]
+        sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6 = _run_grid(
+            predicted_return, actual_return, uncertainties,
+            np.array([best_buy, best_sell]),
+            [best_weight], conf_fine,
+            skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
+            step2_weight_vals=[best_s2w],
+            **grid_kwargs,  # type: ignore[arg-type]
+        )
+        if sharpe6 > best_sharpe:
+            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
+                sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6)
 
     params = CalibrationParams(
         signal_weight=best_weight,

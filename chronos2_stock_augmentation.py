@@ -152,6 +152,19 @@ class AugConfig:
     # Amplitude of injected oscillation as a fraction of the channel mean.
     mean_reversion_amplitude: float = 0.03
 
+    # Earnings shock injection: with this probability, inject a sudden large price
+    # move at a random position in context, followed by either momentum continuation
+    # or partial mean-reversion. Simulates earnings announcements and news events.
+    # Distinct from gap_inject (persistent level shift) and outlier_inject (single
+    # bar reverting to baseline) — this creates a multi-bar directional event.
+    # Set to 0 to disable.
+    earnings_shock_prob: float = 0.0
+
+    # Maximum shock magnitude as a fraction of the local mean price.
+    # Actual shock is U(0.05, earnings_shock_magnitude) so always ≥5%.
+    # E.g. 0.15 = up to ±15% shock.
+    earnings_shock_magnitude: float = 0.15
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -363,6 +376,39 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                 damping = torch.linspace(1.0, 0.0, T, device=task_context.device)
                 osc = oscillation * damping * cfg.mean_reversion_amplitude  # (T,)
                 task_context = task_context + ch_mean.unsqueeze(-1) * osc.unsqueeze(0)
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 13. Earnings shock injection ---
+        # Simulates earnings/news: sudden large price move followed by either
+        # momentum continuation or partial mean-reversion.  More realistic than
+        # outlier_inject (which snaps back) or gap_inject (persistent level shift).
+        if cfg.earnings_shock_prob > 0 and random.random() < cfg.earnings_shock_prob:
+            T = task_context.shape[-1]
+            if T >= 10:
+                task_context = task_context.clone().float()
+                ch_mean = task_context.abs().mean(dim=-1).clamp(min=1e-4)  # (n_channels,)
+                # Shock position: between T//4 and 3*T//4 to avoid edges
+                shock_pos = random.randint(T // 4, 3 * T // 4)
+                sign = 1.0 if random.random() > 0.5 else -1.0
+                magnitude = random.uniform(0.05, max(0.05, cfg.earnings_shock_magnitude))
+                shock_size = sign * magnitude
+                # Apply shock at shock_pos (sudden bar-level move on all channels)
+                task_context[:, shock_pos] = task_context[:, shock_pos] + ch_mean * shock_size
+                # Multi-bar follow-through: momentum or partial reversion
+                if T > shock_pos + 1:
+                    n_follow = min(3, T - shock_pos - 1)
+                    if random.random() > 0.5:
+                        # Momentum: 50% continuation fading over n_follow bars
+                        for k in range(1, n_follow + 1):
+                            follow = shock_size * 0.5 * (1.0 - k / (n_follow + 1))
+                            task_context[:, shock_pos + k] = (
+                                task_context[:, shock_pos + k] + ch_mean * follow)
+                    else:
+                        # Reversion: 30% pullback fading over n_follow bars
+                        for k in range(1, n_follow + 1):
+                            pullback = -shock_size * 0.3 * (1.0 - k / (n_follow + 1))
+                            task_context[:, shock_pos + k] = (
+                                task_context[:, shock_pos + k] + ch_mean * pullback)
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets

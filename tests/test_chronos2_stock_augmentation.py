@@ -839,3 +839,102 @@ class TestAugmentedChronos2Dataset:
         ctx = batch["context"].float()
         finite = ctx[~torch.isnan(ctx)]
         assert float(finite.std()) < 1e-3, "Val mode should not apply mean_reversion_aug"
+
+    def test_earnings_shock_changes_context(self):
+        """Earnings shock injection should change context values."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        rng = np.random.default_rng(42)
+        T = 128
+        T_series = T * 4
+        # Noisy series so shock effects are visible
+        base = 100.0 + np.cumsum(rng.normal(0, 1.0, (4, T_series)), axis=1)
+        inputs = [{"target": base.astype(np.float32)} for _ in range(20)]
+
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            earnings_shock_prob=1.0, earnings_shock_magnitude=0.15,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=T,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=aug,
+        )
+
+        found_change = False
+        baseline_aug = AugConfig(amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0)
+        ds_noshock = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.TRAIN, aug_config=baseline_aug,
+        )
+        for _ in range(30):
+            batch_shocked = next(iter(ds))
+            batch_plain  = next(iter(ds_noshock))
+            ctx_s = batch_shocked["context"].float()
+            ctx_p = batch_plain["context"].float()
+            if ctx_s.shape[-1] < T:
+                continue
+            # Check that the shocked context differs from the plain one
+            if float((ctx_s - ctx_p).abs().max()) > 0.1:
+                found_change = True
+                break
+        assert found_change, "earnings_shock_prob=1.0 should alter the context"
+
+    def test_earnings_shock_disabled_when_zero_prob(self):
+        """Earnings shock should not activate when prob=0."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        # Constant series — any change would be visible
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(10)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            earnings_shock_prob=0.0,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.TRAIN, aug_config=aug,
+        )
+        for _ in range(10):
+            batch = next(iter(ds))
+            ctx = batch["context"].float()
+            finite = ctx[~torch.isnan(ctx)]
+            assert float(finite.std()) < 1e-3, "earnings_shock_prob=0 should not alter constant series"
+
+    def test_earnings_shock_not_in_val_mode(self):
+        """Earnings shock should NOT be applied in validation mode."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(10)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            earnings_shock_prob=1.0, earnings_shock_magnitude=0.15,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.VALIDATION, aug_config=aug,
+        )
+        batch = next(iter(ds))
+        ctx = batch["context"].float()
+        finite = ctx[~torch.isnan(ctx)]
+        assert float(finite.std()) < 1e-3, "Val mode should not apply earnings_shock"
