@@ -50,7 +50,7 @@ if [[ ! -d "$V3_CKPT" ]]; then
     exit 1
 fi
 
-echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (long-only + short-allowed + per-symbol)..."
+echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (long-only + short-allowed + per-symbol + calmar)..."
 python chronos2_linear_calibration.py \
     --model-id     "$V3_CKPT" \
     --cal-data-dir trainingdata \
@@ -62,6 +62,7 @@ python chronos2_linear_calibration.py \
     --max-windows  5000 \
     --batch-size   32 \
     --per-symbol \
+    --also-calmar \
     --hyperparams-dir hyperparams/chronos2_v3 \
     2>&1 | tee chronos2_calibration_v3.log
 
@@ -134,6 +135,7 @@ if [[ -n "$V4_PID" ]]; then
             --max-windows  5000 \
             --batch-size   32 \
             --per-symbol \
+            --also-calmar \
             --hyperparams-dir hyperparams/chronos2_v4 \
             2>&1 | tee chronos2_calibration_v4.log
 
@@ -174,6 +176,7 @@ if [[ -n "$V4_PID" ]]; then
                 --max-windows  5000 \
                 --batch-size   32 \
                 --per-symbol \
+                --also-calmar \
                 --hyperparams-dir hyperparams/chronos2_v5 \
                 2>&1 | tee chronos2_calibration_v5.log
 
@@ -214,6 +217,7 @@ if [[ -n "$V4_PID" ]]; then
                     --max-windows  5000 \
                     --batch-size   32 \
                     --per-symbol \
+                    --also-calmar \
                     --hyperparams-dir hyperparams/chronos2_v6 \
                     2>&1 | tee chronos2_calibration_v6.log
 
@@ -254,6 +258,7 @@ if [[ -n "$V4_PID" ]]; then
                         --max-windows  5000 \
                         --batch-size   32 \
                         --per-symbol \
+                        --also-calmar \
                         --hyperparams-dir hyperparams/chronos2_v7 \
                         2>&1 | tee chronos2_calibration_v7.log
 

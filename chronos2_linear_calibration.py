@@ -565,21 +565,30 @@ def compute_sharpe(
 
 
 def _score_pnl(pnl: np.ndarray, n_trades: np.ndarray, valid_mask: np.ndarray,
-               use_sortino: bool) -> np.ndarray:
+               use_sortino: bool, use_calmar: bool = False) -> np.ndarray:
     """
-    Compute Sharpe or Sortino score for a batched pnl array.
+    Compute Sharpe, Sortino, or Calmar score for a batched pnl array.
 
     Args:
         pnl:        (..., N) float64 array of per-window P&L
         n_trades:   (...,) int array counting transitions per cell
         valid_mask: (...,) bool mask (True = valid cell to score)
         use_sortino: if True compute Sortino (downside std only), else Sharpe
+        use_calmar:  if True compute Calmar = annualised_return / max_drawdown.
+                     Takes priority over use_sortino.
 
     Returns (...,) float score array, -999.0 for invalid cells.
     """
     mean_pnl = pnl.mean(axis=-1)
 
-    if use_sortino:
+    if use_calmar:
+        # Calmar ratio: annualised return / max drawdown.
+        # Computed on cumulative PnL over the window sequence.
+        cum = pnl.cumsum(axis=-1)                                          # (..., N)
+        running_max = np.maximum.accumulate(cum, axis=-1)                  # (..., N)
+        max_dd = (running_max - cum).max(axis=-1) + 1e-10                  # (...,)
+        score = (mean_pnl * 252) / max_dd
+    elif use_sortino:
         downside = np.where(pnl < 0, pnl, 0.0)
         n_neg    = (pnl < 0).sum(axis=-1).clip(min=1)
         downside_std = np.sqrt((downside ** 2).sum(axis=-1) / n_neg) + 1e-10
@@ -604,6 +613,7 @@ def _run_grid(
     skewness: Optional[np.ndarray] = None,
     skew_weight_vals: Optional[List[float]] = None,
     use_sortino: bool = False,
+    use_calmar: bool = False,
     boundaries: Optional[np.ndarray] = None,
 ) -> Tuple[float, float, float, float, float, float]:
     """
@@ -611,7 +621,7 @@ def _run_grid(
 
     For each outer (weight, skew_weight, conf_threshold) combination, builds a
     (B, B, N) desired-position tensor (B = len(thresh_vals), N = windows) and
-    computes Sharpe (or Sortino if use_sortino=True) for every pair simultaneously.
+    computes Sharpe/Sortino/Calmar for every pair simultaneously.
 
     boundaries: indices where position should be reset to 0 (symbol boundaries).
                 These are applied before computing transitions, preventing carry-over
@@ -683,7 +693,7 @@ def _run_grid(
                     pnl = pnl - transitions.astype(np.float64) * fee
 
                     valid = valid_mask_2d  # type: ignore[assignment]
-                    score_grid = _score_pnl(pnl, n_trades, valid, use_sortino)
+                    score_grid = _score_pnl(pnl, n_trades, valid, use_sortino, use_calmar)
 
                     best_idx = np.unravel_index(np.argmax(score_grid), score_grid.shape)
                     best_here = float(score_grid[best_idx])
@@ -717,7 +727,7 @@ def _run_grid(
                     pnl_1d = pnl_1d - transitions_1d.astype(np.float64) * fee
 
                     valid_1d = np.ones(B, dtype=bool)
-                    score_1d = _score_pnl(pnl_1d, n_trades_1d, valid_1d, use_sortino)     # (B,)
+                    score_1d = _score_pnl(pnl_1d, n_trades_1d, valid_1d, use_sortino, use_calmar)  # (B,)
 
                     best_i = int(np.argmax(score_1d))
                     best_here = float(score_1d[best_i])
@@ -747,12 +757,13 @@ def fit_calibration(
     search_signal_weight: bool = True,
     search_confidence: bool = True,
     use_sortino: bool = True,
+    use_calmar: bool = False,
     model_id: str = "",
     symbols: Optional[List[str]] = None,
 ) -> CalibrationParams:
     """
     Two-phase grid-search over (signal_weight, buy_threshold, sell_threshold,
-    confidence_threshold) to maximise Sharpe (or Sortino if use_sortino=True).
+    confidence_threshold) to maximise Sharpe/Sortino/Calmar.
 
     Phase 1 — coarse search over ±max_shift_bps with grid_steps points.
     Phase 2 — fine search ±2bps around the best found in phase 1.
@@ -762,6 +773,9 @@ def fit_calibration(
     confidence_threshold filters high-uncertainty bars (wide q90-q10 interval).
     symbols: list of symbol names for each window. If provided, position is reset
              to 0 at symbol change boundaries to prevent carry-over between symbols.
+    use_calmar: optimise Calmar ratio (annualised_return/max_drawdown) instead of
+                Sortino. Produces more drawdown-conscious strategies. Takes priority
+                over use_sortino when both are True.
 
     Constraint: sell_threshold > buy_threshold - min_gap.
     """
@@ -782,12 +796,14 @@ def fit_calibration(
 
     # --- Coarse phase ---
     thresh_vals_coarse = np.linspace(-max_shift, max_shift, grid_steps)
-    weight_vals = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
+    # Extended weight range: include very small weights (0.05-0.2) since optimal
+    # often falls below 0.25, and larger weights for completeness.
+    weight_vals = [0.05, 0.1, 0.15, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
 
     # Confidence threshold: 0 = disabled, else % of prev_close
-    # Grid over uncertainty percentiles: 25th, 50th, 75th (+ no filter)
+    # Grid over uncertainty percentiles: 25th, 50th, 75th, 90th (+ no filter)
     if search_confidence and len(uncertainties) > 10:
-        pcts = np.percentile(uncertainties, [25, 50, 75])
+        pcts = np.percentile(uncertainties, [25, 50, 75, 90])
         conf_vals: List[float] = [0.0] + [float(p) for p in pcts]
     else:
         conf_vals = [0.0]
@@ -796,7 +812,8 @@ def fit_calibration(
     skew_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0]
 
     grid_kwargs = dict(allow_short=allow_short, min_gap=min_gap, fee_bps=fee_bps,
-                       skewness=skewness, use_sortino=use_sortino, boundaries=boundaries)
+                       skewness=skewness, use_sortino=use_sortino, use_calmar=use_calmar,
+                       boundaries=boundaries)
 
     best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = _run_grid(
         predicted_return, actual_return, uncertainties,
@@ -926,6 +943,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Disable uncertainty/confidence filter search")
     p.add_argument("--no-sortino", action="store_true",
                    help="Optimise Sharpe instead of Sortino (default: Sortino)")
+    p.add_argument("--use-calmar", action="store_true",
+                   help="Optimise Calmar ratio (annualised_return/max_drawdown) — "
+                        "produces lower-drawdown strategies. Takes priority over Sortino.")
+    p.add_argument("--also-calmar", action="store_true",
+                   help="In addition to the main calibration, also fit a Calmar-optimised "
+                        "variant and save to calibration_calmar.json (no extra inference).")
     p.add_argument("--per-symbol", action="store_true",
                    help="Calibrate each symbol independently and save per-symbol JSONs")
     p.add_argument("--hyperparams-dir", default="hyperparams/chronos2",
@@ -1026,6 +1049,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     search_w = not getattr(args, "no_search_signal_weight", False)
     search_c = not getattr(args, "no_search_confidence", False)
     use_sortino = not getattr(args, "no_sortino", False)
+    use_calmar  = getattr(args, "use_calmar", False)
     fit_kwargs: Dict[str, Any] = dict(
         max_shift_bps=args.max_shift_bps,
         min_gap_bps=args.min_gap_bps,
@@ -1034,6 +1058,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         search_signal_weight=search_w,
         search_confidence=search_c,
         use_sortino=use_sortino,
+        use_calmar=use_calmar,
         model_id=args.model_id,
     )
 
@@ -1074,6 +1099,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Short variant:"); _print_params(params_short)
         out_short.write_text(json.dumps(params_short.to_dict(), indent=2))
         print(f"Saved → {out_short}")
+
+    # Calmar variant (drawdown-aware) — uses same collected predictions, no extra inference
+    if getattr(args, "also_calmar", False) and not use_calmar:
+        out_calmar = output_path.parent / "calibration_calmar.json"
+        calmar_kwargs = dict(**fit_kwargs)
+        calmar_kwargs["use_sortino"] = False
+        calmar_kwargs["use_calmar"]  = True
+        params_calmar = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                                        prev_close=prev_close, allow_short=args.allow_short,
+                                        symbols=symbols, **calmar_kwargs)
+        if len(actual_oos) >= 10:
+            oos_calmar = evaluate_params(params_calmar, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
+                                         fee_bps=args.fee_bps, use_sortino=False)
+            params_calmar.oos_sharpe = oos_calmar
+        print("Calmar variant:"); _print_params(params_calmar)
+        out_calmar.write_text(json.dumps(params_calmar.to_dict(), indent=2))
+        print(f"Saved → {out_calmar}")
 
     # ---- Per-symbol calibration ----
     if args.per_symbol:

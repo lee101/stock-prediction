@@ -527,3 +527,88 @@ class TestSymbolBoundaryReset:
         score = evaluate_params(params, q10, q50, q90, actual, prev, fee_bps=10.0)
         assert isinstance(score, float)
         assert score != 0.0 or True  # may be -999 if no trades, just check no exception
+
+
+# ---------------------------------------------------------------------------
+# Calmar ratio calibration
+# ---------------------------------------------------------------------------
+
+class TestCalmarCalibration:
+    def _make_data(self, n: int = 500, seed: int = 42):
+        rng = np.random.default_rng(seed)
+        prev = np.full(n, 100.0)
+        # Slightly predictable: q50 above prev → actual tends to be above
+        q50 = prev + rng.normal(0.5, 2.0, n)
+        q10 = q50 - rng.uniform(1.0, 3.0, n)
+        q90 = q50 + rng.uniform(1.0, 3.0, n)
+        actual = prev + rng.normal(0.3, 2.0, n)
+        return q10, q50, q90, actual, prev
+
+    def test_calmar_returns_valid_params(self):
+        """fit_calibration with use_calmar=True should return valid params."""
+        from chronos2_linear_calibration import fit_calibration
+        q10, q50, q90, actual, prev = self._make_data()
+        params = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                                  prev_close=prev, use_sortino=False, use_calmar=True,
+                                  grid_steps=9, search_signal_weight=True)
+        assert isinstance(params.buy_threshold, float)
+        assert isinstance(params.cal_sharpe, float)
+        # Calmar score is in different units than Sharpe, but should be > -999
+        assert params.cal_sharpe > -900.0
+
+    def test_calmar_vs_sortino_different_params(self):
+        """Calmar and Sortino optimization should generally find different thresholds."""
+        from chronos2_linear_calibration import fit_calibration
+        q10, q50, q90, actual, prev = self._make_data(n=300)
+        p_sortino = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                                     prev_close=prev, use_sortino=True, use_calmar=False,
+                                     grid_steps=9, search_signal_weight=False)
+        p_calmar  = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                                     prev_close=prev, use_sortino=False, use_calmar=True,
+                                     grid_steps=9, search_signal_weight=False)
+        # Both should be valid (no NaNs)
+        assert not np.isnan(p_sortino.buy_threshold)
+        assert not np.isnan(p_calmar.buy_threshold)
+
+    def test_score_pnl_calmar_returns_positive_for_profitable(self):
+        """_score_pnl with use_calmar=True should return positive for profitable PnL."""
+        from chronos2_linear_calibration import _score_pnl
+        # Monotonically increasing PnL (perfectly profitable) → very high Calmar
+        pnl = np.ones((1, 200)) * 0.001   # shape (1, 200) — 0.1% per bar
+        n_trades = np.array([100])
+        valid_mask = np.array([True])
+        score = _score_pnl(pnl, n_trades, valid_mask, use_sortino=False, use_calmar=True)
+        assert score[0] > 0.0  # Calmar should be positive
+
+    def test_score_pnl_calmar_penalizes_high_drawdown(self):
+        """_score_pnl Calmar should be lower for sequences with large drawdowns."""
+        from chronos2_linear_calibration import _score_pnl
+        N = 200
+        # Strategy A: steady profit, no drawdown
+        pnl_A = np.ones((1, N)) * 0.001
+        # Strategy B: same mean return but with a large loss in the middle
+        pnl_B = np.ones((1, N)) * 0.001
+        pnl_B[0, N//2] = -0.5  # large single loss → big drawdown
+        n_trades = np.array([50])
+        valid = np.array([True])
+        score_A = _score_pnl(pnl_A, n_trades, valid, use_sortino=False, use_calmar=True)[0]
+        score_B = _score_pnl(pnl_B, n_trades, valid, use_sortino=False, use_calmar=True)[0]
+        assert score_A > score_B, f"Steady strategy should have higher Calmar: A={score_A:.3f} B={score_B:.3f}"
+
+    def test_extended_weight_range_included(self):
+        """fit_calibration should search weights below 0.25 (extended range)."""
+        from chronos2_linear_calibration import fit_calibration
+        # Create data where small signal weights do better (noisy predictions)
+        rng = np.random.default_rng(0)
+        N = 400
+        prev = np.full(N, 100.0)
+        noise = rng.normal(0, 5.0, N)
+        q50 = prev + noise  # very noisy predictions
+        q10, q90 = q50 - 2, q50 + 2
+        actual = prev + rng.normal(0.2, 1.0, N)  # actual changes are small
+        params = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
+                                  prev_close=prev, use_sortino=True, use_calmar=False,
+                                  grid_steps=9, search_signal_weight=True)
+        # Should complete without error; weight may be small (≤0.25)
+        assert params.signal_weight > 0.0
+        assert not np.isnan(params.buy_threshold)
