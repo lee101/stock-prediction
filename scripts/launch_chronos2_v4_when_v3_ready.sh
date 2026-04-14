@@ -50,7 +50,7 @@ if [[ ! -d "$V3_CKPT" ]]; then
     exit 1
 fi
 
-echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (global + calmar)..."
+echo "[$(date -u +%H:%M:%SZ)] Running v3 calibration (global + calmar, prediction-length=2)..."
 python chronos2_linear_calibration.py \
     --model-id     "$V3_CKPT" \
     --cal-data-dir trainingdata \
@@ -61,6 +61,7 @@ python chronos2_linear_calibration.py \
     --cal-bars     120 \
     --max-windows  5000 \
     --batch-size   32 \
+    --prediction-length 2 \
     --also-calmar \
     2>&1 | tee chronos2_calibration_v3.log
 
@@ -75,6 +76,7 @@ python chronos2_linear_calibration.py \
     --cal-bars     365 \
     --max-windows  50000 \
     --batch-size   32 \
+    --prediction-length 2 \
     --per-symbol \
     --min-windows-per-symbol 30 \
     --symbols-subset AAPL SPY GOOG GOOGL TSLA META NVDA MSFT AMZN QQQ VTI AMD AVGO CRM \
@@ -151,6 +153,7 @@ if [[ -n "$V4_PID" ]]; then
             --max-windows  5000 \
             --batch-size   32 \
             --per-symbol \
+            --prediction-length 2 \
             --also-calmar \
             --hyperparams-dir hyperparams/chronos2_v4 \
             2>&1 | tee chronos2_calibration_v4.log
@@ -192,6 +195,7 @@ if [[ -n "$V4_PID" ]]; then
                 --max-windows  5000 \
                 --batch-size   32 \
                 --per-symbol \
+                --prediction-length 2 \
                 --also-calmar \
                 --hyperparams-dir hyperparams/chronos2_v5 \
                 2>&1 | tee chronos2_calibration_v5.log
@@ -233,6 +237,7 @@ if [[ -n "$V4_PID" ]]; then
                     --max-windows  5000 \
                     --batch-size   32 \
                     --per-symbol \
+                    --prediction-length 2 \
                     --also-calmar \
                     --hyperparams-dir hyperparams/chronos2_v6 \
                     2>&1 | tee chronos2_calibration_v6.log
@@ -274,6 +279,7 @@ if [[ -n "$V4_PID" ]]; then
                         --max-windows  5000 \
                         --batch-size   32 \
                         --per-symbol \
+                        --prediction-length 2 \
                         --also-calmar \
                         --hyperparams-dir hyperparams/chronos2_v7 \
                         2>&1 | tee chronos2_calibration_v7.log
