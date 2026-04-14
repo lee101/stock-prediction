@@ -134,10 +134,12 @@ def fetch_daily_klines(symbol: str, days: int = LOOKBACK_DAYS) -> pd.DataFrame:
 class Crypto30Ensemble:
     """4-model softmax-average ensemble for crypto30 daily trading."""
 
-    def __init__(self, checkpoint_paths: list[str], device: str = "cpu", regime_ma_period: int = 15):
+    def __init__(self, checkpoint_paths: list[str], device: str = "cpu",
+                 regime_ma_period: int = 15, min_confidence: float = 0.0):
         self.device = torch.device(device)
         self.symbols = INTERNAL_SYMBOLS
         self.regime_ma_period = regime_ma_period
+        self.min_confidence = min_confidence
         self.btc_symbol = "BTCUSD"
         self.num_symbols = len(self.symbols)
 
@@ -227,6 +229,11 @@ class Crypto30Ensemble:
         action = int(avg_logits.argmax(dim=-1).item())
         confidence = float(avg_probs[0, action].item())
         avg_value = float(np.mean(values))
+
+        # Confidence gate: reject low-confidence non-flat actions
+        if action != 0 and self.min_confidence > 0 and confidence < self.min_confidence:
+            log.info("confidence gate: %.4f < %.4f, forcing flat", confidence, self.min_confidence)
+            return TradingSignal("flat", None, None, confidence, avg_value)
 
         if action == 0:
             return TradingSignal("flat", None, None, confidence, avg_value)
@@ -502,11 +509,13 @@ def main():
     parser.add_argument("--interval-hours", type=float, default=24.0)
     parser.add_argument("--backtest-days", type=int, default=90)
     parser.add_argument("--regime-ma", type=int, default=15, help="BTC MA period for regime filter (0=disabled)")
+    parser.add_argument("--min-confidence", type=float, default=0.0, help="Min confidence to open position (0=disabled)")
     args = parser.parse_args()
 
     dry_run = not args.live
 
-    ensemble = Crypto30Ensemble(args.checkpoints, device=args.device, regime_ma_period=args.regime_ma)
+    ensemble = Crypto30Ensemble(args.checkpoints, device=args.device,
+                                regime_ma_period=args.regime_ma, min_confidence=args.min_confidence)
     log.info("ensemble loaded: %d models, %d symbols, %d actions",
              len(ensemble.traders), ensemble.num_symbols, ensemble.num_actions)
 

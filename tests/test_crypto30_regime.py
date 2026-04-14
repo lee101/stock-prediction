@@ -20,10 +20,11 @@ def make_btc_df(closes: list[float]) -> pd.DataFrame:
 class TestIsBullRegime:
     """Test Crypto30Ensemble.is_bull_regime without loading real checkpoints."""
 
-    def _make_ensemble(self, regime_ma_period=15):
+    def _make_ensemble(self, regime_ma_period=15, min_confidence=0.0):
         from trade_crypto30_daily import Crypto30Ensemble
         ens = object.__new__(Crypto30Ensemble)
         ens.regime_ma_period = regime_ma_period
+        ens.min_confidence = min_confidence
         ens.btc_symbol = "BTCUSD"
         return ens
 
@@ -87,3 +88,63 @@ class TestIsBullRegime:
         # Model should NOT have been called
         for t in ens.traders:
             t.policy.assert_not_called()
+
+
+class TestConfidenceGate:
+    def test_confidence_gate_rejects_low_conf(self):
+        """Confidence gate forces flat when confidence < threshold."""
+        import torch
+        from trade_crypto30_daily import Crypto30Ensemble, PortfolioState
+
+        ens = object.__new__(Crypto30Ensemble)
+        ens.regime_ma_period = 0  # disable regime filter
+        ens.min_confidence = 0.50  # high gate, will reject typical ~0.25 conf
+        ens.btc_symbol = "BTCUSD"
+        ens.symbols = ["BTCUSD"] * 30
+        ens.num_symbols = 30
+        ens.features_per_sym = 16
+        ens.num_actions = 61
+        ens.device = torch.device("cpu")
+
+        # Mock trader that returns uniform-ish logits (low confidence)
+        mock_trader = MagicMock()
+        logits = torch.randn(1, 61)  # near-uniform -> low confidence
+        mock_trader.policy.return_value = (logits, torch.tensor([0.0]))
+        ens.traders = [mock_trader]
+
+        closes = [100.0] * 20 + [120.0]
+        daily_dfs = {"BTCUSD": make_btc_df(closes)}
+        portfolio = PortfolioState()
+        signal = ens.get_ensemble_signal(daily_dfs, {}, portfolio)
+        # With uniform logits, softmax confidence for any action is ~1/61 ≈ 0.016
+        # which is well below 0.50 threshold
+        assert signal.action == "flat"
+
+    def test_confidence_gate_allows_high_conf(self):
+        """Confidence gate passes when confidence >= threshold."""
+        import torch
+        from trade_crypto30_daily import Crypto30Ensemble, PortfolioState
+
+        ens = object.__new__(Crypto30Ensemble)
+        ens.regime_ma_period = 0
+        ens.min_confidence = 0.01  # very low gate
+        ens.btc_symbol = "BTCUSD"
+        ens.symbols = ["BTCUSD"] * 30
+        ens.num_symbols = 30
+        ens.features_per_sym = 16
+        ens.num_actions = 61
+        ens.device = torch.device("cpu")
+
+        # Mock trader that returns very peaked logits (high confidence on action 1)
+        mock_trader = MagicMock()
+        logits = torch.full((1, 61), -100.0)
+        logits[0, 1] = 10.0  # very confident on action 1 (long BTCUSD)
+        mock_trader.policy.return_value = (logits, torch.tensor([1.0]))
+        ens.traders = [mock_trader]
+
+        closes = [100.0] * 20 + [120.0]
+        daily_dfs = {"BTCUSD": make_btc_df(closes)}
+        portfolio = PortfolioState()
+        signal = ens.get_ensemble_signal(daily_dfs, {}, portfolio)
+        assert signal.action != "flat"
+        assert "long" in signal.action
