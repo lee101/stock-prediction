@@ -1,0 +1,27 @@
+{
+  "symbols": [
+    "LLY",
+    "BSX",
+    "ABBV",
+    "VRTX"
+  ],
+  "n_symbols": 4,
+  "train_end": "2025-06-01",
+  "status": "ok",
+  "n_train": 3303,
+  "n_val": 471,
+  "input_dim": 8,
+  "epochs": 5,
+  "loss_per_epoch": [
+    0.7215319871902466,
+    0.7109516710042953,
+    0.7029117196798325,
+    0.6963987201452255,
+    0.691462367773056
+  ],
+  "final_loss": 0.691462367773056,
+  "teacher_distillation_accuracy": 0.70276008492569,
+  "realized_directional_accuracy_student": 0.4713375796178344,
+  "realized_directional_accuracy_teacher": 0.5138004422187805,
+  "regression_pearson_ic": 0.3170085587287651
+}
