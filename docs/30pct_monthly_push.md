@@ -133,7 +133,7 @@ Anti-goal: do *not* chase crypto12 v8's 2,658× number. It's almost certainly a 
 | Baseline (13m) | +45.34% | +24.48% | 9/50 | reference |
 | + D_s67 | +32.53% | +19.41% | 11/50 | REJECT (−13pp median, +2 neg) |
 | + AA val_best (cosine+anneal, seed=1) | pending | pending | pending | (identical to AC — seed-1 parity before divergence) |
-| + AB val_best (group-rel 0.3, seed=1) | running | running | running | pending |
+| + AB val_best (group-rel 0.3, seed=1) | +39.88% | +16.71% | 14/50 | REJECT (−5.5pp median, +5 neg; mean delta −0.81%) |
 | + AC val_best (full E1 stack, seed=1) | identical to AA | identical to AA | identical to AA | (AA≡AC md5-equal; see `feedback_E1_sweep_results.md`) |
 
 **E1 standalone OOS results (263-window val_best_oos_eval.json):**
@@ -141,4 +141,13 @@ Anti-goal: do *not* chase crypto12 v8's 2,658× number. It's almost certainly a 
 - AB: neg=53, med=−0.7%, p10=−95.4% (softest overfit; worth ensemble test)
 - AC: identical to AA (byte-equal checkpoint; seed=1 parity)
 
-**Takeaway:** neither D_s67 nor AA/AC improves the 13-model ensemble. AB ensemble test pending. If AB also fails, the 13-model v5 ensemble appears locally optimal on the current data — next step is E2 (new seeds) or E4 (2× leverage retrain) per section 4.
+**Takeaway (2026-04-16 session close):** none of D_s67 / AA / AB / AC improves the
+13-model v5 ensemble. The current baseline appears to be a local optimum on the
+existing val data at seed=1. Recommended next experiments:
+- **E2a**: train AA/AB/AC at seeds 2, 3, 4 — seed=1 collapsed to a single checkpoint
+  for AA/AC before the group-relative/anneal knobs could diverge the trajectory.
+- **E2b**: train new D/I/U variants at fresh seeds (100+) and re-run the
+  14th-member eval — `feedback_stocks12_ensemble_expansion.md` notes that
+  ensemble diversity is the load-bearing axis.
+- **E4**: retrain 3 screened32 seeds at `max_leverage=2.0` and paper-deploy
+  (biggest expected lift per section 4 ranking, but requires fresh training).
