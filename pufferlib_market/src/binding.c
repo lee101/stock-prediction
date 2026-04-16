@@ -131,8 +131,16 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     if (env->fill_probability > 1.0f) env->fill_probability = 1.0f;
 
     val = kwargs ? PyDict_GetItemString(kwargs, "decision_lag") : NULL;
-    env->decision_lag = val ? (int)PyLong_AsLong(val) : 1;
+    /* Default 2 mirrors production. Pass decision_lag=1 explicitly for legacy
+     * lookahead-tolerant research paths; warn loudly when that happens so a
+     * silent default never re-enters production. */
+    env->decision_lag = val ? (int)PyLong_AsLong(val) : 2;
     if (env->decision_lag < 1) env->decision_lag = 1;
+    if (env->decision_lag < 2) {
+        PyErr_WarnEx(PyExc_UserWarning,
+                     "trading_env: decision_lag<2 has lookahead bias; production must use >=2",
+                     1);
+    }
 
     val = kwargs ? PyDict_GetItemString(kwargs, "forced_offset") : NULL;
     if (val) {

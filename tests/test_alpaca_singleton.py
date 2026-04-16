@@ -145,6 +145,39 @@ def test_save_buys_uses_unique_temp_file_before_replace(
     assert final_path.exists()
 
 
+def test_record_buy_price_prunes_using_configured_buy_memory_seconds(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.setattr(
+        singleton_mod,
+        "_STATE",
+        singleton_mod.SingletonState(
+            account_name="alpaca_test_writer",
+            buy_memory_seconds=1,
+        ),
+    )
+
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {
+            "STALE": {
+                "price": 50.0,
+                "ts": time.time() - 2.0,
+                "iso": "2026-04-08T00:00:00+00:00",
+            }
+        },
+    )
+
+    singleton_mod.record_buy_price("AAPL", 123.45)
+    data = singleton_mod._load_buys("alpaca_test_writer")
+
+    assert "STALE" not in data
+    assert data["AAPL"]["price"] == 123.45
+
+
 def test_corrupt_buy_memory_is_quarantined_with_loud_log(tmp_path):
     proc = _run_snippet(
         """
@@ -345,6 +378,41 @@ def test_death_spiral_override_bypasses_with_loud_log(tmp_path):
     assert "OVERRIDE ACTIVE" in proc.stderr
 
 
+def test_death_spiral_blocks_short_after_buy(tmp_path):
+    """`short` side must be treated identically to `sell` by the guard.
+
+    Buying AAPL at 200 then opening a short at 198 (below the 0.5% floor of
+    199) is the exact buy/short flip an RL policy can produce intra-day; the
+    guard exists to crash the loop loudly rather than let it round-trip into
+    a death spiral.
+    """
+    proc = _run_snippet(
+        """
+        from src.alpaca_singleton import (
+            enforce_live_singleton, record_buy_price,
+            guard_sell_against_death_spiral, forget_all_buys,
+        )
+        enforce_live_singleton(service_name='ds_short', account_name='alpaca_test_writer')
+        forget_all_buys()
+        record_buy_price('AAPL', 200.0)
+        try:
+            guard_sell_against_death_spiral('AAPL', 'short', 198.0)
+        except RuntimeError as exc:
+            print('REFUSED_SHORT:', exc)
+        else:
+            raise SystemExit('expected RuntimeError on short after buy below floor')
+        # Short at 199.5 is inside floor → must be allowed.
+        guard_sell_against_death_spiral('AAPL', 'short', 199.5)
+        print('ALLOWED_SHORT_INSIDE')
+        """,
+        env_extra={"ALP_PAPER": "1"},
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+    assert "REFUSED_SHORT" in proc.stdout
+    assert "ALLOWED_SHORT_INSIDE" in proc.stdout
+
+
 def test_death_spiral_no_record_allows_sell(tmp_path):
     proc = _run_snippet(
         """
@@ -362,3 +430,33 @@ def test_death_spiral_no_record_allows_sell(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "NO_RECORD_OK" in proc.stdout
+
+
+def test_death_spiral_guard_prunes_stale_buys_using_configured_buy_memory_seconds(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.setattr(
+        singleton_mod,
+        "_STATE",
+        singleton_mod.SingletonState(
+            account_name="alpaca_test_writer",
+            buy_memory_seconds=1,
+        ),
+    )
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {
+            "AAPL": {
+                "price": 200.0,
+                "ts": time.time() - 2.0,
+                "iso": "2026-04-08T00:00:00+00:00",
+            }
+        },
+    )
+
+    singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 100.0)
+
+    assert singleton_mod._load_buys("alpaca_test_writer") == {}
