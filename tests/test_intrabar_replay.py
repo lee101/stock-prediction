@@ -330,3 +330,99 @@ def test_simulate_daily_policy_intrabar_hold_days_zero_on_day_after_buying() -> 
         f"day 1 after buying: expected hold_days=0/max_steps=0.0, got {hold_days_obs[1]:.4f} "
         "(off-by-one: should be 0 not 1)"
     )
+
+
+def test_stop_loss_gap_through_fills_at_bar_open_for_long() -> None:
+    """When a long gap-opens below the stop, fill at bar_open (worse than stop)."""
+    data = _make_mktd(num_days=2, num_symbols=1)
+    # Day 0 hour 0: enter long at 100
+    # Hour 24 (day 1 hour 0): HUGE gap down — bar_open=90, stop would be 98
+    # Stop should fire but fill at 90, not 98.
+    bars = [(100.0, 101.0, 99.0, 100.0)] * 24
+    bars += [(90.0, 91.0, 89.0, 90.0)]  # gap-down bar: open below stop
+    bars += [(90.0, 90.5, 89.5, 90.0)] * 23
+    hourly = _make_hourly(num_days=2, sym="SYM0", bars=bars)
+    actions = np.array([1, 0], dtype=np.int32)  # long sym0 day 0, flat day 1
+
+    res = replay_intrabar(
+        data=data,
+        actions=actions,
+        hourly=hourly,
+        start_date="2026-01-01",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        stop_loss_pct=0.02,  # 2% stop: entry=100 → stop=98
+    )
+
+    stop_fills = [f for f in res.fills if f.kind == "stop"]
+    assert len(stop_fills) == 1, f"expected 1 stop, got {[f.kind for f in res.fills]}"
+    # Gap-through should fill at bar_open=90, NOT the stop level 98.
+    assert stop_fills[0].price == pytest.approx(90.0), (
+        f"gap-through-stop should fill at bar_open=90 (worse than stop=98), "
+        f"got {stop_fills[0].price}"
+    )
+
+
+def test_stop_loss_intrabar_cross_fills_at_stop_level_for_long() -> None:
+    """When the bar opens above the stop but wicks through it, fill at stop (not worse)."""
+    data = _make_mktd(num_days=2, num_symbols=1)
+    bars = [(100.0, 101.0, 99.0, 100.0)] * 24
+    # Day 1 hour 0: open 99, low 97 (wicks to 97 — passes stop=98 from above)
+    bars += [(99.0, 99.5, 97.0, 99.0)]
+    bars += [(99.0, 99.5, 98.5, 99.0)] * 23
+    hourly = _make_hourly(num_days=2, sym="SYM0", bars=bars)
+    actions = np.array([1, 0], dtype=np.int32)
+
+    res = replay_intrabar(
+        data=data,
+        actions=actions,
+        hourly=hourly,
+        start_date="2026-01-01",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        stop_loss_pct=0.02,
+    )
+
+    stop_fills = [f for f in res.fills if f.kind == "stop"]
+    assert len(stop_fills) == 1
+    # Intrabar crossing: fill at the stop level exactly.
+    assert stop_fills[0].price == pytest.approx(98.0), (
+        f"intrabar crossing should fill at stop=98, got {stop_fills[0].price}"
+    )
+
+
+def test_stop_loss_gap_through_fills_at_bar_open_for_short() -> None:
+    """When a short gap-opens above the stop, fill at bar_open (worse than stop)."""
+    data = _make_mktd(num_days=2, num_symbols=1)
+    # Enter short at 100. Stop = 102 (2% up).
+    # Day 1 hour 0: gap up to 110 — open > stop.
+    bars = [(100.0, 101.0, 99.0, 100.0)] * 24
+    bars += [(110.0, 111.0, 109.0, 110.0)]
+    bars += [(110.0, 110.5, 109.5, 110.0)] * 23
+    hourly = _make_hourly(num_days=2, sym="SYM0", bars=bars)
+    # action 2 = short sym0 (S=1 so S+1..2S = action 2)
+    actions = np.array([2, 0], dtype=np.int32)
+
+    res = replay_intrabar(
+        data=data,
+        actions=actions,
+        hourly=hourly,
+        start_date="2026-01-01",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        stop_loss_pct=0.02,
+    )
+
+    stop_fills = [f for f in res.fills if f.kind == "stop"]
+    assert len(stop_fills) == 1, f"expected 1 stop, got {[f.kind for f in res.fills]}"
+    # Gap-through for short: fill at bar_open=110, not stop=102.
+    assert stop_fills[0].price == pytest.approx(110.0), (
+        f"short gap-through-stop should fill at bar_open=110 (worse than stop=102), "
+        f"got {stop_fills[0].price}"
+    )

@@ -39,6 +39,7 @@ class TradingEnvConfig:
         smoothness_penalty: float = 0.0,
         fill_slippage_bps: float = 0.0,
         fill_probability: float = 1.0,
+        decision_lag: int = 2,
         max_hold_hours: int = 0,
         long_only: bool = False,
         enable_drawdown_profit_early_exit: bool = False,
@@ -67,6 +68,7 @@ class TradingEnvConfig:
         self.smoothness_penalty = smoothness_penalty
         self.fill_slippage_bps = fill_slippage_bps
         self.fill_probability = max(0.0, min(1.0, float(fill_probability)))
+        self.decision_lag = max(1, int(decision_lag))
         self.max_hold_hours = max(0, int(max_hold_hours))
         self.long_only = long_only
         self.enable_drawdown_profit_early_exit = bool(enable_drawdown_profit_early_exit)
@@ -140,6 +142,7 @@ class TradingEnv(GymnasiumPufferEnv if GymnasiumPufferEnv is not None else objec
             smoothness_penalty=config.smoothness_penalty,
             fill_slippage_bps=config.fill_slippage_bps,
             fill_probability=config.fill_probability,
+            decision_lag=config.decision_lag,
             max_hold_hours=config.max_hold_hours,
             enable_drawdown_profit_early_exit=config.enable_drawdown_profit_early_exit,
             drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,

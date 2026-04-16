@@ -295,21 +295,30 @@ def _stop_loss_triggered(
     bar_low: float,
     bar_high: float,
     stop_pct: float,
+    bar_open: float = 0.0,
 ) -> Optional[float]:
     """Return the stop-loss fill price if the bar crossed it, else None.
 
     For longs the stop is entry*(1-stop_pct) and triggers when bar_low <= stop.
     For shorts the stop is entry*(1+stop_pct) and triggers when bar_high >= stop.
+    When a bar gaps through the stop (bar_open is already past the stop level),
+    a real exchange stop-market order fills at the open, not the stop. We model
+    this by returning min(stop, open) for longs and max(stop, open) for shorts
+    when the gap is present — always a strictly worse fill than the stop price.
     """
     if stop_pct is None or stop_pct <= 0.0:
         return None
     if pos.is_short:
         stop_price = pos.entry_price * (1.0 + stop_pct)
         if bar_high >= stop_price:
+            if bar_open > stop_price:
+                return float(max(stop_price, bar_open))
             return float(stop_price)
         return None
     stop_price = pos.entry_price * (1.0 - stop_pct)
     if bar_low <= stop_price:
+        if 0.0 < bar_open < stop_price:
+            return float(min(stop_price, bar_open))
         return float(stop_price)
     return None
 
@@ -467,12 +476,16 @@ def replay_intrabar(
         for hi in range(hi_start, hi_end):
             # 1a) Stop-loss / take-profit / max-hold check on any open position.
             if pos is not None:
-                _, hi_high, hi_low, _, _ = _bar(pos.sym, hi)
+                hi_open, hi_high, hi_low, _, _ = _bar(pos.sym, hi)
                 exit_price: Optional[float] = None
                 exit_kind: Optional[str] = None
 
                 sl = _stop_loss_triggered(
-                    pos=pos, bar_low=hi_low, bar_high=hi_high, stop_pct=stop_loss_pct or 0.0
+                    pos=pos,
+                    bar_low=hi_low,
+                    bar_high=hi_high,
+                    stop_pct=stop_loss_pct or 0.0,
+                    bar_open=hi_open,
                 )
                 tp = _take_profit_triggered(
                     pos=pos, bar_low=hi_low, bar_high=hi_high, tp_pct=take_profit_pct or 0.0
@@ -757,12 +770,16 @@ def simulate_daily_policy_intrabar(
             )
 
         if pos is not None:
-            _, hi_high, hi_low, _, _ = _bar(pos.sym, hi)
+            hi_open, hi_high, hi_low, _, _ = _bar(pos.sym, hi)
             exit_price: Optional[float] = None
             exit_kind: Optional[str] = None
 
             sl = _stop_loss_triggered(
-                pos=pos, bar_low=hi_low, bar_high=hi_high, stop_pct=stop_loss_pct or 0.0
+                pos=pos,
+                bar_low=hi_low,
+                bar_high=hi_high,
+                stop_pct=stop_loss_pct or 0.0,
+                bar_open=hi_open,
             )
             tp = _take_profit_triggered(
                 pos=pos, bar_low=hi_low, bar_high=hi_high, tp_pct=take_profit_pct or 0.0
