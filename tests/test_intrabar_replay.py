@@ -395,6 +395,46 @@ def test_stop_loss_intrabar_cross_fills_at_stop_level_for_long() -> None:
     )
 
 
+def test_replay_intrabar_short_borrow_reduces_cash() -> None:
+    """replay_intrabar now applies short-borrow carry each hour a short is open."""
+    data = _make_mktd(num_days=2, num_symbols=1)
+    # Flat prices the entire run: PnL from price movement is exactly zero.
+    bars = [(100.0, 100.01, 99.99, 100.0)] * 48
+    hourly = _make_hourly(num_days=2, sym="SYM0", bars=bars)
+    actions = np.array([2, 0], dtype=np.int32)  # short day 0, flat day 1
+
+    res_no_borrow = replay_intrabar(
+        data=data,
+        actions=actions,
+        hourly=hourly,
+        start_date="2026-01-01",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+    )
+    res_with_borrow = replay_intrabar(
+        data=data,
+        actions=actions,
+        hourly=hourly,
+        start_date="2026-01-01",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.30,  # 30% APR (chunky for signal)
+    )
+
+    assert res_with_borrow.final_equity < res_no_borrow.final_equity, (
+        f"short borrow should reduce final equity: "
+        f"with={res_with_borrow.final_equity} vs without={res_no_borrow.final_equity}"
+    )
+    # Ballpark: 24h of 30% APR on ~$1 notional ≈ 0.00082 ≈ a few bps of $10k.
+    delta = res_no_borrow.final_equity - res_with_borrow.final_equity
+    assert delta > 0.0, f"expected positive borrow cost, got delta={delta}"
+
+
 def test_stop_loss_gap_through_fills_at_bar_open_for_short() -> None:
     """When a short gap-opens above the stop, fill at bar_open (worse than stop)."""
     data = _make_mktd(num_days=2, num_symbols=1)

@@ -363,6 +363,7 @@ def replay_intrabar(
     max_hold_hours: Optional[int] = None,
     initial_cash: float = INITIAL_CASH,
     periods_per_year: float = 8760.0,
+    short_borrow_apr: float = 0.0,
 ) -> IntraBarReplayResult:
     """Walk hourly bars, executing the daily `actions` array with realistic intra-bar fills.
 
@@ -474,7 +475,20 @@ def replay_intrabar(
         # ---- Stage 1: walk the day's hours, applying the action and exits.
         action_done = False
         for hi in range(hi_start, hi_end):
-            # 1a) Stop-loss / take-profit / max-hold check on any open position.
+            # 1a) Short-borrow carry cost — applied every hour a short is open.
+            # Mirrors simulate_daily_policy_intrabar so shorts in replay_intrabar
+            # also pay the overnight locate fee.
+            if pos is not None and pos.is_short and short_borrow_apr > 0.0:
+                carry_px = _hour_close(pos.sym, hi)
+                cash, _ = _apply_short_borrow_cost(
+                    cash=cash,
+                    pos=pos,
+                    price=carry_px,
+                    short_borrow_apr=short_borrow_apr,
+                    periods_per_year=periods_per_year,
+                )
+
+            # 1b) Stop-loss / take-profit / max-hold check on any open position.
             if pos is not None:
                 hi_open, hi_high, hi_low, _, _ = _bar(pos.sym, hi)
                 exit_price: Optional[float] = None
