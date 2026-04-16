@@ -132,20 +132,28 @@ Anti-goal: do *not* chase crypto12 v8's 2,658× number. It's almost certainly a 
 |---|---|---|---|---|
 | Baseline (13m) | +45.34% | +24.48% | 9/50 | reference |
 | + D_s67 | +32.53% | +19.41% | 11/50 | REJECT (−13pp median, +2 neg) |
-| + AA val_best (cosine+anneal, seed=1) | pending | pending | pending | (identical to AC — seed-1 parity before divergence) |
+| + AA val_best (cosine+anneal, seed=1) | identical to AC | identical to AC | identical to AC | (AA s1 ≡ AC s1 md5; see `feedback_E1_sweep_results.md`) |
 | + AB val_best (group-rel 0.3, seed=1) | +39.88% | +16.71% | 14/50 | REJECT (−5.5pp median, +5 neg; mean delta −0.81%) |
-| + AC val_best (full E1 stack, seed=1) | identical to AA | identical to AA | identical to AA | (AA≡AC md5-equal; see `feedback_E1_sweep_results.md`) |
+| + AC val_best (full E1 stack, seed=1) | (pre-divergence parity with AA) | | | |
+| + AA val_best (cosine+anneal, seed=2) | +40.42% | +22.20% | 12/50 | REJECT (−4.9pp median, +3 neg; mean delta −0.74%) |
+| + AC val_best (full E1 stack, seed=2) | identical to AA s2 | identical | identical | (AA s2 ≡ AC s2 md5; skip re-eval) |
+| + AB val_best (group-rel 0.3, seed=2) | (see deltas) | (see deltas) | (see deltas) | REJECT (−0.68% mean delta med, +2.0 neg, 0/4 wins) |
 
 **E1 standalone OOS results (263-window val_best_oos_eval.json):**
 - AA: neg=77, med=−9.4%, p10=−95.6% (overfit val)
 - AB: neg=53, med=−0.7%, p10=−95.4% (softest overfit; worth ensemble test)
 - AC: identical to AA (byte-equal checkpoint; seed=1 parity)
 
-**Takeaway (2026-04-16 session close):** none of D_s67 / AA / AB / AC improves the
-13-model v5 ensemble. The current baseline appears to be a local optimum on the
-existing val data at seed=1. Recommended next experiments:
-- **E2a**: train AA/AB/AC at seeds 2, 3, 4 — seed=1 collapsed to a single checkpoint
-  for AA/AC before the group-relative/anneal knobs could diverge the trajectory.
+**Takeaway (2026-04-16 session close):** none of D_s67 / AA / AB / AC (seeds 1 or 2)
+improves the 13-model v5 ensemble. 5 distinct ensemble-add evals, 0 wins, mean
+delta median monthly return in range [−2.19%, −0.68%]. The current baseline
+appears to be a local optimum on the existing val data across 4 candidate
+variants × 2 seeds. Recommended next experiments:
+- **E2a**: train AA/AB/AC at seeds 3, 4 — all seed-2 E1 variants rejected.
+  Note that AA s1 ≡ AC s1 AND AA s2 ≡ AC s2 (both md5-identical): the
+  `--group-relative-mix 0.3` knob cannot differentiate from cosine+anneal until
+  AFTER the best-val step, so checkpoint output is identical from both runs.
+  Only AB (pure group-relative, no cosine+anneal) shows distinct checkpoints.
 - **E2b**: train new D/I/U variants at fresh seeds (100+) and re-run the
   14th-member eval — `feedback_stocks12_ensemble_expansion.md` notes that
   ensemble diversity is the load-bearing axis.
