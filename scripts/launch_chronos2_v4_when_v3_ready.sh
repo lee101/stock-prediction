@@ -706,6 +706,66 @@ if [[ -n "$V4_PID" ]]; then
                                                 --batch-size 64 \
                                                 --update-hyperparams \
                                                 2>&1 | tee chronos2_benchmark_v12.log
+
+                                            # -----------------------------------------------------------
+                                            # Launch v13 after v12 (washout + parabolic augmentations)
+                                            # -----------------------------------------------------------
+                                            echo "[$(date -u +%H:%M:%SZ)] Launching v13 (washout+parabolic augs)..."
+                                            bash scripts/launch_chronos2_v13.sh
+
+                                            V13_PID="$(cat .chronos2_v13_pid 2>/dev/null)"
+                                            if [[ -n "$V13_PID" ]]; then
+                                                echo "[$(date -u +%H:%M:%SZ)] Waiting for v13 (PID $V13_PID) to complete..."
+                                                while kill -0 "$V13_PID" 2>/dev/null; do
+                                                    sleep 180
+                                                done
+                                                echo "[$(date -u +%H:%M:%SZ)] v13 complete. Running v13 SWA + calibration + benchmark..."
+
+                                                V13_CKPT="chronos2_finetuned/stocks_all_v13/finetuned-ckpt"
+                                                V13_SWA="chronos2_finetuned/stocks_all_v13/swa-ckpt"
+                                                if [[ -d "chronos2_finetuned/stocks_all_v13/trainer_workspace" ]]; then
+                                                    python scripts/average_checkpoints.py \
+                                                        --trainer-workspace chronos2_finetuned/stocks_all_v13/trainer_workspace \
+                                                        --output "$V13_SWA" --n-last 3 \
+                                                        --copy-chronos-config "$V13_CKPT" 2>&1 | tee chronos2_swa_v13.log || true
+                                                fi
+
+                                                if [[ -d "$V13_CKPT" ]]; then
+                                                    python chronos2_linear_calibration.py \
+                                                        --model-id     "$V13_CKPT" \
+                                                        --cal-data-dir trainingdata \
+                                                        --output-path  "$V13_CKPT/calibration.json" \
+                                                        --max-shift-bps 20 \
+                                                        --min-gap-bps   2 \
+                                                        --grid-steps   25 \
+                                                        --cal-bars     120 \
+                                                        --max-windows  5000 \
+                                                        --batch-size   32 \
+                                                        --per-symbol \
+                                                        --prediction-length 2 \
+                                                        --also-calmar \
+                                                        --hyperparams-dir hyperparams/chronos2_v13 \
+                                                        2>&1 | tee chronos2_calibration_v13.log
+
+                                                    if [[ -d "${V13_SWA:-}" ]]; then
+                                                        python chronos2_linear_calibration.py \
+                                                            --model-id "$V13_SWA" --cal-data-dir trainingdata \
+                                                            --output-path "$V13_SWA/calibration.json" \
+                                                            --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                                                            --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                                                            --prediction-length 2 --also-calmar \
+                                                            2>&1 | tee chronos2_calibration_v13_swa.log || true
+                                                    fi
+
+                                                    python benchmark_chronos2.py \
+                                                        --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                                                        --model-id "$V13_CKPT" \
+                                                        --context-length 1024 \
+                                                        --batch-size 64 \
+                                                        --update-hyperparams \
+                                                        2>&1 | tee chronos2_benchmark_v13.log
+                                                fi
+                                            fi
                                         fi
                                     fi
                                 fi
