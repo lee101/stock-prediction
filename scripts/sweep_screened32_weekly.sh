@@ -14,7 +14,8 @@ cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
 
 export TMPDIR="$(pwd)/.tmp_train"
-mkdir -p "$TMPDIR"
+export TRITON_CACHE_DIR="$(pwd)/.tmp_train/triton_cache"
+mkdir -p "$TMPDIR" "$TRITON_CACHE_DIR"
 
 VARIANT="${1:-C}"
 PREFIX="${2:-screened32_weekly}"
@@ -55,6 +56,8 @@ train_one() {
       --trade-penalty "$TP" --hidden-size 1024 \
       --anneal-lr --disable-shorts --num-envs 128 \
       --val-eval-windows 20 --periods-per-year 52 \
+      --early-stop-val-neg-threshold "${EARLY_STOP_NEG:-10}" \
+      --early-stop-val-neg-patience "${EARLY_STOP_PATIENCE:-2}" \
       "${EXTRA_FLAGS[@]}" --seed "$seed" --checkpoint-dir "$dir" > "$dir/train.log" 2>&1
   echo "[$(date -u +%FT%TZ)] [${VARIANT}_weekly] seed ${seed} done"
 }
