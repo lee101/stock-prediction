@@ -25,3 +25,8 @@ def test_serialize_for_checkpoint_removes_paths_and_dataclasses() -> None:
     assert isinstance(payload.get("forecast_config"), dict)
     assert isinstance(payload.get("dataset"), dict)
 
+
+def test_serialize_for_checkpoint_preserves_serialized_set_values_for_mixed_types() -> None:
+    payload = serialize_for_checkpoint({Path("alpha"), 1})
+
+    assert payload == ["alpha", 1]

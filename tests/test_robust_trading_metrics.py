@@ -20,6 +20,13 @@ def test_compute_return_series_handles_zero_prev() -> None:
     assert returns.tolist() == pytest.approx([-1.0, 0.0, 1.0])
 
 
+def test_scalar_inputs_are_treated_as_single_point_series() -> None:
+    assert compute_return_series(100.0).tolist() == []
+    assert compute_max_drawdown(100.0) == pytest.approx(0.0)
+    assert compute_pnl_smoothness(0.01) == pytest.approx(0.0)
+    assert compute_pnl_smoothness_from_equity(100.0) == pytest.approx(0.0)
+
+
 def test_compute_max_drawdown_basic() -> None:
     assert compute_max_drawdown([100.0, 110.0, 120.0]) == pytest.approx(0.0)
     assert compute_max_drawdown([100.0, 120.0, 90.0, 95.0]) == pytest.approx(0.25)

@@ -18,6 +18,15 @@ def test_extract_symbols_from_text_dedupes_and_ignores_noise():
     assert extract_symbols_from_text(blob) == ["AAPL", "MSFT", "ETHUSD", "BTCUSD"]
 
 
+def test_extract_symbols_from_text_ignores_inline_comments() -> None:
+    blob = """
+    symbols = ['AAPL']  # 'IGNORED'
+    fallback = "MSFT"  # "ALSO_IGNORED"
+    """
+
+    assert extract_symbols_from_text(blob) == ["AAPL", "MSFT"]
+
+
 def test_load_symbols_from_missing_file_returns_empty(tmp_path: Path):
     missing = tmp_path / "absent.txt"
     assert load_symbols_from_file(missing) == []

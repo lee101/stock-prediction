@@ -41,10 +41,10 @@ def parse_csv_tokens(raw: str | Sequence[str] | None, *, cast=str) -> list[Any]:
     return parsed
 
 
-def normalize_symbols(symbols: Iterable[str]) -> list[str]:
+def normalize_symbols(symbols: str | Iterable[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
-    for symbol in symbols:
+    for symbol in parse_csv_tokens(symbols):
         clean = str(symbol).strip().upper()
         if not clean or clean in seen:
             continue

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib.util import module_from_spec, spec_from_file_location
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -118,3 +119,54 @@ def test_parse_args_uses_shared_default_preload() -> None:
     mod = _load_module()
     args = mod.parse_args([])
     assert args.preload == DEFAULT_JAX_CLASSIC_PRELOAD
+
+
+def test_resolve_best_checkpoint_uses_checkpoint_dir_for_relative_progress_entry(tmp_path: Path) -> None:
+    mod = _load_module()
+    checkpoint_dir = tmp_path / "run_a"
+    checkpoint_dir.mkdir()
+    best_ckpt = checkpoint_dir / "epoch_001.pt"
+    best_ckpt.write_bytes(b"checkpoint")
+    (checkpoint_dir / "training_progress.json").write_text(
+        json.dumps({"best_checkpoint": "epoch_001.pt"}),
+        encoding="utf-8",
+    )
+
+    resolved = mod.resolve_best_checkpoint(checkpoint_dir)
+
+    assert resolved == best_ckpt.resolve()
+
+
+def test_resolve_best_checkpoint_uses_repo_relative_progress_entry(tmp_path: Path, monkeypatch) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "REPO", tmp_path)
+    checkpoint_dir = tmp_path / "ignored_run"
+    checkpoint_dir.mkdir()
+    best_ckpt = tmp_path / "artifacts" / "epoch_002.pt"
+    best_ckpt.parent.mkdir(parents=True)
+    best_ckpt.write_bytes(b"checkpoint")
+    (checkpoint_dir / "training_progress.json").write_text(
+        json.dumps({"best_checkpoint": "artifacts/epoch_002.pt"}),
+        encoding="utf-8",
+    )
+
+    resolved = mod.resolve_best_checkpoint(checkpoint_dir)
+
+    assert resolved == best_ckpt.resolve()
+
+
+def test_resolve_best_checkpoint_rejects_missing_progress_target(tmp_path: Path) -> None:
+    mod = _load_module()
+    checkpoint_dir = tmp_path / "run_b"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "training_progress.json").write_text(
+        json.dumps({"best_checkpoint": "missing.pt"}),
+        encoding="utf-8",
+    )
+
+    try:
+        mod.resolve_best_checkpoint(checkpoint_dir)
+    except FileNotFoundError as exc:
+        assert f"No best checkpoint found in {checkpoint_dir}" == str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected FileNotFoundError for missing best checkpoint target")

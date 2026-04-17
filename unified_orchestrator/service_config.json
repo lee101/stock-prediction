@@ -5,7 +5,12 @@
   },
   "daily-rl-trader": {
     "crypto_symbols": [],
-    "stock_symbols": ["AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA", "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"]
+    "stock_symbols": [
+      "LLY", "BSX", "ABBV", "VRTX", "SYK", "WELL", "JPM", "GS",
+      "V", "MA", "AXP", "MS", "AAPL", "MSFT", "NVDA", "KLAC",
+      "CRWD", "META", "COST", "AZO", "TJX", "CAT", "PH", "RTX",
+      "BKNG", "MAR", "HLT", "PLTR", "SPY", "QQQ", "AMZN", "GOOG"
+    ]
   },
   "alpaca-hourly-trader": {
     "crypto_symbols": [],

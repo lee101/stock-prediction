@@ -243,7 +243,20 @@ def resolve_best_checkpoint(checkpoint_dir: Path) -> Path:
         payload = json.loads(progress_path.read_text())
         best = payload.get("best_checkpoint")
         if best:
-            return Path(best)
+            best_path = Path(str(best))
+            candidates: list[Path] = []
+            if best_path.is_absolute():
+                candidates.append(best_path)
+            else:
+                candidates.extend(
+                    [
+                        REPO / best_path,
+                        checkpoint_dir / best_path,
+                    ]
+                )
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate.resolve()
     raise FileNotFoundError(f"No best checkpoint found in {checkpoint_dir}")
 
 

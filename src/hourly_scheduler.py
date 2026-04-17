@@ -30,10 +30,10 @@ def extract_symbols_from_text(text: str) -> List[str]:
     """
     cleaned_lines = []
     for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
+        content = line.split("#", 1)[0]
+        if not content.strip():
             continue
-        cleaned_lines.append(line)
+        cleaned_lines.append(content)
     cleaned = "\n".join(cleaned_lines)
     return _dedupe_preserve_order(match.group(1) for match in _SYMBOL_TOKEN.finditer(cleaned))
 

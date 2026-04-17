@@ -59,11 +59,12 @@ def serialize_for_checkpoint(value: Any) -> Any:
         return tuple(serialize_for_checkpoint(v) for v in value)
 
     if isinstance(value, set):
-        # Sort for determinism when elements are comparable; fall back to repr.
+        serialized_items = [serialize_for_checkpoint(v) for v in value]
+        # Sort for determinism when elements are comparable; otherwise keep the
+        # serialized values and use repr only as an ordering key.
         try:
-            return sorted(serialize_for_checkpoint(v) for v in value)  # type: ignore[return-value]
+            return sorted(serialized_items)  # type: ignore[return-value]
         except TypeError:
-            return sorted((repr(v) for v in value))
+            return sorted(serialized_items, key=repr)
 
     return repr(value)
-

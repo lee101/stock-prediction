@@ -4,6 +4,8 @@ import gc
 import threading
 from pathlib import Path
 
+import pytest
+
 from src.shared_path_guard import ReaderWriterGuard, SharedPathGuardRegistry
 
 
@@ -96,3 +98,13 @@ def test_reader_writer_guard_blocks_new_readers_when_writer_is_waiting() -> None
 
     assert writer_done.is_set()
     assert events.index("writer-acquired") < events.index("reader-2-acquired")
+
+
+def test_reader_writer_guard_rejects_release_without_matching_acquire() -> None:
+    guard = ReaderWriterGuard()
+
+    with pytest.raises(RuntimeError, match="matching acquire_read"):
+        guard.release_read()
+
+    with pytest.raises(RuntimeError, match="matching acquire_write"):
+        guard.release_write()

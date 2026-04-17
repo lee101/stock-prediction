@@ -222,7 +222,7 @@ class HourlyAggregator:
             )
             ref_close_tensor = torch.tensor([current_close], device=self.device)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 outputs = self._crypto_model(feature_tensor)
                 actions = self._crypto_model.get_hard_actions(outputs, ref_close_tensor)
 
@@ -287,7 +287,7 @@ class HourlyAggregator:
             )
             ref_close_tensor = torch.tensor([current_close], device=self.device)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 outputs = self._stock_model(feature_tensor)
                 actions = self._stock_model.get_hard_actions(outputs, ref_close_tensor)
 

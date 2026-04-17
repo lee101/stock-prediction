@@ -20,6 +20,8 @@ class ReaderWriterGuard:
 
     def release_read(self) -> None:
         with self._condition:
+            if self._readers <= 0:
+                raise RuntimeError("release_read called without a matching acquire_read")
             self._readers -= 1
             if self._readers == 0:
                 self._condition.notify_all()
@@ -36,6 +38,8 @@ class ReaderWriterGuard:
 
     def release_write(self) -> None:
         with self._condition:
+            if not self._writer:
+                raise RuntimeError("release_write called without a matching acquire_write")
             self._writer = False
             self._condition.notify_all()
 

@@ -4,6 +4,8 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 import unified_orchestrator.jsonl_utils as jsonl_utils
 from unified_orchestrator.jsonl_utils import append_jsonl_row, iter_jsonl_lines_reverse
 
@@ -34,6 +36,14 @@ def test_iter_jsonl_lines_reverse_handles_missing_trailing_newline(tmp_path: Pat
     out = list(iter_jsonl_lines_reverse(path, chunk_size=4))
 
     assert out == ['{"id": 2}', '{"id": 1}']
+
+
+def test_iter_jsonl_lines_reverse_rejects_non_positive_chunk_size(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"id": 1}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="chunk_size must be positive"):
+        list(iter_jsonl_lines_reverse(path, chunk_size=0))
 
 
 def test_append_jsonl_row_round_trips_payload(tmp_path: Path):

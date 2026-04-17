@@ -12,7 +12,13 @@ def normalize_symbols(value: Any) -> list[str]:
     if isinstance(value, str):
         raw_items = value.replace(",", " ").split()
     elif isinstance(value, (list, tuple)):
-        raw_items = [str(item) for item in value]
+        raw_items = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                raw_items.append(text)
     else:
         return []
     return [item.strip().upper() for item in raw_items if item and item.strip()]

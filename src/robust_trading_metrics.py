@@ -7,7 +7,12 @@ import numpy as np
 
 
 def _to_1d_float_array(values: Iterable[float] | np.ndarray) -> np.ndarray:
-    arr = np.asarray(list(values) if not isinstance(values, np.ndarray) else values, dtype=np.float64)
+    if isinstance(values, np.ndarray):
+        arr = np.asarray(values, dtype=np.float64)
+    elif np.isscalar(values):
+        arr = np.asarray([values], dtype=np.float64)
+    else:
+        arr = np.asarray(list(values), dtype=np.float64)
     if arr.ndim != 1:
         arr = arr.reshape(-1)
     if arr.size == 0:

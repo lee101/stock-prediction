@@ -49,8 +49,16 @@ def _normalize_checkpoint_path(path: str | Path | None) -> str | None:
     return str(Path(path).expanduser().resolve())
 
 
-def _normalize_symbols(symbols: list[str] | tuple[str, ...] | None) -> list[str]:
-    return [str(symbol).strip().upper() for symbol in list(symbols or []) if str(symbol).strip()]
+def _normalize_symbols(symbols: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if isinstance(symbols, str):
+        raw_symbols = symbols.replace(",", " ").split()
+    else:
+        raw_symbols = []
+        for symbol in list(symbols or []):
+            if symbol is None:
+                continue
+            raw_symbols.extend(str(symbol).replace(",", " ").split())
+    return [str(symbol).strip().upper() for symbol in raw_symbols if str(symbol).strip()]
 
 
 def _parse_expected_symbols(value: str | None) -> list[str]:

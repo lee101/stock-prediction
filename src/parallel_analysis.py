@@ -47,7 +47,7 @@ def warmup_models(
             pipeline = load_toto()
 
             # Run dummy inference to trigger compilation
-            with torch.no_grad():
+            with torch.inference_mode():
                 # Create dummy context tensor
                 dummy_context = torch.randn(
                     1, toto_context_length,

@@ -24,8 +24,14 @@ def normalize_stock_symbol(raw_symbol: object) -> str:
     return symbol
 
 
+def _symbol_items(values: Iterable[object] | Sequence[object]) -> list[object]:
+    if isinstance(values, (str, bytes)):
+        return [values]
+    return list(values)
+
+
 def normalize_stock_symbol_list(symbols: Iterable[object]) -> list[str]:
-    return [normalize_stock_symbol(symbol) for symbol in symbols]
+    return [normalize_stock_symbol(symbol) for symbol in _symbol_items(symbols)]
 
 
 def normalize_symbols(raw_symbols: Sequence[object]) -> tuple[list[str], list[str], list[str]]:
@@ -35,7 +41,7 @@ def normalize_symbols(raw_symbols: Sequence[object]) -> tuple[list[str], list[st
     seen: set[str] = set()
     removed_seen: set[str] = set()
 
-    for raw_symbol in raw_symbols:
+    for raw_symbol in _symbol_items(raw_symbols):
         stripped = str(raw_symbol).strip()
         if not stripped:
             ignored_symbol_inputs.append("<blank>")

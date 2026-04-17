@@ -14,6 +14,7 @@ from src.remote_training_pipeline import (
     build_remote_large_universe_stock_plan,
     compute_daily_overlap_bounds,
     compute_hourly_train_val_window,
+    normalize_symbols,
     render_remote_pipeline_script,
 )
 
@@ -32,6 +33,14 @@ def _write_hourly_csv(path: Path, start: str, periods: int) -> None:
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)
+
+
+def test_normalize_symbols_accepts_single_string() -> None:
+    assert normalize_symbols("aapl") == ["AAPL"]
+
+
+def test_normalize_symbols_splits_comma_delimited_entries() -> None:
+    assert normalize_symbols(["aapl,msft", " nvda ", "AAPL"]) == ["AAPL", "MSFT", "NVDA"]
 
 
 def test_compute_hourly_train_val_window_uses_latest_common_overlap(tmp_path: Path) -> None:

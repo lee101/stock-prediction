@@ -8,6 +8,7 @@ from pathlib import Path
 
 from src.binance_hybrid_machine_audit import BinanceHybridMachineAuditResult
 from src.binance_hybrid_process_audit import BinanceHybridProcessMatchResult
+from src.binance_hybrid_prod_verify import _extract_live_snapshot_fields, _normalize_symbols
 from src.binance_live_process_audit import BinanceLiveProcessAuditResult
 
 
@@ -41,6 +42,29 @@ def test_parse_args_can_disable_runtime_guards() -> None:
 
     assert args.require_runtime_match is False
     assert args.require_runtime_health is False
+
+
+def test_private_normalize_symbols_accepts_string_and_splits_commas() -> None:
+    assert _normalize_symbols("btcusd, ethusd") == ["BTCUSD", "ETHUSD"]
+    assert _normalize_symbols(["btcusd,ethusd", None, " solusd "]) == [
+        "BTCUSD",
+        "ETHUSD",
+        "SOLUSD",
+    ]
+
+
+def test_extract_live_snapshot_fields_accepts_string_snapshot_symbols() -> None:
+    snapshot = {
+        "requested_tradable_symbols": "btcusd,ethusd",
+        "status": "completed",
+        "allocation_source": "rl",
+        "symbols_detail": [],
+        "orders": {},
+    }
+
+    meta = _extract_live_snapshot_fields(snapshot)
+
+    assert meta["snapshot_symbols"] == ["BTCUSD", "ETHUSD"]
 
 
 def _make_runtime_audit_result(**overrides):

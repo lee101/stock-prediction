@@ -101,6 +101,19 @@ class TestComputeCloseToExtremeMovements:
         assert np.allclose(high_pct, [0.0, 0.0], atol=1e-6)
         assert np.allclose(low_pct, [0.0, 0.0], atol=1e-6)
 
+    def test_integer_inputs_produce_float_movements(self):
+        """Test integer arrays do not trigger integer output casting."""
+        close = np.array([100, 200], dtype=np.int64)
+        high = np.array([110, 210], dtype=np.int64)
+        low = np.array([95, 190], dtype=np.int64)
+
+        high_pct, low_pct = compute_close_to_extreme_movements(close, high, low)
+
+        assert np.issubdtype(high_pct.dtype, np.floating)
+        assert np.issubdtype(low_pct.dtype, np.floating)
+        assert np.allclose(high_pct, [0.1, 0.05], atol=1e-6)
+        assert np.allclose(low_pct, [0.05, 0.05], atol=1e-6)
+
 
 class TestComputePriceRangePct:
     """Tests for compute_price_range_pct function."""
@@ -139,6 +152,17 @@ class TestComputePriceRangePct:
         # All NaN/inf should be replaced with 0.0
         assert not np.isnan(ranges).any()
         assert not np.isinf(ranges).any()
+
+    def test_integer_inputs_produce_float_ranges(self):
+        """Test integer arrays compute non-truncated percentage ranges."""
+        high = np.array([110, 220], dtype=np.int64)
+        low = np.array([90, 180], dtype=np.int64)
+        close = np.array([100, 200], dtype=np.int64)
+
+        ranges = compute_price_range_pct(high, low, close)
+
+        assert np.issubdtype(ranges.dtype, np.floating)
+        assert np.allclose(ranges, [0.2, 0.2], atol=1e-6)
 
 
 class TestSafePriceRatio:
@@ -216,3 +240,13 @@ class TestSafePriceRatio:
         ratios = safe_price_ratio(nums, denoms)
 
         assert np.allclose(ratios, [-2.0, -2.0], atol=1e-6)
+
+    def test_integer_inputs_produce_float_ratios(self):
+        """Test integer arrays retain fractional defaults and ratios."""
+        nums = np.array([100, 200, 50], dtype=np.int64)
+        denoms = np.array([50, 0, 25], dtype=np.int64)
+
+        ratios = safe_price_ratio(nums, denoms, default=0.5)
+
+        assert np.issubdtype(ratios.dtype, np.floating)
+        assert np.allclose(ratios, [2.0, 0.5, 2.0], atol=1e-6)

@@ -13,6 +13,8 @@ except Exception:  # pragma: no cover - non-POSIX fallback
 
 def iter_jsonl_lines_reverse(path: Path, *, chunk_size: int = 65_536) -> Iterator[str]:
     """Yield non-empty JSONL lines from the end of a file backwards."""
+    if int(chunk_size) <= 0:
+        raise ValueError("chunk_size must be positive")
 
     with path.open("rb") as handle:
         handle.seek(0, os.SEEK_END)

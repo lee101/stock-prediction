@@ -10,6 +10,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+def _float_output_dtype(*arrays: NDArray[Any]) -> np.dtype[Any]:
+    return np.result_type(*arrays, np.float64)
+
+
 def compute_close_to_extreme_movements(
     close_vals: NDArray[Any],
     high_vals: NDArray[Any],
@@ -46,13 +50,14 @@ def compute_close_to_extreme_movements(
         - 645-670 (maxdiff_always_on strategy)
         - 859-908 (pctdiff strategy)
     """
+    out_dtype = _float_output_dtype(close_vals, high_vals, low_vals)
     with np.errstate(divide="ignore", invalid="ignore"):
         # Calculate |1 - high/close| to get percentage movement
         close_to_high_np = np.abs(
             1.0 - np.divide(
                 high_vals,
                 close_vals,
-                out=np.zeros_like(high_vals),
+                out=np.zeros_like(high_vals, dtype=out_dtype),
                 where=close_vals != 0.0,
             )
         )
@@ -62,7 +67,7 @@ def compute_close_to_extreme_movements(
             1.0 - np.divide(
                 low_vals,
                 close_vals,
-                out=np.zeros_like(low_vals),
+                out=np.zeros_like(low_vals, dtype=out_dtype),
                 where=close_vals != 0.0,
             )
         )
@@ -97,11 +102,12 @@ def compute_price_range_pct(
         >>> np.allclose(ranges, [0.2, 0.2])
         True
     """
+    out_dtype = _float_output_dtype(high_vals, low_vals, reference_vals)
     with np.errstate(divide="ignore", invalid="ignore"):
         range_pct = np.divide(
             high_vals - low_vals,
             reference_vals,
-            out=np.zeros_like(high_vals),
+            out=np.zeros_like(high_vals, dtype=out_dtype),
             where=reference_vals != 0.0,
         )
 
@@ -130,11 +136,12 @@ def safe_price_ratio(
         >>> np.allclose(ratios, [2.0, 1.0, 2.0])
         True
     """
+    out_dtype = _float_output_dtype(numerator, denominator)
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = np.divide(
             numerator,
             denominator,
-            out=np.full_like(numerator, default),
+            out=np.full_like(numerator, default, dtype=out_dtype),
             where=denominator != 0.0,
         )
 
