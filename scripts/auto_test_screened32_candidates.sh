@@ -1,9 +1,9 @@
 #!/bin/bash
-# Auto-test new screened32 sweep candidates as 14th member of the prod
-# 13-model v5 ensemble. Watches all variant directories under
+# Auto-test new screened32 sweep candidates as 13th member of the prod
+# v7 12-model ensemble. Watches all variant directories under
 # pufferlib_market/checkpoints/screened32_sweep/ and triggers a deploy-gate
 # (fb=5, lev=1.0,1.5, lag=2, 263 windows) test for any new seed whose
-# standalone OOS eval has neg <= 17 (baseline + 6).
+# standalone OOS eval has neg <= 17 (baseline + 7).
 #
 # Designed to run in a loop or as a cron. Each candidate is tested at most
 # once (state tracked via a marker file). Logs to docs/auto_test_log.md.
@@ -23,11 +23,12 @@ LOG_DIR="docs/auto_test_screened32"
 LOG_MD="$LOG_DIR/auto_test_log.md"
 mkdir -p "$LOG_DIR"
 
-NEG_BAR="${NEG_BAR:-17}"  # baseline 11 + 6 cushion
-BASELINE_MED_MO="0.0752"  # 13-model v6 deploy gate (D_s3→AD_s4 swap, 2026-04-17)
+NEG_BAR="${NEG_BAR:-17}"  # v7 baseline 10 + 7 cushion
+BASELINE_MED_MO="0.0747"  # v7 12-model deploy gate (drop D_s81, 2026-04-17)
+BASELINE_NEG="10"          # v7 12-model deploy gate neg count at fb=5 lev=1
 
 [ -f "$LOG_MD" ] || cat > "$LOG_MD" <<EOF
-# Auto-test log: screened32 candidates as 14th ensemble member
+# Auto-test log: screened32 candidates as 13th ensemble member
 
 Watches \`$SWEEP_ROOT\` for newly-evaluated seeds and tests any with
 standalone neg <= \$NEG_BAR (default $NEG_BAR) at the deploy-gate cell
@@ -35,11 +36,14 @@ standalone neg <= \$NEG_BAR (default $NEG_BAR) at the deploy-gate cell
 AD_s9 with neg=11 standalone failed the 14m gate, so candidates with
 neg > 17 standalone are essentially guaranteed to fail too.
 
-| timestamp | candidate | standalone neg | 14m med (1x) | 14m neg | 14m sortino | 14m verdict |
+v7 baseline (12-model softmax_avg, 1× fb=5): med +7.47%/mo, neg 10/263, sortino 6.74.
+A PROMISING 13-model candidate must beat v7 on at least median *and* keep neg ≤ 10.
+
+| timestamp | candidate | standalone neg | 13m med (1x) | 13m neg | 13m sortino | 13m verdict |
 |---|---|---:|---:|---:|---:|---|
 EOF
 
-# Read current 13-model defaults from src/daily_stock_defaults.py.
+# Read current v7 12-model defaults from src/daily_stock_defaults.py.
 mapfile -t BASE_CKPTS < <(python3 - <<'PY'
 import sys
 sys.path.insert(0, ".")
@@ -50,8 +54,8 @@ for c in DEFAULT_EXTRA_CHECKPOINTS:
 PY
 )
 
-if [ ${#BASE_CKPTS[@]} -ne 13 ]; then
-  echo "auto_test: expected 13 base ckpts, got ${#BASE_CKPTS[@]}" >&2
+if [ ${#BASE_CKPTS[@]} -ne 12 ]; then
+  echo "auto_test: expected 12 base ckpts (v7), got ${#BASE_CKPTS[@]}" >&2
   exit 2
 fi
 
@@ -117,15 +121,15 @@ PY
     # Filter: standalone neg too high → skip with marker
     if [ "$standalone_neg" -gt "$NEG_BAR" ]; then
       ts=$(date -u +%FT%TZ)
-      echo "$ts $variant/s$seed standalone neg=$standalone_neg > $NEG_BAR — skip (no 14m test)"
+      echo "$ts $variant/s$seed standalone neg=$standalone_neg > $NEG_BAR — skip (no 13m test)"
       echo "| $ts | $variant/s$seed | $standalone_neg | — | — | — | skip (over neg bar) |" >> "$LOG_MD"
       touch "$marker"
       candidates_skipped=$((candidates_skipped + 1))
       continue
     fi
 
-    # Run 14m gate at fb=5, lev=1.0,1.5
-    out_dir="docs/realism_gate_${variant}_s${seed}_14m"
+    # Run 13m gate at fb=5, lev=1.0,1.5 (12-model v7 + candidate)
+    out_dir="docs/realism_gate_${variant}_s${seed}_13m_v7"
     if [ ! -f "$out_dir/screened32_single_offset_val_full_realism_gate.json" ]; then
       mkdir -p "$out_dir"
       echo "[$(date -u +%FT%TZ)] AUTO-TEST $variant/s$seed (standalone neg=$standalone_neg, med=$standalone_med%)..."
@@ -152,9 +156,9 @@ for c in cells:
         med_mo = float(c.get('median_monthly_return', 0))
         n_neg  = int(c.get('n_neg', 0))
         sort   = float(c.get('median_sortino', 0))
-        baseline = 0.0752  # v6 deploy gate
+        baseline = 0.0747  # v7 12-model deploy gate (drop D_s81)
         d_med = med_mo - baseline
-        verdict = "PROMISING" if (d_med > 0.001 and n_neg <= 11) else "reject"
+        verdict = "PROMISING" if (d_med > 0.001 and n_neg <= 10) else "reject"
         print(f"{med_mo:.4f}|{n_neg}|{sort:.2f}|{verdict}")
         break
 PY
@@ -167,7 +171,7 @@ PY
     verdict=$(echo "$verdict_line" | cut -d'|' -f4)
 
     ts=$(date -u +%FT%TZ)
-    echo "$ts $variant/s$seed → 14m med=$med_14m neg=$neg_14m sortino=$sort_14m → $verdict"
+    echo "$ts $variant/s$seed → 13m med=$med_14m neg=$neg_14m sortino=$sort_14m → $verdict"
     echo "| $ts | $variant/s$seed | $standalone_neg | ${med_14m} | $neg_14m | $sort_14m | $verdict |" >> "$LOG_MD"
     [ "$verdict" = "PROMISING" ] && candidates_promising=$((candidates_promising + 1))
     touch "$marker"
