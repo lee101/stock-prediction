@@ -1340,6 +1340,121 @@ def test_ensemble_mode_rejects_unknown_value() -> None:
         )
 
 
+def _make_min_agree_fake_primary(decoded_actions=None):
+    """Build a fake primary policy that records the action passed to _decode_action."""
+    decoded = decoded_actions if decoded_actions is not None else []
+
+    class _FakePrimary:
+        device = "cpu"
+
+        @staticmethod
+        def build_observation(_features, _prices):
+            return np.zeros(4, dtype=np.float32)
+
+        @staticmethod
+        def policy(obs_t):
+            # primary mildly prefers action 1
+            return torch.tensor([[0.0, 1.0, 0.0]]), torch.tensor([[0.0]])
+
+        @staticmethod
+        def apply_action_constraints(logits):
+            return logits
+
+        @staticmethod
+        def _decode_action(action, confidence, value_estimate):
+            decoded.append(int(action))
+            return SimpleNamespace(
+                action=f"act_{action}",
+                symbol="AAPL" if action != 0 else None,
+                direction="long" if action != 0 else None,
+                confidence=confidence,
+                value_estimate=value_estimate,
+            )
+
+    return _FakePrimary, decoded
+
+
+def test_min_agree_count_zero_is_no_op() -> None:
+    """min_agree_count=0 (default) preserves legacy behavior."""
+    Primary, decoded = _make_min_agree_fake_primary()
+    extras = [
+        # all members agree on action 1
+        lambda obs_t: (torch.tensor([[0.0, 5.0, 0.0]]), torch.tensor([[0.0]])),
+        lambda obs_t: (torch.tensor([[0.0, 5.0, 0.0]]), torch.tensor([[0.0]])),
+    ]
+    sig = daily_stock._ensemble_softmax_signal(
+        Primary(), extras, np.zeros((1, 4), dtype=np.float32), {"AAPL": 100.0},
+        min_agree_count=0,
+    )
+    assert decoded == [1]
+    assert sig.action == "act_1"
+
+
+def test_min_agree_count_passes_when_enough_members_agree() -> None:
+    """When >=N members individually pick the ensemble argmax, action is preserved."""
+    Primary, decoded = _make_min_agree_fake_primary()
+    # primary [0,1,0]→argmax 1; extras [0,3,0] and [0,2,0] both argmax 1
+    # ensemble avg argmax = 1; per-member argmaxes = [1,1,1]; n_agree=3
+    extras = [
+        lambda obs_t: (torch.tensor([[0.0, 3.0, 0.0]]), torch.tensor([[0.0]])),
+        lambda obs_t: (torch.tensor([[0.0, 2.0, 0.0]]), torch.tensor([[0.0]])),
+    ]
+    sig = daily_stock._ensemble_softmax_signal(
+        Primary(), extras, np.zeros((1, 4), dtype=np.float32), {"AAPL": 100.0},
+        min_agree_count=2,
+    )
+    assert decoded == [1]
+    assert sig.action == "act_1"
+
+
+def test_min_agree_count_forces_flat_when_insufficient_agreement() -> None:
+    """When fewer than N members pick the ensemble argmax, force flat (action=0).
+
+    Setup: primary picks 1 (small margin), one extra picks 2 with huge margin
+    (drives softmax_avg to 2), other extra picks 0. Ensemble argmax = 2 but only
+    ONE member individually picks 2. With min_agree_count=2, gate forces flat.
+    """
+    Primary, decoded = _make_min_agree_fake_primary()
+    extras = [
+        # extra 1: huge logit on action 2 — its softmax dominates the average
+        lambda obs_t: (torch.tensor([[0.0, 0.0, 20.0]]), torch.tensor([[0.0]])),
+        # extra 2: prefers action 0 (flat)
+        lambda obs_t: (torch.tensor([[5.0, 0.0, 0.0]]), torch.tensor([[0.0]])),
+    ]
+    # Sanity: with no gate, ensemble picks action 2.
+    sig_no_gate = daily_stock._ensemble_softmax_signal(
+        Primary(), extras, np.zeros((1, 4), dtype=np.float32), {"AAPL": 100.0},
+        min_agree_count=0,
+    )
+    assert sig_no_gate.action == "act_2"
+
+    # With gate, only 1 of 3 picks action 2 → forced flat.
+    decoded.clear()
+    sig_gated = daily_stock._ensemble_softmax_signal(
+        Primary(), extras, np.zeros((1, 4), dtype=np.float32), {"AAPL": 100.0},
+        min_agree_count=2,
+    )
+    assert decoded == [0]
+    assert sig_gated.action == "act_0"
+    assert sig_gated.symbol is None
+
+
+def test_min_agree_count_skipped_when_ensemble_already_flat() -> None:
+    """If ensemble itself picks action 0, no gate eval needed (already flat)."""
+    Primary, decoded = _make_min_agree_fake_primary()
+    extras = [
+        # All members + primary pull toward flat
+        lambda obs_t: (torch.tensor([[10.0, 0.0, 0.0]]), torch.tensor([[0.0]])),
+        lambda obs_t: (torch.tensor([[10.0, 0.0, 0.0]]), torch.tensor([[0.0]])),
+    ]
+    sig = daily_stock._ensemble_softmax_signal(
+        Primary(), extras, np.zeros((1, 4), dtype=np.float32), {"AAPL": 100.0},
+        min_agree_count=99,  # impossible threshold — still no gate trigger because action==0
+    )
+    assert decoded == [0]
+    assert sig.action == "act_0"
+
+
 def test_append_signal_log_writes_jsonl(tmp_path: Path) -> None:
     log_path = tmp_path / "daily_stock_rl_signals.jsonl"
 
@@ -1772,6 +1887,15 @@ def test_main_logs_runtime_config(caplog, monkeypatch, tmp_path: Path) -> None:
         for record in caplog.records
         if record.name == "daily_stock_rl" and record.getMessage().startswith("Runtime config: ")
     ]
+    plan_records = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "daily_stock_rl" and record.getMessage().startswith("Execution plan: ")
+    ]
+    assert plan_records
+    assert "paper once via alpaca" in plan_records[-1]
+    assert "allocation=12.5%" in plan_records[-1]
+    assert "symbols=AAPL" in plan_records[-1]
     assert runtime_records
     assert '"account_mode": "paper"' in runtime_records[-1]
     assert '"symbols": ["AAPL"]' in runtime_records[-1]
@@ -5897,6 +6021,273 @@ def test_execute_signal_with_trading_server_holds_position_when_loss_guard_block
     assert state.active_symbol == "AAPL"
     assert state.pending_close_symbol is None
     assert "Server rejected ordinary sell for AAPL" in caplog.text
+
+
+def test_run_once_integrates_with_trading_server_and_submits_open(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current_now = datetime.now(timezone.utc)
+    fresh_timestamp = pd.Timestamp.now(tz="UTC").normalize()
+    quotes = {
+        "AAPL": {
+            "symbol": "AAPL",
+            "bid_price": 100.0,
+            "ask_price": 100.0,
+            "last_price": 100.0,
+            "as_of": current_now.isoformat(),
+        }
+    }
+    registry = tmp_path / "registry.json"
+    _write_server_registry(
+        registry,
+        account="paper_sortino_daily",
+        bot_id="daily_stock_sortino_v1",
+        symbols=["AAPL"],
+    )
+    engine = TradingServerEngine(
+        registry_path=registry,
+        state_dir=tmp_path / "state",
+        quote_provider=lambda symbol: quotes[str(symbol).upper()],
+        now_fn=lambda: current_now,
+    )
+    client = daily_stock.InMemoryTradingServerClient(
+        engine=engine,
+        account="paper_sortino_daily",
+        bot_id="daily_stock_sortino_v1",
+        execution_mode="paper",
+        session_id="integration-session",
+    )
+    state_path = tmp_path / "strategy_state.json"
+
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(get_clock=lambda: SimpleNamespace(is_open=True)),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.0],
+                        "volume": [1_000.0],
+                    }
+                )
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 100.0},
+            "alpaca",
+            {"AAPL": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_signal",
+        lambda checkpoint, frames, **kwargs: (
+            SimpleNamespace(
+                action="long_AAPL",
+                symbol="AAPL",
+                direction="long",
+                confidence=0.9,
+                value_estimate=1.2,
+            ),
+            {"AAPL": 100.0},
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_server_client", lambda **kwargs: client)
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=False,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=state_path,
+        execution_backend="trading_server",
+        server_account="paper_sortino_daily",
+        server_bot_id="daily_stock_sortino_v1",
+        server_session_id="integration-session",
+    )
+
+    snapshot = client.get_account()
+    position = snapshot["positions"]["AAPL"]
+    saved_state = daily_stock.load_state(state_path)
+
+    assert payload["execution_status"] == "submitted"
+    assert payload["execution_submitted"] is True
+    assert payload["server_snapshot"]["writer_claim"]["active"] is True
+    assert position["qty"] == 25.0
+    assert position["avg_entry_price"] == 100.0
+    assert saved_state.active_symbol == "AAPL"
+    assert saved_state.active_qty == 25.0
+    assert saved_state.entry_price == 100.0
+
+
+def test_run_once_integrates_with_trading_server_loss_guard_blocking_rotation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current_now = datetime.now(timezone.utc)
+    fresh_timestamp = pd.Timestamp.now(tz="UTC").normalize()
+    quotes = {
+        "AAPL": {
+            "symbol": "AAPL",
+            "bid_price": 100.0,
+            "ask_price": 100.0,
+            "last_price": 100.0,
+            "as_of": current_now.isoformat(),
+        },
+        "MSFT": {
+            "symbol": "MSFT",
+            "bid_price": 50.0,
+            "ask_price": 50.0,
+            "last_price": 50.0,
+            "as_of": current_now.isoformat(),
+        },
+    }
+    registry = tmp_path / "registry.json"
+    _write_server_registry(
+        registry,
+        account="paper_sortino_daily",
+        bot_id="daily_stock_sortino_v1",
+        symbols=["AAPL", "MSFT"],
+    )
+    engine = TradingServerEngine(
+        registry_path=registry,
+        state_dir=tmp_path / "state",
+        quote_provider=lambda symbol: quotes[str(symbol).upper()],
+        now_fn=lambda: current_now,
+    )
+    client = daily_stock.InMemoryTradingServerClient(
+        engine=engine,
+        account="paper_sortino_daily",
+        bot_id="daily_stock_sortino_v1",
+        execution_mode="paper",
+        session_id="integration-session",
+    )
+    client.claim_writer()
+    client.refresh_prices(symbols=["AAPL", "MSFT"])
+    client.submit_limit_order(symbol="AAPL", side="buy", qty=10.0, limit_price=100.0)
+    quotes["AAPL"] = {
+        "symbol": "AAPL",
+        "bid_price": 95.0,
+        "ask_price": 95.0,
+        "last_price": 95.0,
+        "as_of": current_now.isoformat(),
+    }
+
+    state_path = tmp_path / "strategy_state.json"
+    daily_stock.save_state(
+        daily_stock.StrategyState(
+            active_symbol="AAPL",
+            active_qty=10.0,
+            entry_price=100.0,
+            entry_date="2026-03-16",
+        ),
+        path=state_path,
+    )
+
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(get_clock=lambda: SimpleNamespace(is_open=True)),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.0],
+                        "volume": [1_000.0],
+                    }
+                ),
+                "MSFT": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [50.0],
+                        "high": [51.0],
+                        "low": [49.0],
+                        "close": [50.0],
+                        "volume": [1_000.0],
+                    }
+                ),
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 95.0, "MSFT": 50.0},
+            "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_signal",
+        lambda checkpoint, frames, **kwargs: (
+            SimpleNamespace(
+                action="long_MSFT",
+                symbol="MSFT",
+                direction="long",
+                confidence=0.9,
+                value_estimate=1.2,
+            ),
+            {"AAPL": 95.0, "MSFT": 50.0},
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_server_client", lambda **kwargs: client)
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=False,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=state_path,
+        execution_backend="trading_server",
+        server_account="paper_sortino_daily",
+        server_bot_id="daily_stock_sortino_v1",
+        server_session_id="integration-session",
+    )
+
+    snapshot = client.get_account()
+    saved_state = daily_stock.load_state(state_path)
+
+    assert payload["execution_status"] == "no_action_executor_declined"
+    assert payload["execution_submitted"] is False
+    assert "AAPL" in snapshot["positions"]
+    assert "MSFT" not in snapshot["positions"]
+    assert snapshot["positions"]["AAPL"]["qty"] == 10.0
+    assert saved_state.active_symbol == "AAPL"
+    assert saved_state.active_qty == 10.0
 
 def test_adopt_existing_position_populates_state() -> None:
     state = daily_stock.StrategyState()

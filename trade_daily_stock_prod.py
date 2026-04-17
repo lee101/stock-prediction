@@ -497,6 +497,7 @@ class CliRuntimeConfig:
     meta_top_k: int = 1
     meta_lookback: int = 3
     ensemble_mode: str = "softmax_avg"
+    min_agree_count: int = 0
     removed_duplicate_symbols: list[str] = field(default_factory=list)
     ignored_symbol_inputs: list[str] = field(default_factory=list)
 
@@ -856,6 +857,18 @@ def _log_runtime_start(
     *,
     preflight_payload: Mapping[str, object] | None = None,
 ) -> None:
+    plan_parts = [
+        config.summary,
+        f"allocation={config.allocation_pct:g}%",
+        f"min_confidence={config.min_open_confidence:g}",
+    ]
+    if math.isfinite(config.min_open_value_estimate):
+        plan_parts.append(f"min_value_estimate={config.min_open_value_estimate:g}")
+    if config.execution_backend == "trading_server":
+        plan_parts.append(f"server_account={config.server_account}")
+        plan_parts.append(f"server_bot_id={config.server_bot_id}")
+    plan_parts.append(f"symbols={config.symbol_preview_text}")
+    logger.info("Execution plan: %s", " | ".join(plan_parts))
     logger.info(
         "Runtime config: %s",
         json.dumps(_runtime_log_payload(config, preflight_payload=preflight_payload), sort_keys=True),
@@ -1708,6 +1721,7 @@ def _ensemble_softmax_signal(
     prices: dict,
     *,
     ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ):
     """Combine primary + extra policies into a TradingSignal.
 
@@ -1723,6 +1737,10 @@ def _ensemble_softmax_signal(
     Both modes return the confidence as the ensemble probability of the chosen
     action (softmax of averaged logits for logit_avg, direct avg for softmax_avg)
     so the downstream MIN_OPEN_CONFIDENCE gate behaves consistently.
+
+    min_agree_count: when >0, force flat (action=0) if fewer than this many
+    members individually pick the same argmax as the ensemble. Validated win at
+    min_agree_count=2 on v7 12-model ensemble (see docs/agreement_gate/).
     """
     if ensemble_mode not in ("softmax_avg", "logit_avg"):
         raise ValueError(f"ensemble_mode must be 'softmax_avg' or 'logit_avg', got {ensemble_mode!r}")
@@ -1748,6 +1766,19 @@ def _ensemble_softmax_signal(
     action = int(avg_probs.argmax(dim=-1).item())
     confidence = float(avg_probs[0, action].item())
     value_est = float(sum(all_values) / max(len(all_values), 1))
+    if min_agree_count > 0 and action != 0:
+        per_member_argmax = [int(lg.argmax(dim=-1).item()) for lg in all_logits]
+        n_agree = sum(1 for a in per_member_argmax if a == action)
+        if n_agree < min_agree_count:
+            logger.info(
+                "min_agree_count gate forcing flat: ensemble_action=%d n_agree=%d/%d threshold=%d",
+                action,
+                n_agree,
+                len(per_member_argmax),
+                min_agree_count,
+            )
+            action = 0
+            confidence = float(avg_probs[0, 0].item())
     return primary._decode_action(action, confidence, value_est)
 
 
@@ -2202,6 +2233,7 @@ def build_signal(
     meta_top_k: int = 1,
     meta_lookback: int = 3,
     ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ):
     aligned = _align_frames(frames)
     indexed = {
@@ -2246,9 +2278,19 @@ def build_signal(
             for p in extra_checkpoints
         ]
         signal = _ensemble_softmax_signal(
-            trader, extra_policies, features, prices, ensemble_mode=ensemble_mode,
+            trader,
+            extra_policies,
+            features,
+            prices,
+            ensemble_mode=ensemble_mode,
+            min_agree_count=min_agree_count,
         )
-        logger.info("Ensemble signal (%d policies, %s)", 1 + len(extra_policies), ensemble_mode)
+        logger.info(
+            "Ensemble signal (%d policies, %s, min_agree=%d)",
+            1 + len(extra_policies),
+            ensemble_mode,
+            min_agree_count,
+        )
     else:
         signal = _trader_signal_from_features(
             trader,
@@ -3904,6 +3946,7 @@ def run_once(
     meta_top_k: int = 1,
     meta_lookback: int = 3,
     ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ) -> dict:
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:12]}"
@@ -4083,6 +4126,7 @@ def run_once(
                 meta_top_k=meta_top_k,
                 meta_lookback=meta_lookback,
                 ensemble_mode=ensemble_mode,
+                min_agree_count=min_agree_count,
             )
         failure_observability["signal_action"] = signal.action
         failure_observability["signal_symbol"] = signal.symbol
@@ -4403,6 +4447,7 @@ def run_daemon(
     meta_top_k: int = 1,
     meta_lookback: int = 3,
     ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
@@ -4503,6 +4548,7 @@ def run_daemon(
                     meta_top_k=meta_top_k,
                     meta_lookback=meta_lookback,
                     ensemble_mode=ensemble_mode,
+                    min_agree_count=min_agree_count,
                 )
             except Exception as exc:
                 logger.exception("Daily stock RL cycle failed: %s", exc)
@@ -4630,6 +4676,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "top-action distribution."
         ),
     )
+    parser.add_argument(
+        "--min-agree-count",
+        type=int,
+        default=0,
+        help=(
+            "Member-agreement gate. When >0, force flat (no trade) if fewer than this "
+            "many ensemble members individually pick the same argmax as the aggregated "
+            "ensemble action. Validated win on v7 12-model ensemble at min_agree_count=2 "
+            "(strictly improves p10/sortino/neg-count at fb=5/10/20 lev=1.0 and lifts "
+            "p10+sortino at lev=1.25; see docs/agreement_gate/)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.check_config_text and not args.check_config:
         parser.error("--check-config-text requires --check-config")
@@ -4701,6 +4759,7 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         meta_top_k=int(args.meta_top_k),
         meta_lookback=int(args.meta_lookback),
         ensemble_mode=str(args.ensemble_mode),
+        min_agree_count=int(args.min_agree_count),
     )
 
 
@@ -6071,6 +6130,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             meta_top_k=config.meta_top_k,
             meta_lookback=config.meta_lookback,
             ensemble_mode=config.ensemble_mode,
+            min_agree_count=config.min_agree_count,
         )
         return
 
@@ -6098,6 +6158,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             meta_top_k=config.meta_top_k,
             meta_lookback=config.meta_lookback,
             ensemble_mode=config.ensemble_mode,
+            min_agree_count=config.min_agree_count,
         )
     except Exception as exc:
         print(_format_run_once_failure_message(config, exc), file=sys.stderr)
