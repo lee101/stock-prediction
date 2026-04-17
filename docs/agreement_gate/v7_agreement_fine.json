@@ -1,0 +1,72 @@
+{
+  "val_data": "pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fill_buffer_bps": 5.0,
+  "max_leverage": 1.0,
+  "decision_lag": 2,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "disable_shorts": true,
+  "ensemble_size": 12,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "results": [
+    {
+      "min_agree_count": 1,
+      "median_monthly_return": 0.07539585877359654,
+      "p10_monthly_return": 0.03177269087920605,
+      "median_sortino": 6.735243987830111,
+      "median_max_dd": 0.05709192916473789,
+      "n_neg": 10,
+      "n_windows": 263
+    },
+    {
+      "min_agree_count": 2,
+      "median_monthly_return": 0.07787248666654266,
+      "p10_monthly_return": 0.03534209709008782,
+      "median_sortino": 7.549039751880257,
+      "median_max_dd": 0.051316998854971645,
+      "n_neg": 8,
+      "n_windows": 263
+    },
+    {
+      "min_agree_count": 3,
+      "median_monthly_return": 0.05738254966269309,
+      "p10_monthly_return": 0.016814471184663077,
+      "median_sortino": 6.76772232151751,
+      "median_max_dd": 0.04663885809724206,
+      "n_neg": 14,
+      "n_windows": 263
+    },
+    {
+      "min_agree_count": 4,
+      "median_monthly_return": 0.021021234978190126,
+      "p10_monthly_return": -0.0011334213919471786,
+      "median_sortino": 4.738053498484701,
+      "median_max_dd": 0.03853506092840989,
+      "n_neg": 34,
+      "n_windows": 263
+    },
+    {
+      "min_agree_count": 5,
+      "median_monthly_return": 0.006746072624325936,
+      "p10_monthly_return": -0.007482704655936002,
+      "median_sortino": 2.7505360134691874,
+      "median_max_dd": 0.0288052990523601,
+      "n_neg": 48,
+      "n_windows": 263
+    }
+  ]
+}
