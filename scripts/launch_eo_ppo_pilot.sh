@@ -17,6 +17,8 @@ BETA="${2:-0.03}"
 WARMUP_FRAC="${3:-0.3}"
 GATE="${4:-entropy}"
 START_FRAC="${5:-0.0}"
+VAL_WINDOWS="${6:-50}"
+VAL_DATA_OVERRIDE="${7:-}"
 
 # earlyoom kills training processes under memory pressure — stop it first.
 echo "ilu" | sudo -S systemctl stop earlyoom 2>/dev/null \
@@ -45,11 +47,14 @@ pufferlib_market/prod_ensemble_screened32/D_s64.pt,\
 pufferlib_market/prod_ensemble_screened32/I_s32.pt"
 
 TRAIN="pufferlib_market/data/screened32_augmented_train.bin"
-VAL="pufferlib_market/data/screened32_augmented_val.bin"
+VAL="${VAL_DATA_OVERRIDE:-pufferlib_market/data/screened32_augmented_val.bin}"
 
 TAG="b${BETA}_s${SEED}"
 if [ "${START_FRAC}" != "0.0" ]; then
   TAG="${TAG}_sf${START_FRAC}"
+fi
+if [ "${VAL_WINDOWS}" != "50" ]; then
+  TAG="${TAG}_vw${VAL_WINDOWS}"
 fi
 CKPT_DIR="pufferlib_market/checkpoints/eo_ppo_pilot/${TAG}"
 mkdir -p "$CKPT_DIR"
@@ -66,7 +71,7 @@ python -u -m pufferlib_market.train \
     --hidden-size 1024 \
     --anneal-lr \
     --disable-shorts \
-    --val-eval-windows 50 \
+    --val-eval-windows "$VAL_WINDOWS" \
     --early-stop-val-neg-threshold 25 \
     --early-stop-val-neg-patience 2 \
     --optimizer muon \
