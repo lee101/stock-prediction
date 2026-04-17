@@ -1,0 +1,89 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 12,
+  "ensemble_mode": "softmax_avg",
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.5,
+    2.0,
+    2.5,
+    3.0
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.2631450763143119,
+      "p10_total_return": 0.10023265423686273,
+      "p90_total_return": 0.4196856483249739,
+      "median_monthly_return": 0.10308850284122634,
+      "p10_monthly_return": 0.04093473978807609,
+      "median_sortino": 6.130105149420081,
+      "median_max_dd": 0.0786394147477833,
+      "n_neg": 13,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 2.0,
+      "median_total_return": 0.3079530389114861,
+      "p10_total_return": 0.07836758862655276,
+      "p90_total_return": 0.5031596426989982,
+      "median_monthly_return": 0.11935721654395114,
+      "p10_monthly_return": 0.03219575110996371,
+      "median_sortino": 5.454095692017123,
+      "median_max_dd": 0.1543677026267396,
+      "n_neg": 15,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 2.5,
+      "median_total_return": 0.3944705117373927,
+      "p10_total_return": 0.10214402433491467,
+      "p90_total_return": 0.6323121844599531,
+      "median_monthly_return": 0.14987841227856272,
+      "p10_monthly_return": 0.04169386671689718,
+      "median_sortino": 5.256465838318927,
+      "median_max_dd": 0.16522170905329975,
+      "n_neg": 17,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 3.0,
+      "median_total_return": 0.45955432298759186,
+      "p10_total_return": 0.07645503578270102,
+      "p90_total_return": 0.6798657529106458,
+      "median_monthly_return": 0.17212117210023486,
+      "p10_monthly_return": 0.03142647632381432,
+      "median_sortino": 5.574057243542554,
+      "median_max_dd": 0.19414983294616706,
+      "n_neg": 19,
+      "n_windows": 263
+    }
+  ]
+}
