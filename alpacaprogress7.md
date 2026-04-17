@@ -684,3 +684,94 @@ Practical next step:
 Saved artifact:
 
 - `analysis/hourly_multiseed_pass1_20260326.json`
+
+---
+
+# Frontier Efficiency Session (2026-04-17)
+
+Context at session start: 13-model v5 screened32 ensemble is locally optimal
+across 5 ensemble-add evals (D_s67, AB s1, AA s2, AB s2, AC s1/s2 via md5 parity)
+— all REJECT. Baseline OOS med=19.57%, p10=7.68%, neg=8/263, target is 30%/mo.
+
+Session goal: find one lever that actually moves the ensemble (not just the
+standalone metric). Hypotheses ranked by expected lift per push doc §4:
+  1. **E4** 2× leverage retrain      — highest expected lift
+  2. **E2b** fresh seed diversity    — load-bearing axis per memory
+  3. **Frontier efficiency**         — SPS × wall-clock speed-up for more seeds
+
+Only winners land here. Losers go to `failedalpacaprogress7.md`.
+
+## Baseline SPS (before any changes)
+
+Measured 2026-04-17 ~02:00 UTC on RTX 5090 with an idle box.
+
+| Metric | Value |
+|---|---|
+| GPU util (eval-only) | 7% (idle) |
+| PPO already `torch.compile`'d | yes (train.py:1432) |
+| CUDA-graph rollout support | yes (--cuda-graph-ppo) |
+| Sweep SPS seen today | AA/AC s3 ≈ 7,900 sps, AA/AB s3 ≈ 11,000 sps |
+
+The AA/AB difference is the `--group-relative-mix 0.3` overhead: AC includes
+the mix on top of cosine+anneal so it spends ~30% more wall-clock per update.
+
+---
+
+## [PENDING] E4 — 2× leverage retrain (D variant, fresh seeds)
+
+(results land here when training completes; see
+`pufferlib_market/checkpoints/screened32_leverage_sweep/D/lev2x_ds03/`)
+
+## [PENDING] E2b — fresh D seeds 200/201/202
+
+(results land here)
+
+## [DONE] Fused CUDA pair-step kernel (2026-04-17)
+
+**`pair_sim_cuda/`** — differentiable daily pair-step in a single fused CUDA
+kernel (forward + manual backward). Built for Blackwell (`sm_120`, RTX 5090).
+
+Model per (batch, pair):
+```
+trade       = target_pos - prev_pos
+threshold   = fee_bp + half_spread_bps + offset_bps          # 5bp buffer
+fill        = session_mask * sigmoid((reach_side_bps - threshold) / T)
+next_pos    = prev_pos + fill * trade
+turnover    = |next_pos - prev_pos|
+cost_frac   = turnover * (commission + half_spread + fee + 0.5*offset) * 1e-4
+pair_pnl    = next_pos * pair_ret - cost_frac
+```
+Plus differentiable EOD interest: `borrowed = max(0, sum(|next_pos|) - 1.0)`,
+`interest_frac = borrowed * (0.0625 / 252)` — matches the 2× leverage /
+6.25% borrow spec exactly.
+
+**Correctness**: 7/7 tests pass. Forward + backward match pure-PyTorch
+reference to 1e-5; `torch.autograd.gradcheck` at fp64 passes.
+
+**Speedup (RTX 5090, bench.py, median of 200 iters fwd+bwd)**:
+| B    | P     | eager ms | fused ms | speedup |
+|------|-------|---------:|---------:|--------:|
+| 64   | 128   | 1.458    | 0.558    | 2.61×   |
+| 64   | 2000  | 2.230    | 0.787    | 2.83×   |
+| 256  | 512   | 2.271    | 0.815    | 2.79×   |
+| 256  | 2000  | 2.450    | 0.788    | 3.11×   |
+| 1024 | 2000  | 2.307    | 0.788    | 2.93×   |
+
+Holds ~**0.79 ms** out to **2M pair-days per call** (B=1024, P=2000).
+~**2.6M fused pair-steps / second**. For a 10M-step run that's 8s vs
+23s at the kernel — the largest single-kernel speedup we've landed.
+
+**Artifacts**:
+- Source: `pair_sim_cuda/src/fused_pair_step.cu`
+- Autograd: `pair_sim_cuda/wrapper.py` (`fused_pair_step`, `daily_eod_interest`)
+- Tests: `pair_sim_cuda/tests/test_correctness.py`
+- Bench: `pair_sim_cuda/bench.py`, `reports/pair_sim_cuda_bench.json`
+
+**Next uses** (not yet wired):
+1. Replace the soft-sim step in `binanceneural/trainer.py` with
+   `fused_pair_step` → end-to-end differentiable pair P&L for full 2000+
+   pair portfolios at RL-train speed.
+2. Combinatorial pair allocator: a set-valued policy outputting
+   `(target_pos, offset_bps)` jointly, optimized by backprop through
+   this kernel + `daily_eod_interest` accumulated over a whole month.
+
