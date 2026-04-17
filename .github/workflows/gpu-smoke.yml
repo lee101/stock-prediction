@@ -1,0 +1,97 @@
+name: GPU Smoke (RunPod)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["gpu-smoke"]
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-smoke:
+    name: Torch CUDA inference smoke
+    runs-on: [self-hosted, runpod-gpu-smoke]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: nvidia-smi
+        run: nvidia-smi
+
+      - name: Python + torch versions
+        run: |
+          python3 --version
+          python3 -c "import torch; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('device_count', torch.cuda.device_count())"
+
+      - name: CUDA available assertion
+        run: |
+          python3 - <<'PY'
+          import torch, sys
+          assert torch.cuda.is_available(), "CUDA not available on self-hosted runner"
+          dev = torch.cuda.get_device_name(0)
+          print(f"CUDA device 0: {dev}")
+          sys.exit(0)
+          PY
+
+      - name: GPU inference smoke (matmul + tiny transformer forward)
+        run: |
+          python3 - <<'PY'
+          import time, torch
+          device = torch.device("cuda:0")
+
+          # 1) Basic matmul — sanity that FP32 compute runs on device.
+          a = torch.randn(4096, 4096, device=device)
+          b = torch.randn(4096, 4096, device=device)
+          torch.cuda.synchronize()
+          t0 = time.time()
+          c = a @ b
+          torch.cuda.synchronize()
+          dt = time.time() - t0
+          print(f"matmul 4096x4096 fp32: {dt*1000:.1f} ms, out.norm={c.norm().item():.2f}")
+
+          # 2) Tiny transformer forward — proves real nn.Module inference on GPU.
+          import torch.nn as nn
+          layer = nn.TransformerEncoderLayer(d_model=128, nhead=4, batch_first=True).to(device)
+          x = torch.randn(8, 32, 128, device=device)
+          torch.cuda.synchronize()
+          t0 = time.time()
+          with torch.inference_mode():
+              y = layer(x)
+          torch.cuda.synchronize()
+          dt = time.time() - t0
+          print(f"tf encoder forward: {dt*1000:.1f} ms, y.shape={tuple(y.shape)}, y.norm={y.norm().item():.3f}")
+
+          # 3) Allocation check.
+          print(f"cuda mem allocated: {torch.cuda.memory_allocated()//1024**2} MiB")
+          print(f"cuda mem reserved:  {torch.cuda.memory_reserved()//1024**2} MiB")
+          print("GPU smoke OK")
+          PY
+
+      - name: Report to CI Sentinel
+        if: always()
+        env:
+          CI_SENTINEL_ID: ${{ vars.CI_SENTINEL_ID }}
+          CI_SENTINEL_KEY: ${{ secrets.CODEX_INFINITY_API_KEY }}
+        run: |
+          if [ -z "$CI_SENTINEL_ID" ] || [ -z "$CI_SENTINEL_KEY" ]; then
+            echo "CI Sentinel not configured, skipping report"
+            exit 0
+          fi
+          curl -sf -X POST "https://codex-infinity.com/api/ci-sentinels/${CI_SENTINEL_ID}/events" \
+            -H "Authorization: Bearer ${CI_SENTINEL_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"external_id\": \"${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\",
+              \"repo\": \"${GITHUB_REPOSITORY}\",
+              \"branch\": \"${GITHUB_REF_NAME}\",
+              \"commit_sha\": \"${GITHUB_SHA}\",
+              \"workflow\": \"${GITHUB_WORKFLOW}\",
+              \"job_name\": \"${GITHUB_JOB}\",
+              \"run_number\": ${GITHUB_RUN_NUMBER},
+              \"run_attempt\": ${GITHUB_RUN_ATTEMPT},
+              \"status\": \"completed\",
+              \"conclusion\": \"${{ job.status }}\",
+              \"logs_url\": \"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"
+            }" || echo "Warning: Failed to report to CI Sentinel"
