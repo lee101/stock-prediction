@@ -1,0 +1,131 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 13,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s81.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    0.125,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 0.125,
+      "median_total_return": 0.02156301227218919,
+      "p10_total_return": 0.008882300461082088,
+      "p90_total_return": 0.032520330519029306,
+      "median_monthly_return": 0.009000466939818043,
+      "p10_monthly_return": 0.0037210014479778504,
+      "median_sortino": 5.622940341000969,
+      "median_max_dd": 0.008865848888146772,
+      "n_neg": 15,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 0.25,
+      "median_total_return": 0.04315478101843219,
+      "p10_total_return": 0.018056793169698434,
+      "p90_total_return": 0.06542168375798967,
+      "median_monthly_return": 0.017903191889292153,
+      "p10_monthly_return": 0.007544513832788294,
+      "median_sortino": 5.593592391537237,
+      "median_max_dd": 0.017691373183303858,
+      "n_neg": 13,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 0.5,
+      "median_total_return": 0.08524439533483565,
+      "p10_total_return": 0.03452289348931998,
+      "p90_total_return": 0.1277746409570248,
+      "median_monthly_return": 0.03495524944291359,
+      "p10_monthly_return": 0.014357032390356022,
+      "median_sortino": 5.572496156483623,
+      "median_max_dd": 0.03484564338037162,
+      "n_neg": 11,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 0.75,
+      "median_total_return": 0.12693967409989673,
+      "p10_total_return": 0.045458793071174224,
+      "p90_total_return": 0.20094040790555664,
+      "median_monthly_return": 0.05147337663040726,
+      "p10_monthly_return": 0.018846848136654906,
+      "median_sortino": 5.976980755766168,
+      "median_max_dd": 0.0557427804720106,
+      "n_neg": 11,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.17196764241379187,
+      "p10_total_return": 0.056664667852963146,
+      "p90_total_return": 0.26506920154207125,
+      "median_monthly_return": 0.06891841955591586,
+      "p10_monthly_return": 0.02341933609972557,
+      "median_sortino": 6.099896216455879,
+      "median_max_dd": 0.06282038619247027,
+      "n_neg": 11,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.259934933160999,
+      "p10_total_return": 0.07881285883665679,
+      "p90_total_return": 0.4101252924697982,
+      "median_monthly_return": 0.10191021552717665,
+      "p10_monthly_return": 0.03237473592019353,
+      "median_sortino": 6.199214516503925,
+      "median_max_dd": 0.0862196905983862,
+      "n_neg": 13,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 2.0,
+      "median_total_return": 0.32643777338024704,
+      "p10_total_return": 0.09951452771559634,
+      "p90_total_return": 0.5388790207017552,
+      "median_monthly_return": 0.12597433108534115,
+      "p10_monthly_return": 0.04064932829704377,
+      "median_sortino": 5.774267075257853,
+      "median_max_dd": 0.1492018114146452,
+      "n_neg": 14,
+      "n_windows": 263
+    }
+  ]
+}

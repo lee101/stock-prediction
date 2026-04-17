@@ -35,9 +35,23 @@ Output: `docs/realism_gate/screened32_single_offset_val_full_realism_gate.{json,
 - **Confirmed via realism gate at `max_leverage=0.125`** (`docs/realism_gate_live125/...`): live's expected monthly is `+0.90%/mo, p10=+0.37%, neg=15/263, sortino=5.62, max_dd=0.89%`. This matches the observed equity flatness ($28,679 unchanged for 3 days when the model also went argmax-flat — the model is argmax-flat 4.2% of val timesteps; see `project_live_flat_run_normal.md`).
 - **Top-k(k=1) ≡ argmax on this val** (`docs/realism_gate_topk/`): the live `_ensemble_top_k_signals` rule at k=1 produces identical PnL to argmax (+6.89%/mo, neg=11/263 at fb=5/lev=1) because `flat_prob ≈ 0.04 > top*0.5 ≈ 0.03`, collapsing the threshold to `top >= flat`.
 - **Path to higher live PnL** (in order of risk):
-  1. Bump `--allocation-pct` from 12.5 → 50 to recover ~4× the expected return (`~3.4%/mo`). Single-position concentration risk goes up.
+  1. Bump `--allocation-pct` from 12.5 → 50 to recover ~4× the expected return (`~3.50%/mo`). Single-position concentration risk goes up.
   2. Add `--multi-position 8 --multi-position-min-prob-ratio 0.5` to take top-8 longs at `12.5%` each (=100% notional) — this is the design intent that the previous version of this doc implied. Requires building a multi-position simulator first to validate before deploying (the existing realism gate is single-action only; k>1 routes through the trading-server portfolio rebalance which the C env doesn't model).
   3. Bump `--allocation-pct` further or add leverage only after (1)/(2) prove out at expected PnL on a few days.
+
+**Allocation curve (`docs/realism_gate_alloc_curve/...`)** — fb=5, lag=2, full 263-window val, single-action argmax:
+
+| max_lev | --allocation-pct equiv | med_monthly | p10_monthly | sortino | max_dd | n_neg |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.125 | 12.5 (current) | +0.90% | +0.37% | 5.62 | 0.89% | 15/263 |
+| 0.25 | 25 | +1.79% | +0.75% | 5.59 | 1.77% | 13/263 |
+| 0.5 | 50 | +3.50% | +1.44% | 5.57 | 3.48% | 11/263 |
+| 0.75 | 75 | +5.15% | +1.88% | 5.98 | 5.57% | 11/263 |
+| 1.0 | 100 | +6.89% | +2.34% | 6.10 | 6.28% | 11/263 |
+| 1.5 | 150 (margin 1.5×) | +10.19% | +3.24% | 6.20 ⭐ | 8.62% | 13/263 |
+| 2.0 | 200 (margin 2×) | +12.60% | +4.06% | 5.77 | 14.92% | 14/263 |
+
+PnL scales linearly with leverage (1×→2× ≈ 2× PnL); sortino is roughly constant across the range so risk-adjusted return is the same regardless of allocation. Max_dd inflects sharply between 1.5× and 2× (8.62→14.92, almost double). **Pareto knee remains 1.5×** (best sortino 6.20, only +0.55% max_dd over 1×).
 
 **Why the old headline didn't catch this**: `eval_multihorizon_candidate` aggregates 30/60/100/120-day horizons with a `--recent-within-days 140` tail. With a 313-day val, that filter restricts to the most recent ~140 days where this ensemble was tuned — the realism gate runs the full 263 windows so the bear tail can't be dropped.
 
