@@ -1,0 +1,90 @@
+{
+  "val_data": "pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fill_buffer_bps": 5.0,
+  "max_leverage": 1.0,
+  "decision_lag": 2,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "disable_shorts": true,
+  "ensemble_size": 12,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "results": [
+    {
+      "threshold": 0.0,
+      "median_monthly_return": 0.06233080020967315,
+      "p10_monthly_return": -0.001150664746286882,
+      "median_sortino": 5.910008250846914,
+      "median_max_dd": 0.06808207422401176,
+      "n_neg": 28,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.05,
+      "median_monthly_return": 0.06541538911556465,
+      "p10_monthly_return": 0.004906223944876152,
+      "median_sortino": 6.306700608794809,
+      "median_max_dd": 0.052181538020630094,
+      "n_neg": 23,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.1,
+      "median_monthly_return": 0.0,
+      "p10_monthly_return": -0.004952900036127138,
+      "median_sortino": 0.0,
+      "median_max_dd": 0.0,
+      "n_neg": 34,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.15,
+      "median_monthly_return": 0.0,
+      "p10_monthly_return": 0.0,
+      "median_sortino": 0.0,
+      "median_max_dd": 0.0,
+      "n_neg": 0,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.2,
+      "median_monthly_return": 0.0,
+      "p10_monthly_return": 0.0,
+      "median_sortino": 0.0,
+      "median_max_dd": 0.0,
+      "n_neg": 0,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.25,
+      "median_monthly_return": 0.0,
+      "p10_monthly_return": 0.0,
+      "median_sortino": 0.0,
+      "median_max_dd": 0.0,
+      "n_neg": 0,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.3,
+      "median_monthly_return": 0.0,
+      "p10_monthly_return": 0.0,
+      "median_sortino": 0.0,
+      "median_max_dd": 0.0,
+      "n_neg": 0,
+      "n_windows": 263
+    }
+  ]
+}

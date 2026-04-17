@@ -1,0 +1,90 @@
+{
+  "val_data": "pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fill_buffer_bps": 5.0,
+  "max_leverage": 1.0,
+  "decision_lag": 2,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "disable_shorts": true,
+  "ensemble_size": 12,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "results": [
+    {
+      "threshold": 0.0,
+      "median_monthly_return": 0.0746681360798813,
+      "p10_monthly_return": 0.03177269087920605,
+      "median_sortino": 6.735243987830111,
+      "median_max_dd": 0.05709192916473789,
+      "n_neg": 10,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.02,
+      "median_monthly_return": 0.0746681360798813,
+      "p10_monthly_return": 0.03177269087920605,
+      "median_sortino": 6.735243987830111,
+      "median_max_dd": 0.05709192916473789,
+      "n_neg": 10,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.04,
+      "median_monthly_return": 0.0746681360798813,
+      "p10_monthly_return": 0.03177269087920605,
+      "median_sortino": 6.735243987830111,
+      "median_max_dd": 0.05709192916473789,
+      "n_neg": 10,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.05,
+      "median_monthly_return": 0.06772884775059154,
+      "p10_monthly_return": 0.024047931712331275,
+      "median_sortino": 6.319775482913732,
+      "median_max_dd": 0.05108059478180115,
+      "n_neg": 12,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.06,
+      "median_monthly_return": 0.03326201498016875,
+      "p10_monthly_return": -0.006226495196319198,
+      "median_sortino": 3.8477178947476416,
+      "median_max_dd": 0.05980661688879024,
+      "n_neg": 42,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.08,
+      "median_monthly_return": -0.0008775861162779361,
+      "p10_monthly_return": -0.033492293048148165,
+      "median_sortino": -0.330603612766356,
+      "median_max_dd": 0.02714209734636879,
+      "n_neg": 148,
+      "n_windows": 263
+    },
+    {
+      "threshold": 0.1,
+      "median_monthly_return": 0.0,
+      "p10_monthly_return": -0.004952900036127138,
+      "median_sortino": 0.0,
+      "median_max_dd": 0.0026369450507821965,
+      "n_neg": 110,
+      "n_windows": 263
+    }
+  ]
+}
