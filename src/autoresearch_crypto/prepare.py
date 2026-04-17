@@ -211,7 +211,7 @@ def _run_scenario(
     buy_amounts_list = []
     sell_amounts_list = []
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(eval_len):
             feat_window = features_t[:, i:i + seq, :]
             outputs = model(feat_window)

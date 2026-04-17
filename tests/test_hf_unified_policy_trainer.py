@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import Dataset
 
@@ -17,6 +18,7 @@ from binanceneural.hf_trainer_bridge import (
     make_training_arguments,
     write_run_metadata,
 )
+import unified_hourly_experiment.train_hf_trainer_policy as train_hf_trainer_policy
 
 
 class _TinySequenceDataset(Dataset):
@@ -160,6 +162,7 @@ def test_hf_trainer_exports_portable_checkpoints(tmp_path: Path) -> None:
     assert (checkpoint_dir / ".topk_manifest.json").exists()
     progress = json.loads((checkpoint_dir / "training_progress.json").read_text())
     assert progress["epoch"] == 1
+    assert progress["trainer_backend"] == "transformers_trainer"
     assert progress["checkpoint_metric_name"] == "robust_score"
     assert progress["best_checkpoint"].endswith("epoch_001.pt")
 
@@ -297,3 +300,27 @@ def test_hf_trainer_logs_metrics_via_wandboard(tmp_path: Path, monkeypatch) -> N
     assert any("val/score" in payload for payload, _step in logger.logs)
     assert any(name == "train/feature_columns" for name, _text, _step in logger.texts)
     assert any(table_name == "hf_train_summary" for _hp, _metrics, _step, table_name in logger.hparams)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_message"),
+    [
+        (["prog", "--symbols", ""], "At least one symbol is required."),
+        (["prog", "--symbols", "../../etc/passwd"], "Unsupported symbol"),
+        (["prog", "--forecast-horizons", " , "], "At least one forecast horizon is required."),
+    ],
+)
+def test_train_hf_trainer_policy_rejects_invalid_plan_inputs_before_data_loading(
+    monkeypatch,
+    argv: list[str],
+    expected_message: str,
+) -> None:
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("Invalid plan input should fail before touching the data module")
+
+    monkeypatch.setattr(train_hf_trainer_policy.sys, "argv", argv)
+    monkeypatch.setattr(train_hf_trainer_policy, "MultiSymbolDataModule", _unexpected)
+
+    with pytest.raises(SystemExit, match="^Plan error:") as excinfo:
+        train_hf_trainer_policy.main()
+    assert expected_message in str(excinfo.value)

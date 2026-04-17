@@ -429,7 +429,7 @@ def _predict_ranked_batches(
     prediction_parts: list[np.ndarray] = []
     score_parts: list[np.ndarray] = []
     budget_parts: list[np.ndarray] = []
-    with torch.no_grad():
+    with torch.inference_mode():
         for start in range(0, len(features), int(batch_size)):
             stop = min(len(features), start + int(batch_size))
             feature_batch = torch.from_numpy(features[start:stop]).to(device=device, dtype=torch.float32)
@@ -768,7 +768,7 @@ def evaluate_validation(
     planner_losses: list[float] = []
     selection_losses: list[float] = []
     non_blocking = device.type == "cuda"
-    with torch.no_grad():
+    with torch.inference_mode():
         for batch in loader:
             features = batch["features"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
             targets = batch["targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)

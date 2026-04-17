@@ -489,6 +489,7 @@ class UnifiedPolicyHFTrainer(Trainer):
         payload = {
             "updated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "run_name": self.training_config.run_name,
+            "trainer_backend": "transformers_trainer",
             "epoch": int(epoch),
             "epochs": int(self.training_config.epochs),
             "checkpoint_metric_name": checkpoint_metric_name,

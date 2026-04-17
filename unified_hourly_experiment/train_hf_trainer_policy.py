@@ -22,6 +22,8 @@ from binanceneural.hf_trainer_bridge import (
     make_training_arguments,
     write_run_metadata,
 )
+from unified_hourly_experiment.classic_training_common import parse_horizons
+from unified_hourly_experiment.symbol_validation import parse_symbols
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 
 
@@ -93,8 +95,11 @@ def main() -> None:
     parser.add_argument("--wandb-log-metrics", action="store_true")
     args = parser.parse_args()
 
-    symbols = [token.strip().upper() for token in args.symbols.split(",") if token.strip()]
-    horizons = tuple(int(token.strip()) for token in args.forecast_horizons.split(",") if token.strip())
+    try:
+        symbols = parse_symbols(args.symbols)
+        horizons = parse_horizons(args.forecast_horizons)
+    except Exception as exc:
+        raise SystemExit(f"Plan error: {exc}") from exc
     run_name = args.run_name or f"alpaca_hf_trainer_{args.seed}"
     checkpoint_dir = args.checkpoint_root / run_name
     checkpoint_dir.mkdir(parents=True, exist_ok=True)

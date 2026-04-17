@@ -211,3 +211,61 @@ def test_validation_aggregates_binary_fill_metrics_across_lag_range_with_minimax
     assert metrics["score"] == pytest.approx(0.0)
     assert metrics["sortino"] == pytest.approx(10.0)
     assert metrics["return"] == pytest.approx(20.0)
+
+
+def test_training_uses_compiled_sim_loss_when_supported(monkeypatch) -> None:
+    lag_calls: list[int] = []
+
+    def _fake_compiled_sim_and_loss(**kwargs):
+        lag = int(kwargs["decision_lag_bars"])
+        lag_calls.append(lag)
+        score = torch.tensor(float(lag))
+        loss = -score.mean()
+        sortino = score + 10.0
+        annual_return = score + 20.0
+        return loss, score, sortino, annual_return
+
+    def _unexpected_sim(**_kwargs):
+        raise AssertionError("standard simulation path should not run when compiled sim+loss is selected")
+
+    monkeypatch.setattr("binanceneural.trainer._compiled_sim_loss_supported", lambda *_args, **_kwargs: (True, 0.0, 8760.0))
+    monkeypatch.setattr("binanceneural.trainer.compiled_sim_and_loss", _fake_compiled_sim_and_loss)
+    monkeypatch.setattr("binanceneural.trainer.simulate_hourly_trades", _unexpected_sim)
+    monkeypatch.setattr("binanceneural.trainer.simulate_hourly_trades_fast", _unexpected_sim)
+    monkeypatch.setattr("binanceneural.trainer.simulate_hourly_trades_triton", _unexpected_sim)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = TrainingConfig(
+            epochs=1,
+            batch_size=1,
+            sequence_length=6,
+            transformer_dim=16,
+            transformer_layers=1,
+            transformer_heads=4,
+            transformer_dropout=0.0,
+            use_compile=False,
+            use_amp=False,
+            use_tf32=False,
+            use_flash_attention=False,
+            checkpoint_root=Path(tmpdir) / "ckpts",
+            run_name="compiled_sim_loss_train",
+            decision_lag_bars=0,
+            decision_lag_range="0,1,2",
+            loss_type="sortino",
+            use_compiled_sim_loss=True,
+        )
+        trainer = BinanceHourlyTrainer(cfg, _SingleBatchDataModule())
+        metrics, _ = trainer._run_epoch(
+            _DummyPolicy(),
+            trainer.data.train_dataloader(batch_size=1),
+            optimizer=None,
+            train=True,
+            global_step=0,
+            current_epoch=1,
+        )
+
+    assert lag_calls == [0, 1, 2]
+    assert metrics["loss"] == pytest.approx(-1.0)
+    assert metrics["score"] == pytest.approx(1.0)
+    assert metrics["sortino"] == pytest.approx(11.0)
+    assert metrics["return"] == pytest.approx(21.0)

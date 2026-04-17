@@ -66,6 +66,46 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+def _scalar_float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    if torch.is_tensor(value):
+        if value.numel() != 1:
+            return None
+        return float(value.detach().reshape(()).item())
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compiled_sim_loss_supported(
+    config: TrainingConfig,
+    *,
+    train: bool,
+    device: torch.device,
+    use_rebal: bool,
+    maker_fee: object,
+    periods_per_year: object,
+    backend_failed: bool,
+) -> tuple[bool, float | None, float | None]:
+    if backend_failed or not train or use_rebal or device.type != "cuda":
+        return False, None, None
+    if not bool(getattr(config, "use_compiled_sim_loss", False)) or not HAS_COMPILED_SIM_LOSS or compiled_sim_and_loss is None:
+        return False, None, None
+    if str(config.loss_type or "sortino").strip().lower() != "sortino":
+        return False, None, None
+    if bool(config.market_order_entry):
+        return False, None, None
+    if float(getattr(config, "smoothness_penalty", 0.0)) != 0.0:
+        return False, None, None
+    maker_fee_value = _scalar_float_or_none(maker_fee)
+    periods_value = _scalar_float_or_none(periods_per_year)
+    if maker_fee_value is None or periods_value is None:
+        return False, None, None
+    return True, maker_fee_value, periods_value
+
+
 def _aggregate_validation_lag_metrics(
     losses: list[torch.Tensor],
     scores: list[torch.Tensor],
@@ -133,6 +173,7 @@ class BinanceHourlyTrainer:
         self._scaler = None
         self._total_train_steps = 0
         self._weight_decay_groups: list[tuple[dict, float]] = []
+        self._compiled_sim_loss_failed = False
 
     def _should_fallback_to_cpu(self, exc: BaseException) -> bool:
         return should_auto_fallback_to_cpu(self.config.device, self.device, exc)
@@ -770,6 +811,19 @@ class BinanceHourlyTrainer:
 
                 with sim_context:
                     use_rebal = bool(self.config.use_rebalance_sim)
+                    batch_maker_fee = batch.get("maker_fee", self.config.maker_fee)
+                    periods_per_year = batch.get("periods_per_year", None)
+                    if periods_per_year is None:
+                        periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+                    use_compiled_sim_loss, compiled_maker_fee, compiled_periods_per_year = _compiled_sim_loss_supported(
+                        self.config,
+                        train=train,
+                        device=device,
+                        use_rebal=use_rebal,
+                        maker_fee=batch_maker_fee,
+                        periods_per_year=periods_per_year,
+                        backend_failed=self._compiled_sim_loss_failed,
+                    )
 
                     if use_rebal:
                         allow_short = bool(getattr(self.config, "rebalance_allow_short", False))
@@ -831,7 +885,7 @@ class BinanceHourlyTrainer:
                             "trade_intensity": trade_intensity,
                             "buy_trade_intensity": buy_intensity,
                             "sell_trade_intensity": sell_intensity,
-                            "maker_fee": batch.get("maker_fee", self.config.maker_fee),
+                            "maker_fee": batch_maker_fee,
                             "initial_cash": self.config.initial_cash,
                             "can_short": batch.get("can_short", False),
                             "can_long": batch.get("can_long", True),
@@ -846,7 +900,62 @@ class BinanceHourlyTrainer:
                                 return simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=lag_i)
                             return sim_fn(**sim_kwargs, temperature=float(self.config.fill_temperature), decision_lag_bars=lag_i)
 
-                    if train and len(lag_list) > 1:
+                        def _run_compiled_loss(lag_i):
+                            loss_i, score_i, sortino_i, annual_return_i = compiled_sim_and_loss(
+                                highs=sim_highs,
+                                lows=sim_lows,
+                                closes=sim_closes,
+                                buy_prices=sim_buy,
+                                sell_prices=sim_sell,
+                                buy_frac=buy_intensity,
+                                sell_frac=sell_intensity,
+                                max_leverage=self.config.max_leverage,
+                                can_short=batch.get("can_short", False),
+                                can_long=batch.get("can_long", True),
+                                initial_cash=self.config.initial_cash,
+                                maker_fee=compiled_maker_fee,
+                                temperature=float(self.config.fill_temperature),
+                                fill_buffer_pct=self._get_fill_buffer(current_epoch),
+                                margin_annual_rate=float(self.config.margin_annual_rate),
+                                periods_per_year=compiled_periods_per_year,
+                                return_weight=float(self.config.return_weight),
+                                decision_lag_bars=lag_i,
+                            )
+                            if float(self.config.sortino_target_sign) != 1.0:
+                                loss_i = -float(self.config.sortino_target_sign) * score_i.mean()
+                            return loss_i, score_i, sortino_i, annual_return_i
+
+                    used_compiled_sim_loss = False
+                    if use_compiled_sim_loss:
+                        try:
+                            if train and len(lag_list) > 1:
+                                all_losses = []
+                                all_scores = []
+                                all_sortinos = []
+                                all_returns_val = []
+                                for lag_i in lag_list:
+                                    lo_i, sc_i, so_i, ar_i = _run_compiled_loss(lag_i)
+                                    all_losses.append(lo_i)
+                                    all_scores.append(sc_i)
+                                    all_sortinos.append(so_i)
+                                    all_returns_val.append(ar_i)
+                                loss = sum(all_losses) / len(all_losses)
+                                with torch.no_grad():
+                                    score = sum(all_scores) / len(all_scores)
+                                    sortino = sum(all_sortinos) / len(all_sortinos)
+                                    annual_return = sum(all_returns_val) / len(all_returns_val)
+                                used_compiled_sim_loss = True
+                            elif train:
+                                loss, score, sortino, annual_return = _run_compiled_loss(base_lag)
+                                used_compiled_sim_loss = True
+                        except Exception as exc:
+                            self._compiled_sim_loss_failed = True
+                            logger.warning(
+                                "Compiled sim+loss backend failed; falling back to standard market simulation: %s",
+                                exc,
+                            )
+
+                    if (not used_compiled_sim_loss) and train and len(lag_list) > 1:
                         all_losses = []
                         all_scores = []
                         all_sortinos = []
@@ -854,14 +963,11 @@ class BinanceHourlyTrainer:
                         for lag_i in lag_list:
                             sim_i = _run_sim(lag_i, is_val=False)
                             ret_i = sim_i.returns.float()
-                            ppy = batch.get("periods_per_year", None)
-                            if ppy is None:
-                                ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
                             lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
                                 ret_i,
                                 self.config.loss_type,
                                 target_sign=self.config.sortino_target_sign,
-                                periods_per_year=ppy,
+                                periods_per_year=periods_per_year,
                                 return_weight=self.config.return_weight,
                                 smoothness_penalty=self.config.smoothness_penalty,
                                 dd_penalty=self.config.dd_penalty,
@@ -877,7 +983,7 @@ class BinanceHourlyTrainer:
                             score = sum(all_scores) / len(all_scores)
                             sortino = sum(all_sortinos) / len(all_sortinos)
                             annual_return = sum(all_returns_val) / len(all_returns_val)
-                    elif (not train) and len(lag_list) > 1:
+                    elif (not used_compiled_sim_loss) and (not train) and len(lag_list) > 1:
                         val_losses = []
                         val_scores = []
                         val_sortinos = []
@@ -885,14 +991,11 @@ class BinanceHourlyTrainer:
                         for lag_i in lag_list:
                             sim_i = _run_sim(lag_i, is_val=True)
                             ret_i = sim_i.returns.float()
-                            ppy = batch.get("periods_per_year", None)
-                            if ppy is None:
-                                ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
                             lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
                                 ret_i,
                                 self.config.loss_type,
                                 target_sign=self.config.sortino_target_sign,
-                                periods_per_year=ppy,
+                                periods_per_year=periods_per_year,
                                 return_weight=self.config.return_weight,
                                 smoothness_penalty=self.config.smoothness_penalty,
                                 dd_penalty=self.config.dd_penalty,
@@ -910,15 +1013,12 @@ class BinanceHourlyTrainer:
                             val_returns,
                             mode=str(getattr(self.config, "validation_lag_aggregation", "minimax")),
                         )
-                    else:
+                    elif not used_compiled_sim_loss:
                         val_lag = max(lag_list) if not train else base_lag
                         sim = _run_sim(val_lag, is_val=not train)
 
-                if not ((train and len(lag_list) > 1) or ((not train) and len(lag_list) > 1)):
+                if not used_compiled_sim_loss and not ((train and len(lag_list) > 1) or ((not train) and len(lag_list) > 1)):
                     returns = sim.returns.float()
-                    periods_per_year = batch.get("periods_per_year", None)
-                    if periods_per_year is None:
-                        periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
                     loss, score, sortino, annual_return = compute_loss_by_type(
                         returns,
                         self.config.loss_type,

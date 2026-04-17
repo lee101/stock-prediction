@@ -110,7 +110,7 @@ def evaluate_checkpoint(
 
         for step in range(max_steps):
             obs_t = torch.from_numpy(obs_buf.copy()).to(device)
-            with torch.no_grad():
+            with torch.inference_mode():
                 logits, _ = policy(obs_t)
             actions = logits.argmax(dim=-1).cpu().numpy().astype(np.int32)
             act_buf[:] = actions

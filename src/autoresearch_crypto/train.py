@@ -243,7 +243,7 @@ def main(argv=None) -> int:
         val_return_sum = 0.0
         val_steps = 0
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for sym in task_config.symbols:
                 for batch in val_loaders[sym]:
                     features = batch["features"].to(device)

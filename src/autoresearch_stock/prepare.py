@@ -1180,7 +1180,7 @@ def _predict_in_batches(
 
     predictions: list[np.ndarray] = []
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for start in range(0, len(features), int(batch_size)):
             stop = min(len(features), start + int(batch_size))
             feature_batch = torch.from_numpy(features[start:stop]).to(device=device, dtype=torch.float32)

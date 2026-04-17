@@ -267,7 +267,7 @@ def train(args=None):
 
             policy.obs_norm.update(obs_t)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 action, logprob, _, value = policy.get_action_and_value(obs_t)
 
             buf_act[step] = action.cpu()
@@ -282,7 +282,7 @@ def train(args=None):
 
         total_timesteps += batch_size
 
-        with torch.no_grad():
+        with torch.inference_mode():
             next_obs = torch.from_numpy(obs_buf).to(device, non_blocking=True)
             policy.obs_norm.update(next_obs)
             next_value = policy.get_value(next_obs).cpu()
@@ -358,7 +358,7 @@ def train(args=None):
                 nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
                 optimizer.step()
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for k, v in policy.state_dict().items():
                 ema_state[k].mul_(ema_decay).add_(v, alpha=1 - ema_decay)
         mean_reward = buf_reward.mean().item()
