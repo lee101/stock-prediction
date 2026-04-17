@@ -791,6 +791,38 @@ error pattern is anti-correlated with EVERY existing member. The 13m v5
 ensemble is genuinely locally optimal under single-substitution edits with
 this candidate. (Artifact: `docs/swap_in/ad_s9_swap.json`.)
 
+## [FINDING] v6 LOO sweep — D_s81 is free-drop (2026-04-17)
+
+`scripts/screened32_leave_one_out.py` on the live 13m v6 (C_s7 + 12 extras
+incl. AD_s4). Each row = (13m baseline) → (12m with member i dropped):
+
+| Drop | Δ med   | Δ p10   | Δ neg | Verdict      |
+|------|--------:|--------:|------:|--------------|
+| D_s81 | **−0.05%** | **+0.46%** | **−1** | **free-drop** |
+| I_s32 | −0.38%  | −0.65%  | +4    | load-bearing |
+| D_s42 | −0.49%  | −2.08%  | +11   | load-bearing |
+| AD_s4 | −0.49%  | −0.14%  | +0    | load-bearing (soft) |
+| I_s3 (×2) | −0.67% | −0.27% | +2    | load-bearing |
+| D_s64 | −0.76%  | −0.83%  | +3    | load-bearing |
+| D_s2  | −0.99%  | −1.46%  | +8    | load-bearing |
+| D_s16 | −1.03%  | −3.58%  | **+23** | load-bearing (heavy) |
+| D_s57 | −1.04%  | −0.64%  | +2    | load-bearing |
+| C_s7  | −1.45%  | −0.78%  | −1    | load-bearing |
+| D_s28 | −1.79%  | −1.51%  | +4    | load-bearing |
+| D_s14 | **−2.80%** | −1.51%  | +5    | load-bearing (anchor) |
+
+**Action**: D_s81 is now the open slot. Any candidate that failed 14th-member
+add-test may still win a **swap-in for D_s81** (drop D_s81, add candidate).
+The 14th-member add-test is a strict superset of what helps / hurts the
+ensemble — swap tests are a softer gate. Start running
+`screened32_swap_in.py` on the top prior-failed candidates:
+
+1. D_s97 (prior 14th-member reject, but strong standalone: med=+8.93%, neg=15, sortino=15)
+2. E4 lev2x_ds03 s3 (softest 14m reject this session, worst_delta=−0.44%)
+3. AD_s9 (already swept, 0/13 — formally a "load-bearing member error-correlated with everyone" signature)
+
+Artifacts: `docs/leave_one_out_v6/leave_one_out.json`, `docs/leave_one_out_v6/run.log`
+
 ## [PENDING] E2b — fresh D seeds 200/201/202
 
 (results land here)
