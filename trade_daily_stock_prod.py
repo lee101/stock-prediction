@@ -4674,7 +4674,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "per-policy softmax probabilities; conservative members can drag aggregated "
             "argmax toward flat. logit_avg averages raw logits, which produces sharper "
             "non-flat decisions when member top-action confidences dominate. Diagnostic "
-            "shows logit_avg cuts flat-argmax rate from 9.6% to 0.4% on val with same "
+            "shows logit_avg cuts flat-argmax rate from 9.6%% to 0.4%% on val with same "
             "top-action distribution."
         ),
     )
