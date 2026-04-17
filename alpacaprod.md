@@ -7,6 +7,68 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-17 — Realism-gate sweep on prod 13-model v5 ensemble (NEW DEPLOY GATE)
+
+The headline `med=19.57%/mo, 8/263 neg` from 2026-04-14 was a 30d-horizon, recent-tail eval at 5bps fill_buffer. `scripts/screened32_realism_gate.py` re-runs the same prod ensemble (C_s7 + 9 D + I_s3×2 + I_s32) on the **full** screened32 single-offset val with binary fills, lag=2, fee=10bps, slip=5bps, shorts disabled, across `fill_buffer × max_leverage` cells. This is what an order would actually see on live Alpaca with the 5bp queue rule.
+
+Output: `docs/realism_gate/screened32_single_offset_val_full_realism_gate.{json,md}`
+
+| fill_bps \ leverage | 1x median/mo | 1.5x median/mo | 2x median/mo |
+|---:|---:|---:|---:|
+| 0  | +6.03%  (neg 11) | +7.97%  (neg 13) | +10.27% (neg 19) |
+| 5  | +6.89%  (neg 11) | +10.19% (neg 13) | +12.60% (neg 14) |
+| 10 | +7.04%  (neg 19) | +10.39% (neg 21) | +13.04% (neg 23) |
+| 20 | +6.97%  (neg 21) | +10.24% (neg 22) | +12.63% (neg 23) |
+
+**Calibration**: at 30d windows + recent-tail (the older eval), the realism gate gives `med=+5.87%/mo, neg=42/283` at fb=5/lev=1 — i.e. the 19.57%/mo headline is *not* reproducible from the 13-model ensemble on this val data when run window-for-window with binary fills and a real 5bp limit-order queue. The headline came from a 30d-horizon `eval_multihorizon_candidate` slice that aggregated horizons 30/60/100/120 with a 140-day recent-tail filter, so it implicitly cherry-picked the bull tail. **The realism gate is the new ground truth for the deploy decision** — older `eval_multihorizon` numbers are still useful for relative seed-vs-seed comparisons but must not be quoted as the deployable monthly return.
+
+**Deploy-gate findings**:
+- 5 bps fill_buffer is the floor — wider (10/20bps) increases neg windows from 11→19+ without lifting the median. We're already on the right side of this knob.
+- 1x leverage (current `--allocation-pct 12.5` × top 8 = 100% notional) does NOT clear `27%/mo`. Best 1x cell is `+7.04%/mo, neg=19/263, sortino=6.52`.
+- 1.5x leverage (≈ `--allocation-pct ~18` × top 8) is the Pareto knee: `+10.19%/mo, neg=13/263, sortino=6.20, max_dd=8.62%` at fb=5. Adds only +2 neg windows over 1x and a +0.55% nominal max_dd hit.
+- 2x leverage adds +2.4%/mo on top of 1.5x but bumps max_dd from 8.6% → 14.9% and neg windows by another +1. Diminishing returns.
+- **Recommendation**: bump live `--allocation-pct` from 12.5 → 18.75 (max 8 picks × 18.75% = 1.5× notional). Re-run the gate before/after to confirm the curve before flipping the live flag.
+
+**Why the old headline didn't catch this**: `eval_multihorizon_candidate` aggregates 30/60/100/120-day horizons with a `--recent-within-days 140` tail. With a 313-day val, that filter restricts to the most recent ~140 days where this ensemble was tuned — the realism gate runs the full 263 windows so the bear tail can't be dropped.
+
+The tariff-crash bear cluster (Mar–Apr 2026) is what costs the ensemble: 11 of the 11 neg windows at fb=5/lev=1 fall in indices ≥ ~200, which corresponds to that crash period.
+
+#### Hard rules unchanged
+- Death-spiral guard, singleton lock, decision_lag=2 are all enforced (now also at C-binding default — see `da842586`).
+- New tests: `tests/test_screened32_realism_gate.py` runs a 1×1×2-window smoke against real prod val on every CI run.
+
+---
+
+### 2026-04-14 — Stock daily live deployment via trading server
+
+#### Config
+- **Bot**: `trade_daily_stock_prod.py`
+- **Execution path**: `--execution-backend trading_server --server-account live_prod --server-bot-id daily_stock_sortino_v1`
+- **Checkpoint set**: `pufferlib_market/prod_ensemble_screened32/` 13-checkpoint ensemble rooted at `C_s7.pt`
+- **Symbols**: 32 screened large-cap equities/ETFs (`LLY BSX ABBV VRTX SYK WELL JPM GS V MA AXP MS AAPL MSFT NVDA KLAC CRWD META COST AZO TJX CAT PH RTX BKNG MAR HLT PLTR SPY QQQ AMZN GOOG`)
+- **Supervisor**:
+  - `trading-server`
+  - `daily-rl-trader`
+
+#### Deployment state
+- `trading-server` is the only live Alpaca broker writer and holds `alpaca_live_writer`
+- `live_prod.allowed_bot_id = daily_stock_sortino_v1`
+- `llm-stock-trader` was removed from active supervisor config
+- legacy `daily-rl-trader.service` systemd unit was stopped
+- `live_prod` trading-server account was seeded from the real Alpaca account:
+  - `cash=28679.04`
+  - `equity=28679.04`
+  - `buying_power=28679.04`
+
+#### Current status
+- `trading-server`: running
+- `daily-rl-trader`: running
+- `open_orders=[]`
+- `writer_claim=null`
+- At deployment time the U.S. equity market was closed, so the daemon logged `Sleeping 940.2 minutes` and is waiting for the next market-open cycle before it can submit any stock orders.
+- 2026-04-15 06:59 UTC dry-run on the live server still loads the same 13-checkpoint ensemble and emits `flat` on fresh Alpaca bars (`latest=2026-04-14T04:00:00+00:00`, confidence `5.47%`, value `-1.2208`). No-trade state is currently model output, not a crashed daemon.
+- `daily-rl-trader.service` remains an inactive legacy systemd unit on the host; the authoritative live deployment path is supervisor via `deployments/daily-rl-trader/launch.sh` plus `deployments/trading-server/launch.sh`.
+
 ### 2026-04-14 — Crypto30 Daily PPO Ensemble (DRY-RUN)
 
 #### Config
