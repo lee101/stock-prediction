@@ -1,0 +1,48 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 14,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s81.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt",
+    "pufferlib_market/checkpoints/screened32_sweep/AD/s5/best.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.0
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.15022555330844825,
+      "p10_total_return": 0.023863273249936395,
+      "p90_total_return": 0.23618077962920433,
+      "median_monthly_return": 0.060544423884679004,
+      "p10_monthly_return": 0.00995407356748849,
+      "median_sortino": 4.848804786207562,
+      "median_max_dd": 0.07636939906492145,
+      "n_neg": 19,
+      "n_windows": 263
+    }
+  ]
+}

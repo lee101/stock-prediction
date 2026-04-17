@@ -1,0 +1,62 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 14,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s81.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt",
+    "pufferlib_market/checkpoints/screened32_sweep/D/s67/val_best.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.0,
+    1.5
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.12281683476987036,
+      "p10_total_return": 0.006928790928368657,
+      "p90_total_return": 0.22708875050586702,
+      "median_monthly_return": 0.049856023992626196,
+      "p10_monthly_return": 0.0029042660412053195,
+      "median_sortino": 4.748826103275525,
+      "median_max_dd": 0.0697421496716089,
+      "n_neg": 24,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.18122152511549722,
+      "p10_total_return": 0.013180947137881194,
+      "p90_total_return": 0.30597157912459977,
+      "median_monthly_return": 0.07245522146586272,
+      "p10_monthly_return": 0.005514982249718036,
+      "median_sortino": 4.7433666787634206,
+      "median_max_dd": 0.11097175913172139,
+      "n_neg": 25,
+      "n_windows": 263
+    }
+  ]
+}
