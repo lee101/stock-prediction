@@ -722,13 +722,24 @@ the mix on top of cosine+anneal so it spends ~30% more wall-clock per update.
 
 ---
 
-## [IN-FLIGHT] E4 — 2× leverage retrain (D variant, fresh seeds)
+## [REJECT-SOFT] E4 — 2× leverage retrain (D variant, seed 1)
 
 lev2x_ds03/s1 training finished 2026-04-17 05:26 UTC (15M steps, 457/457
 updates, final val med=-1.4% neg=21/30 trades_avg=33.9, best_neg=14).
-Standalone in-training val is weak — likely a reject — but the 14th-member
-ensemble-add test is running (`reports/e4_lev2x_ds03_s1_14th_candidate.json`)
-since strong in-training val is not predictive anyway.
+14th-member ensemble-add test → `reports/e4_lev2x_ds03_s1_14th_candidate.json`:
+
+| Metric           | Δ vs 13-model v5 |
+|------------------|:----------------:|
+| mean median/mo   | **−0.56%**       |
+| mean p10/mo      | −0.33%           |
+| mean neg windows | **+0.00**        |
+| wins / cells     | 0 / 4            |
+
+Soft reject: **zero extra negative windows** means the leverage-boosted D
+has nearly break-even risk additivity, but doesn't lift the median. This is
+the softest reject in the batch on the neg axis — worth running seeds 2-5
+to find one that also pulls median.
+
 (Checkpoint: `pufferlib_market/checkpoints/screened32_leverage_sweep/D/lev2x_ds03/s1/val_best.pt`)
 
 ## [PENDING] E2b — fresh D seeds 200/201/202

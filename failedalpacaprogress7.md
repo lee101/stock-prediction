@@ -40,6 +40,12 @@ the same GPU hours.
 
 ## 2026-04-17 frontier-session dead-ends (this push)
 
-- **D_s67, AB s1, AA s2, AB s2, AD s1, AD s9, C_lev1p5x_s1** — seven distinct 14th-member
-  ensemble-add evals, 0 wins, mean delta median monthly return ∈ [−4.04%, −0.68%].
+- **D_s67, AB s1, AA s2, AB s2, AD s1, AD s9, C_lev1p5x_s1, E4 lev2x_ds03 s1** — eight distinct 14th-member
+  ensemble-add evals, 0 wins, mean delta median monthly return ∈ [−4.04%, −0.56%].
   13-model v5 ensemble confirmed locally optimal under the 14th-member one-at-a-time test.
+- **E4 lev2x_ds03 s1 as 14th member** (2026-04-17): mean delta −0.56% med, −0.33% p10, **+0.00 neg** → REJECT
+  - Softest reject on the neg axis (zero extra losing windows!) but median drops 0.56%.
+  - Standalone val was weak (med=-1.4%, neg=21/30, best_neg=14) yet ensemble additivity
+    was nearly break-even on risk. Leverage-boosted D may have real complementary signal
+    but needs more seeds to find one that wins the median too.
+  - **Next move**: run the leverage sweep to seeds 2-5 instead of killing E4 outright.
