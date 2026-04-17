@@ -1,0 +1,33 @@
+{
+  "ensemble": [
+    "C_s7",
+    "D_s16",
+    "D_s42",
+    "D_s3",
+    "I_s3",
+    "D_s2",
+    "D_s14",
+    "D_s28",
+    "D_s81",
+    "D_s57",
+    "I_s3",
+    "D_s64",
+    "I_s32"
+  ],
+  "k": 3,
+  "min_prob_ratio": 0.5,
+  "total_alloc": 1.0,
+  "decision_lag": 2,
+  "fill_buffer_bps": 5.0,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "window_days": 50,
+  "summary": {
+    "median_monthly": 0.019724445022695256,
+    "p10_monthly": -0.012629991499356164,
+    "median_sortino": 1.9153381155105142,
+    "median_max_dd": 0.060590807509547484,
+    "n_neg": 55,
+    "n_windows": 262
+  }
+}

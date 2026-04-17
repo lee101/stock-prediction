@@ -19,6 +19,20 @@ analogue). Features at `t_obs = t-1` to match C env's 1-bar lag.
 | 0.95 | +4.03% | −0.80% | 2.63 | 9.73% | 40/262 |
 | **argmax (single-action baseline)** | **+6.89%** | **+2.34%** | **6.10** | **6.28%** | **11/263** |
 
+## k-sweep at ratio=0.5, total_alloc=1.0 (also LOSES monotonically)
+
+| k | med_monthly | p10_monthly | sortino | n_neg |
+|---:|---:|---:|---:|---:|
+| 1 (argmax) | **+6.89%** | **+2.34%** | **6.10** | **11/263** |
+| 2 | +2.63% | −0.72% | 2.17 | 39/262 |
+| 3 | +1.97% | −1.26% | 1.92 | 55/262 |
+| 4 | +1.77% | −1.33% | 1.73 | 63/262 |
+| 8 | +1.45% | −1.21% | 1.53 | 68/262 |
+
+Returns degrade monotonically as k increases. Even k=2 loses by half.
+The 13-model ensemble's softmax mass beyond top-1 is essentially noise —
+splitting equity to the 2nd-ranked symbol always hurts.
+
 ## Conclusion: don't deploy `--multi-position 8`
 
 Single-action argmax beats every multipos cell on every metric:
