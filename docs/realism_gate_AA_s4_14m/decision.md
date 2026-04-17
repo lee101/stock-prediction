@@ -19,6 +19,7 @@ Baseline 13-model: **med +6.89%/mo, p10 +2.34%, sortino 6.10, neg 11/263**
 | AD_s5 | +6.05% | +1.00% | 4.85 | 19 | −0.84% | +8 | ❌ reject |
 | AD_s6 | +6.01% | +1.32% | 5.29 | 17 | −0.88% | +6 | ❌ reject |
 | AD_s7 | +5.47% | +0.45% | 5.23 | 22 | −1.42% | +11 | ❌ reject (worst, doubles negs) |
+| AD_s9 | +5.90% | +0.67% | 4.66 | 16 | −0.99% | +5 | ❌ reject (strong standalone, errors correlate) |
 
 ## Notes
 
@@ -38,11 +39,18 @@ Baseline 13-model: **med +6.89%/mo, p10 +2.34%, sortino 6.10, neg 11/263**
   on 100 sampled windows and the 14m gate confirms: doubling negs is a
   catastrophic failure mode. Train-time return doesn't predict
   ensemble-membership utility.
+- AD_s9 — strongest standalone in the entire AD batch (med 14.10%,
+  neg 11/263, sortino 18.43 — better than s4 across the board) yet
+  STILL rejects as 14th member (neg 11→16, med −0.99%/mo). Its errors
+  correlate with existing ensemble members rather than hedge them. This
+  refutes the "standalone strength predicts ensemble lift" hypothesis:
+  ensemble utility requires *uncorrelated* signal, not just *strong*
+  signal. Future candidates need diversity criterion beyond raw med/neg.
 
 ## Conclusion
 
-None of the AA/AB/AC/AD sweep candidates (9 tested: AA/AB/AC s4 +
-AD s2-s7) improve the deploy
+None of the AA/AB/AC/AD sweep candidates (10 tested: AA/AB/AC s4 +
+AD s2-s7,s9) improve the deploy
 gate. A* sweep is exhausted as a 14th-member candidate source.
 Continue waiting for new candidates from D/I/U sweeps. Bar for swap-in:
 - (a) median-monthly improvement at 1× cell ≥ +0.5%
