@@ -36,8 +36,9 @@ Output: `docs/realism_gate/screened32_single_offset_val_full_realism_gate.{json,
 - **Top-k(k=1) ≡ argmax on this val** (`docs/realism_gate_topk/`): the live `_ensemble_top_k_signals` rule at k=1 produces identical PnL to argmax (+6.89%/mo, neg=11/263 at fb=5/lev=1) because `flat_prob ≈ 0.04 > top*0.5 ≈ 0.03`, collapsing the threshold to `top >= flat`.
 - **Path to higher live PnL** (in order of risk):
   1. Bump `--allocation-pct` from 12.5 → 50 to recover ~4× the expected return (`~3.50%/mo`). Single-position concentration risk goes up.
-  2. Add `--multi-position 8 --multi-position-min-prob-ratio 0.5` to take top-8 longs at `12.5%` each (=100% notional) — this is the design intent that the previous version of this doc implied. Requires building a multi-position simulator first to validate before deploying (the existing realism gate is single-action only; k>1 routes through the trading-server portfolio rebalance which the C env doesn't model).
-  3. Bump `--allocation-pct` further or add leverage only after (1)/(2) prove out at expected PnL on a few days.
+  2. ~~Add `--multi-position 8`~~ **NOT recommended** (`docs/realism_gate_multipos/`): the multi-position simulator now exists and finds k=8 strictly LOSES to argmax across every metric (best multipos cell med +4.03%/mo vs argmax +6.89%/mo, sortino 2.63 vs 6.10, neg 40 vs 11). Diversification benefit < dilution cost.
+  3. Bump `--allocation-pct` further or add leverage only after (1) proves out at expected PnL on a few days.
+  4. **NEW: SPY MA20 → MA50 filter swap** (`docs/regime_filter_gate/`): committed in `src/market_regime.py` (default `lookback=20 → 50`). Free ~+1.16%/mo lift on the gate (med +6.89→+8.05%, p10 +2.34→+3.45%, neg-rate 4.2→2.7%). Realized live impact at current `--allocation-pct 12.5` is ~+0.15%/mo.
 
 **Allocation curve (`docs/realism_gate_alloc_curve/...`)** — fb=5, lag=2, full 263-window val, single-action argmax:
 
@@ -55,7 +56,7 @@ PnL scales linearly with leverage (1×→2× ≈ 2× PnL); sortino is roughly co
 
 **Why the old headline didn't catch this**: `eval_multihorizon_candidate` aggregates 30/60/100/120-day horizons with a `--recent-within-days 140` tail. With a 313-day val, that filter restricts to the most recent ~140 days where this ensemble was tuned — the realism gate runs the full 263 windows so the bear tail can't be dropped.
 
-The tariff-crash bear cluster (Mar–Apr 2026) is what costs the ensemble: 11 of the 11 neg windows at fb=5/lev=1 fall in indices ≥ ~200, which corresponds to that crash period.
+The 11 neg windows at fb=5/lev=1 are really only 2 distinct loss events: 1 mild isolated loss at start=47, plus 10 sequential starts 250-259 representing the same Mar–Apr 2026 tariff crash window viewed from 10 starting positions. The crash brewed AT the MA20 boundary — starts 250-254 entered with SPY only +0.13 to +0.63% above MA20, and SPY broke down during the trade. The MA20→MA50 filter swap (above) catches more of these "edge" entries.
 
 #### Hard rules unchanged
 - Death-spiral guard, singleton lock, decision_lag=2 are all enforced (now also at C-binding default — see `da842586`).

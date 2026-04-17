@@ -24,15 +24,21 @@ log = logging.getLogger(__name__)
 
 def is_bull_regime(
     data_dir: str | Path = "trainingdata",
-    lookback: int = 20,
+    lookback: int = 50,
     symbol: str = "SPY",
 ) -> bool:
     """Return True if *symbol* close is above its *lookback*-day moving average.
 
-    Defaults to SPY with a 20-day MA.  Returns True (allow trading) if:
+    Defaults to SPY with a 50-day MA. Returns True (allow trading) if:
     - The CSV file does not exist (fail-open so we don't block on missing data)
     - The CSV has fewer than *lookback* rows
     - SPY close > SPY MA(lookback)
+
+    MA50 chosen over MA20 after `scripts/regime_filter_realism_gate.py`
+    showed MA50 lifts the prod ensemble realism gate's bull-cohort
+    median monthly +1.16% (6.89→8.05%) and p10 +1.11% (2.34→3.45%) vs
+    MA20, by catching slow-cycle tops that MA20 keeps flipping back to
+    "bull" on. See docs/regime_filter_gate/regime_split_summary.md.
     """
     try:
         import pandas as pd
@@ -75,7 +81,7 @@ def is_bull_regime(
 
 def regime_filter_reason(
     data_dir: str | Path = "trainingdata",
-    lookback: int = 20,
+    lookback: int = 50,
     symbol: str = "SPY",
 ) -> Tuple[bool, Optional[str]]:
     """Return (allow_open, reason_string_or_None).
