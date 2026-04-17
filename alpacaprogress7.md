@@ -784,8 +784,35 @@ Holds ~**0.79 ms** out to **2M pair-days per call** (B=1024, P=2000).
 **Artifacts**:
 - Source: `pair_sim_cuda/src/fused_pair_step.cu`
 - Autograd: `pair_sim_cuda/wrapper.py` (`fused_pair_step`, `daily_eod_interest`)
-- Tests: `pair_sim_cuda/tests/test_correctness.py`
-- Bench: `pair_sim_cuda/bench.py`, `reports/pair_sim_cuda_bench.json`
+- Tests: `pair_sim_cuda/tests/test_correctness.py`, `pair_sim_cuda/tests/test_lowprec.py`
+- Bench: `pair_sim_cuda/bench.py`, `reports/pair_sim_cuda_bench.json`,
+  `reports/pair_sim_cuda_bench_lowprec.json`
+
+### bf16 / fp16 path (added 2026-04-17)
+
+Kernel now templated on `scalar_t` and dispatched with
+`AT_DISPATCH_FLOATING_TYPES_AND2(Half, BFloat16, ...)`. All internal math
+(sigmoid, divides, abs) stays in fp32; storage + grad tensors are the
+caller's dtype. 4/4 low-prec correctness tests pass:
+
+- fwd bf16 vs bf16 reference: atol=0.03
+- fwd fp16 vs fp16 reference: atol=0.01
+- bwd bf16 vs fp32 grads: atol=0.05
+- bwd fp16 vs fp32 grads: atol=0.02
+
+**Speedup at same dtype vs pure-PyTorch reference (RTX 5090, median of 50
+iters fwd+bwd, grids 64/256/1024 × 128/512/2000)**:
+
+| dtype | speedup range | median |
+|-------|--------------:|-------:|
+| fp32  | 2.15-3.66×    | 2.52×  |
+| bf16  | 2.01-2.87×    | 2.55×  |
+| fp16  | 1.75-3.99×    | 2.31×  |
+
+The fused kernel holds its ~2.5× win across every dtype. bf16/fp16 give
+additional benefit in the surrounding network stack (halved tensor
+bytes, free tensor-core math on Blackwell) rather than in this tiny
+bandwidth-bound kernel — the kernel is already near the DRAM roofline.
 
 **Next uses** (not yet wired):
 1. Replace the soft-sim step in `binanceneural/trainer.py` with

@@ -1,9 +1,8 @@
 // Fused daily pair-trading step, forward + backward.
 //
-// One thread per (b, p). Produces per-pair outputs; per-batch reductions
-// (total_pnl, gross, interest, equity_next) are done in Python via torch.sum
-// so they stay differentiable through autograd without needing a second
-// kernel for the reduction grads.
+// Templated on scalar_t (float32, bfloat16, float16). Internal math is
+// always float32 for numerical stability (sigmoid, division, fabs).
+// Memory bandwidth benefit comes from storing tensors as bf16/fp16.
 //
 // Model per (b, p):
 //   trade           = target_pos - prev_pos
@@ -16,12 +15,9 @@
 //   cost_frac       = turnover * (commission_bps + half_spread_bps + fee_bp
 //                                 + 0.5 * offset_bps) * 1e-4
 //   pair_pnl        = next_pos * pair_ret - cost_frac
-//
-// Backward gradients computed: d/dtarget_pos, d/doffset_bps, d/dprev_pos.
-// reach_side_bps, half_spread_bps, pair_ret, session_mask treated as
-// constants (no grad flows through market-data inputs).
 
 #include <torch/extension.h>
+#include <ATen/Dispatch.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -36,19 +32,20 @@ __device__ inline float signf(float x) {
     return (x > 0.f) - (x < 0.f);
 }
 
+template <typename scalar_t>
 __global__ void pair_step_fwd_kernel(
-    const float* __restrict__ target_pos,      // [B, P]
-    const float* __restrict__ offset_bps,      // [B, P]
-    const float* __restrict__ prev_pos,        // [B, P]
-    const float* __restrict__ pair_ret,        // [B, P]
-    const float* __restrict__ reach_side_bps,  // [B, P]
-    const float* __restrict__ half_spread_bps, // [B, P]
-    const float* __restrict__ session_mask,    // [B]
-    float* __restrict__ next_pos,              // [B, P]
-    float* __restrict__ pair_pnl,              // [B, P]
-    float* __restrict__ turnover,              // [B, P]
-    float* __restrict__ fill_out,              // [B, P]  (saved)
-    float* __restrict__ sign_trade_out,        // [B, P]  (saved)
+    const scalar_t* __restrict__ target_pos,      // [B, P]
+    const scalar_t* __restrict__ offset_bps,      // [B, P]
+    const scalar_t* __restrict__ prev_pos,        // [B, P]
+    const scalar_t* __restrict__ pair_ret,        // [B, P]
+    const scalar_t* __restrict__ reach_side_bps,  // [B, P]
+    const scalar_t* __restrict__ half_spread_bps, // [B, P]
+    const scalar_t* __restrict__ session_mask,    // [B]
+    scalar_t* __restrict__ next_pos,              // [B, P]
+    scalar_t* __restrict__ pair_pnl,              // [B, P]
+    scalar_t* __restrict__ turnover,              // [B, P]
+    scalar_t* __restrict__ fill_out,              // [B, P]  (saved)
+    scalar_t* __restrict__ sign_trade_out,        // [B, P]  (saved)
     int B, int P,
     float commission_bps, float fill_temp_bps, float fee_bp
 ) {
@@ -58,13 +55,13 @@ __global__ void pair_step_fwd_kernel(
 
     int idx = b * P + p;
 
-    float tp = target_pos[idx];
-    float pp = prev_pos[idx];
-    float ob = offset_bps[idx];
-    float rt = pair_ret[idx];
-    float rs = reach_side_bps[idx];
-    float hs = half_spread_bps[idx];
-    float sm = session_mask[b];
+    float tp = static_cast<float>(target_pos[idx]);
+    float pp = static_cast<float>(prev_pos[idx]);
+    float ob = static_cast<float>(offset_bps[idx]);
+    float rt = static_cast<float>(pair_ret[idx]);
+    float rs = static_cast<float>(reach_side_bps[idx]);
+    float hs = static_cast<float>(half_spread_bps[idx]);
+    float sm = static_cast<float>(session_mask[b]);
 
     float trade = tp - pp;
     float threshold = fee_bp + hs + ob;
@@ -79,31 +76,29 @@ __global__ void pair_step_fwd_kernel(
     float cost = tov * cost_per_unit;
     float pnl = npos * rt - cost;
 
-    next_pos[idx] = npos;
-    pair_pnl[idx] = pnl;
-    turnover[idx] = tov;
-    fill_out[idx] = fill;
-    sign_trade_out[idx] = signf(exec);   // sign of exec, for d|exec|/dexec
+    next_pos[idx] = static_cast<scalar_t>(npos);
+    pair_pnl[idx] = static_cast<scalar_t>(pnl);
+    turnover[idx] = static_cast<scalar_t>(tov);
+    fill_out[idx] = static_cast<scalar_t>(fill);
+    sign_trade_out[idx] = static_cast<scalar_t>(signf(exec));
 }
 
+template <typename scalar_t>
 __global__ void pair_step_bwd_kernel(
-    // upstream grads (one per forward output)
-    const float* __restrict__ g_next_pos,      // [B, P]
-    const float* __restrict__ g_pair_pnl,      // [B, P]
-    const float* __restrict__ g_turnover,      // [B, P]
-    // saved forward state
-    const float* __restrict__ target_pos,      // [B, P]
-    const float* __restrict__ offset_bps,      // [B, P]
-    const float* __restrict__ prev_pos,        // [B, P]
-    const float* __restrict__ pair_ret,        // [B, P]
-    const float* __restrict__ half_spread_bps, // [B, P]
-    const float* __restrict__ session_mask,    // [B]
-    const float* __restrict__ fill_save,       // [B, P]
-    const float* __restrict__ sign_trade_save, // [B, P]
-    // output grads
-    float* __restrict__ d_target_pos,          // [B, P]
-    float* __restrict__ d_offset_bps,          // [B, P]
-    float* __restrict__ d_prev_pos,            // [B, P]
+    const scalar_t* __restrict__ g_next_pos,      // [B, P]
+    const scalar_t* __restrict__ g_pair_pnl,      // [B, P]
+    const scalar_t* __restrict__ g_turnover,      // [B, P]
+    const scalar_t* __restrict__ target_pos,      // [B, P]
+    const scalar_t* __restrict__ offset_bps,      // [B, P]
+    const scalar_t* __restrict__ prev_pos,        // [B, P]
+    const scalar_t* __restrict__ pair_ret,        // [B, P]
+    const scalar_t* __restrict__ half_spread_bps, // [B, P]
+    const scalar_t* __restrict__ session_mask,    // [B]
+    const scalar_t* __restrict__ fill_save,       // [B, P]
+    const scalar_t* __restrict__ sign_trade_save, // [B, P]
+    scalar_t* __restrict__ d_target_pos,          // [B, P]
+    scalar_t* __restrict__ d_offset_bps,          // [B, P]
+    scalar_t* __restrict__ d_prev_pos,            // [B, P]
     int B, int P,
     float commission_bps, float fill_temp_bps, float fee_bp
 ) {
@@ -113,24 +108,23 @@ __global__ void pair_step_bwd_kernel(
 
     int idx = b * P + p;
 
-    float tp = target_pos[idx];
-    float pp = prev_pos[idx];
-    float ob = offset_bps[idx];
-    float rt = pair_ret[idx];
-    float hs = half_spread_bps[idx];
-    float sm = session_mask[b];
-    float fill = fill_save[idx];            // = sm * sigmoid(signal/T)
-    float sign_exec = sign_trade_save[idx];
+    float tp = static_cast<float>(target_pos[idx]);
+    float pp = static_cast<float>(prev_pos[idx]);
+    float ob = static_cast<float>(offset_bps[idx]);
+    float rt = static_cast<float>(pair_ret[idx]);
+    float hs = static_cast<float>(half_spread_bps[idx]);
+    float sm = static_cast<float>(session_mask[b]);
+    float fill = static_cast<float>(fill_save[idx]);
+    float sign_exec = static_cast<float>(sign_trade_save[idx]);
 
     float trade = tp - pp;
     float exec = fill * trade;
 
-    // Upstream grads
-    float g_np = g_next_pos[idx];
-    float g_pn = g_pair_pnl[idx];
-    float g_tv = g_turnover[idx];
+    float g_np = static_cast<float>(g_next_pos[idx]);
+    float g_pn = static_cast<float>(g_pair_pnl[idx]);
+    float g_tv = static_cast<float>(g_turnover[idx]);
 
-    // pair_pnl = npos * rt - cost → upstream flowing into npos and cost
+    // pair_pnl = npos * rt - cost
     float u_npos = g_np + g_pn * rt;
     float u_cost = -g_pn;
 
@@ -138,18 +132,11 @@ __global__ void pair_step_bwd_kernel(
     float u_tov = g_tv + u_cost * c_unit;
     float u_cunit = u_cost * fabsf(exec);
 
-    // d tov = sign(exec) * d exec
     float u_exec = u_tov * sign_exec + u_npos;
 
-    // exec = fill * trade
     float u_fill = u_exec * trade;
     float u_trade = u_exec * fill;
 
-    // fill = sm * sigmoid(signal/T), signal = rs - fee_bp - hs - ob
-    //   sigma = fill / sm (when sm > 0)
-    //   dfill/dsignal = sm * sigma * (1-sigma) / T
-    //   dsignal/dob = -1
-    // When sm == 0, fill == 0 and the derivative through fill is 0 anyway.
     float dfill_dsignal = 0.f;
     if (sm > 0.f) {
         float sigma = fill / sm;
@@ -157,19 +144,15 @@ __global__ void pair_step_bwd_kernel(
     }
     float u_signal = u_fill * dfill_dsignal;
     float u_ob_from_fill = -u_signal;
-
-    // c_unit depends on ob: dc_unit/dob = 0.5 * 1e-4
     float u_ob_from_cost = u_cunit * (0.5f * 1e-4f);
-
     float u_ob = u_ob_from_fill + u_ob_from_cost;
 
-    // trade = tp - pp → dtp = +u_trade, dpp += -u_trade
     float u_tp = u_trade;
     float u_pp = u_npos - u_trade;
 
-    d_target_pos[idx] = u_tp;
-    d_offset_bps[idx] = u_ob;
-    d_prev_pos[idx]   = u_pp;
+    d_target_pos[idx] = static_cast<scalar_t>(u_tp);
+    d_offset_bps[idx] = static_cast<scalar_t>(u_ob);
+    d_prev_pos[idx]   = static_cast<scalar_t>(u_pp);
 }
 
 
@@ -182,7 +165,6 @@ std::vector<torch::Tensor> pair_step_fwd_cuda(
     double commission_bps, double fill_temp_bps, double fee_bp
 ) {
     TORCH_CHECK(target_pos.is_cuda(), "target_pos must be CUDA");
-    TORCH_CHECK(target_pos.scalar_type() == torch::kFloat32, "float32 only");
     auto B = target_pos.size(0);
     auto P = target_pos.size(1);
 
@@ -195,23 +177,29 @@ std::vector<torch::Tensor> pair_step_fwd_cuda(
 
     const int threads = 256;
     dim3 grid((P + threads - 1) / threads, B);
-    pair_step_fwd_kernel<<<grid, threads>>>(
-        target_pos.data_ptr<float>(),
-        offset_bps.data_ptr<float>(),
-        prev_pos.data_ptr<float>(),
-        pair_ret.data_ptr<float>(),
-        reach_side_bps.data_ptr<float>(),
-        half_spread_bps.data_ptr<float>(),
-        session_mask.data_ptr<float>(),
-        next_pos.data_ptr<float>(),
-        pair_pnl.data_ptr<float>(),
-        turnover.data_ptr<float>(),
-        fill.data_ptr<float>(),
-        sign_exec.data_ptr<float>(),
-        static_cast<int>(B), static_cast<int>(P),
-        static_cast<float>(commission_bps),
-        static_cast<float>(fill_temp_bps),
-        static_cast<float>(fee_bp)
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half, at::ScalarType::BFloat16,
+        target_pos.scalar_type(), "pair_step_fwd_cuda", ([&] {
+            pair_step_fwd_kernel<scalar_t><<<grid, threads>>>(
+                target_pos.data_ptr<scalar_t>(),
+                offset_bps.data_ptr<scalar_t>(),
+                prev_pos.data_ptr<scalar_t>(),
+                pair_ret.data_ptr<scalar_t>(),
+                reach_side_bps.data_ptr<scalar_t>(),
+                half_spread_bps.data_ptr<scalar_t>(),
+                session_mask.data_ptr<scalar_t>(),
+                next_pos.data_ptr<scalar_t>(),
+                pair_pnl.data_ptr<scalar_t>(),
+                turnover.data_ptr<scalar_t>(),
+                fill.data_ptr<scalar_t>(),
+                sign_exec.data_ptr<scalar_t>(),
+                static_cast<int>(B), static_cast<int>(P),
+                static_cast<float>(commission_bps),
+                static_cast<float>(fill_temp_bps),
+                static_cast<float>(fee_bp)
+            );
+        })
     );
     return {next_pos, pair_pnl, turnover, fill, sign_exec};
 }
@@ -234,25 +222,31 @@ std::vector<torch::Tensor> pair_step_bwd_cuda(
 
     const int threads = 256;
     dim3 grid((P + threads - 1) / threads, B);
-    pair_step_bwd_kernel<<<grid, threads>>>(
-        g_next_pos.data_ptr<float>(),
-        g_pair_pnl.data_ptr<float>(),
-        g_turnover.data_ptr<float>(),
-        target_pos.data_ptr<float>(),
-        offset_bps.data_ptr<float>(),
-        prev_pos.data_ptr<float>(),
-        pair_ret.data_ptr<float>(),
-        half_spread_bps.data_ptr<float>(),
-        session_mask.data_ptr<float>(),
-        fill_save.data_ptr<float>(),
-        sign_trade_save.data_ptr<float>(),
-        d_target_pos.data_ptr<float>(),
-        d_offset_bps.data_ptr<float>(),
-        d_prev_pos.data_ptr<float>(),
-        static_cast<int>(B), static_cast<int>(P),
-        static_cast<float>(commission_bps),
-        static_cast<float>(fill_temp_bps),
-        static_cast<float>(fee_bp)
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half, at::ScalarType::BFloat16,
+        g_next_pos.scalar_type(), "pair_step_bwd_cuda", ([&] {
+            pair_step_bwd_kernel<scalar_t><<<grid, threads>>>(
+                g_next_pos.data_ptr<scalar_t>(),
+                g_pair_pnl.data_ptr<scalar_t>(),
+                g_turnover.data_ptr<scalar_t>(),
+                target_pos.data_ptr<scalar_t>(),
+                offset_bps.data_ptr<scalar_t>(),
+                prev_pos.data_ptr<scalar_t>(),
+                pair_ret.data_ptr<scalar_t>(),
+                half_spread_bps.data_ptr<scalar_t>(),
+                session_mask.data_ptr<scalar_t>(),
+                fill_save.data_ptr<scalar_t>(),
+                sign_trade_save.data_ptr<scalar_t>(),
+                d_target_pos.data_ptr<scalar_t>(),
+                d_offset_bps.data_ptr<scalar_t>(),
+                d_prev_pos.data_ptr<scalar_t>(),
+                static_cast<int>(B), static_cast<int>(P),
+                static_cast<float>(commission_bps),
+                static_cast<float>(fill_temp_bps),
+                static_cast<float>(fee_bp)
+            );
+        })
     );
     return {d_target_pos, d_offset_bps, d_prev_pos};
 }
@@ -260,8 +254,7 @@ std::vector<torch::Tensor> pair_step_bwd_cuda(
 } // namespace pair_sim
 
 
-// Pybind registration
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("pair_step_fwd", &pair_sim::pair_step_fwd_cuda, "Fused pair step forward");
-    m.def("pair_step_bwd", &pair_sim::pair_step_bwd_cuda, "Fused pair step backward");
+    m.def("pair_step_fwd", &pair_sim::pair_step_fwd_cuda, "Fused pair step forward (fp32/bf16/fp16)");
+    m.def("pair_step_bwd", &pair_sim::pair_step_bwd_cuda, "Fused pair step backward (fp32/bf16/fp16)");
 }
