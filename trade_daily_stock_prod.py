@@ -770,6 +770,8 @@ def _runtime_log_payload(
         "symbol_preview_text": config.symbol_preview_text,
         "checkpoint": config.checkpoint,
         "ensemble_size": config.ensemble_size,
+        "ensemble_mode": config.ensemble_mode,
+        "min_agree_count": config.min_agree_count,
         "command_preview": config.command_preview(),
     }
     if config.backtest or config.data_source == "local":
