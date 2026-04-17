@@ -220,6 +220,7 @@ def _render_md(
     slippage_bps: float,
     decision_lag: int,
     monthly_target: float,
+    checkpoint_names: list[str] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# Screened32 realism gate — `{val_path.name}`")
@@ -228,7 +229,12 @@ def _render_md(
         f"- window_days={window_days}, fee_rate={fee_rate}, slippage_bps={slippage_bps}, "
         f"decision_lag={decision_lag}, monthly_target={monthly_target * 100:.1f}%/mo"
     )
-    lines.append("- ensemble: prod 13-model softmax_avg (C_s7 + 9 D + I_s3×2 + I_s32)")
+    if checkpoint_names is not None:
+        names_summary = ", ".join(checkpoint_names) if len(checkpoint_names) <= 16 \
+            else f"{len(checkpoint_names)} checkpoints"
+        lines.append(f"- ensemble: {len(checkpoint_names)}-model softmax_avg ({names_summary})")
+    else:
+        lines.append("- ensemble: softmax_avg (checkpoint list unspecified)")
     lines.append("")
 
     fill_buffers = sorted({c.fill_buffer_bps for c in cells})
@@ -420,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         slippage_bps=float(args.slippage_bps),
         decision_lag=int(args.decision_lag),
         monthly_target=float(args.monthly_target),
+        checkpoint_names=[Path(c).stem for c in ckpts],
     )
     md_path.write_text(md)
     print()

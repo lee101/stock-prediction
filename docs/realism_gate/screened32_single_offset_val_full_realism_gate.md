@@ -1,7 +1,7 @@
 # Screened32 realism gate — `screened32_single_offset_val_full.bin`
 
 - window_days=50, fee_rate=0.001, slippage_bps=5.0, decision_lag=2, monthly_target=27.0%/mo
-- ensemble: prod 13-model softmax_avg (C_s7 + 9 D + I_s3×2 + I_s32)
+- ensemble: 13-model softmax_avg (C_s7, D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, D_s81, D_s57, I_s3, D_s64, I_s32)
 
 ## Median monthly return (worst on each row is the realistic deploy gate)
 
