@@ -16,20 +16,24 @@ DEFAULT_SYMBOLS = (
     "PLTR", "SPY", "QQQ", "AMZN", "GOOG",
 )
 
-# 2026-04-14 v5: Swapped D_s27 → I_s32 (13-model). neg 10→8/263, med 19.02→19.57%.
-# I_s32: I-variant (AdamW+RMSNorm), individual OOS neg=10/263 (best individual I seed found)
-# D_s27 removed: was weakest diversity member (neg=38 individual, lowest utility)
-# 13-model 263w OOS: med=19.57%, p10=+7.68%, neg=8/263, sortino=34.07
-# vs v4 13m: med+0.55%, p10-0.43%, neg-2 (20% fewer losses), sort+0.76
-# Models: C_s7 (AdamW, tp=0.02) + D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, D_s81, D_s57, I_s3(2x), D_s64, I_s32
+# 2026-04-17 v6: Swapped D_s3 → AD_s4 (13-model). LOO showed D_s3 was a free-drop
+# (Δmed +0.14%, Δneg 0, Δsortino +0.17, Δmax_dd −0.68%). AD_s4 (sweep AD/s4, Muon
+# trained on aprcrash data) had best individual standalone (med 8.11%, neg 12) of
+# the A* batch and was the only candidate with positive Δmed as 14th member.
+# 13-model v6 263w deploy gate (fb=5, lev=1): med +7.52%, p10 +2.72%, neg 11/263,
+# sortino 6.55, max_dd 5.71%. vs v5 baseline: +0.63% med, +0.38% p10, +0.45 sort,
+# −0.57% max_dd, neg unchanged. 1.5× cell preserved (med +10.33%, sortino 6.18).
+# Models: C_s7 (AdamW, tp=0.02) + D_s16, D_s42, AD_s4, I_s3, D_s2, D_s14, D_s28, D_s81, D_s57, I_s3(2x), D_s64, I_s32
 # All models: disable_shorts=True, 65 actions (masked shorts), features_per_sym=16
 # Trained on data through 2025-05-31, val 2025-06-01 to 2025-11-30
+# AD_s4 trained on aprcrash augmented data (through 2026-02-28) — gives ensemble
+# fresh exposure to Mar-Apr 2026 tariff crash dynamics without contaminating OOS val.
 DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble_screened32/C_s7.pt"
 
 DEFAULT_EXTRA_CHECKPOINTS = (
     "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
     "pufferlib_market/prod_ensemble_screened32/D_s42.pt",  # D_s13→D_s42: neg 22→15/263, p10→+2.72%
-    "pufferlib_market/prod_ensemble_screened32/D_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",  # 2026-04-17 v6: swap D_s3→AD_s4, +0.63% med, +0.45 sort, neg same
     "pufferlib_market/prod_ensemble_screened32/I_s3.pt",   # D_s5→I_s3 swap: med+2.36% sort+3.02 (100-win)
     "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
     "pufferlib_market/prod_ensemble_screened32/D_s14.pt",

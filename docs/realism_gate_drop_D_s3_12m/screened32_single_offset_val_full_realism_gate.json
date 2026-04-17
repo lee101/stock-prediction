@@ -1,0 +1,60 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 12,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s81.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.0,
+    1.5
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.1755590951358734,
+      "p10_total_return": 0.06248331447961872,
+      "p90_total_return": 0.26896329130609803,
+      "median_monthly_return": 0.07029297695324449,
+      "p10_monthly_return": 0.025782509694945794,
+      "median_sortino": 6.265110740541457,
+      "median_max_dd": 0.05597151110447233,
+      "n_neg": 11,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.26119189014072347,
+      "p10_total_return": 0.08049710728848931,
+      "p90_total_return": 0.41524416597923886,
+      "median_monthly_return": 0.10237179043994271,
+      "p10_monthly_return": 0.033051364271765075,
+      "median_sortino": 6.0518428999453615,
+      "median_max_dd": 0.08510996499811681,
+      "n_neg": 15,
+      "n_windows": 263
+    }
+  ]
+}

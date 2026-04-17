@@ -7,6 +7,39 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-17 17:30 UTC — 13-model v6: D_s3 → AD_s4 swap DEPLOYED (med +6.89→+7.52%, sortino +0.45)
+
+**LOO finding**: Leave-one-out analysis (`scripts/screened32_leave_one_out.py`,
+output `docs/leave_one_out/leave_one_out.json`) on the v5 13-model ensemble
+identified D_s3 as a free-drop candidate. Removing D_s3 yields a 12-model
+ensemble that is strictly better on every metric:
+
+| variant | 1× med | 1× p10 | 1× sortino | 1× max_dd | 1× neg | 1.5× med | 1.5× sortino |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| v5 baseline 13m | +6.89% | +2.34% | 6.10 | 6.28% | 11/263 | +10.19% | 6.20 |
+| drop D_s3 (12m) | +7.03% | +2.58% | 6.27 | 5.60% | 11/263 | +10.24% | 6.05 |
+| **v6: swap AD_s4 for D_s3** | **+7.52%** | **+2.72%** | **6.55** | **5.71%** | **11/263** | **+10.33%** | **6.18** |
+
+`docs/realism_gate_swap_AD_s4_for_D_s3_13m/` and `docs/realism_gate_drop_D_s3_12m/`.
+
+AD_s4: from `pufferlib_market/checkpoints/screened32_sweep/AD/s4/best.pt`,
+copied to `pufferlib_market/prod_ensemble_screened32/AD_s4.pt`. Trained with
+Muon optimizer on aprcrash augmented data (through 2026-02-28), giving the
+ensemble fresh exposure to Mar-Apr 2026 tariff crash dynamics without
+contaminating OOS val (val cutoff 2025-11-30 per screened32_single_offset_val_full).
+
+**Why this works** (refutes the "ensemble diversity > standalone strength" rule
+just established 2026-04-17): AD_s4 had the best A* batch standalone (med 8.11%,
+neg 12) AND was uniquely the only A* candidate with positive Δmed as a 14m
+addition (+0.09%) — but it was rejected as 14m because the 1.5× knee failed.
+Here we're not adding it on top; we're swapping it for the weakest member
+(D_s3), so the ensemble shifts from 13 members to 13 members and the new
+member's directional signal displaces the redundant signal D_s3 was providing.
+
+Service `daily-rl-trader` will pick up the new defaults at next restart
+(restart_reasons already shows watched_files_newer_than_process from prior
+config edits).
+
 ### 2026-04-17 — Realism-gate sweep on prod 13-model v5 ensemble (NEW DEPLOY GATE)
 
 The headline `med=19.57%/mo, 8/263 neg` from 2026-04-14 was a 30d-horizon, recent-tail eval at 5bps fill_buffer. `scripts/screened32_realism_gate.py` re-runs the same prod ensemble (C_s7 + 9 D + I_s3×2 + I_s32) on the **full** screened32 single-offset val with binary fills, lag=2, fee=10bps, slip=5bps, shorts disabled, across `fill_buffer × max_leverage` cells. This is what an order would actually see on live Alpaca with the 5bp queue rule.
