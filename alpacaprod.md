@@ -7,6 +7,38 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-17 13:03 UTC — Agreement-gate `min_agree_count=2` DEPLOYED (med +0.32, p10 +0.35, sortino +0.81, neg −2)
+
+**What changed**: `deployments/daily-rl-trader/launch.sh` now passes
+`--min-agree-count 2`. The supervisor restarted the daemon at 13:03:52 UTC
+(PID 2626283); next signal at 13:35 UTC market-open will use the gate.
+
+**Mechanism**: After `_ensemble_softmax_signal` picks the softmax_avg argmax,
+count how many of the 12 ensemble members individually pick that same argmax.
+If <2 agree, force `flat`. Different from the rejected confidence-gate
+(top-prob filter) — this targets disagreement on the chosen action even when
+the post-mask probability looks high.
+
+**Marketsim deltas vs v7 12-model baseline (`docs/agreement_gate/`)**:
+
+| cell | metric | baseline | +min_agree=2 | Δ |
+|---|---|---:|---:|---:|
+| fb=5 slip=5 lev=1.0 (PROD CELL) | med / p10 / sortino / neg / dd | 7.47% / 3.18% / 6.74 / 10 / 5.71% | 7.79% / 3.53% / 7.55 / 8 / 5.13% | +0.32 / +0.35 / +0.81 / −2 / −0.58% |
+| fb=10 slip=10 lev=1.0 | med / p10 / sortino / neg / dd | 6.49% / 2.26% / 5.92 / 10 / 5.99% | 7.03% / 2.96% / 6.76 / 9 / 5.20% | +0.54 / +0.70 / +0.84 / −1 / −0.79% |
+| fb=20 slip=20 lev=1.0 | med / p10 / sortino / neg / dd | 4.84% / 0.42% / 4.48 / 24 / 6.55% | 5.78% / 1.79% / 5.35 / 14 / 5.48% | +0.94 / +1.37 / +0.87 / −10 / −1.07% |
+| fb=5 slip=5 lev=1.25 | med / p10 / sortino / neg / dd | 9.35% / 3.80% / 6.84 / 13 / 6.38% | 9.32% / 5.08% / 7.34 / 12 / 7.09% | −0.03 / +1.28 / +0.50 / −1 / +0.71% |
+| fb=5 slip=5 lev=1.50 | med / p10 / sortino / neg / dd | 10.31% / 4.09% / 6.13 / 13 / 7.86% | 10.46% / 5.38% / 6.96 / 12 / 8.49% | +0.16 / +1.28 / +0.83 / −1 / +0.63% |
+
+**Risk**: Only regression is +0.6-0.7% max_dd at lev≥1.25; prod runs at lev=1.0
+so this is moot for the current deploy. Rollback: `--min-agree-count 0` (or
+remove the flag) and `supervisorctl restart daily-rl-trader`.
+
+**Tests**: `tests/test_trade_daily_stock_prod.py::test_min_agree_count_*`
+(4 cases) green; full 208-test file remains green.
+
+Code wire-in: commit 857fee24 ("feat: wire min_agree_count gate into prod
+ensemble path"). Algorithm reference: `scripts/screened32_agreement_gate.py`.
+
 ### 2026-04-17 17:30 UTC — 13-model v6: D_s3 → AD_s4 swap DEPLOYED (med +6.89→+7.52%, sortino +0.45)
 
 **LOO finding**: Leave-one-out analysis (`scripts/screened32_leave_one_out.py`,
