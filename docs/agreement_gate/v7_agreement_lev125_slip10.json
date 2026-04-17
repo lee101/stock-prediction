@@ -1,0 +1,45 @@
+{
+  "val_data": "pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fill_buffer_bps": 10.0,
+  "max_leverage": 1.25,
+  "decision_lag": 2,
+  "fee_rate": 0.001,
+  "slippage_bps": 10.0,
+  "disable_shorts": true,
+  "ensemble_size": 12,
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "results": [
+    {
+      "min_agree_count": 0,
+      "median_monthly_return": 0.08029817383874996,
+      "p10_monthly_return": 0.0017904228667468699,
+      "median_sortino": 6.21701271556372,
+      "median_max_dd": 0.07595632363667319,
+      "n_neg": 26,
+      "n_windows": 263
+    },
+    {
+      "min_agree_count": 2,
+      "median_monthly_return": 0.0753418217588511,
+      "p10_monthly_return": 0.029209854946855567,
+      "median_sortino": 6.1416484431747875,
+      "median_max_dd": 0.07576292462958982,
+      "n_neg": 12,
+      "n_windows": 263
+    }
+  ]
+}

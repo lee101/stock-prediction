@@ -27,11 +27,16 @@ the post-mask probability looks high.
 | fb=10 slip=10 lev=1.0 | med / p10 / sortino / neg / dd | 6.49% / 2.26% / 5.92 / 10 / 5.99% | 7.03% / 2.96% / 6.76 / 9 / 5.20% | +0.54 / +0.70 / +0.84 / −1 / −0.79% |
 | fb=20 slip=20 lev=1.0 | med / p10 / sortino / neg / dd | 4.84% / 0.42% / 4.48 / 24 / 6.55% | 5.78% / 1.79% / 5.35 / 14 / 5.48% | +0.94 / +1.37 / +0.87 / −10 / −1.07% |
 | fb=5 slip=5 lev=1.25 | med / p10 / sortino / neg / dd | 9.35% / 3.80% / 6.84 / 13 / 6.38% | 9.32% / 5.08% / 7.34 / 12 / 7.09% | −0.03 / +1.28 / +0.50 / −1 / +0.71% |
+| fb=10 slip=10 lev=1.25 | med / p10 / sortino / neg / dd | 8.03% / 0.18% / 6.22 / 26 / 7.60% | 7.53% / 2.92% / 6.14 / 12 / 7.58% | −0.50 / +2.74 / −0.08 / −14 / −0.02% |
+| fb=20 slip=20 lev=1.25 | med / p10 / sortino / neg / dd | 5.40% / **−2.23%** / 4.07 / 46 / 8.96% | 5.61% / **+1.26%** / 4.58 / 14 / 8.78% | +0.21 / **+3.49** / +0.51 / **−32** / −0.18% |
 | fb=5 slip=5 lev=1.50 | med / p10 / sortino / neg / dd | 10.31% / 4.09% / 6.13 / 13 / 7.86% | 10.46% / 5.38% / 6.96 / 12 / 8.49% | +0.16 / +1.28 / +0.83 / −1 / +0.63% |
 
-**Risk**: Only regression is +0.6-0.7% max_dd at lev≥1.25; prod runs at lev=1.0
-so this is moot for the current deploy. Rollback: `--min-agree-count 0` (or
-remove the flag) and `supervisorctl restart daily-rl-trader`.
+**Risk**: Only regression is +0.6-0.7% max_dd at lev≥1.25/slip=5 cells (so
+moot for current lev=1.0 deploy). At lev=1.25/slip=20 the gate is a
+deal-breaker fix — flips p10 from −2.23% to +1.26% and cuts neg windows from
+46/263 to 14/263, so the gate also makes a future leverage rollout safer.
+Rollback: `--min-agree-count 0` (or remove the flag) and
+`supervisorctl restart daily-rl-trader`.
 
 **Tests**: `tests/test_trade_daily_stock_prod.py::test_min_agree_count_*`
 (4 cases) green; full 208-test file remains green.
