@@ -693,6 +693,11 @@ Context at session start: 13-model v5 screened32 ensemble is locally optimal
 across 5 ensemble-add evals (D_s67, AB s1, AA s2, AB s2, AC s1/s2 via md5 parity)
 — all REJECT. Baseline OOS med=19.57%, p10=7.68%, neg=8/263, target is 30%/mo.
 
+**Mid-session update**: add AD s1, AD s9, C_lev1p5x_s1 to the reject list
+(7 total, 0 wins). AD s9 is the strongest standalone ever measured at this
+variant (med=+14.10%, neg=11) but still −1.07% mean-delta-med as 14th
+member → confirms raw strength ≠ ensemble additivity.
+
 Session goal: find one lever that actually moves the ensemble (not just the
 standalone metric). Hypotheses ranked by expected lift per push doc §4:
   1. **E4** 2× leverage retrain      — highest expected lift
@@ -717,10 +722,14 @@ the mix on top of cosine+anneal so it spends ~30% more wall-clock per update.
 
 ---
 
-## [PENDING] E4 — 2× leverage retrain (D variant, fresh seeds)
+## [IN-FLIGHT] E4 — 2× leverage retrain (D variant, fresh seeds)
 
-(results land here when training completes; see
-`pufferlib_market/checkpoints/screened32_leverage_sweep/D/lev2x_ds03/`)
+lev2x_ds03/s1 training finished 2026-04-17 05:26 UTC (15M steps, 457/457
+updates, final val med=-1.4% neg=21/30 trades_avg=33.9, best_neg=14).
+Standalone in-training val is weak — likely a reject — but the 14th-member
+ensemble-add test is running (`reports/e4_lev2x_ds03_s1_14th_candidate.json`)
+since strong in-training val is not predictive anyway.
+(Checkpoint: `pufferlib_market/checkpoints/screened32_leverage_sweep/D/lev2x_ds03/s1/val_best.pt`)
 
 ## [PENDING] E2b — fresh D seeds 200/201/202
 
