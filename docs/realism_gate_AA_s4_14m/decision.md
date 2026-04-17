@@ -18,6 +18,7 @@ Baseline 13-model: **med +6.89%/mo, p10 +2.34%, sortino 6.10, neg 11/263**
 | AD_s4 | +6.98% | +2.02% | 6.39 | 10 | +0.09% | −1 | ❌ reject (1.5× knee fails) |
 | AD_s5 | +6.05% | +1.00% | 4.85 | 19 | −0.84% | +8 | ❌ reject |
 | AD_s6 | +6.01% | +1.32% | 5.29 | 17 | −0.88% | +6 | ❌ reject |
+| AD_s7 | +5.47% | +0.45% | 5.23 | 22 | −1.42% | +11 | ❌ reject (worst, doubles negs) |
 
 ## Notes
 
@@ -31,11 +32,17 @@ Baseline 13-model: **med +6.89%/mo, p10 +2.34%, sortino 6.10, neg 11/263**
 - AD seeds standalone leaderboard: s4 is the standout (med 8.11%, neg 12,
   sortino 16.80), all others weak (s5 med 0.83%, s6 med −1.46% actually
   loses money standalone). Standalone strength predicts ensemble lift —
-  none of s2/s3/s5/s6 should have been expected to improve.
+  none of s2/s3/s5/s6/s7 should have been expected to improve.
+- AD_s7 (best.pt, training_best_return=0.49) — despite training-time
+  best_return being highest in the AD batch, val_best showed −4.66% med
+  on 100 sampled windows and the 14m gate confirms: doubling negs is a
+  catastrophic failure mode. Train-time return doesn't predict
+  ensemble-membership utility.
 
 ## Conclusion
 
-None of the AA/AB/AC/AD sweep candidates (8 tested) improve the deploy
+None of the AA/AB/AC/AD sweep candidates (9 tested: AA/AB/AC s4 +
+AD s2-s7) improve the deploy
 gate. A* sweep is exhausted as a 14th-member candidate source.
 Continue waiting for new candidates from D/I/U sweeps. Bar for swap-in:
 - (a) median-monthly improvement at 1× cell ≥ +0.5%
