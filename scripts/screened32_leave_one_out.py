@@ -235,6 +235,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out-dir", default="docs/leave_one_out")
+    ap.add_argument(
+        "--extra-checkpoints",
+        nargs="*",
+        default=[],
+        help="Additional checkpoints appended to DEFAULT_CHECKPOINT + DEFAULT_EXTRA_CHECKPOINTS before running LOO (e.g. test a 13th-member add-in).",
+    )
     args = ap.parse_args(argv)
 
     val_path = Path(args.val_data).resolve()
@@ -248,7 +254,9 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     base_ckpts = [Path(DEFAULT_CHECKPOINT), *(Path(p) for p in DEFAULT_EXTRA_CHECKPOINTS)]
-    abs_ckpts = [REPO / c for c in base_ckpts]
+    if args.extra_checkpoints:
+        base_ckpts = base_ckpts + [Path(p) for p in args.extra_checkpoints]
+    abs_ckpts = [REPO / c if not c.is_absolute() else c for c in base_ckpts]
     member_names = [Path(c).stem for c in base_ckpts]
 
     data = read_mktd(val_path)

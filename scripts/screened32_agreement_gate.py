@@ -134,6 +134,12 @@ def main():
         default="0,3,4,5,6,7,8,9,10",
         help="Comma-separated minimum number of members that must agree with the ensemble argmax",
     )
+    ap.add_argument(
+        "--extra-checkpoints",
+        nargs="*",
+        default=[],
+        help="Additional checkpoints appended to DEFAULT (v7) baseline, e.g. to test a 13th-member add-in under the gate.",
+    )
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -144,7 +150,7 @@ def main():
 
     counts = [int(x) for x in args.min_agree_counts.split(",") if x]
 
-    ckpts = [DEFAULT_CHECKPOINT, *DEFAULT_EXTRA_CHECKPOINTS]
+    ckpts = [DEFAULT_CHECKPOINT, *DEFAULT_EXTRA_CHECKPOINTS, *args.extra_checkpoints]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"loading {len(ckpts)} ensemble members on {device}...", flush=True)
 
