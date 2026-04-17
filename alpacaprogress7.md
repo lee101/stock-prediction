@@ -742,6 +742,55 @@ to find one that also pulls median.
 
 (Checkpoint: `pufferlib_market/checkpoints/screened32_leverage_sweep/D/lev2x_ds03/s1/val_best.pt`)
 
+## [REJECT] E4 — 2× leverage retrain seeds 2-5 follow-through (2026-04-17)
+
+Launched `scripts/launch_e4_seeds_2to5.sh` after s1 was REJECT-SOFT. All four
+seeds completed (15M steps, ~28 min each wall-clock with 4-way parallelism,
+isolated `TMPDIR` per seed to dodge the Triton `/tmp` race). Seeds 2, 3, 5
+each hit **best_neg=0** during training (s2 best_neg=1), which is a far
+cleaner validation than s1's best_neg=14. But the 14th-member ensemble
+add-test on each `val_best.pt` (same 4-cell deploy gate):
+
+| Seed | Δ mean med | Δ mean p10 | Δ mean neg | Wins | Worst cell |
+|:-----|-----------:|-----------:|-----------:|:----:|:-----------|
+| s1   |  −0.56%    |  −0.33%    |  +0.00     | 0/4  | −0.75% full/30d/5bps |
+| s2   |  −0.64%    |  ?         |  +0.25     | 0/4  | −1.01% full/100d/5bps |
+| s3   | **−0.23%** |  ?         |  +0.25     | 0/4  | **−0.44%** full/100d/5bps |
+| s4   |  (dud — best_score=−53, neg=20, skipped) |||||
+| s5   |  −0.45%    |  ?         |  +0.25     | 0/4  | −0.87% full/30d/5bps |
+
+**s3 is the tightest miss of the whole session** (worst_delta=−0.44%) but
+still 0-wins. E4 lineage 0/4 evaluated → stop expanding. Risk-controlled
+standalone (best_neg=0) does not translate to ensemble additivity here:
+leverage-boosted D is too correlated with the already-13-strong D population
+in the baseline. Also confirmed separately via swap-in test on AD_s9 below.
+
+## [REJECT] AD_s9 swap-in sweep (2026-04-17)
+
+`scripts/screened32_swap_in.py` replaces each of the 13 members with the
+candidate and re-runs the 263w OOS cell. AD_s9 vs each swap:
+
+| Dropped member | Δ med    | Δ p10    | Δ neg | Verdict |
+|----------------|---------:|---------:|------:|---------|
+| C_s7           |  −0.72%  |  −1.05%  |  +7   | worse   |
+| D_s16          |  −2.22%  |  −3.18%  | **+23** | **worst** |
+| D_s42          |  −1.20%  |  −1.88%  |  +6   | worse   |
+| AD_s4          |  −1.40%  |  −1.66%  |  +7   | worse   |
+| I_s3           |  −1.40%  |  −1.65%  |  +4   | worse   |
+| D_s2           |  −1.05%  |  −1.20%  |  +4   | worse   |
+| D_s14          |  −1.47%  |  −1.59%  |  +6   | worse   |
+| D_s28          |  −1.75%  |  −1.13%  |  +2   | worse (softest on neg) |
+| D_s81          |  −1.25%  |  −1.55%  |  +4   | worse   |
+| D_s57          |  −1.54%  |  −1.53%  |  +5   | worse   |
+| I_s3 (dup)     |  −1.40%  |  −1.65%  |  +4   | worse   |
+| D_s64          |  −1.04%  |  −0.78%  |  +4   | worse   |
+| I_s32          |  −1.17%  |  −1.83%  |  +4   | worse   |
+
+**0 / 13 swap wins.** Combined with the 14th-member add-test REJECT, AD_s9's
+error pattern is anti-correlated with EVERY existing member. The 13m v5
+ensemble is genuinely locally optimal under single-substitution edits with
+this candidate. (Artifact: `docs/swap_in/ad_s9_swap.json`.)
+
 ## [PENDING] E2b — fresh D seeds 200/201/202
 
 (results land here)

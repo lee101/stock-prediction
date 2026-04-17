@@ -49,3 +49,24 @@ the same GPU hours.
     was nearly break-even on risk. Leverage-boosted D may have real complementary signal
     but needs more seeds to find one that wins the median too.
   - **Next move**: run the leverage sweep to seeds 2-5 instead of killing E4 outright.
+
+- **E4 lev2x_ds03 seeds 2-5 as 14th members** (2026-04-17, follow-through on E4 lineage):
+  - s2: mean Δ −0.64% med, +0.25 neg, worst −1.01% @ full/100d/5bps → REJECT
+  - s3: mean Δ **−0.23%** med, +0.25 neg, worst **−0.44%** @ full/100d/5bps → REJECT (softest in this group)
+  - s4: standalone dud (train best_score=−53, neg=20) — skipped
+  - s5: mean Δ −0.45% med, +0.25 neg, worst −0.87% @ full/30d/5bps → REJECT
+  - All three val_best.pt checkpoints hit best_neg=0 during training (s2=1, s3/5=0) — strong individual risk
+    profile that did NOT translate into ensemble additivity. The full lineage (s1-5) now stands 0/4 evaluated wins.
+  - **Takeaway**: E4's lev2x_ds03 recipe produces checkpoints that are individually risk-controlled but
+    consistently pull the 13m v5 median down by 0.2-0.6%/mo when added as a 14th member. The
+    neg-window axis is nearly neutral (+0.25 ≈ a single 263w negative tip); the median axis is not.
+    Leverage-boosted D does not get us to a 14th member. Stop expanding this branch.
+
+- **AD_s9 as swap-in** (2026-04-17, `scripts/screened32_swap_in.py` via `docs/swap_in/ad_s9_swap.json`):
+  - 0 / 13 wins. Every swap adds +2 to +23 neg windows and drops median by 0.0072 to 0.0222.
+  - Worst swap: replace D_s16 → neg=34 (+23), med=+5.30% (−2.22%), sortino=4.42 (−2.13).
+  - Best swap: replace D_s28 → neg=13 (+2), med=+5.77% (−1.75%) — still worse.
+  - **Takeaway**: AD_s9's contribution is anti-correlated with EVERY current member's residual error.
+    Both the add-test (14th-member) and the swap-test (replace member i) confirm the same thing:
+    the 13m v5 ensemble is tighter than any single swap / addition with AD_s9 can produce. Drop from
+    candidate pool.
