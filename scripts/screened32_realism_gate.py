@@ -94,8 +94,18 @@ def _build_ensemble_policy_fn(
     disable_shorts: bool,
     device: torch.device,
     deterministic: bool,
+    ensemble_mode: str = "softmax_avg",
 ):
-    """Load N checkpoints and return a softmax-averaged policy_fn matching prod."""
+    """Load N checkpoints and return an ensemble policy_fn matching prod.
+
+    ensemble_mode:
+      - "softmax_avg" (default, current prod): average per-policy softmax probs, then argmax.
+        Conservative members with high flat-probability pull ensemble argmax toward flat.
+      - "logit_avg": average raw logits, then argmax. Sharper non-flat decisions when
+        member confidences on the argmax winner dominate the few flat-leaning members.
+    """
+    if ensemble_mode not in ("softmax_avg", "logit_avg"):
+        raise ValueError(f"ensemble_mode must be 'softmax_avg' or 'logit_avg', got {ensemble_mode!r}")
     loaded = [
         load_policy(str(p), num_symbols, features_per_sym=features_per_sym, device=device)
         for p in checkpoints
@@ -116,7 +126,7 @@ def _build_ensemble_policy_fn(
         with torch.no_grad():
             if n_ensemble == 1:
                 logits, _ = policies[0](obs_t)
-            else:
+            elif ensemble_mode == "softmax_avg":
                 probs_sum: torch.Tensor | None = None
                 for p in policies:
                     lg, _ = p(obs_t)
@@ -124,6 +134,13 @@ def _build_ensemble_policy_fn(
                     probs_sum = pr if probs_sum is None else probs_sum + pr
                 assert probs_sum is not None
                 logits = torch.log(probs_sum / float(n_ensemble) + 1e-8)
+            else:  # logit_avg
+                logit_sum: torch.Tensor | None = None
+                for p in policies:
+                    lg, _ = p(obs_t)
+                    logit_sum = lg if logit_sum is None else logit_sum + lg
+                assert logit_sum is not None
+                logits = logit_sum / float(n_ensemble)
         if disable_shorts:
             logits = _mask_all_shorts(
                 logits,
@@ -160,6 +177,7 @@ def _run_cell(
     slippage_bps: float,
     window_days: int,
     start_indices: Sequence[int],
+    ensemble_mode: str = "softmax_avg",
 ) -> CellResult:
     policy_fn, reset_buffer, head = _build_ensemble_policy_fn(
         checkpoints=checkpoints,
@@ -169,6 +187,7 @@ def _run_cell(
         disable_shorts=disable_shorts,
         device=device,
         deterministic=deterministic,
+        ensemble_mode=ensemble_mode,
     )
     rets: list[float] = []
     sortinos: list[float] = []
@@ -328,6 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", default="docs/realism_gate")
     ap.add_argument("--checkpoints", nargs="*", default=None,
                     help="Override prod ensemble (default: DEFAULT_CHECKPOINT + DEFAULT_EXTRA_CHECKPOINTS).")
+    ap.add_argument("--ensemble-mode", choices=["softmax_avg", "logit_avg"], default="softmax_avg",
+                    help="How to combine per-policy outputs. softmax_avg (prod) averages probs; "
+                         "logit_avg averages raw logits (sharper, fewer aggregation-artifact flats).")
     args = ap.parse_args(argv)
 
     val_path = Path(args.val_data).resolve()
@@ -386,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
                 slippage_bps=float(args.slippage_bps),
                 window_days=int(args.window_days),
                 start_indices=start_indices,
+                ensemble_mode=str(args.ensemble_mode),
             )
             cells.append(cell)
             print(
@@ -409,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         "disable_shorts": bool(args.disable_shorts),
         "monthly_target": float(args.monthly_target),
         "ensemble_size": len(abs_ckpts),
+        "ensemble_mode": str(args.ensemble_mode),
         "checkpoints": [str(c) for c in ckpts],
         "n_windows_per_cell": len(start_indices),
         "fill_buffer_bps_grid": fill_buffers,

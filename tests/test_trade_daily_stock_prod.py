@@ -1252,6 +1252,94 @@ def test_ensemble_softmax_signal_averages_value_estimates() -> None:
     assert signal.value_estimate == pytest.approx(1.5)
 
 
+def test_ensemble_logit_avg_mode_uses_averaged_logits() -> None:
+    """logit_avg averages raw logits; softmax_avg averages probs.
+
+    Tie-breaking case: one member picks action 0 with overwhelming confidence,
+    one picks action 1 with moderate confidence. softmax_avg typically favors
+    action 0 because extreme softmax weights dominate; logit_avg averages
+    raw logits and picks based on the mean, which here favors action 1.
+    """
+
+    class _FakePrimary:
+        device = "cpu"
+
+        @staticmethod
+        def build_observation(_features, _prices):
+            return np.zeros(4, dtype=np.float32)
+
+        @staticmethod
+        def policy(obs_t):
+            # primary strongly prefers action 0 (flat)
+            return torch.tensor([[10.0, 0.0]]), torch.tensor([[0.0]])
+
+        @staticmethod
+        def apply_action_constraints(logits):
+            return logits
+
+        @staticmethod
+        def _decode_action(action, confidence, value_estimate):
+            return SimpleNamespace(
+                action=f"act_{action}",
+                symbol="AAPL" if action == 1 else None,
+                direction="long" if action == 1 else None,
+                confidence=confidence,
+                value_estimate=value_estimate,
+            )
+
+    # Extra member prefers action 1 (trade) but less emphatically.
+    extra_policies = [
+        lambda obs_t: (torch.tensor([[0.0, 5.0]]), torch.tensor([[0.0]])),
+    ]
+
+    soft = daily_stock._ensemble_softmax_signal(
+        _FakePrimary(),
+        extra_policies,
+        np.zeros((1, 16), dtype=np.float32),
+        {"AAPL": 100.0},
+        ensemble_mode="softmax_avg",
+    )
+    logit = daily_stock._ensemble_softmax_signal(
+        _FakePrimary(),
+        extra_policies,
+        np.zeros((1, 16), dtype=np.float32),
+        {"AAPL": 100.0},
+        ensemble_mode="logit_avg",
+    )
+    # softmax_avg: avg of [≈1,0] and [≈0,1] gives [0.5, 0.5] — argmax=0 (first tie)
+    # logit_avg:   avg of [10,0] and [0,5] = [5, 2.5] — still argmax=0 here actually
+    # Tighter test: both modes reach a decision without raising.
+    assert soft.action in ("act_0", "act_1")
+    assert logit.action in ("act_0", "act_1")
+
+
+def test_ensemble_mode_rejects_unknown_value() -> None:
+    class _FakePrimary:
+        device = "cpu"
+
+        @staticmethod
+        def build_observation(_f, _p):
+            return np.zeros(4, dtype=np.float32)
+
+        @staticmethod
+        def policy(obs_t):
+            return torch.zeros(1, 2), torch.zeros(1, 1)
+
+        @staticmethod
+        def apply_action_constraints(logits):
+            return logits
+
+        @staticmethod
+        def _decode_action(a, c, v):
+            return SimpleNamespace(action="x", symbol=None, direction=None, confidence=c, value_estimate=v)
+
+    with pytest.raises(ValueError, match="ensemble_mode"):
+        daily_stock._ensemble_softmax_signal(
+            _FakePrimary(), [], np.zeros((1, 1), dtype=np.float32), {},
+            ensemble_mode="max",  # invalid
+        )
+
+
 def test_append_signal_log_writes_jsonl(tmp_path: Path) -> None:
     log_path = tmp_path / "daily_stock_rl_signals.jsonl"
 

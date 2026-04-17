@@ -1,0 +1,61 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 12,
+  "ensemble_mode": "logit_avg",
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.0,
+    1.5
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.10557322511132279,
+      "p10_total_return": -0.029221608766169832,
+      "p90_total_return": 0.2253666476923385,
+      "median_monthly_return": 0.04305390946715683,
+      "p10_monthly_return": -0.01237871245763999,
+      "median_sortino": 3.809950774896375,
+      "median_max_dd": 0.08352232951403968,
+      "n_neg": 43,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.1437173737510264,
+      "p10_total_return": 0.01856171201499874,
+      "p90_total_return": 0.3339417666687568,
+      "median_monthly_return": 0.05801996189930222,
+      "p10_monthly_return": 0.007754359813179039,
+      "median_sortino": 4.161534619653077,
+      "median_max_dd": 0.10566941686524996,
+      "n_neg": 19,
+      "n_windows": 263
+    }
+  ]
+}

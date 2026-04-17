@@ -1,0 +1,257 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "num_windows": 3,
+  "window_days": 30,
+  "total_obs": 90,
+  "num_symbols": 32,
+  "per_policy": {
+    "C_s7": {
+      "n_steps": 90,
+      "flat_count": 14,
+      "flat_fraction": 0.15555555555555556,
+      "mean_flat_prob": 0.13839691263209614,
+      "p90_flat_prob": 0.24129585325717942,
+      "argmax_mode": [
+        [
+          25,
+          38
+        ],
+        [
+          8,
+          16
+        ],
+        [
+          0,
+          14
+        ]
+      ]
+    },
+    "D_s16": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.02740155104547739,
+      "p90_flat_prob": 0.06171550638973713,
+      "argmax_mode": [
+        [
+          12,
+          47
+        ],
+        [
+          23,
+          29
+        ],
+        [
+          28,
+          10
+        ]
+      ]
+    },
+    "D_s42": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.033281632181670934,
+      "p90_flat_prob": 0.04151943251490593,
+      "argmax_mode": [
+        [
+          15,
+          52
+        ],
+        [
+          22,
+          29
+        ],
+        [
+          11,
+          5
+        ]
+      ]
+    },
+    "AD_s4": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.029017060229347812,
+      "p90_flat_prob": 0.03189566768705845,
+      "argmax_mode": [
+        [
+          32,
+          52
+        ],
+        [
+          16,
+          29
+        ],
+        [
+          11,
+          4
+        ]
+      ]
+    },
+    "I_s3": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.03217156748804781,
+      "p90_flat_prob": 0.03301794268190861,
+      "argmax_mode": [
+        [
+          6,
+          51
+        ],
+        [
+          16,
+          34
+        ],
+        [
+          15,
+          5
+        ]
+      ]
+    },
+    "D_s2": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.022816348872664902,
+      "p90_flat_prob": 0.02611106000840664,
+      "argmax_mode": [
+        [
+          28,
+          46
+        ],
+        [
+          1,
+          18
+        ],
+        [
+          23,
+          11
+        ]
+      ]
+    },
+    "D_s14": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.025018436627255544,
+      "p90_flat_prob": 0.032077628001570706,
+      "argmax_mode": [
+        [
+          28,
+          87
+        ],
+        [
+          11,
+          3
+        ]
+      ]
+    },
+    "D_s28": {
+      "n_steps": 90,
+      "flat_count": 9,
+      "flat_fraction": 0.1,
+      "mean_flat_prob": 0.0838898485319482,
+      "p90_flat_prob": 0.11690947338938713,
+      "argmax_mode": [
+        [
+          28,
+          46
+        ],
+        [
+          24,
+          28
+        ],
+        [
+          0,
+          9
+        ]
+      ]
+    },
+    "D_s57": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.02958069114635388,
+      "p90_flat_prob": 0.03949226066470146,
+      "argmax_mode": [
+        [
+          27,
+          44
+        ],
+        [
+          16,
+          29
+        ],
+        [
+          6,
+          7
+        ]
+      ]
+    },
+    "D_s64": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.014546221116971639,
+      "p90_flat_prob": 0.017926187813282018,
+      "argmax_mode": [
+        [
+          11,
+          53
+        ],
+        [
+          17,
+          20
+        ],
+        [
+          32,
+          8
+        ]
+      ]
+    },
+    "I_s32": {
+      "n_steps": 90,
+      "flat_count": 0,
+      "flat_fraction": 0.0,
+      "mean_flat_prob": 0.024175439164456393,
+      "p90_flat_prob": 0.05245875865221024,
+      "argmax_mode": [
+        [
+          26,
+          60
+        ],
+        [
+          11,
+          27
+        ],
+        [
+          24,
+          2
+        ]
+      ]
+    }
+  },
+  "ensemble_softmax_avg": {
+    "n_steps": 90,
+    "flat_count": 7,
+    "flat_fraction": 0.07777777777777778,
+    "mean_flat_prob": 0.04103893937749995,
+    "p90_flat_prob": 0.05054819323122502,
+    "argmax_mode": [
+      [
+        25,
+        30
+      ],
+      [
+        28,
+        27
+      ],
+      [
+        16,
+        18
+      ]
+    ]
+  }
+}
