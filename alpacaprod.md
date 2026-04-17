@@ -24,10 +24,19 @@ Output: `docs/realism_gate/screened32_single_offset_val_full_realism_gate.{json,
 
 **Deploy-gate findings**:
 - 5 bps fill_buffer is the floor — wider (10/20bps) increases neg windows from 11→19+ without lifting the median. We're already on the right side of this knob.
-- 1x leverage (current `--allocation-pct 12.5` × top 8 = 100% notional) does NOT clear `27%/mo`. Best 1x cell is `+7.04%/mo, neg=19/263, sortino=6.52`.
-- 1.5x leverage (≈ `--allocation-pct ~18` × top 8) is the Pareto knee: `+10.19%/mo, neg=13/263, sortino=6.20, max_dd=8.62%` at fb=5. Adds only +2 neg windows over 1x and a +0.55% nominal max_dd hit.
+- 1x leverage at **100% allocation per signal** does NOT clear `27%/mo`. Best 1x cell is `+7.04%/mo, neg=19/263, sortino=6.52` at fb=10.
+- 1.5x leverage at 100% allocation is the Pareto knee: `+10.19%/mo, neg=13/263, sortino=6.20, max_dd=8.62%` at fb=5. Adds only +2 neg windows over 1x and a +0.55% nominal max_dd hit.
 - 2x leverage adds +2.4%/mo on top of 1.5x but bumps max_dd from 8.6% → 14.9% and neg windows by another +1. Diminishing returns.
-- **Recommendation**: bump live `--allocation-pct` from 12.5 → 18.75 (max 8 picks × 18.75% = 1.5× notional). Re-run the gate before/after to confirm the curve before flipping the live flag.
+
+**LIVE vs gate calibration (CORRECTION 2026-04-17)**:
+- The realism gate numbers above assume the policy fully invests its top signal each step (`max_leverage=1.0` in the C env, single-action sim).
+- The live launch is `--allocation-pct 12.5` with **no `--multi-position` flag** (DEFAULT_MULTI_POSITION=0 → single-action mode, `portfolio_mode: False` confirmed in `strategy_state/daily_stock_rl_signals.jsonl`).
+- Therefore live currently translates the model's signal into `12.5%` of equity per long, **not** `12.5% × 8 = 100%`. Expected live monthly ≈ `12.5% × 6.89%/mo ≈ 0.86%/mo`, which matches the observed equity flatness ($28,679 unchanged for 3 days when the model also went argmax-flat — the model is argmax-flat 4.2% of val timesteps; see `project_live_flat_run_normal.md`).
+- **Top-k(k=1) ≡ argmax on this val** (`docs/realism_gate_topk/`): the live `_ensemble_top_k_signals` rule at k=1 produces identical PnL to argmax (+6.89%/mo, neg=11/263 at fb=5/lev=1) because `flat_prob ≈ 0.04 > top*0.5 ≈ 0.03`, collapsing the threshold to `top >= flat`.
+- **Path to higher live PnL** (in order of risk):
+  1. Bump `--allocation-pct` from 12.5 → 50 to recover ~4× the expected return (`~3.4%/mo`). Single-position concentration risk goes up.
+  2. Add `--multi-position 8 --multi-position-min-prob-ratio 0.5` to take top-8 longs at `12.5%` each (=100% notional) — this is the design intent that the previous version of this doc implied. Requires building a multi-position simulator first to validate before deploying (the existing realism gate is single-action only; k>1 routes through the trading-server portfolio rebalance which the C env doesn't model).
+  3. Bump `--allocation-pct` further or add leverage only after (1)/(2) prove out at expected PnL on a few days.
 
 **Why the old headline didn't catch this**: `eval_multihorizon_candidate` aggregates 30/60/100/120-day horizons with a `--recent-within-days 140` tail. With a 313-day val, that filter restricts to the most recent ~140 days where this ensemble was tuned — the realism gate runs the full 263 windows so the bear tail can't be dropped.
 
