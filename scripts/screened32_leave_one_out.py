@@ -81,8 +81,14 @@ def _build_loo_policy_fn(
     decision_lag: int,
     disable_shorts: bool,
     device: torch.device,
+    min_agree_count: int = 0,
 ):
-    """Return a policy_fn that softmax-averages all policies except `drop_idx` (None = full ensemble)."""
+    """Return a policy_fn that softmax-averages all policies except `drop_idx` (None = full ensemble).
+
+    If `min_agree_count > 0`, force flat (action=0) when fewer than that many
+    kept members individually pick the ensemble argmax. Mirrors the gate wired
+    into `trade_daily_stock_prod.py::_ensemble_softmax_signal`.
+    """
     pending: collections.deque[int] = collections.deque(maxlen=max(1, decision_lag + 1))
     n_full = len(policies)
     keep_indices = [i for i in range(n_full) if i != drop_idx]
@@ -93,10 +99,21 @@ def _build_loo_policy_fn(
 
     def policy_fn(obs: np.ndarray) -> int:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
+        per_member_logits: list[torch.Tensor] = []
         with torch.no_grad():
             probs_sum: torch.Tensor | None = None
             for i in keep_indices:
                 lg, _ = policies[i](obs_t)
+                if min_agree_count > 0:
+                    if disable_shorts:
+                        lg_masked = _mask_all_shorts(
+                            lg,
+                            num_symbols=int(num_symbols),
+                            per_symbol_actions=int(per_symbol_actions),
+                        )
+                    else:
+                        lg_masked = lg
+                    per_member_logits.append(lg_masked)
                 pr = torch.softmax(lg, dim=-1)
                 probs_sum = pr if probs_sum is None else probs_sum + pr
             assert probs_sum is not None
@@ -108,6 +125,13 @@ def _build_loo_policy_fn(
                 per_symbol_actions=int(per_symbol_actions),
             )
         action_now = int(torch.argmax(logits, dim=-1).item())
+        if min_agree_count > 0 and action_now != 0:
+            n_agree = sum(
+                1 for lg in per_member_logits
+                if int(torch.argmax(lg, dim=-1).item()) == action_now
+            )
+            if n_agree < min_agree_count:
+                action_now = 0
         if decision_lag <= 0:
             return action_now
         pending.append(action_now)
@@ -136,6 +160,7 @@ def evaluate_loo(
     window_days: int,
     start_indices: Sequence[int],
     label: str = "",
+    min_agree_count: int = 0,
 ) -> dict:
     policy_fn, reset_buffer = _build_loo_policy_fn(
         policies=policies,
@@ -145,6 +170,7 @@ def evaluate_loo(
         decision_lag=decision_lag,
         disable_shorts=disable_shorts,
         device=device,
+        min_agree_count=min_agree_count,
     )
     rets: list[float] = []
     sortinos: list[float] = []
@@ -201,6 +227,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--decision-lag", type=int, default=2)
     ap.add_argument("--disable-shorts", action="store_true", default=True)
     ap.add_argument("--no-disable-shorts", dest="disable_shorts", action="store_false")
+    ap.add_argument(
+        "--min-agree-count",
+        type=int,
+        default=0,
+        help="Force flat when fewer than this many kept members individually pick the ensemble argmax. 0 disables. Mirrors the prod gate.",
+    )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out-dir", default="docs/leave_one_out")
     args = ap.parse_args(argv)
@@ -242,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     policies = [lp.policy for lp in loaded]
 
     # Baseline: full N-model ensemble
-    print(f"\n=== Baseline ({len(policies)}-model full ensemble) ===")
+    print(f"\n=== Baseline ({len(policies)}-model full ensemble, min_agree={int(args.min_agree_count)}) ===")
     baseline = evaluate_loo(
         data=data,
         policies=policies,
@@ -260,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         window_days=int(args.window_days),
         start_indices=start_indices,
         label="baseline",
+        min_agree_count=int(args.min_agree_count),
     )
     print(
         f"  med_monthly={baseline['median_monthly']:+.4f}  "
@@ -291,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             window_days=int(args.window_days),
             start_indices=start_indices,
             label=f"loo-{drop_idx}",
+            min_agree_count=int(args.min_agree_count),
         )
         result["dropped_member"] = name
         loo_results.append(result)
@@ -333,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         "fee_rate": float(args.fee_rate),
         "slippage_bps": float(args.slippage_bps),
         "decision_lag": int(args.decision_lag),
+        "min_agree_count": int(args.min_agree_count),
         "n_windows": baseline["n_windows"],
         "members": member_names,
         "baseline": {k: v for k, v in baseline.items() if k != "window_returns"},
