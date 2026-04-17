@@ -31,7 +31,8 @@ Output: `docs/realism_gate/screened32_single_offset_val_full_realism_gate.{json,
 **LIVE vs gate calibration (CORRECTION 2026-04-17)**:
 - The realism gate numbers above assume the policy fully invests its top signal each step (`max_leverage=1.0` in the C env, single-action sim).
 - The live launch is `--allocation-pct 12.5` with **no `--multi-position` flag** (DEFAULT_MULTI_POSITION=0 → single-action mode, `portfolio_mode: False` confirmed in `strategy_state/daily_stock_rl_signals.jsonl`).
-- Therefore live currently translates the model's signal into `12.5%` of equity per long, **not** `12.5% × 8 = 100%`. Expected live monthly ≈ `12.5% × 6.89%/mo ≈ 0.86%/mo`, which matches the observed equity flatness ($28,679 unchanged for 3 days when the model also went argmax-flat — the model is argmax-flat 4.2% of val timesteps; see `project_live_flat_run_normal.md`).
+- Therefore live currently translates the model's signal into `12.5%` of equity per long, **not** `12.5% × 8 = 100%`.
+- **Confirmed via realism gate at `max_leverage=0.125`** (`docs/realism_gate_live125/...`): live's expected monthly is `+0.90%/mo, p10=+0.37%, neg=15/263, sortino=5.62, max_dd=0.89%`. This matches the observed equity flatness ($28,679 unchanged for 3 days when the model also went argmax-flat — the model is argmax-flat 4.2% of val timesteps; see `project_live_flat_run_normal.md`).
 - **Top-k(k=1) ≡ argmax on this val** (`docs/realism_gate_topk/`): the live `_ensemble_top_k_signals` rule at k=1 produces identical PnL to argmax (+6.89%/mo, neg=11/263 at fb=5/lev=1) because `flat_prob ≈ 0.04 > top*0.5 ≈ 0.03`, collapsing the threshold to `top >= flat`.
 - **Path to higher live PnL** (in order of risk):
   1. Bump `--allocation-pct` from 12.5 → 50 to recover ~4× the expected return (`~3.4%/mo`). Single-position concentration risk goes up.
