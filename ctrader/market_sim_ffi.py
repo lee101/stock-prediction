@@ -276,6 +276,10 @@ def simulate_target_weights(
         raise ValueError("close and target_weights must have the same shape")
 
     n_bars, n_symbols = close_arr.shape
+    if n_bars <= 0:
+        raise ValueError("close and target_weights must contain at least one bar")
+    if n_symbols <= 0:
+        raise ValueError("close and target_weights must contain at least one symbol")
     _validate_native_symbol_count(int(n_symbols))
     lib = library or load_library()
     eq_curve = np.zeros(n_bars, dtype=np.float64)
@@ -305,6 +309,10 @@ class NativeWeightEnvHandle:
         self.close = np.ascontiguousarray(close, dtype=np.float64)
         if self.close.ndim != 2:
             raise ValueError("close must be 2D [n_bars, n_symbols]")
+        if self.close.shape[0] <= 0:
+            raise ValueError("close must contain at least one bar")
+        if self.close.shape[1] <= 0:
+            raise ValueError("close must contain at least one symbol")
         _validate_native_symbol_count(int(self.close.shape[1]))
         self.lib = library or load_library()
         self.env = NativeWeightEnv()

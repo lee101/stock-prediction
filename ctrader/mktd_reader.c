@@ -14,6 +14,10 @@ typedef struct {
 } MktdHeader;
 
 int mktd_load(const char *path, MktdData *data) {
+    if (!path || !data) {
+        fprintf(stderr, "mktd_load: path and data must be non-null\n");
+        return -1;
+    }
     memset(data, 0, sizeof(*data));
 
     FILE *fp = fopen(path, "rb");

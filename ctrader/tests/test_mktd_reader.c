@@ -36,9 +36,12 @@ static int g_pass = 0, g_fail = 0;
     } \
 } while(0)
 
-static void write_test_mktd(const char *path, int S, int T, int F) {
+static int write_test_mktd(const char *path, int S, int T, int F) {
     FILE *fp = fopen(path, "wb");
-    if (!fp) { fprintf(stderr, "cannot create %s\n", path); return; }
+    if (!fp) {
+        fprintf(stderr, "cannot create %s\n", path);
+        return -1;
+    }
 
     /* header: 64 bytes */
     unsigned int version = 2;
@@ -101,15 +104,26 @@ static void write_test_mktd(const char *path, int S, int T, int F) {
     }
 
     fclose(fp);
+    return 0;
+}
+
+static void build_test_path(char *out, size_t out_size, const char *filename) {
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !tmpdir[0]) {
+        tmpdir = "/tmp";
+    }
+    snprintf(out, out_size, "%s/%s", tmpdir, filename);
 }
 
 static void test_load_basic(void) {
-    const char *path = "/tmp/test_mktd_basic.bin";
-    write_test_mktd(path, 3, 10, 16);
+    char path[512];
+    build_test_path(path, sizeof(path), "test_mktd_basic.bin");
+    ASSERT_EQ_INT(write_test_mktd(path, 3, 10, 16), 0, "load_basic: fixture created");
 
     MktdData data;
     int rc = mktd_load(path, &data);
     ASSERT_EQ_INT(rc, 0, "load_basic: return code");
+    if (rc != 0) return;
     ASSERT_EQ_INT(data.num_symbols, 3, "load_basic: num_symbols");
     ASSERT_EQ_INT(data.num_timesteps, 10, "load_basic: num_timesteps");
     ASSERT_EQ_INT(data.features_per_sym, 16, "load_basic: features_per_sym");
@@ -142,7 +156,8 @@ static void test_load_basic(void) {
 }
 
 static void test_load_bad_magic(void) {
-    const char *path = "/tmp/test_mktd_badmagic.bin";
+    char path[512];
+    build_test_path(path, sizeof(path), "test_mktd_badmagic.bin");
     FILE *fp = fopen(path, "wb");
     char buf[64];
     memset(buf, 0, 64);
@@ -156,13 +171,16 @@ static void test_load_bad_magic(void) {
 }
 
 static void test_load_missing_file(void) {
+    char path[512];
+    build_test_path(path, sizeof(path), "nonexistent_mktd_file.bin");
     MktdData data;
-    int rc = mktd_load("/tmp/nonexistent_mktd_file.bin", &data);
+    int rc = mktd_load(path, &data);
     ASSERT_EQ_INT(rc, -1, "missing_file: should fail");
 }
 
 static void test_load_truncated(void) {
-    const char *path = "/tmp/test_mktd_trunc.bin";
+    char path[512];
+    build_test_path(path, sizeof(path), "test_mktd_trunc.bin");
     FILE *fp = fopen(path, "wb");
     /* write valid header but no data after it */
     unsigned int version = 2;
@@ -191,12 +209,14 @@ static void test_free_zeroed(void) {
 }
 
 static void test_single_symbol(void) {
-    const char *path = "/tmp/test_mktd_1sym.bin";
-    write_test_mktd(path, 1, 5, 16);
+    char path[512];
+    build_test_path(path, sizeof(path), "test_mktd_1sym.bin");
+    ASSERT_EQ_INT(write_test_mktd(path, 1, 5, 16), 0, "1sym: fixture created");
 
     MktdData data;
     int rc = mktd_load(path, &data);
     ASSERT_EQ_INT(rc, 0, "1sym: load ok");
+    if (rc != 0) return;
     ASSERT_EQ_INT(data.num_symbols, 1, "1sym: num_symbols");
     ASSERT_EQ_INT(data.num_timesteps, 5, "1sym: num_timesteps");
 
@@ -207,12 +227,14 @@ static void test_single_symbol(void) {
 }
 
 static void test_equity_curve_from_mktd(void) {
-    const char *path = "/tmp/test_mktd_eq.bin";
-    write_test_mktd(path, 2, 20, 16);
+    char path[512];
+    build_test_path(path, sizeof(path), "test_mktd_eq.bin");
+    ASSERT_EQ_INT(write_test_mktd(path, 2, 20, 16), 0, "eq: fixture created");
 
     MktdData data;
     int rc = mktd_load(path, &data);
     ASSERT_EQ_INT(rc, 0, "eq: load ok");
+    if (rc != 0) return;
 
     int T = data.num_timesteps;
     int S = data.num_symbols;
@@ -249,17 +271,25 @@ static void test_equity_curve_from_mktd(void) {
 }
 
 static void test_20_features(void) {
-    const char *path = "/tmp/test_mktd_f20.bin";
-    write_test_mktd(path, 2, 5, 20);
+    char path[512];
+    build_test_path(path, sizeof(path), "test_mktd_f20.bin");
+    ASSERT_EQ_INT(write_test_mktd(path, 2, 5, 20), 0, "f20: fixture created");
 
     MktdData data;
     int rc = mktd_load(path, &data);
     ASSERT_EQ_INT(rc, 0, "f20: load ok");
+    if (rc != 0) return;
     ASSERT_EQ_INT(data.features_per_sym, 20, "f20: features=20");
     ASSERT_EQ_INT(data.num_symbols, 2, "f20: num_symbols");
     ASSERT_EQ_INT(data.num_timesteps, 5, "f20: num_timesteps");
 
     mktd_free(&data);
+}
+
+static void test_load_null_args(void) {
+    MktdData data;
+    ASSERT_EQ_INT(mktd_load(NULL, &data), -1, "null_args: null path");
+    ASSERT_EQ_INT(mktd_load("/dev/null", NULL), -1, "null_args: null data");
 }
 
 int main(void) {
@@ -269,6 +299,7 @@ int main(void) {
     test_load_bad_magic();
     test_load_missing_file();
     test_load_truncated();
+    test_load_null_args();
     test_free_zeroed();
     test_single_symbol();
     test_equity_curve_from_mktd();

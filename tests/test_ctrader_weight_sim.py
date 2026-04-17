@@ -234,6 +234,32 @@ def test_simulate_target_weights_rejects_symbol_count_above_native_limit() -> No
         )
 
 
+def test_simulate_target_weights_rejects_empty_bar_axis_before_touching_library() -> None:
+    close = np.ones((0, 1), dtype=np.float64)
+    weights = np.zeros((0, 1), dtype=np.float64)
+
+    with pytest.raises(ValueError, match="at least one bar"):
+        simulate_target_weights(
+            close,
+            weights,
+            {"initial_cash": 10_000.0},
+            library=object(),
+        )
+
+
+def test_simulate_target_weights_rejects_empty_symbol_axis_before_touching_library() -> None:
+    close = np.ones((3, 0), dtype=np.float64)
+    weights = np.zeros((3, 0), dtype=np.float64)
+
+    with pytest.raises(ValueError, match="at least one symbol"):
+        simulate_target_weights(
+            close,
+            weights,
+            {"initial_cash": 10_000.0},
+            library=object(),
+        )
+
+
 def test_native_weight_env_handle_rejects_symbol_count_above_native_limit() -> None:
     n_symbols = MAX_NATIVE_WEIGHT_SYMBOLS + 1
     close = np.ones((8, n_symbols), dtype=np.float64)
@@ -242,6 +268,26 @@ def test_native_weight_env_handle_rejects_symbol_count_above_native_limit() -> N
     with pytest.raises(ValueError, match="supports at most"):
         NativeWeightEnvHandle(
             close,
+            env_config,
+            {"initial_cash": 10_000.0},
+            library=object(),
+        )
+
+
+def test_native_weight_env_handle_rejects_empty_axes_before_touching_library() -> None:
+    env_config = NativeWeightEnvConfig(lookback=2, episode_steps=3, reward_scale=1.0)
+
+    with pytest.raises(ValueError, match="at least one bar"):
+        NativeWeightEnvHandle(
+            np.ones((0, 1), dtype=np.float64),
+            env_config,
+            {"initial_cash": 10_000.0},
+            library=object(),
+        )
+
+    with pytest.raises(ValueError, match="at least one symbol"):
+        NativeWeightEnvHandle(
+            np.ones((3, 0), dtype=np.float64),
             env_config,
             {"initial_cash": 10_000.0},
             library=object(),

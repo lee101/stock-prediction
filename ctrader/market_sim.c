@@ -46,6 +46,7 @@ double compute_sortino(const double *equity_curve, int n_eq) {
 }
 
 double compute_max_drawdown(const double *equity_curve, int n_eq) {
+    if (!equity_curve || n_eq <= 0) return 0.0;
     double running_max = equity_curve[0];
     double max_dd = 0.0;
     for (int i = 0; i < n_eq; i++) {
@@ -89,10 +90,20 @@ static void score_to_target_weights(
     double *out_weights
 ) {
     if (cfg->can_short) {
+        double gross = 0.0;
         for (int s = 0; s < n_symbols; s++) {
             out_weights[s] = tanh(raw_scores[s]);
+            gross += fabs(out_weights[s]);
         }
-        clamp_target_weights(out_weights, out_weights, n_symbols, cfg->can_short, cfg->max_gross_leverage);
+        {
+            double gross_limit = cfg->max_gross_leverage > 0.0 ? cfg->max_gross_leverage : 1.0;
+            if (gross > gross_limit && gross > 0.0) {
+                double scale = gross_limit / gross;
+                for (int s = 0; s < n_symbols; s++) {
+                    out_weights[s] *= scale;
+                }
+            }
+        }
         return;
     }
 

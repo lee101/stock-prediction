@@ -313,6 +313,14 @@ static void test_max_drawdown(void) {
     ASSERT_NEAR(dd, 0.0, 1e-10, "max_dd: flat");
 }
 
+static void test_max_drawdown_edge_cases(void) {
+    double eq[] = {100.0};
+
+    ASSERT_NEAR(compute_max_drawdown(eq, 1), 0.0, 1e-12, "max_dd: single point");
+    ASSERT_NEAR(compute_max_drawdown(eq, 0), 0.0, 1e-12, "max_dd: zero points");
+    ASSERT_NEAR(compute_max_drawdown(NULL, 0), 0.0, 1e-12, "max_dd: null empty");
+}
+
 static void test_batch_simulation(void) {
     double o[] = {100, 101, 102};
     double h[] = {105, 106, 107};
@@ -1156,6 +1164,58 @@ static void test_weight_env_extreme_scores(void) {
     weight_env_free(&env);
 }
 
+static void test_weight_env_short_scores_clamp_gross_leverage(void) {
+    int n_bars = 7;
+    int n_symbols = 2;
+    double close[] = {
+        100.0, 100.0,
+        102.0, 98.0,
+        104.0, 96.0,
+        106.0, 94.0,
+        108.0, 92.0,
+        110.0, 90.0,
+        112.0, 88.0,
+    };
+    WeightEnvConfig ecfg = {2, 3, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.5, 0.001, 0.0, 8760.0, 1};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+    double scores[] = {100.0, -100.0};
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "short_clamp: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "short_clamp: reset");
+    ASSERT_EQ_INT(weight_env_step(&env, scores, 2, &info), 0, "short_clamp: step");
+
+    if (!(env.current_weights[0] > 0.0 && env.current_weights[1] < 0.0)) {
+        fprintf(
+            stderr,
+            "FAIL short_clamp: expected long/short weights, got %.10f %.10f\n",
+            env.current_weights[0],
+            env.current_weights[1]
+        );
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+
+    double gross = fabs(env.current_weights[0]) + fabs(env.current_weights[1]);
+    if (gross > 1.5000001) {
+        fprintf(stderr, "FAIL short_clamp: gross leverage exceeded cap, got %.10f\n", gross);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+
+    if (!isfinite(info.equity) || info.equity <= 0.0) {
+        fprintf(stderr, "FAIL short_clamp: expected finite positive equity, got %.10f\n", info.equity);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+
+    weight_env_free(&env);
+}
+
 static void test_weight_env_multi_symbol_rotation(void) {
     int n_bars = 10;
     int n_symbols = 3;
@@ -1404,6 +1464,7 @@ int main(void) {
     test_min_edge();
     test_sortino_computation();
     test_max_drawdown();
+    test_max_drawdown_edge_cases();
     test_batch_simulation();
     test_multi_sym_no_trades();
     test_multi_sym_buy_sell();
@@ -1433,6 +1494,7 @@ int main(void) {
     test_weight_env_borrow_cost();
 
     test_weight_env_extreme_scores();
+    test_weight_env_short_scores_clamp_gross_leverage();
     test_weight_env_multi_symbol_rotation();
     test_weight_env_zero_equity_recovery();
     test_weight_env_all_cash();
