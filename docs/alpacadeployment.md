@@ -1,8 +1,8 @@
 # Alpaca Deployment Runbook
 
 This runbook is for the Alpaca live writers in this repo, especially the
-supervisor-managed `llm-stock-trader` stock planner and the systemd-managed
-`daily-rl-trader`.
+supervisor-managed `trading-server`, the supervisor-managed `daily-rl-trader`,
+and the supervisor-managed `llm-stock-trader` stock planner.
 
 ## Preconditions
 
@@ -24,7 +24,13 @@ Check the running process directly:
 ps -ef | rg "unified_orchestrator\\.orchestrator|trade_daily_stock_prod.py"
 ```
 
-Check repo-side preflight for the stock LLM service:
+Check repo-side preflight for the live writer pair:
+
+```bash
+python scripts/alpaca_deploy_preflight.py --service trading-server --service daily-rl-trader
+```
+
+Check the stock LLM service separately:
 
 ```bash
 python scripts/alpaca_deploy_preflight.py --service llm-stock-trader
@@ -34,6 +40,8 @@ Useful live files:
 
 - Cycle log: `strategy_state/orchestrator_cycle_events.jsonl`
 - Stock event log: `strategy_state/stock_event_log.jsonl`
+- Trading-server audit log: `strategy_state/trading_server/events/live_prod.audit.jsonl`
+- Trading-server fills log: `strategy_state/trading_server/events/live_prod.fills.jsonl`
 - Supervisor stdout: `/var/log/supervisor/llm-stock-trader.log`
 - Supervisor stderr: `/var/log/supervisor/llm-stock-trader-error.log`
 
@@ -132,12 +140,42 @@ You want to see the new model and PID in the cycle log:
 - `reprompt_passes: 1`
 - expected stock symbol set
 
-## 4. Deploy `daily-rl-trader`
+## 4. Deploy `trading-server`
+
+The checked-in launcher is:
+
+- [deployments/trading-server/launch.sh](../deployments/trading-server/launch.sh)
+
+The checked-in supervisor program is:
+
+- [deployments/trading-server/supervisor.conf](../deployments/trading-server/supervisor.conf)
+
+Restart via supervisor on the host:
+
+```bash
+sudo cp deployments/trading-server/supervisor.conf /etc/supervisor/conf.d/trading-server.conf
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl restart trading-server
+```
+
+Verify:
+
+```bash
+sudo supervisorctl status trading-server
+tail -n 80 /var/log/supervisor/trading-server.log
+tail -n 80 /var/log/supervisor/trading-server-error.log
+```
+
+The live registry entry is `live_prod` and its checked-in writer identity is
+`daily_stock_sortino_v1` in `config/trading_server/accounts.json`.
+
+## 5. Deploy `daily-rl-trader`
 
 Current live command pattern:
 
 ```bash
-.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5
+deployments/daily-rl-trader/launch.sh
 ```
 
 Current repo defaults as of 2026-04-13:
@@ -153,11 +191,18 @@ without a qualifying positive replay.
 Restart:
 
 ```bash
-sudo systemctl restart daily-rl-trader.service
-sudo systemctl status daily-rl-trader.service --no-pager
+sudo cp deployments/daily-rl-trader/supervisor.conf /etc/supervisor/conf.d/daily-rl-trader.conf
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl restart daily-rl-trader
+sudo supervisorctl status daily-rl-trader
 ```
 
-## 5. Update the production ledger
+This writer now talks to the loopback trading server instead of placing live
+orders directly. The broker-facing single-writer boundary is the server account
+lease on `live_prod`.
+
+## 6. Update the production ledger
 
 Whenever a live config changes or a live restart happens:
 
@@ -171,5 +216,8 @@ Whenever a live config changes or a live restart happens:
 - The stock executor currently opens new long positions and manages exits for
   held longs. The LLM can still emit `short` plans, which are logged but not
   opened as new short positions by `execute_stock_signals(...)`.
+- The current daily stock writer only submits new orders while the U.S. market
+  is open. After the cash close, the service can still run healthily and claim
+  the writer lease, but it will not force an after-hours stock order.
 - `python scripts/alpaca_deploy_preflight.py --service llm-stock-trader` will
   refuse `--apply` from a dirty repo outside the service watchlist.

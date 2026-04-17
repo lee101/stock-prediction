@@ -62,6 +62,18 @@ export TRADING_SERVER_QUOTE_FETCH_WORKERS=8
 uvicorn src.trading_server.server:app --host 0.0.0.0 --port 8000
 ```
 
+Production deployment on this repo now uses the checked-in supervisor wrapper:
+
+```bash
+sudo cp deployments/trading-server/supervisor.conf /etc/supervisor/conf.d/trading-server.conf
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl restart trading-server
+```
+
+The live Alpaca account is represented by the `live_prod` registry entry, and
+the checked-in live writer identity is `daily_stock_sortino_v1`.
+
 ## Writer Ownership
 
 Mutating requests must include:
