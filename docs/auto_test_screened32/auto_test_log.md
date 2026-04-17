@@ -320,3 +320,13 @@ neg > 17 standalone are essentially guaranteed to fail too.
 | 2026-04-17T06:33:59Z | AD/s15 | 62 | — | — | — | skip (over neg bar) |
 | 2026-04-17T06:33:59Z | AD/s16 | 26 | — | — | — | skip (over neg bar) |
 | 2026-04-17T07:04:47Z | AD/s17 | 53 | — | — | — | skip (over neg bar) |
+| 2026-04-17T07:25:16Z | AD/s18 | 22 | — | — | — | skip (over neg bar) |
+| 2026-04-17T07:45:46Z | AD/s19 | 59 | — | — | — | skip (over neg bar) |
+| 2026-04-17T08:06:11Z | AD/s20 | 52 | — | — | — | skip (over neg bar) |
+| 2026-04-17T08:16:16Z | AD/s21 | 43 | — | — | — | skip (over neg bar) |
+| 2026-04-17T08:54:14Z | AD/s22 | 41 | — | — | — | skip (over neg bar) |
+| 2026-04-17T08:54:14Z | AD/s23 | 51 | — | — | — | skip (over neg bar) |
+| 2026-04-17T08:54:14Z | AD/s24 | 52 | — | — | — | skip (over neg bar) |
+| 2026-04-17T09:16:33Z | AD/s25 | 36 | — | — | — | skip (over neg bar) |
+| 2026-04-17T09:02:00Z | D/s92 (manual) | 20 | 0.0716 | 13 | 6.35 | reject (1x: Δmed −0.31%, Δp10 −0.69%, Δneg +3) |
+| 2026-04-17T09:02:00Z | D/s92 (manual, 1.5x) | 20 | 0.1033 | 11 | 6.58 | PROMISING @ 1.5x (Δmed +0.02%, Δp10 +0.33%, Δneg −2, Δsortino +0.45) |
