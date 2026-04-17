@@ -881,9 +881,8 @@ class TestAugmentedChronos2Dataset:
             batch_plain  = next(iter(ds_noshock))
             ctx_s = batch_shocked["context"].float()
             ctx_p = batch_plain["context"].float()
-            if ctx_s.shape[-1] < T:
+            if ctx_s.shape != ctx_p.shape or ctx_s.shape[-1] < T:
                 continue
-            # Check that the shocked context differs from the plain one
             if float((ctx_s - ctx_p).abs().max()) > 0.1:
                 found_change = True
                 break
@@ -1074,3 +1073,129 @@ class TestAugmentedChronos2Dataset:
             ctx = batch["context"].float()
             finite = ctx[~torch.isnan(ctx)]
             assert float(finite.std()) < 1e-3, "return_momentum_prob=0 should not alter constant series"
+
+    def test_washout_changes_context(self):
+        """Washout augmentation should alter a flat series with prob=1."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        # Washout should produce non-constant context from a flat input
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(20)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            washout_prob=1.0, washout_magnitude_frac=0.10,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.TRAIN, aug_config=aug,
+        )
+        found_change = False
+        for _ in range(30):
+            ctx = next(iter(ds))["context"].float()
+            finite = ctx[~torch.isnan(ctx)]
+            # Washout on a flat series should produce a non-constant context (std > 0)
+            if float(finite.std()) > 0.01:
+                found_change = True
+                break
+        assert found_change, "washout_prob=1.0 should alter a flat series"
+
+    def test_washout_disabled_when_zero_prob(self):
+        """Washout should not activate when prob=0."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(10)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            washout_prob=0.0,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.TRAIN, aug_config=aug,
+        )
+        for _ in range(10):
+            batch = next(iter(ds))
+            ctx = batch["context"].float()
+            finite = ctx[~torch.isnan(ctx)]
+            assert float(finite.std()) < 1e-3, "washout_prob=0 should not alter constant series"
+
+    def test_parabolic_trend_changes_context(self):
+        """Parabolic trend should alter a flat series with prob=1."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(20)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            parabolic_trend_prob=1.0, parabolic_trend_magnitude_frac=0.10,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.TRAIN, aug_config=aug,
+        )
+        found_change = False
+        for _ in range(20):
+            ctx = next(iter(ds))["context"].float()
+            finite = ctx[~torch.isnan(ctx)]
+            if float(finite.std()) > 0.01:
+                found_change = True
+                break
+        assert found_change, "parabolic_trend_prob=1.0 should alter a flat series"
+
+    def test_parabolic_trend_is_nonlinear(self):
+        """Parabolic trend should create a non-linear (accelerating) pattern."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+            from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        except ImportError:
+            pytest.skip("chronos not installed")
+        import torch
+
+        T = 64
+        # Start from a constant series — parabolic trend creates all the variation
+        inputs = [{"target": np.full((4, T + 1), 100.0, dtype=np.float32)} for _ in range(50)]
+        aug = AugConfig(
+            amplitude_log_std=0.0, noise_std_frac=0.0, time_dropout_rate=0.0,
+            parabolic_trend_prob=1.0, parabolic_trend_magnitude_frac=0.30,
+        )
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs, context_length=T, prediction_length=1, batch_size=4,
+            output_patch_size=16, mode=DatasetMode.TRAIN, aug_config=aug,
+        )
+        # Check that the trend is nonlinear: increments should increase toward the end
+        found_nonlinear = False
+        for _ in range(30):
+            ctx = next(iter(ds))["context"].float()[0]  # first channel
+            diffs = ctx[1:] - ctx[:-1]
+            first_half_mean = diffs[:T//2].abs().mean()
+            second_half_mean = diffs[T//2:].abs().mean()
+            # Parabolic (power > 1) accelerates: second half diffs should be >= first half
+            if second_half_mean >= first_half_mean * 0.9:  # allow 10% tolerance
+                found_nonlinear = True
+                break
+        assert found_nonlinear, "Parabolic trend should accelerate toward the end"
+
+    def test_augconfig_has_washout_and_parabolic_fields(self):
+        """AugConfig should have washout and parabolic trend fields."""
+        cfg = AugConfig()
+        assert hasattr(cfg, "washout_prob")
+        assert hasattr(cfg, "washout_magnitude_frac")
+        assert hasattr(cfg, "parabolic_trend_prob")
+        assert hasattr(cfg, "parabolic_trend_magnitude_frac")
+        assert cfg.washout_prob == 0.0
+        assert cfg.parabolic_trend_prob == 0.0

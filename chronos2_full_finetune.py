@@ -623,6 +623,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Prob of applying AR-like return autocorrelation augmentation. 0=off")
     p.add_argument("--return-momentum-blend", type=float, default=0.4,
                    help="Blend ratio for return momentum augmentation (default: 0.4)")
+    p.add_argument("--washout-prob", type=float, default=0.0,
+                   help="Prob of applying washout (drop+recovery) pattern augmentation. 0=off")
+    p.add_argument("--washout-magnitude-frac", type=float, default=0.12,
+                   help="Max washout drop magnitude as fraction of mean price (default: 0.12)")
+    p.add_argument("--parabolic-trend-prob", type=float, default=0.0,
+                   help="Prob of applying parabolic (power-law) trend augmentation. 0=off")
+    p.add_argument("--parabolic-trend-magnitude-frac", type=float, default=0.15,
+                   help="Max parabolic trend magnitude as fraction of mean price (default: 0.15)")
     p.add_argument("--no-return-variants", action="store_true")
     p.add_argument("--no-sliding",  action="store_true",
                    help="Disable hourly sliding-window daily aggregations")
@@ -692,6 +700,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         struct_break_vol_mult=getattr(args, "struct_break_vol_mult", 3.0),
         return_momentum_prob=getattr(args, "return_momentum_prob", 0.0),
         return_momentum_blend=getattr(args, "return_momentum_blend", 0.4),
+        washout_prob=getattr(args, "washout_prob", 0.0),
+        washout_magnitude_frac=getattr(args, "washout_magnitude_frac", 0.12),
+        parabolic_trend_prob=getattr(args, "parabolic_trend_prob", 0.0),
+        parabolic_trend_magnitude_frac=getattr(args, "parabolic_trend_magnitude_frac", 0.15),
         add_return_variants=not args.no_return_variants,
         sliding_daily_offsets=[] if args.no_sliding else [0, 1, 2, 3, 4, 5, 6],
     )

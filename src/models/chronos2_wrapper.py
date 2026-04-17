@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 from collections import OrderedDict
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeGuard, TypeVar
@@ -36,6 +37,11 @@ try:  # pragma: no cover - surface chronos version info when available
     import chronos as _chronos_pkg
 except Exception:  # pragma: no cover
     _chronos_pkg = None  # type: ignore
+
+try:  # pragma: no cover - optional transformers kernel integration
+    from transformers import KernelConfig as _TransformersKernelConfig
+except Exception:  # pragma: no cover
+    _TransformersKernelConfig = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - optional dependency loaded lazily by callers
     from chronos import BaseChronosPipeline as _ChronosBasePipeline
@@ -153,6 +159,50 @@ def _safe_bool(value: Optional[str], default: bool = True) -> bool:
     if normalized in {"1", "true", "yes", "on", "prefer"}:
         return True
     return default
+
+
+@contextmanager
+def _temporary_env(var_name: str, value: Optional[str]):
+    old_value = os.environ.get(var_name)
+    if value is None:
+        os.environ.pop(var_name, None)
+    else:
+        os.environ[var_name] = value
+    try:
+        yield
+    finally:
+        if old_value is None:
+            os.environ.pop(var_name, None)
+        else:
+            os.environ[var_name] = old_value
+
+
+def _resolve_use_hub_kernels(value: Optional[bool]) -> tuple[bool, bool]:
+    if value is not None:
+        return bool(value), True
+    env_value = os.getenv("CHRONOS2_USE_HUB_KERNELS")
+    if env_value is None:
+        return False, False
+    return _safe_bool(env_value, default=False), True
+
+
+class _KernelConfigShim:
+    __slots__ = ("kernel_mapping",)
+
+    def __init__(self, kernel_mapping: Mapping[str, str]) -> None:
+        self.kernel_mapping = dict(kernel_mapping)
+
+
+def _coerce_kernel_config(value: Any) -> Any:
+    if value is None:
+        return None
+    if _TransformersKernelConfig is not None and isinstance(value, _TransformersKernelConfig):
+        return value
+    if isinstance(value, Mapping):
+        if _TransformersKernelConfig is not None:
+            return _TransformersKernelConfig(kernel_mapping=dict(value))
+        return _KernelConfigShim(value)
+    return value
 
 
 def _round_float_columns(df: pd.DataFrame, decimals: int) -> pd.DataFrame:
@@ -754,6 +804,8 @@ class Chronos2OHLCWrapper:
         multiscale_enabled: Optional[bool] = None,
         multiscale_config_paths: Optional[Sequence[str | Path]] = None,
         pipeline_backend: Optional[str] = None,
+        use_hub_kernels: Optional[bool] = None,
+        hub_kernel_config: Optional[Any] = None,
         cache_policy: str = "prefer",
         force_refresh: bool = False,
         cache_manager: Optional[ModelCacheManager] = None,
@@ -771,6 +823,18 @@ class Chronos2OHLCWrapper:
         if resolved_model_id != model_id:
             logger.info("Resolved Chronos2 model_id '%s' to '%s'", model_id, resolved_model_id)
         backend = _resolve_pipeline_backend(pipeline_backend)
+        hub_kernels_enabled, hub_kernels_requested = _resolve_use_hub_kernels(use_hub_kernels)
+        effective_kwargs = dict(kwargs)
+        kernel_config_obj = _coerce_kernel_config(hub_kernel_config)
+        if kernel_config_obj is not None and "kernel_config" not in effective_kwargs:
+            effective_kwargs["kernel_config"] = kernel_config_obj
+        hub_kernels_context = (
+            _temporary_env("USE_HUB_KERNELS", "1" if hub_kernels_enabled else "0")
+            if hub_kernels_requested
+            else nullcontext()
+        )
+        if hub_kernels_enabled:
+            logger.info("Chronos2 hub kernels requested for model load.")
 
         if backend != "chronos":
             cute_compile = bool(torch_compile)
@@ -837,7 +901,7 @@ class Chronos2OHLCWrapper:
         use_cache = policy != "never"
         loaded_from_cache = False
 
-        with manager.compilation_env(resolved_model_id, dtype_token):
+        with manager.compilation_env(resolved_model_id, dtype_token), hub_kernels_context:
             metadata = manager.load_metadata(resolved_model_id, dtype_token) if use_cache else None
             pipeline: _ChronosBasePipeline
             if (
@@ -849,7 +913,11 @@ class Chronos2OHLCWrapper:
                 cache_path = manager.load_pretrained_path(resolved_model_id, dtype_token)
                 if cache_path is not None:
                     try:
-                        pipeline = pipeline_cls.from_pretrained(str(cache_path), device_map=device_map, **kwargs)
+                        pipeline = pipeline_cls.from_pretrained(
+                            str(cache_path),
+                            device_map=device_map,
+                            **effective_kwargs,
+                        )
                         loaded_from_cache = True
                         logger.info(
                             "Loaded Chronos2 model '%s' (%s) from compiled cache.",
@@ -866,7 +934,11 @@ class Chronos2OHLCWrapper:
                 )
 
             if not loaded_from_cache:
-                pipeline = pipeline_cls.from_pretrained(resolved_model_id, device_map=device_map, **kwargs)
+                pipeline = pipeline_cls.from_pretrained(
+                    resolved_model_id,
+                    device_map=device_map,
+                    **effective_kwargs,
+                )
                 logger.info(
                     "Loaded Chronos2 model '%s' from source (cache_policy=%s).",
                     resolved_model_id,

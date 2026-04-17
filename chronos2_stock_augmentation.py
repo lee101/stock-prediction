@@ -199,6 +199,30 @@ class AugConfig:
     # If None (default), randomly chosen from U(-0.5, 0.5) each application.
     return_momentum_ar: Optional[float] = None
 
+    # Washout pattern injection: with this probability, inject a multi-bar drop followed
+    # by a rapid partial recovery. Simulates stop-loss cascade / short-squeeze dynamics
+    # that are common in individual stocks. Teaches the model that sharp drops often
+    # partially reverse within 1-5 bars.
+    # Pattern: drop of washout_magnitude_frac over 1-3 bars, then 50-90% recovery
+    # over 1-3 subsequent bars. Both the drop and recovery are applied to all channels.
+    # Set to 0 to disable.
+    washout_prob: float = 0.0
+
+    # Maximum washout magnitude as a fraction of local mean (e.g., 0.12 = up to 12% drop).
+    washout_magnitude_frac: float = 0.12
+
+    # Parabolic trend injection: with this probability, add a power-law (quadratic)
+    # trend to context — simulates blow-off tops or capitulation moves that accelerate
+    # as they develop. Distinct from trend_inject (linear) — this captures
+    # acceleration/deceleration patterns common in individual stock momentum.
+    # Applied with random sign (up or down) and random exponent in [1.5, 3.0].
+    # Set to 0 to disable.
+    parabolic_trend_prob: float = 0.0
+
+    # Maximum parabolic trend magnitude as fraction of mean context value at endpoint.
+    # E.g. 0.15 = trend reaches ±15% of price by the end of context.
+    parabolic_trend_magnitude_frac: float = 0.15
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -507,6 +531,74 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                         reconstructed[:, 0] = task_context[:, 0]
                         reconstructed[:, 1:] = task_context[:, 0:1] + neg_returns.cumsum(dim=-1)
                         task_context = (1 - blend) * task_context + blend * reconstructed
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 16. Washout pattern: sharp drop followed by partial recovery ---
+        # Simulates stop-loss cascades / short-squeeze dynamics common in individual stocks.
+        # Teaches the model that rapid declines often reverse 50-90% within a few bars.
+        if cfg.washout_prob > 0 and random.random() < cfg.washout_prob:
+            T = task_context.shape[-1]
+            if T >= 12:
+                task_context = task_context.clone().float()
+                ch_mean = task_context.abs().mean(dim=-1).clamp(min=1e-4)  # (n_ch,)
+                # Washout position: middle portion so we see both drop and recovery
+                min_pos = T // 4
+                max_pos = T * 2 // 3
+                if max_pos > min_pos:
+                    washout_pos = random.randint(min_pos, max_pos)
+                    drop_bars = random.randint(1, min(3, T - washout_pos - 2))
+                    recovery_bars = random.randint(1, min(3, T - washout_pos - drop_bars - 1))
+                    # Drop magnitude: U(0.03, washout_magnitude_frac)
+                    magnitude = random.uniform(0.03, max(0.03, cfg.washout_magnitude_frac))
+                    sign = -1.0 if random.random() > 0.5 else 1.0  # can be up-then-down too
+                    # Apply drop over drop_bars (each bar contributes equal fraction)
+                    drop_per_bar = sign * magnitude / drop_bars
+                    cumulative_shift = 0.0
+                    for k in range(drop_bars):
+                        bar_drop = drop_per_bar * ch_mean  # (n_ch,)
+                        cumulative_shift += drop_per_bar
+                        task_context[:, washout_pos + k] = (
+                            task_context[:, washout_pos + k] + bar_drop)
+                    # Persist the level shift to all subsequent bars
+                    total_drop = cumulative_shift * ch_mean  # (n_ch,)
+                    task_context[:, washout_pos + drop_bars:] = (
+                        task_context[:, washout_pos + drop_bars:] + total_drop.unsqueeze(-1))
+                    # Recovery: partial reversal (50-90% of the drop) over recovery_bars
+                    recovery_frac = random.uniform(0.5, 0.9)
+                    recovery_total = -cumulative_shift * recovery_frac  # opposite sign
+                    recovery_per_bar = recovery_total / recovery_bars
+                    cumulative_recovery = 0.0
+                    for k in range(recovery_bars):
+                        bar_recovery = recovery_per_bar * ch_mean  # (n_ch,)
+                        cumulative_recovery += recovery_per_bar
+                        task_context[:, washout_pos + drop_bars + k] = (
+                            task_context[:, washout_pos + drop_bars + k] + bar_recovery)
+                    # Persist the net level (drop - recovery) to end
+                    end_pos = washout_pos + drop_bars + recovery_bars
+                    if end_pos < T:
+                        net_shift = (cumulative_shift + cumulative_recovery) * ch_mean
+                        task_context[:, end_pos:] = (
+                            task_context[:, end_pos:] + net_shift.unsqueeze(-1))
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 17. Parabolic trend injection ---
+        # Adds a power-law (quadratic or cubic) trend to context, simulating the
+        # accelerating price moves seen in blow-off tops and capitulation events.
+        # Distinct from trend_inject (linear) — captures non-linear acceleration.
+        if cfg.parabolic_trend_prob > 0 and random.random() < cfg.parabolic_trend_prob:
+            T = task_context.shape[-1]
+            if T >= 4:
+                task_context = task_context.clone().float()
+                ch_mean = task_context.abs().mean(dim=-1).clamp(min=1e-4)  # (n_ch,)
+                sign = 1.0 if random.random() > 0.5 else -1.0
+                # Random exponent in [1.5, 3.0] — between linear and cubic
+                exponent = random.uniform(1.5, 3.0)
+                # Normalised time in [0, 1], then raised to exponent
+                t_norm = torch.linspace(0.0, 1.0, T, device=task_context.device,
+                                        dtype=task_context.dtype)
+                parabolic_ramp = t_norm ** exponent  # (T,)
+                trend = sign * cfg.parabolic_trend_magnitude_frac * ch_mean.unsqueeze(-1) * parabolic_ramp  # (n_ch, T)
+                task_context = task_context + trend
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets
