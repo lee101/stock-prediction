@@ -1,0 +1,75 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 12,
+  "ensemble_mode": "softmax_avg",
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.0,
+    1.25,
+    1.5
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.18703299547430632,
+      "p10_total_return": 0.077315542567706,
+      "p90_total_return": 0.27590903089598073,
+      "median_monthly_return": 0.0746681360798813,
+      "p10_monthly_return": 0.03177269087920605,
+      "median_sortino": 6.735243987830111,
+      "median_max_dd": 0.05709192916473789,
+      "n_neg": 10,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.25,
+      "median_total_return": 0.23716084746023644,
+      "p10_total_return": 0.09295804115219909,
+      "p90_total_return": 0.35267962021150173,
+      "median_monthly_return": 0.09350051095574424,
+      "p10_monthly_return": 0.038038510052404904,
+      "median_sortino": 6.839458697014909,
+      "median_max_dd": 0.0637991941315613,
+      "n_neg": 13,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.2631450763143119,
+      "p10_total_return": 0.10023265423686273,
+      "p90_total_return": 0.4196856483249739,
+      "median_monthly_return": 0.10308850284122634,
+      "p10_monthly_return": 0.04093473978807609,
+      "median_sortino": 6.130105149420081,
+      "median_max_dd": 0.0786394147477833,
+      "n_neg": 13,
+      "n_windows": 263
+    }
+  ]
+}
