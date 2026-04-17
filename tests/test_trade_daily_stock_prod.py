@@ -1426,7 +1426,7 @@ def test_main_uses_default_resolved_ensemble_checkpoints(monkeypatch) -> None:
 
     assert captured["checkpoint"] == str((daily_stock.REPO / daily_stock.DEFAULT_CHECKPOINT).resolve())
     assert captured["extra_checkpoints"] == resolved_defaults
-    assert len(resolved_defaults) == len(set(resolved_defaults))
+    assert resolved_defaults.count(str((daily_stock.REPO / "pufferlib_market/prod_ensemble_screened32/I_s3.pt").resolve())) == 2
     # Verify the last entry matches the current DEFAULT_EXTRA_CHECKPOINTS tail
     assert resolved_defaults[-1].endswith(daily_stock.DEFAULT_EXTRA_CHECKPOINTS[-1].split("/")[-1])
 
@@ -1687,10 +1687,10 @@ def test_main_logs_runtime_config(caplog, monkeypatch, tmp_path: Path) -> None:
     assert runtime_records
     assert '"account_mode": "paper"' in runtime_records[-1]
     assert '"symbols": ["AAPL"]' in runtime_records[-1]
-    assert '"checkpoint_feature_schema": "legacy_prod"' in runtime_records[-1]
-    assert '"checkpoint_feature_dimension": 8' in runtime_records[-1]
-    assert '"primary_checkpoint_arch": "mlp"' in runtime_records[-1]
-    assert '"extra_checkpoint_classes": ["MLPPolicy"]' in runtime_records[-1]
+    assert '"checkpoint_feature_schema"' not in runtime_records[-1]
+    assert '"checkpoint_feature_dimension"' not in runtime_records[-1]
+    assert '"primary_checkpoint_arch"' not in runtime_records[-1]
+    assert '"extra_checkpoint_classes"' not in runtime_records[-1]
     assert captured["checkpoint"] == str(checkpoint)
 
 
@@ -4589,6 +4589,51 @@ def test_main_rejects_live_backtest_before_live_safety_checks(monkeypatch, tmp_p
     assert exc_info.value.code == 1
     assert "--backtest is local-only; omit --live" in stderr
     assert "Checkpoint load failed" not in stderr
+
+
+def test_main_live_trading_server_skips_direct_alpaca_lock(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def _fake_require(service_name: str) -> None:
+        captured["service_name"] = service_name
+
+    def _unexpected_lock(*_args, **_kwargs):
+        raise AssertionError("direct Alpaca lock should not be acquired for trading_server backend")
+
+    def _fake_run_daemon(**kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(daily_stock, "require_explicit_live_trading_enable", _fake_require)
+    monkeypatch.setattr(daily_stock, "acquire_alpaca_account_lock", _unexpected_lock)
+    monkeypatch.setattr(daily_stock, "run_daemon", _fake_run_daemon)
+    monkeypatch.setattr(
+        daily_stock,
+        "_preflight_config_payload",
+        lambda _config, **_kwargs: {"ready": True},
+    )
+
+    daily_stock.main(
+        [
+            "--daemon",
+            "--live",
+            "--execution-backend",
+            "trading_server",
+            "--server-account",
+            "live_prod",
+            "--server-bot-id",
+            "daily_stock_sortino_v1",
+            "--checkpoint",
+            str(checkpoint),
+            "--no-ensemble",
+        ]
+    )
+
+    assert captured["service_name"] == "daily-rl-trader"
+    assert captured["execution_backend"] == "trading_server"
+    assert captured["server_account"] == "live_prod"
+    assert captured["server_bot_id"] == "daily_stock_sortino_v1"
 
 
 def test_main_passes_backtest_starting_cash_to_run_backtest(monkeypatch, tmp_path: Path) -> None:

@@ -132,6 +132,20 @@ def test_build_service_report_marks_restart_reasons_and_apply_blockers(monkeypat
     assert report.safe_to_apply is False
 
 
+def test_runtime_matches_configured_command_via_launch_script_wrapper(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u trade_daily_stock_prod.py --daemon --live --execution-backend trading_server\n"
+    )
+
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    runtime = "python -u trade_daily_stock_prod.py --daemon --live --execution-backend trading_server"
+
+    assert mod.runtime_matches_configured_command(runtime, configured) is True
+
+
 def test_symbols_outside_ownership_filters_non_owned_symbols() -> None:
     mod = _load_module()
     out = mod.symbols_outside_ownership(["YELP", "NET", "DBX"], ["NET", "DBX"])
@@ -154,15 +168,20 @@ def test_daily_rl_trader_watchlist_includes_inference_loader_files() -> None:
     mod = _load_module()
     spec = mod.SPECS["daily-rl-trader"]
 
+    assert spec.manager == "supervisor"
+    assert spec.actual_name == "daily-rl-trader"
     assert spec.watched_repo_files == (
         "trade_daily_stock_prod.py",
         "pufferlib_market/inference.py",
         "pufferlib_market/inference_daily.py",
         "pufferlib_market/checkpoint_loader.py",
-        "systemd/daily-rl-trader.service",
-        "unified_orchestrator/service_config.json",
+        "src/daily_stock_defaults.py",
+        "config/trading_server/accounts.json",
+        "deployments/daily-rl-trader/launch.sh",
+        "deployments/daily-rl-trader/supervisor.conf",
     )
-    assert spec.repo_config_path == REPO / "systemd" / "daily-rl-trader.service"
+    assert spec.repo_config_path == REPO / "deployments" / "daily-rl-trader" / "supervisor.conf"
+    assert spec.ownership_service_name is None
 
 
 def test_build_service_report_flags_installed_config_drift_from_repo(monkeypatch) -> None:
@@ -196,3 +215,13 @@ def test_llm_stock_trader_spec_exists_and_tracks_symbol_ownership() -> None:
     assert spec.manager == "supervisor"
     assert spec.symbols_flag == "--stock-symbols"
     assert spec.ownership_service_name == "llm-stock-trader"
+
+
+def test_trading_server_spec_exists_and_tracks_repo_config() -> None:
+    mod = _load_module()
+    spec = mod.SPECS["trading-server"]
+
+    assert spec.manager == "supervisor"
+    assert spec.actual_name == "trading-server"
+    assert spec.repo_config_path == REPO / "deployments" / "trading-server" / "supervisor.conf"
+    assert "config/trading_server/accounts.json" in spec.watched_repo_files

@@ -98,6 +98,14 @@ def _current_account_name() -> str:
     return state.account_name
 
 
+def _current_buy_memory_seconds() -> int:
+    with _STATE_MU:
+        state = _STATE
+    if state is None:
+        return DEFAULT_BUY_MEMORY_SECONDS
+    return state.buy_memory_seconds
+
+
 # ---------------------------------------------------------------------------
 # Singleton writer lock
 # ---------------------------------------------------------------------------
@@ -309,7 +317,7 @@ def record_buy_price(symbol: str, price: float) -> None:
     account_name = _current_account_name()
     with _buy_memory_guard(account_name):
         data = _load_buys(account_name)
-        data = _prune_buys(data, DEFAULT_BUY_MEMORY_SECONDS)
+        data = _prune_buys(data, _current_buy_memory_seconds())
         data[str(symbol).upper()] = {
             "price": float(price),
             "ts": time.time(),
@@ -368,7 +376,10 @@ def guard_sell_against_death_spiral(
 
     with _buy_memory_guard(account_name):
         data = _load_buys(account_name)
-        data = _prune_buys(data, DEFAULT_BUY_MEMORY_SECONDS)
+        pruned = _prune_buys(data, _current_buy_memory_seconds())
+        if pruned != data:
+            _save_buys(account_name, pruned)
+        data = pruned
         rec = data.get(str(symbol).upper())
         if rec is None:
             # No recent buy on record — nothing to compare against. Allow

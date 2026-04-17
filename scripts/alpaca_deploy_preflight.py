@@ -69,6 +69,21 @@ class ServiceReport:
 
 
 SPECS: dict[str, ServiceSpec] = {
+    "trading-server": ServiceSpec(
+        name="trading-server",
+        manager="supervisor",
+        actual_name="trading-server",
+        config_path=Path("/etc/supervisor/conf.d/trading-server.conf"),
+        repo_config_path=REPO_ROOT / "deployments" / "trading-server" / "supervisor.conf",
+        watched_repo_files=(
+            "config/trading_server/accounts.json",
+            "deployments/trading-server/launch.sh",
+            "deployments/trading-server/supervisor.conf",
+            "src/trading_server/client.py",
+            "src/trading_server/server.py",
+            "src/trading_server/settings.py",
+        ),
+    ),
     "unified-stock-trader": ServiceSpec(
         name="unified-stock-trader",
         manager="supervisor",
@@ -95,19 +110,20 @@ SPECS: dict[str, ServiceSpec] = {
     ),
     "daily-rl-trader": ServiceSpec(
         name="daily-rl-trader",
-        manager="systemd",
-        actual_name="daily-rl-trader.service",
-        config_path=Path("/etc/systemd/system/daily-rl-trader.service"),
-        repo_config_path=REPO_ROOT / "systemd" / "daily-rl-trader.service",
+        manager="supervisor",
+        actual_name="daily-rl-trader",
+        config_path=Path("/etc/supervisor/conf.d/daily-rl-trader.conf"),
+        repo_config_path=REPO_ROOT / "deployments" / "daily-rl-trader" / "supervisor.conf",
         watched_repo_files=(
             "trade_daily_stock_prod.py",
             "pufferlib_market/inference.py",
             "pufferlib_market/inference_daily.py",
             "pufferlib_market/checkpoint_loader.py",
-            "systemd/daily-rl-trader.service",
-            "unified_orchestrator/service_config.json",
+            "src/daily_stock_defaults.py",
+            "config/trading_server/accounts.json",
+            "deployments/daily-rl-trader/launch.sh",
+            "deployments/daily-rl-trader/supervisor.conf",
         ),
-        ownership_service_name="daily-rl-trader",
     ),
     "llm-stock-trader": ServiceSpec(
         name="llm-stock-trader",
@@ -319,6 +335,48 @@ def read_repo_configured_command(spec: ServiceSpec) -> str | None:
     return read_supervisor_command(spec.repo_config_path)
 
 
+def _extract_launch_script_path(command: str | None) -> Path | None:
+    if not command:
+        return None
+    match = re.search(r"exec\s+((?:/[^'\" ]+|[^'\" ]+)?launch\.sh)\b", command)
+    if not match:
+        return None
+    path = Path(match.group(1))
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path
+
+
+def _read_launch_script_exec_command(script_path: Path | None) -> str | None:
+    if script_path is None or not script_path.exists():
+        return None
+    try:
+        lines = script_path.read_text().splitlines()
+    except Exception:
+        return None
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("exec "):
+            continue
+        parts = [stripped[len("exec "):].rstrip("\\").strip()]
+        while stripped.endswith("\\") and idx + 1 < len(lines):
+            idx += 1
+            stripped = lines[idx].strip()
+            parts.append(stripped.rstrip("\\").strip())
+        return " ".join(part for part in parts if part)
+    return None
+
+
+def runtime_matches_configured_command(runtime_cmd: str | None, configured_cmd: str | None) -> bool:
+    if not runtime_cmd or not configured_cmd:
+        return False
+    if runtime_cmd == configured_cmd:
+        return True
+    launch_exec = _read_launch_script_exec_command(_extract_launch_script_path(configured_cmd))
+    return launch_exec == runtime_cmd
+
+
 def build_service_report(spec: ServiceSpec, git_status: GitStatusSummary) -> ServiceReport:
     if spec.manager == "supervisor":
         pid = get_supervisor_pid(spec.actual_name)
@@ -354,7 +412,10 @@ def build_service_report(spec: ServiceSpec, git_status: GitStatusSummary) -> Ser
     restart_reasons: list[str] = []
     if stale_files:
         restart_reasons.append("watched_files_newer_than_process")
-    if runtime_cmd and configured_cmd and runtime_cmd != configured_cmd:
+    if runtime_cmd and configured_cmd and not runtime_matches_configured_command(
+        runtime_cmd,
+        configured_cmd,
+    ):
         restart_reasons.append("runtime_command_differs_from_config")
     if repo_configured_cmd and configured_cmd and repo_configured_cmd != configured_cmd:
         restart_reasons.append("installed_config_differs_from_repo")
@@ -412,8 +473,8 @@ def parse_args() -> argparse.Namespace:
         action="append",
         choices=sorted(SPECS.keys()),
         help=(
-            "Service(s) to inspect. Defaults to daily-rl-trader + llm-stock-trader "
-            "+ unified-stock-trader + unified-orchestrator."
+            "Service(s) to inspect. Defaults to trading-server + daily-rl-trader "
+            "+ llm-stock-trader + unified-stock-trader + unified-orchestrator."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
@@ -474,6 +535,7 @@ def render_text(git_status: GitStatusSummary, reports: list[ServiceReport]) -> s
 def main() -> int:
     args = parse_args()
     targets = args.service or [
+        "trading-server",
         "daily-rl-trader",
         "llm-stock-trader",
         "unified-stock-trader",

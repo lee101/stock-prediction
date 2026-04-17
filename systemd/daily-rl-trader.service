@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=administrator
 WorkingDirectory=/nvme0n1-disk/code/stock-prediction
-ExecStart=/bin/bash -lc 'cd /nvme0n1-disk/code/stock-prediction && source ~/.secretbashrc && source .venv313/bin/activate && export PYTHONPATH=/nvme0n1-disk/code/stock-prediction && export ALLOW_ALPACA_LIVE_TRADING=1 && exec python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5'
+ExecStart=/bin/bash -lc 'export HOME=/home/administrator && export USER=administrator && cd /nvme0n1-disk/code/stock-prediction && exec deployments/daily-rl-trader/launch.sh'
 Restart=on-failure
 RestartSec=60
 Environment=PYTHONUNBUFFERED=1

@@ -4120,8 +4120,9 @@ def run_once(
         allow_open_reasons: list[str] = []
         blocked_portfolio_signals: list[dict[str, object]] = []
 
-        # Regime filter: skip opening new positions in bear markets (SPY < 20-day MA).
+        # Regime filter: skip opening new positions in bear markets (SPY < 50-day MA).
         # Does NOT force-close existing positions — only blocks new entries.
+        # MA50 chosen via realism-gate sweep: see docs/regime_filter_gate/.
         _regime_ok, _regime_reason = regime_filter_reason(data_dir=data_dir)
         if not _regime_ok:
             allow_open = False
@@ -4899,7 +4900,11 @@ def _build_local_symbol_details(
     return details, usable_symbols, latest_local_data_date, oldest_local_data_date
 
 
-def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
+def _preflight_config_payload(
+    config: CliRuntimeConfig,
+    *,
+    include_checkpoint_load_diagnostics: bool = True,
+) -> dict[str, object]:
     payload = _runtime_config_payload(config)
     errors: list[str] = []
     warnings: list[str] = []
@@ -4967,11 +4972,19 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
             "extras": [],
             "skipped": True,
         }
-    else:
+    elif include_checkpoint_load_diagnostics:
         checkpoint_load = _checkpoint_load_diagnostics(config)
         payload["checkpoint_load"] = checkpoint_load
         if not checkpoint_load["ok"]:
             errors.append(f"Checkpoint load failed: {checkpoint_load['error']}")
+    else:
+        payload["checkpoint_load"] = {
+            "ok": None,
+            "error": None,
+            "primary": None,
+            "extras": [],
+            "skipped": True,
+        }
 
     local_data_required = bool(config.backtest or config.data_source == "local")
     missing_local_symbol_files: list[str] = []
@@ -5931,7 +5944,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.print_config:
         print(json.dumps(_runtime_config_payload(config), indent=2, sort_keys=True))
         return
-    payload = _preflight_config_payload(config)
+    payload = _preflight_config_payload(
+        config,
+        include_checkpoint_load_diagnostics=False,
+    )
     if not payload["ready"]:
         print(_format_runtime_preflight_failure(payload), file=sys.stderr)
         raise SystemExit(1)
@@ -5977,12 +5993,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     account_lock = None
     if not config.paper:
         require_explicit_live_trading_enable("daily-rl-trader")
-    if not config.paper and not config.dry_run:
+    if not config.paper and not config.dry_run and config.execution_backend == "alpaca":
         account_lock = acquire_alpaca_account_lock(
             "daily-rl-trader",
             account_name="alpaca_live_writer",
         )
         logger.info("Acquired Alpaca live writer lock: %s", account_lock.path)
+    elif not config.paper and not config.dry_run and config.execution_backend == "trading_server":
+        logger.info(
+            "Skipping direct Alpaca live writer lock; trading_server owns the broker boundary"
+        )
 
     if config.daemon:
         run_daemon(

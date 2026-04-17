@@ -453,6 +453,8 @@ def main() -> None:
     parser.add_argument("--out", type=str, default=None, help="Optional JSON output path")
     parser.add_argument("--extra-checkpoints", nargs="*", default=[],
                         help="Additional checkpoint paths for softmax-avg ensemble")
+    parser.add_argument("--start-indices", nargs="*", type=int, default=None,
+                        help="Evaluate only these specific window start indices (overrides --n-windows and --exhaustive)")
     args = parser.parse_args()
 
     steps = int(args.eval_hours)
@@ -566,7 +568,11 @@ def main() -> None:
         raise ValueError("No candidate windows (check --end-within-hours and --eval-hours)")
     candidate_start_max = candidate_start_min + candidate_window_count - 1
 
-    if args.exhaustive:
+    if args.start_indices is not None:
+        selection_mode = "targeted"
+        sampled_with_replacement = False
+        sampled_start_indices = [int(i) for i in args.start_indices]
+    elif args.exhaustive:
         selection_mode = "exhaustive"
         sampled_with_replacement = False
         sampled_start_indices = list(range(candidate_start_min, candidate_start_max + 1))
