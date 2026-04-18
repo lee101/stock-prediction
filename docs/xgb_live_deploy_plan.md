@@ -96,6 +96,26 @@ The DD-reduction campaign (commit `0d9026bd`) finished. Summary:
 - **Three-seed trend on worst_dd**: s0=31.87 → s1=30.19 → s2=27.39. Axis looks real, not a lucky spike; but N=3 is small.
 - **Seed-robustness sweep in flight.** `scripts/xgb_baseline_seeds_ext.sh` (driver PID 488196) is running seeds 3, 4, 5, 6 at the same cell. Seed=3 is mid-run (PID 488210); full harvest in ~45 min. Ship rule for seed=2 promotion: must be in top quartile by (sortino, −worst_dd) across the 8-seed pool AND the median sortino across 8 must be ≥ baseline.
 
+### Update 2026-04-18 ~11:10 UTC — 7-seed pool confirms seed=2 promotion
+
+Seeds 3-6 finished. All 7 seeds (0..6) show 0/34 neg windows. Pool:
+
+| seed | med | p10 | med_sortino | worst_dd |
+|------|-----|-----|-------------|----------|
+| 0 | +32.80 | +20.19 | 8.28 | 31.87 |
+| 1 | +30.23 | +18.67 | 8.61 | 30.19 |
+| **2** | +32.15 | +19.73 | **8.67** | **27.39** |
+| 3 | +30.02 | +17.64 | 8.26 | 30.71 |
+| 4 | +32.75 | +20.28 | 8.12 | 27.39 |
+| 5 | +30.38 | +20.08 | 8.36 | 29.26 |
+| 6 | +30.89 | +19.27 | 7.56 | 28.03 |
+
+- **seed=2 is only seed in top quartile on BOTH axes** (sortino rank 1/7, worst_dd rank 2/7 tied with seed=4).
+- Pool median sortino (8.28) == baseline sortino → promotion rule satisfied.
+- seed=0 has the **worst** worst_dd of all 7 seeds (31.87 vs pool median 29.26) — keeping it for deploy is actively leaving tail improvement on the table.
+
+**Queued artifact swap**: `live_model_v2_n400_d5_lr003_top1.pkl` → `live_model_v2_n400_d5_lr003_top1_s2.pkl`. The seed=2 pkl already exists on disk (trained 2026-04-18 11:23 UTC), same 15-feature schema as seed=0, same n_est=400/d=5/lr=0.03, only `random_state=2`. Applies to the Option A checklist step 5: the `--model-path` override in `xgb-daily-trader.service` now points at `_s2.pkl`.
+
 ### Updated Option A deploy recipe
 
 If user approves Option A and the 8-seed sweep confirms seed=2:

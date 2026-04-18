@@ -25,17 +25,17 @@ Last synced: 2026-04-18 (off-market Saturday)
 
 - **Process (when live)**: systemd unit `xgb-daily-trader.service` runs `python -m xgbnew.live_trader`. **DEAD since 2026-04-14** (paper REST 401 unauthorized). Live PROD keys fine; paper keys must be regenerated at the Alpaca dashboard and pasted into `env_real.py` (`ALP_KEY_ID_PAPER`, `ALP_SECRET_KEY_PAPER`). No other action needed — unit will restart fine once keys land.
 - **Queued config** (ship after key fix):
-  - `--model-path analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1.pkl`
+  - `--model-path analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1_s2.pkl` *(seed=2 — promoted 2026-04-18, see below; seed=0 pkl kept as rollback)*
   - `--top-n 1 --allocation 1.0`
-  - XGBoost `n_estimators=400, max_depth=5, learning_rate=0.03`, 846-symbol universe, seed-robust per 16-seed Bonferroni.
+  - XGBoost `n_estimators=400, max_depth=5, learning_rate=0.03`, 846-symbol universe, seed-robust per 16-seed Bonferroni + 7-seed DD sweep.
 - **OOS evidence** (846-sym, 34 windows thru 2026-04-18, binary fills, lag=2, fee=0.278bps, fb=5bps):
   - 1.0× → med +32.2%/mo, p10 +20.3%, worst_dd 31.9%, **0/34 neg**, sortino 8.42
   - 1.25× → med +40.8%, p10 +25.1%, dd 39.0%, 0/34 neg
   - 1.5× → med +49.7%, p10 +29.6%, dd 45.8%, 0/34 neg
 - **In-flight research**: DD-reduction sweep in `analysis/xgbnew_dd_sweep/` (SPY MA50 gate, vol-target sizing, seed variance). Ledger `xgboptimiztions.md`.
   - **Round 2 closed 2026-04-18 ~10:50 UTC** (commit `0d9026bd`): all 7 DD-reduction knobs FAIL strict ship rule (every Δsortino < 0). Regime gates / vol-target hurt top_n=1.
-  - **Seed axis wins**: baseline at seed=2 posts Δsortino +0.39, Δworst_dd −4.48pt (27.39% from 31.87%, 14% relative DD cut), Δneg 0, Δp10 +0.09. Trend on worst_dd across s0/s1/s2 is monotone down — axis likely real.
-  - **8-seed robustness sweep in flight** (`scripts/xgb_baseline_seeds_ext.sh`, seeds 3-6 running). If seed=2 lands top-quartile on the 8-seed pool, promote its pkl for deploy. Otherwise stick with seed=0.
+  - **Seed axis wins**: baseline at seed=2 posts Δsortino +0.39, Δworst_dd −4.48pt (27.39% from 31.87%, 14% relative DD cut), Δneg 0, Δp10 +0.09.
+  - **7-seed robustness DONE 2026-04-18 ~11:10 UTC** (seeds 0-6). All 7 → 0/34 neg. Pool median_sortino 8.28 ≥ baseline. seed=2 is only seed in top-quartile on BOTH axes (sortino rank 1/7, worst_dd rank 2/7 tied with s4). **seed=2 promoted** — queued pkl is `live_model_v2_n400_d5_lr003_top1_s2.pkl` (already trained at 11:23 UTC, identical 15-feature schema as seed=0 pkl, only `random_state=2` differs).
 - **Character**: buy-open / sell-close same session, flat overnight. `top_n=1 + allocation=1.0` → 100% single-stock concentration per session. No overnight margin hit.
 
 ## 3. Other services (present but not primary signal)

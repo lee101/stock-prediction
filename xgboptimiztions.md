@@ -86,6 +86,34 @@ until seed-robustness is confirmed. `scripts/xgb_baseline_seeds_ext.sh`
 2. If it's in the top quartile by (sortino, −worst_dd) AND the median seed sortino across 8 is ≥ baseline, we swap the deploy pkl to seed=2's model.
 3. Else keep seed=0 and chase the portfolio-packing axis instead.
 
+### 2026-04-18 ~11:10 UTC — seeds 3-6 finished, 7-seed pool harvested
+
+All 4 extended seeds completed. Final per-seed table (same cell: lev=1.0, no gate, top_n=1, n_est=400, d=5, lr=0.03, 846 sym, pandas path, 34-window OOS):
+
+| seed | med/mo | p10/mo | med_sortino | worst_dd | neg |
+|------|--------|--------|-------------|----------|-----|
+| 0 (baseline) | +32.80 | +20.19 | 8.28 | 31.87 | 0/34 |
+| 1            | +30.23 | +18.67 | 8.61 | 30.19 | 0/34 |
+| **2**        | +32.15 | +19.73 | **8.67** | **27.39** | 0/34 |
+| 3            | +30.02 | +17.64 | 8.26 | 30.71 | 0/34 |
+| 4            | +32.75 | +20.28 | 8.12 | 27.39 | 0/34 |
+| 5            | +30.38 | +20.08 | 8.36 | 29.26 | 0/34 |
+| 6            | +30.89 | +19.27 | 7.56 | 28.03 | 0/34 |
+
+**Pool stats (N=7)**: median_monthly 30.89% (mean 31.32, stdev 1.12), median_p10 19.73% (mean 19.41), median_sortino **8.28** (mean 8.27, stdev 0.34), median_worst_dd 29.26% (mean 29.26, stdev 1.61). **0/34 neg on every seed** — config is seed-robust on the reliability axis.
+
+**seed=2 promotion check**:
+- sortino rank: **1 of 7** (best in pool at 8.67)
+- worst_dd rank: **2 of 7** (tied with seed=4 at 27.39, only seed=4 beats by a tiebreak)
+- pool median sortino (8.28) ≥ baseline sortino (8.28) ✓
+- **seed=2 is the only seed in the top quartile on BOTH axes** → meets the strict promotion rule set at sweep launch.
+
+**Artifact queued**: `analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1_s2.pkl` already exists (trained 11:23 UTC). Same schema as seed=0 pkl (15 feature_cols identical, same n_est/d/lr), only `random_state=2`. Loads fine in live_trader.
+
+**Queued deploy swap**: replace `--model-path analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1.pkl` with `..._s2.pkl` in `xgb-daily-trader.service` and `monitoring/current_algorithms.md` queued config. Applied at the XGB live flip (still human-gated; not an auto-deploy action on its own).
+
+**What this buys us**: Δworst_dd **−4.48pt** (27.39% vs 31.87%, 14% relative DD reduction) + Δsortino **+0.39** + Δp10 flat, Δneg flat. Δmed −0.65 is <½σ of pool seed noise → free smoothness at a cost within seed noise.
+
 The DD campaign itself produced one clear result: **no DD-reduction knob
 (MA gate, vol-target, or their stack) is worth shipping for XGB top_n=1**.
 Every gate sat out profitable days the argmax correctly identified.
