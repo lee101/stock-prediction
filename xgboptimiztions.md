@@ -191,6 +191,50 @@ for the full universe (ran grep — all mentioned syms present).
 
 ---
 
+## Task #23 packing-grid results (2026-04-18, seed=2)
+
+Cell: n_est=400 d=5 lr=0.03 top1_equal baseline is reference row.
+All runs at fee_rate=0.278bps fb=5bps, 34-window walkforward OOS
+(2024-01-02→2026-04-18), pandas features, device=cuda.
+
+Artifacts: `analysis/xgbnew_packing_grid/<cell>/multiwindow_*.json`
+Log: `logs/xgb_packing_grid_20260418_112712.log`
+
+| cell             | med%   | p10%   | sort | neg | worst-DD | Δsort  | Δneg | Δdd    |
+|------------------|--------|--------|------|-----|----------|--------|------|--------|
+| top1_equal       | +32.15 | +20.35 | 8.67 |  0  | 27.39    |  +0.00 |  +0  |  +0.00 |
+| top2_equal       | +29.09 | +17.64 | 8.10 |  0  | 31.11    |  −0.57 |  +0  |  +3.71 |
+| top2_softmax     | +29.22 | +17.81 | 8.09 |  0  | 31.02    |  −0.58 |  +0  |  +3.63 |
+| top2_score_norm  | +29.26 | +17.86 | 8.03 |  0  | 31.00    |  −0.64 |  +0  |  +3.61 |
+| top3_equal       | +26.29 | +14.70 | 7.45 |  0  | 30.23    |  −1.22 |  +0  |  +2.83 |
+| top3_softmax     | +26.38 | +14.97 | 7.43 |  0  | 30.11    |  −1.24 |  +0  |  +2.71 |
+| top3_score_norm  | +26.30 | +15.04 | 7.30 |  0  | 30.07    |  −1.37 |  +0  |  +2.68 |
+| top4_equal       | +24.74 | +12.72 | 7.10 |  0  | 29.69    |  −1.57 |  +0  |  +2.30 |
+| top4_softmax     | +24.85 | +13.02 | 7.08 |  0  | 29.64    |  −1.60 |  +0  |  +2.24 |
+| top4_score_norm  | +24.87 | +13.11 | 6.94 |  0  | 29.61    |  −1.73 |  +0  |  +2.22 |
+
+**Verdict: keep top_n=1 equal. Do NOT deploy packing.**
+
+- Every top_n>1 cell is strictly worse on sortino AND strictly worse on
+  worst-DD. Ship rule variant "Δsort>0 AND Δdd<0" fails for all 9.
+- Concentration beats diversification for this signal: the argmax of 846
+  candidates is the real edge. Picks #2/#3/#4 dilute it without reducing
+  per-day variance (they correlate with argmax).
+- Mode axis (equal/softmax/score_norm) is essentially flat within each
+  top_n (<0.2% median spread, ~0.15 sortino, ~0.1pt worst-DD) — softer
+  weighting of #2/#3 doesn't save the dilution.
+- worst-DD actually rises at n=2 (27.39→31.11) before easing at n=3,4.
+  Intuition: top_n=2 adds a noisy second pick most days; large
+  top_n starts to average out. Still worse than top_n=1 throughout.
+
+Corollary: DD-reduction campaign (regime/vol + packing) is conclusively
+closed. Structural DD floor for top_n=1 seed=2 is ~27.4% worst-window.
+Leverage≤1.25 is the only safe PnL lever left; further DD lowering
+needs a different feature axis (per-day exposure cap, intrabar
+stop-loss once task #21 hourly sim lands, or shorts/inverse pairing).
+
+---
+
 ## Rule: before shipping anything to prod from this file
 
 1. Re-run baseline on the exact same command (pandas path, seed=0, lev=1).
