@@ -666,7 +666,8 @@ pufferlib_market/stocks12_*.log
 .secretbashrc
 **/events.jsonl
 **/sapp_events.jsonl
-monitoring/
+monitoring/logs/
+monitoring/*.raw.jsonl
 chronos2_finetuned
 compiled_models
 
