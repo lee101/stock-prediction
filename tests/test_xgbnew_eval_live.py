@@ -1,6 +1,8 @@
 """Tests for xgbnew eval_multiwindow and live_trader modules."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import types
 import sys
 from pathlib import Path
 
@@ -13,6 +15,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from xgbnew.eval_multiwindow import _monthly_return, main as eval_main
+import xgbnew.live_trader as live_trader
 from xgbnew.live_trader import score_all_symbols
 
 
@@ -105,6 +108,9 @@ class TestEvalMultiwindow:
         data = json.loads(jsons[0].read_text())
         assert "median_monthly_pct" in data
         assert "windows" in data
+        assert "best" in data
+        assert "sweep_results" in data
+        assert "coverage" in data
         assert len(data["windows"]) > 0
 
     def test_model_save_path(self, tmp_path):
@@ -188,3 +194,103 @@ class TestScoreAllSymbols:
         model._fitted = False
         df = score_all_symbols([], tmp_path / "nodata", model)  # type: ignore
         assert len(df) == 0 or isinstance(df, pd.DataFrame)
+
+    def test_skips_stale_local_daily_bars(self, tmp_path):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        stale_ts = pd.date_range("2025-10-01", periods=80, freq="B", tz="UTC")
+        df = pd.DataFrame(
+            {
+                "timestamp": stale_ts,
+                "open": np.linspace(90.0, 110.0, len(stale_ts)),
+                "high": np.linspace(91.0, 111.0, len(stale_ts)),
+                "low": np.linspace(89.0, 109.0, len(stale_ts)),
+                "close": np.linspace(90.5, 110.5, len(stale_ts)),
+                "volume": np.full(len(stale_ts), 2e7),
+            }
+        )
+        df.to_csv(data_dir / "AAPL.csv", index=False)
+
+        class _StubModel:
+            def predict_scores(self, frame: pd.DataFrame) -> pd.Series:
+                return pd.Series(0.8, index=frame.index, name="xgb_score")
+
+        scores = score_all_symbols(
+            ["AAPL"],
+            data_dir,
+            _StubModel(),  # type: ignore[arg-type]
+            min_dollar_vol=1e3,
+            now=datetime(2026, 4, 17, 13, 25, tzinfo=timezone.utc),
+        )
+
+        assert scores.empty
+
+
+class TestLiveTraderSizing:
+    def test_target_buy_qty_keeps_fractional_size(self):
+        qty = live_trader._target_buy_qty(buy_notional=1250.0, price=3125.0)
+        assert qty == pytest.approx(0.4, rel=1e-6)
+
+    def test_target_buy_qty_rejects_invalid_inputs(self):
+        assert live_trader._target_buy_qty(buy_notional=0.0, price=100.0) == 0.0
+        assert live_trader._target_buy_qty(buy_notional=100.0, price=0.0) == 0.0
+        assert live_trader._target_buy_qty(buy_notional=-10.0, price=100.0) == 0.0
+
+
+def test_get_latest_bars_fetches_all_symbol_batches(monkeypatch):
+    requested_batches: list[list[str]] = []
+
+    class _FakeBar:
+        def __init__(self, symbol: str):
+            self.timestamp = datetime(2026, 4, 16, 20, 0, tzinfo=timezone.utc)
+            self.open = 100.0
+            self.high = 101.0
+            self.low = 99.0
+            self.close = 100.5
+            self.volume = 1_000_000.0
+            self.symbol = symbol
+
+    class _FakeStockBarsRequest:
+        def __init__(self, *, symbol_or_symbols, timeframe, start, end, feed):
+            self.symbol_or_symbols = list(symbol_or_symbols)
+            self.timeframe = timeframe
+            self.start = start
+            self.end = end
+            self.feed = feed
+
+    class _FakeStockHistoricalDataClient:
+        def __init__(self, key_id, secret):
+            self.key_id = key_id
+            self.secret = secret
+
+        def get_stock_bars(self, req):
+            requested_batches.append(list(req.symbol_or_symbols))
+            return types.SimpleNamespace(
+                data={symbol: [_FakeBar(symbol)] for symbol in req.symbol_or_symbols}
+            )
+
+    fake_data_module = types.ModuleType("alpaca.data")
+    fake_data_module.StockHistoricalDataClient = _FakeStockHistoricalDataClient
+    fake_data_module.StockBarsRequest = _FakeStockBarsRequest
+    fake_data_module.TimeFrame = types.SimpleNamespace(Day="day")
+
+    fake_enums_module = types.ModuleType("alpaca.data.enums")
+    fake_enums_module.DataFeed = types.SimpleNamespace(IEX="iex")
+
+    fake_env_real = types.ModuleType("env_real")
+    fake_env_real.ALP_KEY_ID_PAPER = "paper"
+    fake_env_real.ALP_SECRET_KEY_PAPER = "secret"
+
+    monkeypatch.setitem(sys.modules, "alpaca.data", fake_data_module)
+    monkeypatch.setitem(sys.modules, "alpaca.data.enums", fake_enums_module)
+    monkeypatch.setitem(sys.modules, "env_real", fake_env_real)
+
+    symbols = [f"SYM{i}" for i in range(450)]
+    result = live_trader._get_latest_bars(symbols, n_days=5, batch_size=200)
+
+    sym_batches = [b for b in requested_batches if b and b[0].startswith("SYM")]
+    assert len(sym_batches) == 3
+    assert sum(len(batch) for batch in sym_batches) == len(symbols)
+    assert sym_batches[0][0] == "SYM0"
+    assert sym_batches[-1][-1] == "SYM449"
+    assert set(result) == set(symbols)

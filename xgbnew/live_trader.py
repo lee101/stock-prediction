@@ -41,6 +41,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import BDay
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -57,6 +58,8 @@ ET = ZoneInfo("America/New_York")
 MARKET_OPEN  = (9, 30)   # HH, MM ET
 MARKET_CLOSE = (15, 50)  # sell by 15:50 (10 min before 4pm close)
 DEFAULT_MODEL_PATH = REPO / "analysis/xgbnew_daily/live_model.pkl"
+DEFAULT_LIVE_BAR_BATCH_SIZE = 200
+MIN_FRACTIONAL_QTY = 0.0001
 
 
 # ── Alpaca client ─────────────────────────────────────────────────────────────
@@ -104,38 +107,112 @@ def _get_positions(client) -> dict[str, float]:
     return {str(p.symbol): float(p.qty) for p in positions}
 
 
-def _get_latest_bars(symbols: list[str], n_days: int = 5) -> dict[str, pd.DataFrame]:
-    """Fetch last N calendar days of daily bars from Alpaca data API."""
+def _previous_trading_day(day: date) -> date:
+    return (pd.Timestamp(day) - BDay(1)).date()
+
+
+def _expected_latest_daily_bar_date(now: datetime | None = None) -> date:
+    now_et = (now or datetime.now(timezone.utc)).astimezone(ET)
+    market_open = now_et.replace(hour=MARKET_OPEN[0], minute=MARKET_OPEN[1], second=0, microsecond=0)
+    if now_et >= market_open:
+        return now_et.date()
+    return _previous_trading_day(now_et.date())
+
+
+def _latest_daily_bar_is_fresh(df: pd.DataFrame, *, now: datetime | None = None) -> bool:
+    if df is None or len(df) == 0 or "timestamp" not in df.columns:
+        return False
+    latest = pd.to_datetime(df["timestamp"], utc=True, errors="coerce").dropna()
+    if latest.empty:
+        return False
+    latest_date = latest.max().tz_convert(ET).date()
+    expected_latest = _expected_latest_daily_bar_date(now=now)
+    return latest_date >= expected_latest
+
+
+def _iter_symbol_batches(symbols: list[str], batch_size: int = DEFAULT_LIVE_BAR_BATCH_SIZE):
+    size = max(int(batch_size), 1)
+    for i in range(0, len(symbols), size):
+        yield symbols[i : i + size]
+
+
+def _get_latest_bars(
+    symbols: list[str],
+    n_days: int = 5,
+    *,
+    batch_size: int = DEFAULT_LIVE_BAR_BATCH_SIZE,
+) -> dict[str, pd.DataFrame]:
+    """Fetch last N calendar days of daily bars from Alpaca data API.
+
+    Data API is read-only; falls through paper → prod keys so it still
+    works when paper credentials are revoked (which blocks trading but
+    shouldn't block scoring/dry-run).
+    """
     try:
         import importlib
         env_real = importlib.import_module("env_real")
-        key_id = getattr(env_real, "ALP_KEY_ID_PAPER", getattr(env_real, "ALP_KEY_ID", ""))
-        secret = getattr(env_real, "ALP_SECRET_KEY_PAPER", getattr(env_real, "ALP_SECRET_KEY", ""))
         from alpaca.data import StockHistoricalDataClient, StockBarsRequest, TimeFrame
         from alpaca.data.enums import DataFeed
-        data_client = StockHistoricalDataClient(key_id, secret)
+        candidate_keys = [
+            (getattr(env_real, "ALP_KEY_ID_PAPER", ""),
+             getattr(env_real, "ALP_SECRET_KEY_PAPER", "")),
+            (getattr(env_real, "ALP_KEY_ID_PROD", ""),
+             getattr(env_real, "ALP_SECRET_KEY_PROD", "")),
+            (getattr(env_real, "ALP_KEY_ID", ""),
+             getattr(env_real, "ALP_SECRET_KEY", "")),
+        ]
+        data_client = None
+        for key_id, secret in candidate_keys:
+            if not key_id or not secret:
+                continue
+            try:
+                test_client = StockHistoricalDataClient(key_id, secret)
+                test_req = StockBarsRequest(
+                    symbol_or_symbols="AAPL",
+                    timeframe=TimeFrame.Day,
+                    start=datetime.now(timezone.utc) - timedelta(days=7),
+                    end=datetime.now(timezone.utc),
+                    feed=DataFeed.IEX,
+                )
+                test_client.get_stock_bars(test_req)
+                data_client = test_client
+                break
+            except Exception:
+                continue
+        if data_client is None:
+            raise RuntimeError("no working Alpaca data credentials in env_real.py")
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=max(n_days * 2, 14))  # extra buffer for holidays
-        req = StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=TimeFrame.Day,
-            start=start,
-            end=end,
-            feed=DataFeed.IEX,
-        )
-        bars = data_client.get_stock_bars(req)
+        # Alpaca uses BRK.B / BF.B; symbol list uses BRK-B / BF-B. Translate
+        # on the wire then map back when stitching results.
+        def _to_api(sym: str) -> str:
+            return sym.replace("-", ".") if "-" in sym else sym
+
+        api_to_local = {_to_api(s): s for s in symbols}
+
         result = {}
-        for sym in symbols:
-            if sym in bars.data:
-                rows = [
-                    {"timestamp": b.timestamp, "open": b.open, "high": b.high,
-                     "low": b.low, "close": b.close, "volume": b.volume}
-                    for b in bars.data[sym]
-                ]
-                if rows:
-                    df = pd.DataFrame(rows)
-                    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-                    result[sym] = df
+        for batch in _iter_symbol_batches(symbols, batch_size=batch_size):
+            api_batch = [_to_api(s) for s in batch]
+            req = StockBarsRequest(
+                symbol_or_symbols=api_batch,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                feed=DataFeed.IEX,
+            )
+            bars = data_client.get_stock_bars(req)
+            for api_sym in api_batch:
+                if api_sym in bars.data:
+                    sym = api_to_local.get(api_sym, api_sym)
+                    rows = [
+                        {"timestamp": b.timestamp, "open": b.open, "high": b.high,
+                         "low": b.low, "close": b.close, "volume": b.volume}
+                        for b in bars.data[api_sym]
+                    ]
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+                        result[sym] = df
         return result
     except Exception as exc:
         logger.warning("Alpaca data API fetch failed: %s — will use local CSVs only", exc)
@@ -169,6 +246,7 @@ def score_all_symbols(
     model: XGBStockModel,
     live_bars: dict[str, pd.DataFrame] | None = None,
     min_dollar_vol: float = 5e6,
+    now: datetime | None = None,
 ) -> pd.DataFrame:
     """Score all symbols for today's open-to-close trade.
 
@@ -178,7 +256,6 @@ def score_all_symbols(
     if live_bars is None:
         live_bars = {}
 
-    today = date.today()
     rows = []
 
     for sym in symbols:
@@ -187,6 +264,8 @@ def score_all_symbols(
             continue
         df = _extend_with_live_bars(local_df, live_bars, sym)
         if len(df) < 60:
+            continue
+        if not _latest_daily_bar_is_fresh(df, now=now):
             continue
 
         feat = build_features_for_symbol(df, symbol=sym)
@@ -243,6 +322,15 @@ def _wait_until(hour: int, minute: int, tz: ZoneInfo, poll_secs: float = 10.0) -
         time.sleep(wait)
 
 
+def _target_buy_qty(*, buy_notional: float, price: float) -> float:
+    if not np.isfinite(buy_notional) or not np.isfinite(price) or buy_notional <= 0 or price <= 0:
+        return 0.0
+    qty = round(float(buy_notional) / float(price), 4)
+    if qty <= 0:
+        return 0.0
+    return max(qty, MIN_FRACTIONAL_QTY)
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -292,7 +380,7 @@ def run_session(
     print("[xgb-live] Fetching live bars from Alpaca...", flush=True)
     # Only need recent data — fetch last 10 bars to extend local CSVs
     try:
-        live_bars = _get_latest_bars(symbols[:200], n_days=10)  # sample to avoid rate limit
+        live_bars = _get_latest_bars(symbols, n_days=10)
     except Exception as exc:
         logger.warning("Live bar fetch failed: %s", exc)
         live_bars = {}
@@ -337,7 +425,10 @@ def run_session(
         if price <= 0:
             logger.warning("Skipping %s — invalid last_close %s", sym, price)
             continue
-        qty = max(1.0, round(buy_notional / price, 4))
+        qty = _target_buy_qty(buy_notional=buy_notional, price=price)
+        if qty <= 0:
+            logger.warning("Skipping %s — invalid target qty for price=%s notional=%s", sym, price, buy_notional)
+            continue
         try:
             order = _submit_market_order(client, symbol=sym, qty=qty, side="buy")
             print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
