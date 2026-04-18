@@ -208,10 +208,18 @@ def build_daily_features_fast(
         .clip(lower_bound=0.0, upper_bound=10_000.0).alias("cs_spread_bps")
     )
 
-    # ── spread_bps ≈ volume-based cost (coarse): 10 / log1p(dolvol). ──────
+    # ── spread_bps — tiered volume-based cost, matches features._vol_spread_series.
+    # Tiers are on linear dolvol (not log): larger $-vol → tighter spread.
+    # Default 50 bps when dolvol is below the smallest tier.
+    dolvol_lin = pl.col("dolvol_20d_log").exp() - 1.0
     df = df.with_columns(
-        (10_000.0 / (pl.col("dolvol_20d_log") + 1e-6))
-        .clip(lower_bound=0.0, upper_bound=100.0).alias("spread_bps")
+        pl.when(dolvol_lin >= 1e10).then(2.0)
+        .when(dolvol_lin >= 5e8).then(3.0)
+        .when(dolvol_lin >= 1e8).then(7.0)
+        .when(dolvol_lin >= 5e7).then(12.0)
+        .when(dolvol_lin >= 1e7).then(25.0)
+        .otherwise(50.0)
+        .alias("spread_bps")
     )
 
     # ── 52-week highs / lows ─────────────────────────────────────────────
