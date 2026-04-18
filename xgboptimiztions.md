@@ -95,6 +95,27 @@ seeds; this pins seed=0 only). Baseline row filled in the table above; worst-DD
 left TBD until we pull the max over window max_dd_pct from the JSON.
 `ma50` run started at 10:02:38.
 
+**2026-04-18 10:08 UTC — bug: round-1 ma50 crashed on duplicate SPY date labels**
+
+`ValueError: cannot reindex on an axis with duplicate labels` inside
+`_build_regime_flags`. Real `trainingdata/train/SPY.csv` carries up to 3 bars
+per date (pre-market + RTH + post-market), so the per-timestamp dedup in
+`eval_multiwindow.py` still left up-to-3 rows per `dt.date`. Fixed by
+collapsing SPY to one close per date via `groupby('date')['close'].last()`
+plus defensive `groupby(level=0).last()` in both `_build_regime_flags` and
+`_build_vol_scale`. Two regression tests added
+(`test_regime_gate_tolerates_duplicate_spy_dates`,
+`test_vol_scale_tolerates_duplicate_spy_dates`). 22/22 tests green, and an
+end-to-end smoke against the real SPY CSV now exercises both helpers.
+Commit `42d9129f`.
+
+**2026-04-18 10:12 UTC — round-1 + round-2 relaunched under one driver (PID 205818)**
+
+Sequential driver: `bash scripts/xgb_dd_reduction_sweep.sh && bash
+scripts/xgb_dd_reduction_sweep_round2.sh`. Round-2 queue now fires only after
+round-1 exits cleanly, removing the race from the earlier `WAIT_PID` pattern.
+Combined log: `logs/xgb_dd_combined_20260418.log`. 10 runs ≈ 2.5h end-to-end.
+
 On sweep completion: analyze each JSON with `xgbnew/analyze_sweep.py`, fill
 the results table above, promote the winner into a combined run (best gate
 + vol-target, if both are net-positive), then queue E4/E5/E6/E7.
