@@ -59,7 +59,7 @@ med sortino, worst DD, neg windows, and Δ vs baseline.)
 
 | tag | config | med/mo | p10/mo | sortino | worst DD | neg | Δ median | Δ sortino | artifact |
 |---|---|---|---|---|---|---|---|---|---|
-| baseline | lev=1.0 no-gate seed=0 | TBD | TBD | TBD | TBD | TBD | 0 | 0 | `analysis/xgbnew_dd_sweep/baseline/` (running) |
+| baseline | lev=1.0 no-gate seed=0 | **+32.80%** | **+20.26%** | **8.28** | **31.87%** | 0/34 | 0 | 0 | `analysis/xgbnew_dd_sweep/baseline/multiwindow_20260418_100231.json` |
 | ma50 | + `--regime-gate-window 50` | TBD | TBD | TBD | TBD | TBD | TBD | TBD | `analysis/xgbnew_dd_sweep/ma50/` (queued) |
 | ma20 | + `--regime-gate-window 20` | TBD | TBD | TBD | TBD | TBD | TBD | TBD | `analysis/xgbnew_dd_sweep/ma20/` (queued) |
 | voltarget015 | + `--vol-target-ann 0.15` | TBD | TBD | TBD | TBD | TBD | TBD | TBD | `analysis/xgbnew_dd_sweep/voltarget015/` (queued) |
@@ -86,6 +86,14 @@ Changes on disk:
 
 Sweep in flight at PID 92539 — logging to `logs/xgb_dd_sweep_20260418_095731.log`.
 Expected wall time ~60 min (4 × 15 min).
+
+**2026-04-18 10:03 UTC — baseline landed, ma50 starting**
+
+Baseline re-confirmed at med +32.80% / p10 +20.26% / sortino 8.28 / 0/34 neg
+(1 bp tighter median than the prior 6-lev sweep because that aggregated three
+seeds; this pins seed=0 only). Baseline row filled in the table above; worst-DD
+left TBD until we pull the max over window max_dd_pct from the JSON.
+`ma50` run started at 10:02:38.
 
 On sweep completion: analyze each JSON with `xgbnew/analyze_sweep.py`, fill
 the results table above, promote the winner into a combined run (best gate

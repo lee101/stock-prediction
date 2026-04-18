@@ -41,6 +41,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from loss_utils import TRADING_FEE
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
 from xgbnew.features import ALL_FEATURE_COLS, CHRONOS_FEATURE_COLS, DAILY_FEATURE_COLS
 from xgbnew.model import XGBStockModel, combined_scores
@@ -78,7 +79,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Position leverage (1.0=none, 2.0=max)")
     p.add_argument("--xgb-weight", type=float, default=0.5,
                    help="XGB weight in blended score (0=pure Chronos2, 1=pure XGB)")
-    p.add_argument("--commission-bps", type=float, default=10.0)
+    p.add_argument("--commission-bps", type=float, default=0.0,
+                   help="Legacy extra commission per side in bps (default 0; stock fee defaults are applied separately)")
+    p.add_argument("--fee-rate", type=float, default=float(TRADING_FEE),
+                   help="Per-side fee fraction (default: shared stock TRADING_FEE)")
+    p.add_argument("--fill-buffer-bps", type=float, default=5.0,
+                   help="Adverse fill buffer applied around open/close bars (default 5bps)")
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
     p.add_argument("--initial-cash",   type=float, default=10_000.0)
 
@@ -191,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         BacktestConfig(top_n=args.top_n, leverage=1.0,
                        xgb_weight=args.xgb_weight,
                        commission_bps=args.commission_bps,
+                       fee_rate=args.fee_rate,
+                       fill_buffer_bps=args.fill_buffer_bps,
                        initial_cash=args.initial_cash,
                        min_dollar_vol=args.min_dollar_vol),
     ]
@@ -199,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
         configs.append(BacktestConfig(top_n=args.top_n, leverage=args.leverage,
                                       xgb_weight=args.xgb_weight,
                                       commission_bps=args.commission_bps,
+                                      fee_rate=args.fee_rate,
+                                      fill_buffer_bps=args.fill_buffer_bps,
                                       initial_cash=args.initial_cash,
                                       min_dollar_vol=args.min_dollar_vol))
     # Always compare: pure XGB, pure Chronos2, blended
@@ -207,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
             configs.append(BacktestConfig(top_n=args.top_n, leverage=1.0,
                                           xgb_weight=xw,
                                           commission_bps=args.commission_bps,
+                                          fee_rate=args.fee_rate,
+                                          fill_buffer_bps=args.fill_buffer_bps,
                                           initial_cash=args.initial_cash,
                                           min_dollar_vol=args.min_dollar_vol))
 

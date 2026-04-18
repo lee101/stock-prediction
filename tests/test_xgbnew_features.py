@@ -308,3 +308,83 @@ class TestBacktestSimulate:
         result = simulate(df, _DummyModel(), cfg)
         assert result.total_trades == 0
         assert result.final_equity == cfg.initial_cash
+
+    def test_fill_buffer_and_fee_reduce_realized_trade_return(self):
+        df = pd.DataFrame(
+            [
+                {
+                    **{col: 0.0 for col in DAILY_FEATURE_COLS},
+                    **{col: 0.0 for col in CHRONOS_FEATURE_COLS},
+                    "date": date(2026, 1, 5),
+                    "symbol": "AAPL",
+                    "actual_open": 100.0,
+                    "actual_close": 101.0,
+                    "spread_bps": 3.0,
+                    "dolvol_20d_log": np.log1p(1e8),
+                    "target_oc_up": 1,
+                }
+            ]
+        )
+        cfg = BacktestConfig(
+            top_n=1,
+            leverage=1.0,
+            fee_rate=0.001,
+            fill_buffer_bps=5.0,
+            commission_bps=0.0,
+        )
+        result = simulate(df, _DummyModel(), cfg)
+        trade = result.day_results[0].trades[0]
+
+        assert trade.entry_fill_price == pytest.approx(100.05)
+        assert trade.exit_fill_price == pytest.approx(100.9495)
+        assert trade.gross_return_pct < 1.0
+        assert trade.net_return_pct < trade.gross_return_pct
+        assert result.avg_fee_bps == pytest.approx(10.0)
+
+    def test_tie_break_prefers_higher_chronos_signal(self):
+        rows = []
+        for symbol, chronos_signal in [("SLOW", 1.0), ("FAST", 3.0)]:
+            rows.append(
+                {
+                    **{col: 0.0 for col in DAILY_FEATURE_COLS},
+                    **{col: 0.0 for col in CHRONOS_FEATURE_COLS},
+                    "date": date(2026, 1, 5),
+                    "symbol": symbol,
+                    "actual_open": 100.0,
+                    "actual_close": 101.0,
+                    "spread_bps": 3.0,
+                    "dolvol_20d_log": np.log1p(1e8),
+                    "target_oc_up": 1,
+                    "chronos_oc_return": chronos_signal,
+                }
+            )
+        df = pd.DataFrame(rows)
+        cfg = BacktestConfig(top_n=1, leverage=1.0, fee_rate=0.0, fill_buffer_bps=0.0, xgb_weight=1.0)
+        result = simulate(df, _DummyModel(), cfg)
+
+        assert result.day_results[0].trades[0].symbol == "FAST"
+
+    def test_precomputed_scores_override_model_scoring(self):
+        rows = []
+        for symbol, score in [("LOW", 0.2), ("HIGH", 0.9)]:
+            rows.append(
+                {
+                    **{col: 0.0 for col in DAILY_FEATURE_COLS},
+                    **{col: 0.0 for col in CHRONOS_FEATURE_COLS},
+                    "date": date(2026, 1, 5),
+                    "symbol": symbol,
+                    "actual_open": 100.0,
+                    "actual_close": 101.0,
+                    "spread_bps": 3.0,
+                    "dolvol_20d_log": np.log1p(1e8),
+                    "target_oc_up": 1,
+                    "_custom_score": score,
+                }
+            )
+        df = pd.DataFrame(rows)
+        cfg = BacktestConfig(top_n=1, leverage=1.0, fee_rate=0.0, fill_buffer_bps=0.0)
+        scores = pd.Series(df["_custom_score"].to_numpy(dtype=float), index=df.index)
+
+        result = simulate(df, _DummyModel(), cfg, precomputed_scores=scores)
+
+        assert result.day_results[0].trades[0].symbol == "HIGH"
