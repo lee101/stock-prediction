@@ -134,7 +134,12 @@ def _build_regime_flags(
     closed = pd.Series(False, index=all_dates)
     if spy_close_by_date is None or window <= 0:
         return closed
+    # Defensive: caller may pass a Series with duplicate date labels (e.g.,
+    # multi-bar CSV collapsed incorrectly). Keep the last close per date so
+    # the downstream reindex never errors out and never silently skips days.
     sp = spy_close_by_date.sort_index()
+    if not sp.index.is_unique:
+        sp = sp.groupby(level=0).last()
     ma = sp.rolling(window=int(window), min_periods=int(window)).mean()
     ratio = sp / ma
     below = ratio < 1.0
@@ -160,6 +165,8 @@ def _build_vol_scale(
     if spy_close_by_date is None or target_ann <= 0:
         return scale
     sp = spy_close_by_date.sort_index().astype(float)
+    if not sp.index.is_unique:
+        sp = sp.groupby(level=0).last()
     log_ret = np.log(sp / sp.shift(1))
     realised_ann = log_ret.rolling(window=int(lookback_days), min_periods=int(lookback_days)).std() * np.sqrt(trading_days_per_year)
     ratio = (float(target_ann) / realised_ann).clip(upper=1.0)

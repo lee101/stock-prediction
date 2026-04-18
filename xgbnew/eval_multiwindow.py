@@ -335,7 +335,13 @@ def main(argv=None) -> int:
         spy_df["timestamp"] = pd.to_datetime(spy_df["timestamp"], utc=True, errors="coerce")
         spy_df = spy_df.dropna(subset=["timestamp", "close"]).drop_duplicates(subset=["timestamp"])
         spy_df["date"] = spy_df["timestamp"].dt.date
-        spy_close_by_date = spy_df.set_index("date")["close"].astype(float).sort_index()
+        # CSV may carry multiple bars per date (pre/regular/post-market, or
+        # hourly). Collapse to one close per date — the last bar of each day is
+        # the day's regular-session close (rows are ordered by timestamp).
+        spy_df = spy_df.sort_values("timestamp")
+        spy_close_by_date = (
+            spy_df.groupby("date")["close"].last().astype(float).sort_index()
+        )
         print(
             f"[xgb-eval] loaded SPY closes: {len(spy_close_by_date)} days "
             f"(regime_gate={int(args.regime_gate_window)}, vol_target_ann={float(args.vol_target_ann):.2f})",

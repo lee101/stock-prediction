@@ -96,6 +96,36 @@ def test_vol_scale_down_scales_in_high_vol():
     assert 0.15 < float(tail.median()) < 0.55
 
 
+def test_regime_gate_tolerates_duplicate_spy_dates():
+    """Regression: real SPY CSVs carry multiple bars per date. The helper
+    must not raise on a duplicate-indexed input — it should collapse to
+    per-date last close before the rolling MA."""
+    sp = _spy_updown(n=200)
+    # Duplicate every label (simulating hourly bars collapsed to `dt.date`).
+    dup = pd.concat([sp, sp])
+    dates = pd.Index(sp.index)
+    closed = _build_regime_flags(dup, dates, window=50)
+    assert len(closed) == len(dates)
+    assert closed.iloc[-30:].sum() >= 20
+
+
+def test_vol_scale_tolerates_duplicate_spy_dates():
+    """Same duplicate-label regression for the vol-scale helper."""
+    rng = np.random.default_rng(0)
+    n = 80
+    start = date(2024, 1, 2)
+    dates = pd.Index([start + timedelta(days=int(i)) for i in range(n)])
+    daily_sigma = 0.50 / np.sqrt(252)
+    log_ret = rng.normal(0.0, daily_sigma, n)
+    prices = 100.0 * np.exp(np.cumsum(log_ret))
+    sp = pd.Series(prices, index=dates)
+    dup = pd.concat([sp, sp])
+    scale = _build_vol_scale(dup, dates, target_ann=0.15, lookback_days=20)
+    assert len(scale) == len(dates)
+    tail = scale.iloc[25:]
+    assert (tail < 1.0).all()
+
+
 def test_backtest_config_knob_defaults():
     cfg = BacktestConfig()
     assert cfg.regime_gate_window == 0
