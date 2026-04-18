@@ -213,6 +213,13 @@ def parse_args(argv=None):
         default=None,
         help="XGBoost device (e.g. 'cuda'). Omit for CPU. Requires xgboost built with USE_CUDA.",
     )
+    p.add_argument(
+        "--fast-features",
+        action="store_true",
+        help="Use polars-native feature builder (~3× faster). Minor numerical "
+        "divergence on rolling / EWM columns (corr > 0.98) vs pandas path — "
+        "fine for exploratory sweeps; use pandas for headline publish.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -278,8 +285,10 @@ def main(argv=None) -> int:
         test_end=oos_end,
         chronos_cache=chronos_cache if chronos_cache else None,
         min_dollar_vol=args.min_dollar_vol,
+        fast_features=bool(args.fast_features),
     )
-    print(f"[xgb-eval] dataset built in {time.perf_counter()-t0:.1f}s | train={len(train_df):,} oos={len(oos_df):,}", flush=True)
+    _feat_src = "polars" if args.fast_features else "pandas"
+    print(f"[xgb-eval] dataset built in {time.perf_counter()-t0:.1f}s ({_feat_src}) | train={len(train_df):,} oos={len(oos_df):,}", flush=True)
     requested_symbol_count = len(symbols)
     train_symbol_count = int(train_df["symbol"].nunique()) if "symbol" in train_df.columns else 0
     oos_symbol_count = int(oos_df["symbol"].nunique()) if "symbol" in oos_df.columns else 0

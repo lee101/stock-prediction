@@ -217,6 +217,7 @@ def build_daily_dataset(
     test_end: date,
     chronos_cache: dict[date, dict[str, dict]] | None = None,
     min_dollar_vol: float = 1e6,
+    fast_features: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build train / val / test DataFrames for daily XGBoost model.
 
@@ -228,10 +229,21 @@ def build_daily_dataset(
         test_start / test_end: Test period (receives Chronos2 features if cache given).
         chronos_cache: Optional cached Chronos2 forecasts (from load_chronos_cache).
         min_dollar_vol: Minimum average daily dollar volume for a row to be included.
+        fast_features: If True, use polars-native builder (~3× faster). RSI and
+            rolling-std columns have small numerical divergence (corr > 0.98) from
+            the pandas path; treat A/B numbers from the two paths as comparable
+            but not bit-identical.
 
     Returns:
         (train_df, val_df, test_df) — each with DAILY_FEATURE_COLS + target columns.
     """
+    if fast_features:
+        return _build_daily_dataset_fast(
+            data_root, symbols, train_start, train_end, val_start, val_end,
+            test_start, test_end, chronos_cache=chronos_cache,
+            min_dollar_vol=min_dollar_vol,
+        )
+
     train_parts, val_parts, test_parts = [], [], []
 
     logger.info("Building dataset for %d symbols...", len(symbols))
@@ -285,6 +297,58 @@ def build_daily_dataset(
         len(train_df), len(val_df), len(test_df),
     )
     return train_df, val_df, test_df
+
+
+def _build_daily_dataset_fast(
+    data_root: Path,
+    symbols: list[str],
+    train_start: date,
+    train_end: date,
+    val_start: date,
+    val_end: date,
+    test_start: date,
+    test_end: date,
+    chronos_cache: dict[date, dict[str, dict]] | None = None,
+    min_dollar_vol: float = 1e6,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Polars-native dataset builder. Same splits and columns as the pandas
+    path, but features come from ``xgbnew.features_fast.build_daily_features_fast``
+    — one ETL pass over all symbols instead of N per-symbol passes.
+    """
+    from .features_fast import build_daily_features_fast
+
+    logger.info("Building dataset (fast/polars) for %d symbols...", len(symbols))
+    feat = build_daily_features_fast(data_root, symbols)
+    feat = feat.dropna(subset=DAILY_FEATURE_COLS[:5])
+    feat = feat[feat["dolvol_20d_log"] >= np.log1p(min_dollar_vol)]
+    # Drop raw OHLCV columns left over from the polars path so the returned
+    # DataFrame has the same column set as the pandas builder.
+    for _extra in ("high", "low", "volume"):
+        if _extra in feat.columns:
+            feat = feat.drop(columns=_extra)
+    # Drop any symbol group that ended up with < 50 usable rows, to match
+    # the behaviour of the pandas path.
+    sym_counts = feat.groupby("symbol").size()
+    keep = sym_counts[sym_counts >= 50].index
+    feat = feat[feat["symbol"].isin(keep)]
+
+    tr = feat[(feat["date"] >= train_start) & (feat["date"] <= train_end)].copy()
+    va = feat[(feat["date"] >= val_start)   & (feat["date"] <= val_end)].copy()
+    te = feat[(feat["date"] >= test_start)  & (feat["date"] <= test_end)].copy()
+
+    for df in (tr, va, te):
+        for col in CHRONOS_FEATURE_COLS:
+            if col not in df.columns:
+                df[col] = 0.0
+
+    if chronos_cache and len(te) > 0:
+        te = _attach_chronos_features_fast(te, chronos_cache)
+
+    logger.info(
+        "Dataset sizes (fast): train=%d val=%d test=%d rows",
+        len(tr), len(va), len(te),
+    )
+    return tr, va, te
 
 
 __all__ = [
