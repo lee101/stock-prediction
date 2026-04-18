@@ -639,6 +639,241 @@ class MultiSymEnv:
         return torch.cat(parts, dim=-1)
 
 
+@dataclass
+class PortfolioBracketConfig:
+    """Knobs for PortfolioBracketEnv (mirrors MultiSymBracketConfig in the
+    numpy spec at pufferlib_cpp_market_sim/python/market_sim_py/multisym_bracket_ref.py).
+    """
+    fee_bps: float = 0.278
+    fill_buffer_bps: float = 5.0
+    max_leverage: float = 2.0
+    annual_margin_rate: float = 0.0625
+    trading_days_per_year: int = 252
+    init_cash: float = 10_000.0
+    episode_len: int = 252  # one trading year per episode
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "PortfolioBracketConfig":
+        if not d:
+            return cls()
+        fields = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        return cls(**{k: v for k, v in d.items() if k in fields})
+
+
+@dataclass
+class PortfolioBracketEnv:
+    """Multi-symbol PORTFOLIO bracket env, GPU-resident.
+
+    State per-env (CUDA float32):
+        cash       [B]
+        positions  [B, S]   (signed shares; neg = short)
+        t_idx      [B] int32
+        done       [B] int32
+
+    Action per (env, sym): [B, S, 4]
+        action[b, s, 0] = limit_buy_offset_bps
+        action[b, s, 1] = limit_sell_offset_bps
+        action[b, s, 2] = buy_qty_pct  (>= 0; >1 OK — leverage cap clips)
+        action[b, s, 3] = sell_qty_pct (>= 0)
+
+    Bar lookup: prev_close = prices[t-1, :, 3], bar_o/h/l/c = prices[t, :, 0..3].
+    Episodes start at ``t_idx = 1`` so prev_close at t-1 is always valid.
+
+    Auto-reset: completed envs (done=1) are reset at the START of the next
+    step() call — same convention as MultiSymEnv.
+    """
+    B: int
+    cfg: PortfolioBracketConfig
+    prices: torch.Tensor                       # [T, S, 5] (O, H, L, C, V)
+    tradable_tape: Optional[torch.Tensor] = None  # [T, S] uint8; None = all true
+    features: Optional[torch.Tensor] = None    # [T, S, F] obs passthrough
+    state: dict = field(default_factory=dict)
+    _reward: torch.Tensor = field(init=False)
+    _info: dict = field(init=False)
+    _scratch: dict = field(init=False)
+
+    @property
+    def T(self) -> int:
+        return int(self.prices.size(0))
+
+    @property
+    def S(self) -> int:
+        return int(self.prices.size(1))
+
+    @property
+    def action_shape(self) -> tuple[int, int, int]:
+        return (self.B, self.S, 4)
+
+    def __post_init__(self) -> None:
+        dev = self.prices.device
+        B, S = self.B, self.S
+        ic = self.cfg.init_cash
+        self.state = {
+            "cash":      torch.full((B,), ic, device=dev, dtype=torch.float32),
+            "positions": torch.zeros((B, S), device=dev, dtype=torch.float32),
+            "t_idx":     torch.ones(B, device=dev, dtype=torch.int32),
+            "done":      torch.zeros(B, device=dev, dtype=torch.int32),
+            "equity":    torch.full((B,), ic, device=dev, dtype=torch.float32),
+        }
+        self._reward = torch.zeros(B, device=dev, dtype=torch.float32)
+        self._info = {
+            "eq_prev":  torch.zeros(B, device=dev, dtype=torch.float32),
+            "new_eq":   torch.zeros(B, device=dev, dtype=torch.float32),
+            "fees":     torch.zeros(B, device=dev, dtype=torch.float32),
+            "margin":   torch.zeros(B, device=dev, dtype=torch.float32),
+            "borrowed": torch.zeros(B, device=dev, dtype=torch.float32),
+        }
+        # Pre-allocated scratch for the per-step gather + kernel I/O.
+        self._scratch = {
+            "cash_out": torch.empty(B, device=dev, dtype=torch.float32),
+            "pos_out":  torch.empty((B, S), device=dev, dtype=torch.float32),
+        }
+        if self.tradable_tape is None:
+            # Lazy-build a static all-true tape.
+            self.tradable_tape = torch.ones((self.T, S), device=dev, dtype=torch.uint8)
+
+    def reset(self, mask: Optional[torch.Tensor] = None) -> None:
+        dev = self.prices.device
+        if mask is None:
+            idx = torch.ones(self.B, dtype=torch.bool, device=dev)
+        else:
+            idx = mask.to(torch.bool).to(dev)
+        s = self.state
+        s["cash"][idx]      = self.cfg.init_cash
+        s["positions"][idx] = 0.0
+        s["t_idx"][idx]     = 1
+        s["done"][idx]      = 0
+        s["equity"][idx]    = self.cfg.init_cash
+
+    def step(self, action: torch.Tensor):
+        ext = _load_ext()
+        if ext is None:
+            raise RuntimeError(_EXT_ERR or "gpu_trading_env._C not loaded")
+        if action.shape != self.action_shape:
+            raise ValueError(
+                f"action must be {self.action_shape}, got {tuple(action.shape)}"
+            )
+        if action.dtype != torch.float32:
+            action = action.to(torch.float32)
+        if not action.is_contiguous():
+            action = action.contiguous()
+
+        s = self.state
+        # Auto-reset completed envs before stepping.
+        done_mask = s["done"].to(torch.bool)
+        if done_mask.any():
+            self.reset(done_mask)
+
+        # Gather per-bar OHLC + tradable for each env's current t_idx.
+        ti = s["t_idx"].long()
+        # Clamp to [1, T-1] to keep prev (t-1) valid.
+        ti = ti.clamp(1, self.T - 1)
+        bar = self.prices.index_select(0, ti)            # [B, S, 5]
+        prev = self.prices.index_select(0, ti - 1)       # [B, S, 5]
+        prev_close = prev[..., 3].contiguous()
+        bar_open   = bar[..., 0].contiguous()
+        bar_high   = bar[..., 1].contiguous()
+        bar_low    = bar[..., 2].contiguous()
+        bar_close  = bar[..., 3].contiguous()
+        tradable   = self.tradable_tape.index_select(0, ti).contiguous()
+
+        cash_out = self._scratch["cash_out"]
+        pos_out  = self._scratch["pos_out"]
+        info = self._info
+        ext.portfolio_bracket_step(
+            s["cash"], s["positions"], action,
+            prev_close, bar_open, bar_high, bar_low, bar_close, tradable,
+            cash_out, pos_out, self._reward,
+            info["eq_prev"], info["new_eq"], info["fees"],
+            info["margin"], info["borrowed"],
+            float(self.cfg.fee_bps),
+            float(self.cfg.fill_buffer_bps),
+            float(self.cfg.max_leverage),
+            float(self.cfg.annual_margin_rate),
+            int(self.cfg.trading_days_per_year),
+            int(self.S),
+        )
+
+        # Commit state.
+        s["cash"].copy_(cash_out)
+        s["positions"].copy_(pos_out)
+        s["equity"].copy_(info["new_eq"])
+
+        # Advance time and mark done at end of episode / tape.
+        new_t = ti + 1
+        ep_done = (new_t - 1) >= self.cfg.episode_len  # episode_len bars consumed
+        tape_done = new_t >= self.T - 1                # need t+1 in-bounds next step
+        s["t_idx"].copy_(new_t.to(torch.int32))
+        done = (ep_done | tape_done).to(torch.int32)
+        s["done"].copy_(done)
+
+        return self._reward, s["done"], info
+
+    def obs(self) -> torch.Tensor:
+        """Build a [B, F_obs] observation.
+
+        Layout: [features[t, :, :] flat (S*F), portfolio (3 + S+S):
+        cash_frac, eq_norm, drawdown, positions[B, S], unrealized_per_sym[B, S]].
+        Without features tape: [B, 3 + 2S].
+        """
+        s = self.state
+        ti = s["t_idx"].clamp(0, self.T - 1).long()
+        parts: list[torch.Tensor] = []
+        if self.features is not None:
+            flat_feat = self.features.reshape(self.T, -1)
+            parts.append(flat_feat.index_select(0, ti))   # [B, S*F]
+        ic = self.cfg.init_cash
+        equity = s["equity"]
+        cash = s["cash"]
+        cash_frac = cash / (equity.abs() + 1e-6)
+        eq_norm = (equity - ic) / (ic + 1e-6)
+        drawdown = torch.zeros_like(equity)  # not tracked in this env yet
+        portfolio = torch.stack([cash_frac, eq_norm, drawdown], dim=-1)
+        parts.append(portfolio)
+        # Per-symbol position fraction of equity (mark-to-current-close).
+        bar_close = self.prices.index_select(0, ti)[..., 3]  # [B, S]
+        pos_value = s["positions"] * bar_close
+        pos_frac = pos_value / (equity.abs().unsqueeze(-1) + 1e-6)
+        parts.append(pos_frac)
+        # Raw position shares (lightly normalized).
+        parts.append(s["positions"] / (ic + 1e-6))
+        return torch.cat(parts, dim=-1)
+
+
+def make_portfolio_bracket(
+    B: int,
+    prices: torch.Tensor,
+    tradable_tape: Optional[torch.Tensor] = None,
+    features: Optional[torch.Tensor] = None,
+    params: Optional[dict] = None,
+) -> PortfolioBracketEnv:
+    """Create a PortfolioBracketEnv with an in-memory [T, S, 5] price tape.
+
+    ``tradable_tape`` (optional) [T, S] bool — defaults to all-true.
+    ``features`` (optional) [T, S, F] for obs passthrough.
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("gpu_trading_env.make_portfolio_bracket requires CUDA")
+    if prices.dim() != 3 or prices.size(-1) != 5:
+        raise ValueError(f"prices must be [T, S, 5], got {tuple(prices.shape)}")
+    prices = prices.to(torch.float32).contiguous().cuda()
+    if tradable_tape is not None:
+        if tradable_tape.shape != prices.shape[:2]:
+            raise ValueError(
+                f"tradable_tape must be [T, S]={tuple(prices.shape[:2])}, "
+                f"got {tuple(tradable_tape.shape)}"
+            )
+        tradable_tape = tradable_tape.to(torch.uint8).contiguous().cuda()
+    if features is not None:
+        features = features.to(torch.float32).contiguous().cuda()
+    cfg = PortfolioBracketConfig.from_dict(params)
+    if cfg.episode_len > prices.size(0) - 1:
+        cfg.episode_len = prices.size(0) - 1
+    return PortfolioBracketEnv(
+        B=B, cfg=cfg, prices=prices, tradable_tape=tradable_tape, features=features,
+    )
+
+
 def make_multisym(
     B: int,
     prices: torch.Tensor,
@@ -661,6 +896,7 @@ def make_multisym(
     return MultiSymEnv(B=B, cfg=cfg, prices=prices, features=features)
 
 
-__all__ = ["make", "make_multi_symbol", "make_multisym", "EnvConfig",
-           "EnvHandle", "MultiSymbolEnvHandle", "MultiSymEnv",
+__all__ = ["make", "make_multi_symbol", "make_multisym", "make_portfolio_bracket",
+           "EnvConfig", "PortfolioBracketConfig",
+           "EnvHandle", "MultiSymbolEnvHandle", "MultiSymEnv", "PortfolioBracketEnv",
            "_load_ext", "_EXT_ERR", "_load_bin_features"]
