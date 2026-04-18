@@ -77,7 +77,9 @@ def _load_ext():
         sm = f"{cap[0]}{cap[1]}"
         _EXT = load(
             name="gpu_trading_env_C",
-            sources=[str(_CSRC / "binding.cpp"), str(_CSRC / "env_step.cu")],
+            sources=[str(_CSRC / "binding.cpp"), str(_CSRC / "env_step.cu"),
+                     str(_CSRC / "env_step_multisym.cu"),
+                     str(_CSRC / "env_step_portfolio.cu")],
             extra_include_paths=[str(_CSRC)],
             extra_cuda_cflags=[
                 "-O3", "--use_fast_math", "-lineinfo",
@@ -505,5 +507,160 @@ def make_multi_symbol(
     )
 
 
-__all__ = ["make", "make_multi_symbol", "EnvConfig", "EnvHandle",
-           "MultiSymbolEnvHandle", "_load_ext", "_EXT_ERR", "_load_bin_features"]
+@dataclass
+class MultiSymEnv:
+    """Proper multi-symbol GPU env.
+
+    Data tapes (CUDA float32):
+        prices   [T, S, 5]     (O, H, L, C, V)
+        features [T, S, F]     (optional; obs passthrough)
+
+    Action per-env: int32 in ``[0, 1 + 2*S)``.
+        0           -> flat
+        1..S        -> long  sym_i
+        S+1..2S     -> short sym_i
+
+    Reward: log(equity_t / equity_{t-1}).
+    Single-position policy (one symbol at a time) — matches XGB top_n=1 and
+    the current RL prod gate semantics.
+    """
+    B: int
+    cfg: EnvConfig
+    prices: torch.Tensor          # [T, S, 5]
+    features: Optional[torch.Tensor] = None  # [T, S, F]
+    state: dict = field(default_factory=dict)
+    _reward: torch.Tensor = field(init=False)
+    _cost: torch.Tensor = field(init=False)
+
+    @property
+    def T(self) -> int:
+        return int(self.prices.size(0))
+
+    @property
+    def S(self) -> int:
+        return int(self.prices.size(1))
+
+    @property
+    def action_dim(self) -> int:
+        return 1 + 2 * self.S
+
+    def __post_init__(self) -> None:
+        dev = self.prices.device
+        B = self.B
+        ic = self.cfg.init_cash
+        self.state = {
+            "pos_sym":      torch.full((B,), -1, device=dev, dtype=torch.int32),
+            "pos_side":     torch.zeros(B, device=dev, dtype=torch.int32),
+            "pos_qty":      torch.zeros(B, device=dev, dtype=torch.float32),
+            "pos_entry_px": torch.zeros(B, device=dev, dtype=torch.float32),
+            "cash":         torch.full((B,), ic, device=dev, dtype=torch.float32),
+            "equity":       torch.full((B,), ic, device=dev, dtype=torch.float32),
+            "dd_peak":      torch.full((B,), ic, device=dev, dtype=torch.float32),
+            "drawdown":     torch.zeros(B, device=dev, dtype=torch.float32),
+            "t_idx":        torch.zeros(B, device=dev, dtype=torch.int32),
+            "done":         torch.zeros(B, device=dev, dtype=torch.int32),
+        }
+        self._reward = torch.zeros(B, device=dev, dtype=torch.float32)
+        self._cost = torch.zeros(B, 4, device=dev, dtype=torch.float32)
+
+    def reset(self, mask: Optional[torch.Tensor] = None) -> None:
+        dev = self.prices.device
+        if mask is None:
+            idx = torch.ones(self.B, dtype=torch.bool, device=dev)
+        else:
+            idx = mask.to(torch.bool).to(dev)
+        s = self.state
+        s["pos_sym"][idx] = -1
+        s["pos_side"][idx] = 0
+        s["pos_qty"][idx] = 0.0
+        s["pos_entry_px"][idx] = 0.0
+        s["cash"][idx] = self.cfg.init_cash
+        s["equity"][idx] = self.cfg.init_cash
+        s["dd_peak"][idx] = self.cfg.init_cash
+        s["drawdown"][idx] = 0.0
+        s["t_idx"][idx] = 0
+        s["done"][idx] = 0
+
+    def step(self, action: torch.Tensor):
+        ext = _load_ext()
+        if ext is None:
+            raise RuntimeError(_EXT_ERR or "gpu_trading_env._C not loaded")
+        if action.dtype != torch.int32:
+            action = action.to(torch.int32)
+        if not action.is_contiguous():
+            action = action.contiguous()
+        if action.shape != (self.B,):
+            raise ValueError(f"action must be [{self.B}], got {tuple(action.shape)}")
+        s = self.state
+        ext.env_step_multisym(
+            self.prices,
+            s["pos_sym"], s["pos_side"], s["pos_qty"], s["pos_entry_px"],
+            s["cash"], s["equity"], s["dd_peak"], s["drawdown"],
+            s["t_idx"], s["done"], action, self._reward, self._cost,
+            float(self.cfg.fee_bps),
+            float(self.cfg.buffer_bps),
+            float(self.cfg.max_leverage),
+            float(self.cfg.maint_margin),
+            float(self.cfg.liq_penalty),
+            float(self.cfg.init_cash),
+            int(self.T),
+            int(self.S),
+            int(self.cfg.episode_len),
+        )
+        return self._reward, s["done"], self._cost
+
+    def obs(self) -> torch.Tensor:
+        """Build the [B, S*F + 5 + S] obs (matches pufferlib_market layout).
+        Callers with no features tape get a features-less [B, 5 + S] obs.
+        """
+        s = self.state
+        ti = s["t_idx"].clamp(0, self.T - 1).long()
+        parts: list[torch.Tensor] = []
+        if self.features is not None:
+            flat_feat = self.features.reshape(self.T, -1)
+            parts.append(flat_feat.index_select(0, ti))  # [B, S*F]
+        ic = self.cfg.init_cash
+        equity = s["equity"]
+        cash = s["cash"]
+        cash_frac = cash / (equity.abs() + 1e-6)
+        eq_norm = (equity - ic) / (ic + 1e-6)
+        dd = s["drawdown"]
+        pos_qty = s["pos_qty"]
+        pos_side_f = s["pos_side"].to(torch.float32)
+        portfolio = torch.stack([cash_frac, eq_norm, dd, pos_qty,
+                                 pos_side_f], dim=-1)
+        parts.append(portfolio)
+        sym_one_hot = torch.zeros(self.B, self.S, device=self.prices.device,
+                                  dtype=torch.float32)
+        held = s["pos_sym"].clamp_min(0).long()
+        has_pos = (s["pos_side"] != 0).unsqueeze(-1).to(torch.float32)
+        sym_one_hot.scatter_(1, held.unsqueeze(-1), has_pos)
+        parts.append(sym_one_hot)
+        return torch.cat(parts, dim=-1)
+
+
+def make_multisym(
+    B: int,
+    prices: torch.Tensor,
+    features: Optional[torch.Tensor] = None,
+    params: Optional[dict] = None,
+) -> MultiSymEnv:
+    """Create a MultiSymEnv with an in-memory [T, S, 5] price tape.
+    ``features`` (optional) is [T, S, F] and passed through for observation use.
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("gpu_trading_env.make_multisym requires CUDA")
+    if prices.dim() != 3 or prices.size(-1) != 5:
+        raise ValueError(f"prices must be [T, S, 5], got {tuple(prices.shape)}")
+    prices = prices.to(torch.float32).contiguous().cuda()
+    if features is not None:
+        features = features.to(torch.float32).contiguous().cuda()
+    cfg = EnvConfig.from_dict(params)
+    if cfg.episode_len > prices.size(0) - 1:
+        cfg.episode_len = prices.size(0) - 1
+    return MultiSymEnv(B=B, cfg=cfg, prices=prices, features=features)
+
+
+__all__ = ["make", "make_multi_symbol", "make_multisym", "EnvConfig",
+           "EnvHandle", "MultiSymbolEnvHandle", "MultiSymEnv",
+           "_load_ext", "_EXT_ERR", "_load_bin_features"]

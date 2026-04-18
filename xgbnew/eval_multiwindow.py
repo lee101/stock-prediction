@@ -241,6 +241,19 @@ def parse_args(argv=None):
         default=REPO / "trainingdata/train/SPY.csv",
         help="SPY daily OHLCV CSV (used by regime-gate and vol-target knobs).",
     )
+    p.add_argument(
+        "--allocation-mode",
+        default="equal",
+        choices=["equal", "softmax", "score_norm"],
+        help="How to weight the top_n picks within a day. equal = mean (legacy); "
+        "softmax = concentrate on high scores; score_norm = proportional to positive scores.",
+    )
+    p.add_argument(
+        "--allocation-temp",
+        type=float,
+        default=1.0,
+        help="Softmax temperature when --allocation-mode=softmax (lower = more concentrated).",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -401,6 +414,8 @@ def main(argv=None) -> int:
             fill_buffer_bps=float(args.fill_buffer_bps),
             regime_gate_window=int(args.regime_gate_window),
             vol_target_ann=float(args.vol_target_ann),
+            allocation_mode=str(args.allocation_mode),
+            allocation_temp=float(args.allocation_temp),
         )
         combined_scores = _combined_scores_from_predictions(
             oos_df,
@@ -457,6 +472,8 @@ def main(argv=None) -> int:
                     "xgb_weight": cfg.xgb_weight,
                     "leverage": cfg.leverage,
                     "random_state": cfg.random_state,
+                    "allocation_mode": str(args.allocation_mode),
+                    "allocation_temp": float(args.allocation_temp),
                 },
                 "median_monthly_pct": float(np.median(monthly_rets)),
                 "p10_monthly_pct": float(np.percentile(monthly_rets, 10)),
