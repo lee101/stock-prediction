@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import math
@@ -232,6 +233,10 @@ def _coerce_float(value: object, *, default: float = 0.0) -> float:
     return parsed
 
 
+def _live_trading_enabled() -> bool:
+    return str(os.getenv("ALLOW_ALPACA_LIVE_TRADING", "")).strip() in {"1", "true", "TRUE"}
+
+
 def _normalize_account_name(name: str) -> str:
     value = str(name or "").strip()
     if not value:
@@ -401,6 +406,8 @@ class TradingServerEngine:
         self.accounts_root.mkdir(parents=True, exist_ok=True)
         self.event_root.mkdir(parents=True, exist_ok=True)
         self.locks_root.mkdir(parents=True, exist_ok=True)
+        self._uses_default_quote_provider = quote_provider is None
+        self._uses_default_live_executor = live_executor is None
         self.quote_provider = quote_provider or self._default_quote_provider
         self.live_executor = live_executor or self._default_live_executor
         self.now_fn = now_fn or _utc_now
@@ -417,6 +424,8 @@ class TradingServerEngine:
         self._inflight_quote_fetches: dict[str, _InFlightQuoteFetch] = {}
         self._state_cache = FileBackedStateCache[AccountState]()
         self._registry = self._load_registry()
+        self._has_live_accounts = any(config["mode"] == "live" for config in self._registry.values())
+        self._live_broker_guard_primed = False
 
     def close(self, *, wait: bool = True) -> None:
         with self._quote_fetch_executor_lock:
@@ -428,6 +437,19 @@ class TradingServerEngine:
             finalizer.detach()
         if executor is not None:
             executor.shutdown(wait=wait, cancel_futures=False)
+
+    def prime_live_broker_guard(self) -> bool:
+        if self._live_broker_guard_primed:
+            return False
+        if not self._has_live_accounts:
+            return False
+        if not _live_trading_enabled():
+            return False
+        if not (self._uses_default_quote_provider or self._uses_default_live_executor):
+            return False
+        importlib.import_module("alpaca_wrapper")
+        self._live_broker_guard_primed = True
+        return True
 
     def _get_quote_fetch_executor(self) -> ThreadPoolExecutor:
         executor = self._quote_fetch_executor
@@ -1783,6 +1805,21 @@ def create_app(engine: TradingServerEngine | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
+        live_guard_primed = engine.prime_live_broker_guard()
+        logger.info(
+            "Trading server runtime: %s",
+            json.dumps(
+                {
+                    "accounts": sorted(engine._registry.keys()),
+                    "live_accounts": sorted(
+                        account for account, config in engine._registry.items() if config["mode"] == "live"
+                    ),
+                    "live_guard_primed": live_guard_primed,
+                    "background_poll_seconds": poll_seconds,
+                },
+                sort_keys=True,
+            ),
+        )
         ensure_background_refresh(engine, poll_seconds=poll_seconds)
         try:
             yield
@@ -1813,6 +1850,31 @@ def create_app(engine: TradingServerEngine | None = None) -> FastAPI:
             detail="invalid auth token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    @app.get("/health")
+    def health():
+        # Auth-free liveness probe for monitors. Reports the writer lock-holder
+        # (authoritative "who owns the Alpaca broker boundary") + account count,
+        # but does NOT hit Alpaca so a slow external call can't mask a local wedge.
+        lock_info: dict[str, object] = {}
+        lock_path = Path(
+            "/nvme0n1-disk/code/stock-prediction/strategy_state/account_locks/alpaca_live_writer.lock"
+        )
+        try:
+            if lock_path.exists():
+                lock_info = json.loads(lock_path.read_text())
+        except Exception as exc:
+            lock_info = {"error": str(exc)}
+        my_pid = os.getpid()
+        holder_pid = lock_info.get("pid") if isinstance(lock_info, dict) else None
+        lock_held_by_me = holder_pid == my_pid if holder_pid is not None else None
+        return {
+            "status": "ok",
+            "pid": my_pid,
+            "accounts": engine.configured_accounts(),
+            "writer_lock": lock_info,
+            "writer_lock_held_by_me": lock_held_by_me,
+        }
 
     @app.get("/api/v1/accounts", dependencies=[Depends(require_auth)])
     def list_accounts():

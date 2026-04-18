@@ -59,34 +59,182 @@ def run_cmd(cmd: str, timeout: int = 15) -> tuple[int, str, str]:
 # ---------------------------------------------------------------------------
 
 def check_daily_rl_trader() -> CheckResult:
-    """Check daily-rl-trader.service status."""
-    rc, out, err = run_cmd("sudo systemctl is-active daily-rl-trader.service")
-    if rc != 0 or out != "active":
-        return CheckResult("daily-rl-trader", "fail", f"service not active: {out or err}")
+    """Check daily-rl-trader under supervisor (the authoritative path).
 
-    # Check for recent 401 errors
+    The legacy systemd unit `daily-rl-trader.service` is intentionally
+    inactive — prod is hosted by supervisord, not systemd. The earlier
+    version of this check probed systemd and so always reported "fail"
+    while the daemon was actually healthy.
+    """
+    rc, out, err = run_cmd("sudo -n supervisorctl status daily-rl-trader 2>&1")
+    if "RUNNING" not in out:
+        return CheckResult(
+            "daily-rl-trader",
+            "fail",
+            f"supervisor not RUNNING: {out or err}",
+            {"raw": out},
+        )
+
+    # Error scan: ONLY recent-day lines. The log is long-lived so an unfiltered
+    # grep catches errors from days ago (e.g. a singleton race on 2026-04-14
+    # that resolved itself). We only want *today or yesterday*.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     rc2, out2, _ = run_cmd(
-        "sudo journalctl -u daily-rl-trader.service --since '30 minutes ago' --no-pager 2>&1 | grep -c '401\\|unauthorized'"
+        "sudo -n tail -2000 /var/log/supervisor/daily-rl-trader-error.log 2>&1 | "
+        f"grep -E '^({today}|{yday})' | "
+        "grep -iE '401|unauthorized|Traceback' | wc -l"
     )
     try:
         error_count = int(out2)
     except ValueError:
         error_count = 0
 
-    if error_count > 5:
-        return CheckResult("daily-rl-trader", "fail",
-                           f"service running but {error_count} auth errors in last 30min — API key likely expired",
-                           {"error_count": error_count})
+    if error_count > 0:
+        return CheckResult(
+            "daily-rl-trader",
+            "fail",
+            f"supervisor RUNNING but {error_count} error lines today/yesterday",
+            {"error_count": error_count, "raw": out},
+        )
 
-    return CheckResult("daily-rl-trader", "ok", "service active, no auth errors")
+    return CheckResult(
+        "daily-rl-trader",
+        "ok",
+        "supervisor RUNNING, no recent auth errors",
+        {"raw": out},
+    )
+
+
+def check_trading_server() -> CheckResult:
+    """Check trading_server broker boundary on 127.0.0.1:8050.
+
+    Uses the auth-free /health endpoint which reports the lock-holder pid —
+    this is the single source of truth for "is the Alpaca writer boundary
+    alive AND held by this process?". A healthy result requires both:
+      - uvicorn responding on :8050
+      - writer_lock_held_by_me == True
+    """
+    import urllib.request
+    import urllib.error
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8050/health", timeout=5) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.URLError as exc:
+        return CheckResult("trading-server", "fail", f"unreachable on :8050: {exc}")
+    except Exception as exc:
+        return CheckResult("trading-server", "fail", f"/health failed: {exc}")
+
+    held = data.get("writer_lock_held_by_me")
+    holder = data.get("writer_lock", {})
+    acct_count = len(data.get("accounts", []))
+    if held is True and acct_count > 0:
+        return CheckResult(
+            "trading-server",
+            "ok",
+            f"up, writer lock held by server pid={data.get('pid')}, {acct_count} accounts",
+            {"pid": data.get("pid"), "accounts": acct_count, "holder": holder},
+        )
+    if held is False:
+        return CheckResult(
+            "trading-server",
+            "fail",
+            f"server up but writer lock held by a DIFFERENT pid — "
+            f"server_pid={data.get('pid')} holder_pid={holder.get('pid')} "
+            f"holder_service={holder.get('service_name')}",
+            {"server_pid": data.get("pid"), "holder": holder},
+        )
+    # held is None → lock file missing
+    return CheckResult(
+        "trading-server",
+        "warn",
+        f"server up but writer lock file missing (singleton override?)",
+        {"server_pid": data.get("pid"), "accounts": acct_count},
+    )
+
+
+def check_stale_writer_locks() -> CheckResult:
+    """Flag stale/orphan writer locks — each lock file records a pid+host;
+    if the holder process no longer exists, the file is orphaned and will
+    block the next legitimate acquirer with a "lock held" error.
+    """
+    lock_dir = REPO_ROOT / "strategy_state" / "account_locks"
+    if not lock_dir.exists():
+        return CheckResult("writer-locks", "ok", "no lock dir yet")
+    orphans = []
+    alive = []
+    for lock in lock_dir.glob("*.lock"):
+        try:
+            rec = json.loads(lock.read_text())
+        except Exception:
+            continue
+        pid = rec.get("pid")
+        host = rec.get("hostname")
+        if not isinstance(pid, int):
+            continue
+        # /proc lookup is cheap and host-local; only trust if hostname matches.
+        this_host = os.uname().nodename
+        if host and host != this_host:
+            alive.append((lock.name, pid, f"remote host {host}"))
+            continue
+        if Path(f"/proc/{pid}").exists():
+            alive.append((lock.name, pid, rec.get("service_name", "?")))
+        else:
+            orphans.append((lock.name, pid, rec.get("service_name", "?"), rec.get("started_at", "?")))
+    if orphans:
+        return CheckResult(
+            "writer-locks",
+            "warn",
+            f"{len(orphans)} orphan lock(s): "
+            + "; ".join(f"{n} pid={p} svc={s} since {t}" for n, p, s, t in orphans),
+            {"orphans": orphans, "alive": alive},
+        )
+    return CheckResult(
+        "writer-locks",
+        "ok",
+        f"{len(alive)} active lock(s); no orphans",
+        {"alive": alive},
+    )
+
+
+def check_death_spiral_markers() -> CheckResult:
+    """Detect if the death-spiral guard has fired recently — markers are
+    written to `<state>/alpaca_singleton/markers/`."""
+    marker_dir = REPO_ROOT / "strategy_state" / "alpaca_singleton" / "markers"
+    if not marker_dir.exists():
+        return CheckResult("death-spiral", "ok", "no markers dir")
+    recent = []
+    now = time.time()
+    for m in marker_dir.glob("*.marker"):
+        try:
+            age = now - m.stat().st_mtime
+        except Exception:
+            continue
+        if age <= 24 * 3600:
+            recent.append((m.name, age))
+    if recent:
+        return CheckResult(
+            "death-spiral",
+            "fail",
+            f"{len(recent)} death-spiral marker(s) in last 24h — guard fired",
+            {"markers": [(n, round(a)) for n, a in recent]},
+        )
+    return CheckResult("death-spiral", "ok", "no guard firings in last 24h")
 
 
 def check_llm_stock_trader() -> CheckResult:
-    """Check llm-stock-trader supervisor process."""
-    rc, out, _ = run_cmd("sudo supervisorctl status llm-stock-trader 2>&1")
+    """Check the optional llm-stock-trader supervisor process.
+
+    This is an optional research/experimental trader — not core prod. If the
+    unit isn't configured or is stopped, report `warn` rather than `fail`
+    so core-prod health isn't masked by an optional component being down.
+    """
+    rc, out, _ = run_cmd("sudo -n supervisorctl status llm-stock-trader 2>&1")
     if "RUNNING" in out:
         return CheckResult("llm-stock-trader", "ok", "supervisor process running")
-    return CheckResult("llm-stock-trader", "fail", f"not running: {out}")
+    if "no such process" in out.lower() or "no such group" in out.lower():
+        return CheckResult("llm-stock-trader", "warn", "not configured in supervisor (optional)")
+    return CheckResult("llm-stock-trader", "warn", f"not running (optional): {out}")
 
 
 def check_cancel_multi_orders() -> CheckResult:
@@ -168,10 +316,22 @@ def check_portfolio_state() -> CheckResult:
 
 
 def check_recent_activity() -> CheckResult:
-    """Check if any trading activity happened recently."""
-    # Check journalctl for recent trade signals
+    """Check if daily-rl-trader has emitted a run-summary today or yesterday.
+
+    The daemon logs one `Run summary` JSON per scheduled run (~daily at
+    13:35 UTC). If we can't see one in the last 48h, something is wedged —
+    the supervisor-status check covers process liveness, but this covers
+    "liveness without progress".
+
+    Reads /var/log/supervisor/daily-rl-trader-error.log (where loguru writes
+    INFO records by default) rather than the dead systemd journal.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     rc, out, _ = run_cmd(
-        "sudo journalctl -u daily-rl-trader.service --since '24 hours ago' --no-pager 2>&1 | grep -c 'signal\\|trade\\|order\\|position'"
+        "sudo -n tail -3000 /var/log/supervisor/daily-rl-trader-error.log 2>&1 | "
+        f"grep -E '^({today}|{yday})' | "
+        "grep -c 'Run summary\\|daily_stock_run_once\\|Signal\\|allow_open'"
     )
     try:
         activity_count = int(out)
@@ -180,10 +340,9 @@ def check_recent_activity() -> CheckResult:
 
     if activity_count == 0:
         return CheckResult("recent-activity", "warn",
-                           "no trade-related log entries in last 24h")
-
+                           "no Run summary log lines in last 48h")
     return CheckResult("recent-activity", "ok",
-                       f"{activity_count} trade-related log entries in last 24h")
+                       f"{activity_count} run-summary log lines in last 48h")
 
 
 def check_gpu_available() -> CheckResult:
@@ -213,24 +372,37 @@ def check_gpu_available() -> CheckResult:
 
 
 def check_disk_space() -> CheckResult:
-    """Check disk space on main partition."""
-    rc, out, _ = run_cmd("df -h /nvme0n1-disk | tail -1")
-    if rc != 0:
-        return CheckResult("disk", "warn", "df failed")
+    """Check disk space on both `/` and `/nvme0n1-disk`.
 
-    parts = out.split()
-    if len(parts) >= 5:
-        use_pct = parts[4].rstrip("%")
+    Either filling up breaks prod: `/` holds supervisor logs + /var/log, and
+    `/nvme0n1-disk` holds repo, venvs, model checkpoints, strategy_state.
+    """
+    mounts = ["/", "/nvme0n1-disk"]
+    worst_pct = 0
+    worst_mount = ""
+    details: dict = {}
+    for mnt in mounts:
+        rc, out, _ = run_cmd(f"df -P {mnt} | tail -1")
+        if rc != 0 or not out:
+            details[mnt] = "df failed"
+            continue
+        parts = out.split()
+        if len(parts) < 5:
+            continue
         try:
-            if int(use_pct) > 90:
-                return CheckResult("disk", "fail", f"disk {use_pct}% full", {"use_pct": int(use_pct)})
-            elif int(use_pct) > 80:
-                return CheckResult("disk", "warn", f"disk {use_pct}% full", {"use_pct": int(use_pct)})
-            return CheckResult("disk", "ok", f"disk {use_pct}% used", {"use_pct": int(use_pct)})
+            pct = int(parts[4].rstrip("%"))
         except ValueError:
-            pass
-
-    return CheckResult("disk", "ok", out)
+            continue
+        details[mnt] = f"{pct}%"
+        if pct > worst_pct:
+            worst_pct = pct
+            worst_mount = mnt
+    summary = ", ".join(f"{m}={v}" for m, v in details.items()) or "no mounts"
+    if worst_pct > 90:
+        return CheckResult("disk", "fail", f"{worst_mount} {worst_pct}% full — {summary}", details)
+    if worst_pct > 80:
+        return CheckResult("disk", "warn", f"{worst_mount} {worst_pct}% full — {summary}", details)
+    return CheckResult("disk", "ok", summary, details)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +446,9 @@ def auto_fix(results: list[CheckResult]) -> list[str]:
 def run_all_checks() -> list[CheckResult]:
     checks = [
         check_daily_rl_trader,
+        check_trading_server,
+        check_stale_writer_locks,
+        check_death_spiral_markers,
         check_llm_stock_trader,
         check_cancel_multi_orders,
         check_alpaca_api,

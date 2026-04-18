@@ -31,9 +31,18 @@ Do these six reads **in parallel** where possible:
 3. **trading_server** (the single broker boundary; port 8050):
    ```bash
    ss -ltnp 2>/dev/null | grep ':8050'
-   curl -sS http://127.0.0.1:8050/health
-   curl -sS http://127.0.0.1:8050/accounts      # must list live_prod
+   # Auth-free liveness + writer-lock check. The MUST-SEE field is
+   # `writer_lock_held_by_me: true` — that's the single truth for "is the
+   # Alpaca broker boundary owned by the server we just probed?". The
+   # accounts list is embedded here too; live_prod must be present.
+   curl -sS http://127.0.0.1:8050/health | python -m json.tool
    ```
+   Expected: `status=ok`, `writer_lock_held_by_me=true`, `accounts[].account` includes `live_prod`. If `writer_lock_held_by_me=false` with a non-server pid in `writer_lock.pid`, that is a **singleton violation** — jump to Phase 2 (stale-lock recovery). If `writer_lock_held_by_me=null` the lock file is missing, which means the server is running in `ALPACA_SINGLETON_OVERRIDE=1` mode — never allowed in prod, investigate.
+
+   Auth-gated endpoints (use the token from `env_real.TRADING_SERVER_TOKEN` if you need account-level detail, but these will 401 without auth — do NOT curl them unauthenticated and interpret 401 as failure):
+   - `/api/v1/accounts` (accounts list; same info already surfaced via `/health`)
+   - `/api/v1/account/live_prod` (live equity, positions via server)
+   - `/api/v1/runtime-config` (server runtime settings)
 4. **Alpaca API** (prod keys hardcoded in `env_real.py::ALP_KEY_ID_PROD`):
    ```bash
    python -c "
@@ -127,9 +136,7 @@ You are authorized to take these actions without asking:
 - **Daemon dead** → `echo ilu | sudo -S supervisorctl restart daily-rl-trader`. Re-verify liveness. If it re-dies, `tail -200` of the error log, identify crash signature, patch the cause if obvious (e.g. missing checkpoint path → restore), else escalate.
 - **trading_server dead** (no :8050 listener) → find its launcher (`grep -rn trading_server systemd/ supervisor* scripts/ deployments/ 2>/dev/null`), restart via whatever owns it. Validate `/health` responds.
 - **Portfolio state has stale `pending_close`** → `python monitoring/health_check.py --fix`.
-- **Disk > 85%** → check **BOTH** filesystems separately with `df -h / /nvme0n1-disk` (health_check.py only reports /nvme0n1-disk; root FS at 96% will still read "ok" on the per-mount check but slowly wedge docker + postgres services). Safe purges:
-  - /nvme0n1-disk space → delete intermediate checkpoints (keep only `best.pt` / `val_best.pt` under `pufferlib_market/checkpoints/screened32_sweep/*/s*/`); clean `.tmp_train/*.log` older than 7 days.
-  - root FS space → `echo ilu | sudo -S journalctl --vacuum-size=500M` is always safe (typically frees 3–5 GB). Do NOT touch `/var/lib/docker` or `/var/lib/postgresql` without user approval — they're shared with other services on this box.
+- **Disk > 85% on either `/` or `/nvme0n1-disk`** → see Recovery Playbook R6 below. `health_check.py` now reports both filesystems and takes the worse of the two as the overall status.
 - **Alpaca 401** → prod keys need rotation by a human. Stop. Update alpacaprod.md with a `🚨 PROD KEY ROTATION NEEDED` line at the top. Do not proceed to Phase 3.
 - **Unexpected ensemble change** (Runtime config shows an `ensemble_size` or checkpoint list you didn't deploy) → investigate, do not auto-revert.
 - **trading_server has a live writer from anything other than the expected daemon** → singleton violation, stop and escalate.
@@ -138,6 +145,135 @@ You are authorized to take these actions without asking:
 - **claude CLI broken** (hourly cron log shows `claude native binary not installed` / `postinstall did not run`) → `cd /home/administrator/.bun/install/global/node_modules/@anthropic-ai/claude-code && node install.cjs`, then `/home/administrator/.bun/bin/claude --version` to verify. Root cause is usually a bun/npm update that skipped postinstall.
 
 Re-run Phase 1 after every fix. If any issue persists after one fix attempt, stop, log, move on — escalate at end.
+
+### Recovery playbooks (use these when the failure mode matches)
+
+#### R1. Stale writer lock blocks daemon startup
+**Symptom**: `daily-rl-trader` crash loops with `RuntimeError: Alpaca account writer lock is already held ... holder_pid=<N>`, OR `/health` returns `writer_lock_held_by_me=false` with a holder pid that doesn't exist.
+
+**Diagnose** (idempotent — safe to run):
+```bash
+ls -la strategy_state/account_locks/
+for L in strategy_state/account_locks/*.lock; do
+  PID=$(python -c "import json; print(json.load(open('$L'))['pid'])" 2>/dev/null)
+  HOST=$(python -c "import json; print(json.load(open('$L')).get('hostname',''))" 2>/dev/null)
+  THIS=$(uname -n)
+  if [ "$HOST" = "$THIS" ] && ! kill -0 "$PID" 2>/dev/null; then
+    echo "ORPHAN: $L pid=$PID (host matches, pid dead)"
+  else
+    echo "LIVE:   $L pid=$PID host=$HOST"
+  fi
+done
+```
+
+**Fix**: only delete orphans where (a) hostname matches this box AND (b) pid is not in `/proc`. Never delete a lock for a live pid — that's the singleton doing its job.
+```bash
+rm strategy_state/account_locks/<orphan>.lock
+echo ilu | sudo -S supervisorctl restart daily-rl-trader
+```
+
+**Confirm**: next `/health` shows `writer_lock_held_by_me=true`, no crash-loop in error log.
+
+#### R2. Death-spiral guard tripped
+**Symptom**: `strategy_state/alpaca_singleton/markers/<slug>.marker` created in the last hour, OR error log shows `guard_sell_against_death_spiral` traceback; daemon keeps crashing on the same SELL.
+
+**Diagnose**:
+```bash
+ls -lat strategy_state/alpaca_singleton/markers/ 2>/dev/null | head
+cat strategy_state/alpaca_singleton/alpaca_live_writer_buys.json 2>/dev/null | python -m json.tool | head -40
+echo ilu | sudo -S grep -B2 -A20 'death_spiral\|guard_sell' /var/log/supervisor/daily-rl-trader-error.log | tail -40
+```
+
+**What it means**: the daemon tried to SELL at > 50 bps below the recorded last BUY for that symbol. This is an EXPECTED crash — the guard is working. It means one of:
+1. **Real loss the daemon wants to lock in** — the strategy decided to exit. Let it crash once, then a supervisor restart should retry; if the bar is still > 50 bps below the recorded buy, the guard fires again.
+2. **The recorded buy price is stale** (3-day TTL); check the buy file's timestamps against actual Alpaca position cost basis.
+3. **A singleton violation earlier left a buy price from the wrong account** — rare.
+
+**Fix path**:
+- For case 1: do NOT bypass with `ALPACA_DEATH_SPIRAL_OVERRIDE=1` unless you've personally verified the sell is intentional. If the position is still open at end of day, manually flatten with `python -c "import alpaca_wrapper; alpaca_wrapper.close_position('<SYM>')"` — the wrapper respects the guard, so this will itself fail if the price is still > 50 bps worse. In that case, escalate to the user: the guard is protecting you from a ~1% slippage; flipping override is a human-only action.
+- For case 2: delete the stale record from `alpaca_live_writer_buys.json` (backup first), restart daemon. The next buy will re-seed.
+
+**Confirm**: no new `.marker` files created, no death-spiral traceback in the last 10 minutes of error log.
+
+#### R3. Alpaca broker 401 — PROD keys rotated
+**Symptom**: `check_alpaca_api` returns `fail: API key EXPIRED (401 Unauthorized)`, OR `/api/v1/account/live_prod` through the trading_server returns 401 upstream.
+
+**Fix**: this is **human-only**. Do NOT fabricate keys or try to swap to paper. Write a banner to `alpacaprod.md` at the very top:
+```
+🚨 PROD KEY ROTATION REQUIRED — <ISO timestamp>
+Alpaca returned 401 on /v2/account. Live writer daemon is crash-looping or flat-signalling safe.
+Until rotated: daily-rl-trader will emit flat signals (safe); XGB and llm-stock-trader are already blocked.
+Human action: regenerate ALP_KEY_ID_PROD + ALP_SECRET_KEY_PROD at alpaca.markets dashboard,
+edit env_real.py, then `echo ilu | sudo -S supervisorctl restart daily-rl-trader trading-server`.
+```
+Then stop Phase 3 — do not attempt to beat the bar when the writer path is broken.
+
+**If 401 is on PAPER keys only** (XGB blocker): XGB stays dead, flag `🚨 XGB PAPER KEYS` separately at the top of alpacaprod.md, but PROD is unaffected; Phase 3 may proceed normally.
+
+#### R4. Supervisor vs systemd drift
+**Symptom**: `check_daily_rl_trader` reports ok under supervisor, but `systemctl is-active daily-rl-trader.service` says `active` too — both are running, singleton crash imminent.
+
+**Diagnose**:
+```bash
+echo ilu | sudo -S supervisorctl status daily-rl-trader
+echo ilu | sudo -S systemctl is-active daily-rl-trader.service
+echo ilu | sudo -S systemctl is-enabled daily-rl-trader.service
+pgrep -af trade_daily_stock_prod
+```
+Only ONE should be running the trader. The canonical path is **supervisor**. The legacy systemd unit must be `inactive` AND `disabled`.
+
+**Fix**:
+```bash
+# Stop and permanently disable the systemd path. Do NOT mask it — mask blocks
+# future manual `systemctl start` which is the break-glass for any supervisor outage.
+echo ilu | sudo -S systemctl stop daily-rl-trader.service
+echo ilu | sudo -S systemctl disable daily-rl-trader.service
+# Leave supervisor as the authoritative runner:
+echo ilu | sudo -S supervisorctl status daily-rl-trader
+```
+
+#### R5. SPY regime data stale
+**Symptom**: daemon logs `SPY regime indeterminate — treating as risk-off` on a trading day, OR confidence drops to 0 on every symbol.
+
+**Diagnose**:
+```bash
+ls -la strategy_state/spy_regime/*.json 2>/dev/null
+python -c "
+import json, datetime as dt, glob
+for f in sorted(glob.glob('strategy_state/spy_regime/*.json'))[-5:]:
+    j = json.load(open(f))
+    print(f, j.get('last_bar_ts'), j.get('ma50'), j.get('regime'))
+"
+```
+Compare `last_bar_ts` to today; if > 24h stale on a trading day, the feeder is wedged.
+
+**Fix**: rerun the regime builder — typically `python src/spy_regime_update.py` (check `pgrep` first that it's not already running).
+
+#### R6. Disk full on either filesystem
+**Symptom**: `check_disk_space` fails with `/ > 90%` or `/nvme0n1-disk > 90%`. health_check.py now probes both.
+
+**Fix (ranked by safety — do the earliest that frees enough)**:
+```bash
+# 1. Always-safe: rotate old journal (frees 3-5 GB on / typically)
+echo ilu | sudo -S journalctl --vacuum-size=500M
+# 2. /nvme0n1-disk/.tmp_train logs older than 14 days
+find .tmp_train -name '*.log' -mtime +14 -delete
+# 3. Intermediate checkpoints under checkpoints/screened32_sweep/ (keep best.pt, val_best.pt, final.pt)
+find pufferlib_market/checkpoints/screened32_sweep -name 'step_*.pt' -mtime +14 -delete
+# 4. Old docs/realism_gate_* scratch dirs older than 30 days (keep the current deployed one)
+find docs -maxdepth 1 -name 'realism_gate_*' -mtime +30 -type d -print
+# 5. The big ones on / — DO NOT touch without user approval:
+#    /var/lib/docker (shared w/ other services)
+#    /var/lib/postgresql (shared w/ other services)
+```
+
+#### R7. Stale pending-close in portfolio state
+**Symptom**: `check_portfolio_state` returns warn with "stale pending_close"; a symbol is listed in `pending_close` but no longer in `positions`.
+
+**Fix**: idempotent, safe, covered by `--fix`:
+```bash
+python monitoring/health_check.py --fix
+```
 
 ---
 
