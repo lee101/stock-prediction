@@ -51,6 +51,7 @@ class SweepConfig:
     top_n: int
     xgb_weight: float
     leverage: float = 1.0
+    random_state: int = 42
 
 
 def _monthly_return(total_ret: float, n_days: int) -> float:
@@ -199,21 +200,33 @@ def parse_args(argv=None):
     p.add_argument("--max-depth-grid", default="")
     p.add_argument("--learning-rate", type=float, default=0.05)
     p.add_argument("--learning-rate-grid", default="")
+    p.add_argument("--random-state", type=int, default=42)
+    p.add_argument(
+        "--random-state-grid",
+        default="",
+        help="Comma-separated seeds to sweep XGB random_state across (Bonferroni / stability check).",
+    )
     p.add_argument("--output-dir", type=Path, default=REPO / "analysis/xgbnew_multiwindow")
     p.add_argument("--model-save-path", type=Path, default=None)
+    p.add_argument(
+        "--device",
+        default=None,
+        help="XGBoost device (e.g. 'cuda'). Omit for CPU. Requires xgboost built with USE_CUDA.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
 
 def _config_grid(args: argparse.Namespace) -> list[SweepConfig]:
     configs = []
-    for n_estimators, max_depth, learning_rate, top_n, xgb_weight, leverage in itertools.product(
+    for n_estimators, max_depth, learning_rate, top_n, xgb_weight, leverage, random_state in itertools.product(
         _parse_int_grid(args.n_estimators_grid, args.n_estimators),
         _parse_int_grid(args.max_depth_grid, args.max_depth),
         _parse_float_grid(args.learning_rate_grid, args.learning_rate),
         _parse_int_grid(args.top_n_grid, args.top_n),
         _parse_float_grid(args.xgb_weight_grid, args.xgb_weight),
         _parse_float_grid(args.leverage_grid, args.leverage),
+        _parse_int_grid(args.random_state_grid, args.random_state),
     ):
         configs.append(
             SweepConfig(
@@ -223,6 +236,7 @@ def _config_grid(args: argparse.Namespace) -> list[SweepConfig]:
                 top_n=int(top_n),
                 xgb_weight=float(xgb_weight),
                 leverage=float(leverage),
+                random_state=int(random_state),
             )
         )
     return configs
@@ -294,7 +308,7 @@ def main(argv=None) -> int:
     chronos_mae = _compute_chronos_mae(oos_df)
 
     model_cache: dict[
-        tuple[int, int, float],
+        tuple[int, int, float, int],
         tuple[XGBStockModel, tuple[float, float], dict[str, float], pd.Series]
     ] = {}
     sweep_results: list[dict[str, object]] = []
@@ -302,17 +316,20 @@ def main(argv=None) -> int:
 
     print(f"[xgb-eval] evaluating {len(configs)} config(s)", flush=True)
     for idx, cfg in enumerate(configs, start=1):
-        model_key = (cfg.n_estimators, cfg.max_depth, cfg.learning_rate)
+        model_key = (cfg.n_estimators, cfg.max_depth, cfg.learning_rate, cfg.random_state)
         if model_key not in model_cache:
             print(
                 f"[xgb-eval] train model {idx}/{len(configs)} "
-                f"(n_estimators={cfg.n_estimators}, max_depth={cfg.max_depth}, lr={cfg.learning_rate})",
+                f"(n_estimators={cfg.n_estimators}, max_depth={cfg.max_depth}, "
+                f"lr={cfg.learning_rate}, seed={cfg.random_state})",
                 flush=True,
             )
             model = XGBStockModel(
+                device=args.device,
                 n_estimators=cfg.n_estimators,
                 max_depth=cfg.max_depth,
                 learning_rate=cfg.learning_rate,
+                random_state=cfg.random_state,
             )
             model.fit(train_df, DAILY_FEATURE_COLS, verbose=args.verbose)
             train_prob = model.predict_scores(train_df)
@@ -384,6 +401,7 @@ def main(argv=None) -> int:
                     "top_n": cfg.top_n,
                     "xgb_weight": cfg.xgb_weight,
                     "leverage": cfg.leverage,
+                    "random_state": cfg.random_state,
                 },
                 "median_monthly_pct": float(np.median(monthly_rets)),
                 "p10_monthly_pct": float(np.percentile(monthly_rets, 10)),

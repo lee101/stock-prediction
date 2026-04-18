@@ -54,13 +54,28 @@ class XGBStockModel:
         eval_metric="logloss",
         random_state=42,
         n_jobs=-1,
-        use_label_encoder=False,
     )
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, device: str | None = None, **kwargs) -> None:
+        """Create an XGB classifier.
+
+        Args:
+            device: XGBoost device string. None (default) uses CPU. Pass
+                ``"cuda"`` or ``"cuda:0"`` to train on GPU — requires an
+                xgboost build with USE_CUDA=1 (check ``xgboost.build_info()``).
+                When device starts with ``"cuda"`` we also force
+                ``tree_method="hist"`` (the modern GPU path; ``gpu_hist`` is
+                deprecated in xgboost ≥ 2.0).
+            **kwargs: Overrides for DEFAULT_PARAMS.
+        """
         _check_xgb()
         from xgboost import XGBClassifier
         params = {**self.DEFAULT_PARAMS, **kwargs}
+        if device is not None:
+            params["device"] = device
+            if device.startswith("cuda"):
+                params.setdefault("tree_method", "hist")
+        self.device = device
         self.clf = XGBClassifier(**params)
         self.feature_cols: list[str] = []
         self._fitted = False
@@ -167,7 +182,8 @@ class XGBStockModel:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump({"clf": self.clf, "feature_cols": self.feature_cols,
-                         "col_medians": self._col_medians}, f)
+                         "col_medians": self._col_medians,
+                         "device": getattr(self, "device", None)}, f)
         logger.info("Model saved to %s", path)
 
     @classmethod
@@ -180,6 +196,7 @@ class XGBStockModel:
         obj.clf = data["clf"]
         obj.feature_cols = data["feature_cols"]
         obj._col_medians = data["col_medians"]
+        obj.device = data.get("device")
         obj._fitted = True
         return obj
 

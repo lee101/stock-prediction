@@ -21,6 +21,7 @@ def load_trained(symbol: str):
     is_xgb = meta['is_xgb']
     scale = float(meta['scale'])
     cap = float(meta['cap'])
+    best_iteration = meta.get('best_iteration')
     mean = np.array(meta['scaler_mean']) if meta['scaler_mean'] is not None else None
     std = np.array(meta['scaler_std']) if meta['scaler_std'] is not None else None
 
@@ -37,6 +38,7 @@ def load_trained(symbol: str):
         'is_xgb': is_xgb,
         'scale': scale,
         'cap': cap,
+        'best_iteration': best_iteration,
         'mean': mean,
         'std': std,
         'model': loader,
@@ -108,7 +110,12 @@ def main():
     kind, model = meta['model']
     if kind == 'xgb':
         import xgboost as xgb  # type: ignore
-        y_pred = model.predict(xgb.DMatrix(Xv))
+        d = xgb.DMatrix(Xv, feature_names=meta['feature_cols'])
+        best_iter = meta.get('best_iteration')
+        if best_iter is not None:
+            y_pred = model.predict(d, iteration_range=(0, int(best_iter) + 1))
+        else:
+            y_pred = model.predict(d)
     else:
         y_pred = model.predict(Xv)
 
