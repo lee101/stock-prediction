@@ -32,7 +32,10 @@ Last synced: 2026-04-18 (off-market Saturday)
   - 1.0× → med +32.2%/mo, p10 +20.3%, worst_dd 31.9%, **0/34 neg**, sortino 8.42
   - 1.25× → med +40.8%, p10 +25.1%, dd 39.0%, 0/34 neg
   - 1.5× → med +49.7%, p10 +29.6%, dd 45.8%, 0/34 neg
-- **In-flight research**: DD-reduction sweep in `analysis/xgbnew_dd_sweep/` (SPY MA50 gate, vol-target sizing, seed variance). Ledger `xgboptimiztions.md`. If any round-2 cell beats baseline on (Δ sortino ≥ 0 AND Δ neg ≤ 0) at equal-or-better median, deploy that config instead of bare lev=1×.
+- **In-flight research**: DD-reduction sweep in `analysis/xgbnew_dd_sweep/` (SPY MA50 gate, vol-target sizing, seed variance). Ledger `xgboptimiztions.md`.
+  - **Round 2 closed 2026-04-18 ~10:50 UTC** (commit `0d9026bd`): all 7 DD-reduction knobs FAIL strict ship rule (every Δsortino < 0). Regime gates / vol-target hurt top_n=1.
+  - **Seed axis wins**: baseline at seed=2 posts Δsortino +0.39, Δworst_dd −4.48pt (27.39% from 31.87%, 14% relative DD cut), Δneg 0, Δp10 +0.09. Trend on worst_dd across s0/s1/s2 is monotone down — axis likely real.
+  - **8-seed robustness sweep in flight** (`scripts/xgb_baseline_seeds_ext.sh`, seeds 3-6 running). If seed=2 lands top-quartile on the 8-seed pool, promote its pkl for deploy. Otherwise stick with seed=0.
 - **Character**: buy-open / sell-close same session, flat overnight. `top_n=1 + allocation=1.0` → 100% single-stock concentration per session. No overnight margin hit.
 
 ## 3. Other services (present but not primary signal)

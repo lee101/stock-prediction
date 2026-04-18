@@ -81,3 +81,30 @@ The call is **Option A** — XGB's OOS edge is 3.6× RL at fee parity (see `proj
 1. Approve Option A, or prefer B's cohabit?
 2. Ship at bare lev=1 now, OR wait ~2h for `analysis/xgbnew_dd_sweep/` round 2 result? (Round 2 tests MA50 regime gate + vol-target sizing — if any cell beats baseline on Δsortino ≥ 0 AND Δneg ≤ 0 at equal median, deploy that variant.)
 3. Accept the 31.9% worst-window DD, or require lev<1 to cap it further?
+
+---
+
+## Update 2026-04-18 ~10:55 UTC — DD campaign closed, seed=2 leads
+
+The DD-reduction campaign (commit `0d9026bd`) finished. Summary:
+
+- **All 7 DD-reduction knobs FAILED the ship gate.** `ma50`, `ma20`, `voltarget{010,015,020}`, `ma50+voltarget015`, `ma50+lev1.25` — every one posts Δsortino strictly < 0. Regime gates and vol-target sizers sat out profitable days the `top_n=1` argmax had correctly identified, so the tail cost exceeded the DD benefit. Question 2 above is answered: **do NOT ship a DD-reduction variant.**
+- **Seed=2 baseline passes the strict ship rule.** Same cell, seed=2 (file: `analysis/xgbnew_dd_sweep/baseline_s2/multiwindow_20260418_104652.json`):
+  - Δsortino **+0.39** (8.67 vs 8.28)
+  - Δworst_dd **−4.48pt** (27.39% vs 31.87% — **14% relative DD reduction**)
+  - Δneg 0, Δp10 +0.09, Δmed −0.65 (still +32.15%/mo)
+- **Three-seed trend on worst_dd**: s0=31.87 → s1=30.19 → s2=27.39. Axis looks real, not a lucky spike; but N=3 is small.
+- **Seed-robustness sweep in flight.** `scripts/xgb_baseline_seeds_ext.sh` (driver PID 488196) is running seeds 3, 4, 5, 6 at the same cell. Seed=3 is mid-run (PID 488210); full harvest in ~45 min. Ship rule for seed=2 promotion: must be in top quartile by (sortino, −worst_dd) across the 8-seed pool AND the median sortino across 8 must be ≥ baseline.
+
+### Updated Option A deploy recipe
+
+If user approves Option A and the 8-seed sweep confirms seed=2:
+
+- Swap the queued `--model-path` from `live_model_v2_n400_d5_lr003_top1.pkl` (seed=0) to the seed=2 artifact. The DD reduction is free PnL smoothness; the 0.65%/mo median hit is noise-level (≪ seed σ).
+- Keep everything else in the checklist identical (bot_id, allocation=1.0, lev=1).
+
+If user wants to ship today regardless of the seed-sweep, stay on seed=0 — it's the seed that every prior Bonferroni/leverage/DSR check used, so it's the best-validated artifact even though seed=2 has tighter DD on the latest 34-window OOS.
+
+### Recommendation refinement
+
+Still **Option A**. Question 2 now has a concrete answer (no DD-knob ships, hold at lev=1). Question 3's answer: the 27.39% seed=2 DD is a 14% relative improvement for free, and no lower-lev variant was tested this round — the existing `project_xgb_leverage_scaling.md` memo already documented lev<1 as a proportional median-cut with no DD/sortino benefit, so lev=1 + seed=2 is the cleanest deploy.
