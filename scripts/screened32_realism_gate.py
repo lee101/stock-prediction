@@ -178,6 +178,28 @@ def _build_ensemble_policy_fn(
     return policy_fn, reset_buffer, head
 
 
+def _can_use_gpu_path(
+    *, decision_lag: int, disable_shorts: bool, deterministic: bool,
+    alloc_bins: int, level_bins: int, action_max_offset_bps: float,
+    ensemble_mode: str,
+) -> bool:
+    """The GPU parallel-windows sim only covers the deploy-gate envelope.
+
+    Anything outside (non-det sampling, shorts enabled, multi-alloc/level,
+    offset bins) still uses the CPU reference.
+    """
+    return (
+        int(decision_lag) == 2
+        and bool(disable_shorts)
+        and bool(deterministic)
+        and int(alloc_bins) == 1
+        and int(level_bins) == 1
+        and float(action_max_offset_bps) == 0.0
+        and ensemble_mode in ("softmax_avg", "logit_avg")
+        and torch.cuda.is_available()
+    )
+
+
 def _run_cell(
     *,
     data,
@@ -195,40 +217,76 @@ def _run_cell(
     window_days: int,
     start_indices: Sequence[int],
     ensemble_mode: str = "softmax_avg",
+    use_gpu_sim: bool = False,
 ) -> CellResult:
-    policy_fn, reset_buffer, head = _build_ensemble_policy_fn(
-        checkpoints=checkpoints,
-        num_symbols=num_symbols,
-        features_per_sym=features_per_sym,
+    # Read head metadata once — needed by both GPU and CPU paths.
+    from pufferlib_market.evaluate_holdout import load_policy as _load_policy
+    _head = _load_policy(str(checkpoints[0]), num_symbols, features_per_sym=features_per_sym, device=device)
+
+    gpu_ok = use_gpu_sim and _can_use_gpu_path(
         decision_lag=decision_lag,
         disable_shorts=disable_shorts,
-        device=device,
         deterministic=deterministic,
+        alloc_bins=int(_head.action_allocation_bins),
+        level_bins=int(_head.action_level_bins),
+        action_max_offset_bps=float(_head.action_max_offset_bps),
         ensemble_mode=ensemble_mode,
     )
     rets: list[float] = []
     sortinos: list[float] = []
     maxdds: list[float] = []
-    for start in start_indices:
-        window = _slice_window(data, start=int(start), steps=int(window_days))
-        reset_buffer()
-        result = simulate_daily_policy(
-            window,
-            policy_fn,
-            max_steps=int(window_days),
+    if gpu_ok:
+        # Parallel-windows GPU sim — processes all windows in one pass.
+        from pufferlib_market.gpu_realism_gate import run_cell_gpu
+        result = run_cell_gpu(
+            data,
+            checkpoints=[str(p) for p in checkpoints],
+            num_symbols=int(num_symbols),
+            features_per_sym=int(features_per_sym),
+            starts=list(start_indices),
+            window_days=int(window_days),
+            fill_buffer_bps=float(fill_buffer_bps),
+            max_leverage=float(max_leverage),
             fee_rate=float(fee_rate),
             slippage_bps=float(slippage_bps),
-            max_leverage=float(max_leverage),
-            periods_per_year=365.0,
-            fill_buffer_bps=float(fill_buffer_bps),
-            action_allocation_bins=int(head.action_allocation_bins),
-            action_level_bins=int(head.action_level_bins),
-            action_max_offset_bps=float(head.action_max_offset_bps),
-            enable_drawdown_profit_early_exit=False,
+            decision_lag=int(decision_lag),
+            ensemble_mode=ensemble_mode,
         )
-        rets.append(float(result.total_return))
-        sortinos.append(float(result.sortino))
-        maxdds.append(float(result.max_drawdown))
+        rets = [float(x) for x in result.total_returns]
+        sortinos = [float(x) for x in result.sortinos]
+        maxdds = [float(x) for x in result.max_drawdowns]
+        head = _head
+    else:
+        policy_fn, reset_buffer, head = _build_ensemble_policy_fn(
+            checkpoints=checkpoints,
+            num_symbols=num_symbols,
+            features_per_sym=features_per_sym,
+            decision_lag=decision_lag,
+            disable_shorts=disable_shorts,
+            device=device,
+            deterministic=deterministic,
+            ensemble_mode=ensemble_mode,
+        )
+        for start in start_indices:
+            window = _slice_window(data, start=int(start), steps=int(window_days))
+            reset_buffer()
+            result = simulate_daily_policy(
+                window,
+                policy_fn,
+                max_steps=int(window_days),
+                fee_rate=float(fee_rate),
+                slippage_bps=float(slippage_bps),
+                max_leverage=float(max_leverage),
+                periods_per_year=365.0,
+                fill_buffer_bps=float(fill_buffer_bps),
+                action_allocation_bins=int(head.action_allocation_bins),
+                action_level_bins=int(head.action_level_bins),
+                action_max_offset_bps=float(head.action_max_offset_bps),
+                enable_drawdown_profit_early_exit=False,
+            )
+            rets.append(float(result.total_return))
+            sortinos.append(float(result.sortino))
+            maxdds.append(float(result.max_drawdown))
     median_ret = _percentile(rets, 50)
     p10_ret = _percentile(rets, 10)
     p90_ret = _percentile(rets, 90)
@@ -367,6 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ensemble-mode", choices=["softmax_avg", "logit_avg"], default="softmax_avg",
                     help="How to combine per-policy outputs. softmax_avg (prod) averages probs; "
                          "logit_avg averages raw logits (sharper, fewer aggregation-artifact flats).")
+    ap.add_argument("--use-gpu-sim", action="store_true",
+                    help="Opt-in: run the parallel-windows GPU sim (pufferlib_market.gpu_realism_gate) "
+                         "for deploy-gate-envelope cells (decision_lag=2, disable_shorts, deterministic, "
+                         "alloc/level bins=1). Parity-tested to fp32 epsilon vs CPU sim. "
+                         "Anything outside the envelope falls back to CPU automatically.")
     args = ap.parse_args(argv)
 
     val_path = Path(args.val_data).resolve()
@@ -426,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
                 window_days=int(args.window_days),
                 start_indices=start_indices,
                 ensemble_mode=str(args.ensemble_mode),
+                use_gpu_sim=bool(args.use_gpu_sim),
             )
             cells.append(cell)
             print(
