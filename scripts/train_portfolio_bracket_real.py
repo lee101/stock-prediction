@@ -170,19 +170,22 @@ def main():
     print(f"[train reward] early-q: {early_r:+.5f} -> late-q: {late_r:+.5f} "
           f"(delta {late_r-early_r:+.5f})")
 
-    # Deterministic eval on val.
+    # Deterministic eval on val. The per-env episode_len must be long enough
+    # that no auto-reset fires *during* the eval window — otherwise
+    # random-start envs all collapse back to t=1 after their first step and
+    # the eval loses all independence.
+    val_T = val_prices.size(0)
+    eval_steps = 21  # ~ one trading month (XGB headline is +32%/mo)
     val_env = gpu_trading_env.make_portfolio_bracket(
         B=512,
         prices=val_prices, tradable_tape=val_tradable,
         params={
-            "episode_len": min(args.episode_len, val_prices.size(0) - 2),
+            "episode_len": val_T,  # never auto-reset during eval
             "fee_bps": args.fee_bps,
             "fill_buffer_bps": args.fb_bps,
             "max_leverage": args.max_leverage,
         },
     )
-    # Eval = monthly return per env, random start per env => OOS distribution.
-    eval_steps = 21  # ~ one trading month (XGB headline is +32%/mo)
     print(f"\n[eval] {eval_steps}-day eval on val tape with random per-env starts, B={val_env.B}")
     eval_stats = deterministic_eval(val_env, policy, num_steps=eval_steps,
                                     random_starts=True, seed=0)

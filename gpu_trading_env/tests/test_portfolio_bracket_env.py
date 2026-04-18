@@ -117,8 +117,9 @@ def test_step_is_cuda_graph_capturable():
         B=B, prices=prices, params={"episode_len": 200},
     )
     action = torch.zeros(B, S, 4, device="cuda", dtype=torch.float32)
-    action[..., 2] = 0.05
-    action[..., 3] = 0.05
+    # Small one-side-only volume per symbol — both-side volume would deterministically
+    # bleed equity to 0 (post-fix the H-L scalp is gone, only fees remain).
+    action[..., 2] = 0.01
 
     # Warmup (required by CUDA Graphs API — populates allocator caches).
     s = torch.cuda.Stream()
@@ -142,6 +143,35 @@ def test_step_is_cuda_graph_capturable():
     assert torch.isfinite(env.state["equity"]).all()
     assert torch.isfinite(env.state["cash"]).all()
     assert (env.state["equity"] > 0).all()
+
+
+def test_flat_tape_short_only_does_not_leak_equity():
+    """CUDA mirror of the numpy-ref leverage-clip regression. On a zero-fee
+    flat tape a policy that over-requests shorts each bar must NOT grow
+    equity by pressing the leverage clip.
+    """
+    _require_ext()
+    T, S = 40, 32
+    # Exactly flat OHLC tape at $100.
+    import numpy as np
+    prices_np = np.full((T, S, 5), 100.0, dtype=np.float32)
+    env = gpu_trading_env.make_portfolio_bracket(
+        B=1, prices=torch.from_numpy(prices_np),
+        params={"episode_len": 200, "fee_bps": 0.0, "fill_buffer_bps": 0.0,
+                "max_leverage": 2.0, "annual_margin_rate": 0.0,
+                "init_cash": 10_000.0},
+    )
+    action = torch.zeros(1, S, 4, device="cuda", dtype=torch.float32)
+    action[..., 3] = 0.12  # sell 12% per symbol × 32 sym = 384% requested
+    for _ in range(15):
+        env.step(action)
+    eq_final = float(env.state["equity"].item())
+    assert abs(eq_final - 10_000.0) < 1.0, \
+        f"CUDA kernel leaked equity on flat tape: ${eq_final:,.2f}"
+    # Notional must also be capped at exactly 2× equity.
+    notional = float((env.state["positions"].abs() * 100.0).sum().item())
+    assert notional <= 2.0 * 10_000.0 + 1.0, \
+        f"CUDA kernel allowed notional {notional} past 2x cap"
 
 
 def test_obs_shape_with_and_without_features():

@@ -213,3 +213,137 @@ def test_short_sell_is_supported_when_already_long():
     # New position = 100 - 200 = -100 (short 100). Cash = 10_000 + 200*100 = 30_000.
     assert pytest.approx(new_pos[0, 0]) == -100.0
     assert pytest.approx(new_cash[0]) == 30_000.0
+
+
+def test_dual_fill_cancellation_blocks_intrabar_scalping():
+    """Same-bar buy-low + sell-high on the same instrument no longer captures
+    the H-L spread risk-free. Exactly one side fills, the other is cancelled.
+    """
+    cfg = MultiSymBracketConfig(fee_bps=0.0, fill_buffer_bps=0.0, max_leverage=1.0)
+    B, S = 1, 1
+    cash = np.array([10_000.0])
+    positions = np.zeros((B, S))
+    # Buy at -50 bps (limit 99.5), sell at +50 bps (limit 100.5), both 50% size.
+    actions = np.array([[[-50.0, 50.0, 0.5, 0.5]]])
+    prev_close = np.array([[100.0]])
+    bar_open  = np.array([[100.0]])
+    bar_high  = np.array([[101.0]])  # touches sell limit
+    bar_low   = np.array([[99.0]])   # touches buy limit
+    bar_close = np.array([[100.0]])
+
+    new_cash, new_pos, reward, info = step(
+        cash, positions, actions, prev_close,
+        bar_open, bar_high, bar_low, bar_close,
+        _tradable_all_true(B, S), cfg,
+    )
+    # Pre-fix: BOTH would fill, capturing 100 bps - fees risk-free per bar.
+    # Post-fix: exactly one side fills.
+    assert int(info["buy_filled"][0, 0]) + int(info["sell_filled"][0, 0]) == 1, \
+        "exactly one side must fill, never both"
+    # One-side trade can move equity by at most ~50 bps (the limit-vs-close
+    # gap on the side that filled), NOT the full 100 bps risk-free dual-fill.
+    new_eq = new_cash[0] + new_pos[0, 0] * 100.0
+    pnl_bps = abs(new_eq - 10_000.0) / 10_000.0 * 1e4
+    assert pnl_bps <= 60.0, f"single-side PnL was {pnl_bps:.1f} bps, expected ≤60"
+
+
+def test_dual_fill_buy_only_when_buy_closer_to_open():
+    """Buy limit ($99.5) closer to bar_open ($99.7) than sell limit ($100.5)
+    => buy fills, sell does not.
+    """
+    cfg = MultiSymBracketConfig(fee_bps=0.0, fill_buffer_bps=0.0, max_leverage=1.0)
+    actions = np.array([[[-50.0, 50.0, 0.5, 0.5]]])
+    res = step(np.array([10_000.0]), np.zeros((1, 1)), actions,
+               np.array([[100.0]]), np.array([[99.7]]),
+               np.array([[101.0]]), np.array([[99.0]]), np.array([[100.0]]),
+               _tradable_all_true(1, 1), cfg)
+    assert res[3]["buy_filled"][0, 0] and not res[3]["sell_filled"][0, 0]
+
+
+def test_leverage_clip_does_not_leak_equity_on_flat_tape():
+    """Reproduces the short-only free-money exploit:
+
+    A policy that, each bar, sells ``pct`` of equity on every one of ``S``
+    symbols at ``limit = prev_close`` on a perfectly flat tape must NEVER
+    grow equity. The old clip semantic scaled the *existing* position along
+    with the new trade — shrinking the short with no corresponding buy-back
+    cash flow — which turned a flat tape into >100% per-bar log-return.
+    Fix: clip only the new trade delta, leave existing positions untouched.
+    """
+    cfg = MultiSymBracketConfig(fee_bps=0.0, fill_buffer_bps=0.0,
+                                max_leverage=2.0, annual_margin_rate=0.0)
+    B, S = 1, 32
+    cash = np.array([10_000.0])
+    positions = np.zeros((B, S))
+    prev_close = np.full((B, S), 100.0)
+    bar_open   = np.full((B, S), 100.0)
+    bar_high   = np.full((B, S), 100.0)
+    bar_low    = np.full((B, S), 100.0)
+    bar_close  = np.full((B, S), 100.0)
+    actions = np.zeros((B, S, 4))
+    actions[..., 3] = 0.12  # sell 12% of equity per symbol (32*12% = 384% requested)
+    trad = np.ones((B, S), dtype=bool)
+
+    for t in range(25):
+        cash, positions, reward, info = step(
+            cash, positions, actions, prev_close,
+            bar_open, bar_high, bar_low, bar_close, trad, cfg)
+
+    # After many bars on a zero-fee flat tape, equity must remain within
+    # rounding noise of init. Pre-fix this grew to ~150× init.
+    eq_final = cash[0] + (positions[0] * bar_close[0]).sum()
+    assert abs(eq_final - 10_000.0) < 1e-3, \
+        f"leverage-clip leaked equity: $10,000 -> ${eq_final:,.2f} on flat tape"
+    # And notional must be capped at exactly 2x equity.
+    notional = float(np.abs(positions[0] * bar_close[0]).sum())
+    assert notional <= 2.0 * 10_000.0 + 1e-3, f"notional {notional} exceeds 2x cap"
+
+
+def test_leverage_clip_only_affects_new_trades_not_existing_position():
+    """When the candidate trade breaches max_leverage, scale only the new
+    buy/sell shares. Existing positions stay untouched (a real broker
+    doesn't force-close your existing positions — it just rejects the
+    margin-breaching part of your new order).
+    """
+    cfg = MultiSymBracketConfig(fee_bps=0.0, fill_buffer_bps=0.0,
+                                max_leverage=1.0, annual_margin_rate=0.0)
+    B, S = 1, 1
+    # Existing 60% long, then try to buy another 60% (total would be 120% > cap=100%).
+    cash = np.array([4_000.0])
+    positions = np.array([[60.0]])        # 60 shares × $100 = $6,000 long
+    prev_close = np.array([[100.0]])
+    bar_open   = np.array([[100.0]])
+    bar_high   = np.array([[101.0]])
+    bar_low    = np.array([[99.0]])
+    bar_close  = np.array([[100.0]])
+    actions = np.array([[[0.0, 0.0, 0.6, 0.0]]])  # try buy 60% of equity more
+    trad = np.ones((B, S), dtype=bool)
+
+    new_cash, new_pos, reward, info = step(
+        cash, positions, actions, prev_close,
+        bar_open, bar_high, bar_low, bar_close, trad, cfg)
+
+    # equity_prev = 4,000 + 60 * 100 = 10,000. Cap = 1.0 * 10,000 = 10,000.
+    # Existing notional = 6,000. Headroom = 4,000.
+    # Requested trade delta notional = 60% * 10,000 = 6,000. alpha = 4,000 / 6,000 = 0.667.
+    # Scaled buy_shares = 0.667 * 60 = 40. new_pos = 60 + 40 = 100 shares.
+    assert pytest.approx(new_pos[0, 0], rel=1e-5) == 100.0
+    # Notional_close = 100 * 100 = 10,000 = cap exactly.
+    # Cash paid out = 40 * 100 = 4,000. new_cash = 4,000 - 4,000 = 0.
+    assert pytest.approx(new_cash[0], abs=1e-3) == 0.0
+    # Equity preserved (no free PnL).
+    new_eq = new_cash[0] + new_pos[0, 0] * 100.0
+    assert pytest.approx(new_eq, rel=1e-5) == 10_000.0
+
+
+def test_dual_fill_sell_only_when_sell_closer_to_open():
+    """Sell limit ($100.5) closer to bar_open ($100.3) than buy limit ($99.5)
+    => sell fills, buy does not.
+    """
+    cfg = MultiSymBracketConfig(fee_bps=0.0, fill_buffer_bps=0.0, max_leverage=1.0)
+    actions = np.array([[[-50.0, 50.0, 0.5, 0.5]]])
+    res = step(np.array([10_000.0]), np.zeros((1, 1)), actions,
+               np.array([[100.0]]), np.array([[100.3]]),
+               np.array([[101.0]]), np.array([[99.0]]), np.array([[100.0]]),
+               _tradable_all_true(1, 1), cfg)
+    assert res[3]["sell_filled"][0, 0] and not res[3]["buy_filled"][0, 0]

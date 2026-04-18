@@ -88,8 +88,20 @@ def step(
     limit_sell_px = prev_close * (1.0 + lim_sell_bps * 1e-4)
 
     # Binary bracket fills against the bar with a fill_buffer crossing margin.
-    buy_filled  = tradable_mask & (bar_low  <= limit_buy_px  * (1.0 - fb))
-    sell_filled = tradable_mask & (bar_high >= limit_sell_px * (1.0 + fb))
+    buy_could_fill  = tradable_mask & (bar_low  <= limit_buy_px  * (1.0 - fb))
+    sell_could_fill = tradable_mask & (bar_high >= limit_sell_px * (1.0 + fb))
+
+    # Same-bar dual fills are unrealistic without temporal ordering — they let
+    # a policy capture H-L spread risk-free by placing buy-low + sell-high on
+    # the same instrument. Conservative resolution: only the side closer to
+    # bar_open executes (the side bar_open passes first as price walks). Only
+    # contest when both sides have nonzero size — a zero-size side is no order.
+    buy_dist  = np.abs(bar_open - limit_buy_px)
+    sell_dist = np.abs(bar_open - limit_sell_px)
+    both_could = buy_could_fill & sell_could_fill & (buy_pct > 0) & (sell_pct > 0)
+    buy_first  = buy_dist <= sell_dist
+    buy_filled  = buy_could_fill  & (~both_could | buy_first)
+    sell_filled = sell_could_fill & (~both_could | ~buy_first)
 
     # Notional targets per symbol (fraction of *prior* equity).
     buy_notional_target  = buy_pct  * equity_prev_safe[:, None]
@@ -98,19 +110,32 @@ def step(
     buy_shares  = np.where(buy_filled,  buy_notional_target  / np.maximum(limit_buy_px,  1e-9), 0.0)
     sell_shares = np.where(sell_filled, sell_notional_target / np.maximum(limit_sell_px, 1e-9), 0.0)
 
-    new_positions = positions + buy_shares - sell_shares
-
-    # Leverage clip: scale positions proportionally so Σ|notional_close| <= max_lev * equity_prev.
-    notional_after_fills = np.abs(new_positions) * bar_close   # [B, S]
-    notional_sum = notional_after_fills.sum(axis=1)            # [B]
-    cap = cfg.max_leverage * equity_prev_safe                  # [B]
-    over = notional_sum > cap
+    # Leverage clip: scale ONLY new buy/sell shares so that
+    # Σ|positions + new_delta| * bar_close <= max_lev * equity_prev.
+    # Crucially we do NOT shrink the existing position — that would create
+    # equity from nothing (the shrunk size has no corresponding cash flow,
+    # which a short-only policy can compound into runaway equity growth on a
+    # flat tape). Real broker semantics: new orders that breach margin get
+    # partial-filled, existing positions are untouched.
+    candidate_new_pos = positions + buy_shares - sell_shares
+    candidate_notional = (np.abs(candidate_new_pos) * bar_close).sum(axis=1)
+    cap = cfg.max_leverage * equity_prev_safe
+    over = candidate_notional > cap
     if over.any():
-        scale = np.where(over, cap / np.maximum(notional_sum, 1e-9), 1.0)
-        new_positions = new_positions * scale[:, None]
-        # also rescale buy/sell shares for fee/cash accounting
-        buy_shares  = buy_shares  * scale[:, None]
-        sell_shares = sell_shares * scale[:, None]
+        existing_notional = (np.abs(positions) * bar_close).sum(axis=1)
+        delta_notional = (np.abs(buy_shares - sell_shares) * bar_close).sum(axis=1)
+        headroom = np.maximum(0.0, cap - existing_notional)
+        # alpha is the max fraction of the requested trade that fits the cap.
+        alpha = np.where(delta_notional > 1e-9,
+                         headroom / np.maximum(delta_notional, 1e-9),
+                         1.0)
+        alpha = np.clip(alpha, 0.0, 1.0)
+        # Only apply to envs that actually breached.
+        alpha = np.where(over, alpha, 1.0)
+        buy_shares  = buy_shares  * alpha[:, None]
+        sell_shares = sell_shares * alpha[:, None]
+
+    new_positions = positions + buy_shares - sell_shares
 
     # Cash flow: pay for buys (at limit_buy_px), receive sells (at limit_sell_px).
     cash_out = (buy_shares  * limit_buy_px ).sum(axis=1)

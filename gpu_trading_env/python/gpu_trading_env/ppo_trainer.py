@@ -133,7 +133,9 @@ class PPOConfig:
     target_kl: float = 0.05        # early-stop epoch loop if approx_kl exceeds this
     bf16: bool = True
     reward_scale: float = 1.0
-    reward_clip: float = 5.0       # hard clip on per-step reward to keep PPO stable
+    reward_clip: float = 1.0       # hard clip on per-step reward (in unscaled units of "100% move per step")
+    bankrupt_penalty: float = 1.0  # extra penalty subtracted from reward when equity collapses
+    reward_mode: str = "log_return"  # one of: "log_return" | "init_cash" | "env_native"
     log_every: int = 1
 
 
@@ -184,21 +186,40 @@ def collect_rollout(
             action = (mu + std * noise).to(torch.float32)
             log_prob = policy.dist_log_prob(mu.float(), action)
 
-        reward, done, _info = env.step(action)
+        reward, done, info = env.step(action)
 
         obs_buf[t]    = cur_obs
         action_buf[t] = action
         logp_buf[t]   = log_prob
-        # Reward is per-step relative return; can spike if env equity nearly
-        # collapsed. Sanitize then clip so PPO targets stay bounded.
-        scaled_r = torch.nan_to_num(reward * cfg.reward_scale,
+        # Reward formula. The env's native reward divides by eq_prev_safe
+        # (1e-9 floor), which lets a collapsed-then-recovered env produce
+        # arbitrarily large per-step returns — the policy then learns to
+        # gamble. Two safer options:
+        #   - "log_return": log(new_eq / eq_prev) with both clamped to a small
+        #     positive floor. Bounded for normal moves and naturally small for
+        #     bankruptcy (clipped + penalty handles that path).
+        #   - "init_cash": dollar P&L / init_cash. Clean but lets the gradient
+        #     scale with equity (compounding bias toward growth).
+        if cfg.reward_mode == "log_return" and isinstance(info, dict) and "new_eq" in info:
+            ic = float(env.cfg.init_cash)
+            floor = 0.01 * ic
+            new_eq_pos = info["new_eq"].clamp_min(floor)
+            eq_prev_pos = info["eq_prev"].clamp_min(floor)
+            raw_r = torch.log(new_eq_pos / eq_prev_pos)
+        elif cfg.reward_mode == "init_cash" and isinstance(info, dict) and "new_eq" in info:
+            ic = float(env.cfg.init_cash)
+            raw_r = (info["new_eq"] - info["eq_prev"]) / ic
+        else:
+            raw_r = reward
+        bankrupt = env.state["equity"] <= 0.005 * env.cfg.init_cash  # equity dropped below 0.5% of init
+        scaled_r = torch.nan_to_num(raw_r * cfg.reward_scale,
                                     nan=0.0, posinf=cfg.reward_clip,
                                     neginf=-cfg.reward_clip)
         scaled_r = scaled_r.clamp(-cfg.reward_clip, cfg.reward_clip)
+        # Bankruptcy gets an explicit penalty so the policy learns to avoid it
+        # — otherwise the post-reset "free recovery" looks like positive reward.
+        scaled_r = torch.where(bankrupt, scaled_r - cfg.bankrupt_penalty, scaled_r)
         reward_buf[t] = scaled_r
-        # Force-reset envs whose equity has gone non-positive — the env's
-        # auto-reset only fires on episode_len/T-end, not on bankruptcy.
-        bankrupt = env.state["equity"] <= 1e-3
         if bankrupt.any():
             env.reset(bankrupt)
         value_buf[t]  = value.float()

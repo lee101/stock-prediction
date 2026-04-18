@@ -135,8 +135,13 @@ def test_cuda_matches_numpy_ref(seed, B, S, cfg_kw):
                                rtol=2e-4, atol=1e-4)
     np.testing.assert_allclose(cuda_out["cash"], np_cash.astype(np.float32),
                                rtol=2e-4, atol=5e-3)
+    # Reward = (new_eq - eq_prev) / eq_prev. When eq_prev ~ 1e4 the numerator
+    # is a difference of two near-equal ~1e4 sums → fp32 sum-order divergence
+    # floors the absolute tolerance around 1e-5. The leverage-clip alpha path
+    # (headroom / delta_notional) adds another div that pushes the relative
+    # floor into ~1e-3 on near-boundary cases.
     np.testing.assert_allclose(cuda_out["reward"], np_reward.astype(np.float32),
-                               rtol=2e-4, atol=5e-7)
+                               rtol=1e-3, atol=1e-5)
     np.testing.assert_allclose(cuda_out["eq_prev"], np_info["equity_prev"].astype(np.float32),
                                rtol=2e-4, atol=5e-3)
     np.testing.assert_allclose(cuda_out["new_eq"], np_info["new_equity"].astype(np.float32),

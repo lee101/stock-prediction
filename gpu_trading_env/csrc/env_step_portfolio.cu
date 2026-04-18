@@ -80,8 +80,14 @@ __global__ void portfolio_bracket_step_kernel(
     // cash flow + fees + margin. To avoid heap, we recompute fills in the second
     // pass — cheap (a few mul/cmp per symbol).
 
-    // First pass: tentative new_positions and notional_after_fills sum.
-    float notional_sum = 0.f;
+    // First pass: tentative new_positions and notional summary.
+    // We need three quantities for the leverage-clip alpha:
+    //   candidate_notional = Σ |old + buy - sell| * bar_close   (post-trade)
+    //   existing_notional  = Σ |old|             * bar_close   (pre-trade)
+    //   delta_notional     = Σ |buy - sell|      * bar_close   (trade size)
+    float candidate_notional = 0.f;
+    float existing_notional  = 0.f;
+    float delta_notional     = 0.f;
     for (int s = 0; s < S; ++s) {
         const int idx = b * S + s;
         const float pc = prev_close[idx];
@@ -93,25 +99,43 @@ __global__ void portfolio_bracket_step_kernel(
 
         const float lim_buy_px  = pc * (1.f + lim_buy_bps  * 1e-4f);
         const float lim_sell_px = pc * (1.f + lim_sell_bps * 1e-4f);
-        const bool  buy_filled  = tr && (bar_low[idx]  <= lim_buy_px  * (1.f - fb));
-        const bool  sell_filled = tr && (bar_high[idx] >= lim_sell_px * (1.f + fb));
+        bool  buy_filled  = tr && (bar_low[idx]  <= lim_buy_px  * (1.f - fb));
+        bool  sell_filled = tr && (bar_high[idx] >= lim_sell_px * (1.f + fb));
+        if (buy_filled && sell_filled && buy_pct > 0.f && sell_pct > 0.f) {
+            const float bo = bar_open[idx];
+            const float buy_dist  = fabsf(bo - lim_buy_px);
+            const float sell_dist = fabsf(bo - lim_sell_px);
+            if (buy_dist <= sell_dist) sell_filled = false;
+            else                        buy_filled  = false;
+        }
 
         const float buy_notional  = buy_pct  * eq_prev_safe;
         const float sell_notional = sell_pct * eq_prev_safe;
         const float buy_shares  = buy_filled  ? (buy_notional  / fmaxf(lim_buy_px,  1e-9f)) : 0.f;
         const float sell_shares = sell_filled ? (sell_notional / fmaxf(lim_sell_px, 1e-9f)) : 0.f;
 
-        const float new_p = pos_in[idx] + buy_shares - sell_shares;
-        notional_sum += fabsf(new_p) * bar_close[idx];
+        const float new_p_tentative = pos_in[idx] + buy_shares - sell_shares;
+        candidate_notional += fabsf(new_p_tentative) * bar_close[idx];
+        existing_notional  += fabsf(pos_in[idx])     * bar_close[idx];
+        delta_notional     += fabsf(buy_shares - sell_shares) * bar_close[idx];
     }
 
     const float cap = p.max_leverage * eq_prev_safe;
-    float scale = 1.f;
-    if (notional_sum > cap) {
-        scale = cap / fmaxf(notional_sum, 1e-9f);
+    // Clip ONLY the new buy/sell shares (the trade delta). Do NOT shrink the
+    // existing position — that creates equity from nothing because the shrunk
+    // size has no corresponding cash flow. A short-only policy on a flat tape
+    // can compound that into runaway equity growth otherwise.
+    float alpha = 1.f;
+    if (candidate_notional > cap) {
+        const float headroom = fmaxf(0.f, cap - existing_notional);
+        if (delta_notional > 1e-9f) {
+            alpha = headroom / delta_notional;
+            if (alpha > 1.f) alpha = 1.f;
+            if (alpha < 0.f) alpha = 0.f;
+        }
     }
 
-    // Second pass: apply scale, accumulate cash flow + fees.
+    // Second pass: apply alpha to trade legs only, accumulate cash flow + fees.
     float cash_flow = 0.f;     // net (cash_in - cash_out)
     float fee_total = 0.f;
     float notional_close = 0.f;
@@ -126,24 +150,28 @@ __global__ void portfolio_bracket_step_kernel(
 
         const float lim_buy_px  = pc * (1.f + lim_buy_bps  * 1e-4f);
         const float lim_sell_px = pc * (1.f + lim_sell_bps * 1e-4f);
-        const bool  buy_filled  = tr && (bar_low[idx]  <= lim_buy_px  * (1.f - fb));
-        const bool  sell_filled = tr && (bar_high[idx] >= lim_sell_px * (1.f + fb));
+        bool  buy_filled  = tr && (bar_low[idx]  <= lim_buy_px  * (1.f - fb));
+        bool  sell_filled = tr && (bar_high[idx] >= lim_sell_px * (1.f + fb));
+        if (buy_filled && sell_filled && buy_pct > 0.f && sell_pct > 0.f) {
+            const float bo = bar_open[idx];
+            const float buy_dist  = fabsf(bo - lim_buy_px);
+            const float sell_dist = fabsf(bo - lim_sell_px);
+            if (buy_dist <= sell_dist) sell_filled = false;
+            else                        buy_filled  = false;
+        }
 
         float buy_shares  = buy_filled  ? ((buy_pct  * eq_prev_safe) / fmaxf(lim_buy_px,  1e-9f)) : 0.f;
         float sell_shares = sell_filled ? ((sell_pct * eq_prev_safe) / fmaxf(lim_sell_px, 1e-9f)) : 0.f;
-        // Apply leverage scale uniformly (matches numpy: scale * (positions + dB - dS)
-        // which expands to scale*pos + scale*dB - scale*dS; both legs scale by same
-        // factor and we also rescale buy/sell shares for fee/cash accounting.)
-        buy_shares  *= scale;
-        sell_shares *= scale;
+        // Scale only the trade delta, NOT the existing position.
+        buy_shares  *= alpha;
+        sell_shares *= alpha;
 
         const float buy_notional_actual  = buy_shares  * lim_buy_px;
         const float sell_notional_actual = sell_shares * lim_sell_px;
         cash_flow += sell_notional_actual - buy_notional_actual;
         fee_total += (buy_notional_actual + sell_notional_actual) * fee_rate;
 
-        const float new_p = scale * (pos_in[idx] + (buy_filled  ? ((buy_pct  * eq_prev_safe) / fmaxf(lim_buy_px,  1e-9f)) : 0.f)
-                                                 - (sell_filled ? ((sell_pct * eq_prev_safe) / fmaxf(lim_sell_px, 1e-9f)) : 0.f));
+        const float new_p = pos_in[idx] + buy_shares - sell_shares;
         pos_out[idx] = new_p;
         notional_close += fabsf(new_p) * bar_close[idx];
     }
