@@ -7,6 +7,53 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-18 10:00 UTC — XGB DD-reduction campaign in flight (9-run sweep)
+
+**Context**: user asked "is there some way to also get the worst DD down as
+well?" on top of the queued XGB lev=1× deploy. Instead of shipping lev=1×
+bare, we run the 9-cell DD sweep first; whichever cell beats baseline on
+(Δ sortino ≥ 0 AND Δ neg ≤ 0) at equal-or-better median goes out as the
+first live config. The plain lev=1× config is still queued-safe below as
+a fallback — worst case we ship it unmodified.
+
+Round-1 (`scripts/xgb_dd_reduction_sweep.sh`, PID 92524, 09:57 UTC)
+and round-2 (`scripts/xgb_dd_reduction_sweep_round2.sh`, launcher PID
+166853, queued on round-1 exit) write into `analysis/xgbnew_dd_sweep/`.
+Ledger at `xgboptimiztions.md`. Expected wall time ~2.25h total from launch.
+
+Baseline re-confirmed (lev=1× pandas path, seed=0):
+
+| metric | value |
+|---|---|
+| median monthly % | **+32.80%** |
+| p10 monthly % | **+20.26%** |
+| median sortino | **8.28** |
+| worst window DD | **31.87%** |
+| neg windows | **0/34** |
+
+Artifact: `analysis/xgbnew_dd_sweep/baseline/multiwindow_20260418_100231.json`.
+
+Queue (all on pandas path, same 846-symbol OOS grid):
+
+| round | tag | knob(s) | status |
+|---|---|---|---|
+| 1 | baseline | — | **done** |
+| 1 | ma50 | `--regime-gate-window 50` | running |
+| 1 | ma20 | `--regime-gate-window 20` | queued |
+| 1 | voltarget015 | `--vol-target-ann 0.15` | queued |
+| 2 | ma50_lev125 | ma50 + lev=1.25 | queued |
+| 2 | voltarget010 | `--vol-target-ann 0.10` | queued |
+| 2 | voltarget020 | `--vol-target-ann 0.20` | queued |
+| 2 | ma50_voltarget015 | ma50 + vol_target=0.15 | queued |
+| 2 | baseline_s1 / s2 | seeds 1, 2 (DD variance) | queued |
+
+Crypto12_ppo_v8 ("2,658.9× per 30d") **not deployable this cycle** —
+training-snapshot, not OOS; `ann_ret` in 10^40%+ range; no holdout split.
+Full audit in `alpacaprogress8.md`. No crypto checkpoint goes live until a
+clean post-Nov-2025 holdout eval lands.
+
+---
+
 ### 2026-04-18 — XGB top_n=1 champion QUEUED for paper (lev=1×; blocked on paper-key regen)
 
 **Status**: ready but not live. The `xgb-daily-trader.service` unit has been

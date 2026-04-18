@@ -1,5 +1,70 @@
 # Alpaca Progress 8
 
+## 2026-04-18 10:00 UTC — XGB DD-reduction campaign kicked off
+
+Round-1 sweep (`scripts/xgb_dd_reduction_sweep.sh`, PID 92524) launched at
+09:57 UTC to test the three cheapest DD-reduction levers stacked on the
+`top_n=1 n_est=400 depth=5 lr=0.03` champion, all at lev=1×, seed=0,
+pandas path, same 846-symbol / 34-window OOS grid as the champion itself:
+
+| tag | knob | status |
+|---|---|---|
+| baseline | no gate | **done** — med +32.80%, p10 +20.26%, sortino 8.28, worst_dd 31.87%, 0/34 neg |
+| ma50 | `--regime-gate-window 50` (flat when SPY < MA50) | running |
+| ma20 | `--regime-gate-window 20` | queued |
+| voltarget015 | `--vol-target-ann 0.15` | queued |
+
+Round-2 (`scripts/xgb_dd_reduction_sweep_round2.sh`, launcher PID 166853
+blocked on round-1 via `kill -0`) will fire automatically when round-1
+exits. Round-2 queue:
+
+| tag | stacked knobs | purpose |
+|---|---|---|
+| ma50_lev125 | ma50 gate + lev=1.25 | gate + validated leverage knee |
+| voltarget010 | vol_target=0.10 | tighter cap |
+| voltarget020 | vol_target=0.20 | looser cap |
+| ma50_voltarget015 | ma50 gate + vol_target=0.15 | stack best gate + best sizer |
+| baseline_s1 / baseline_s2 | seed=1, seed=2 | bound DD stddev across seeds |
+
+Ledger: `xgboptimiztions.md`. Promotion rule baked into the ledger: Δ
+median sortino ≥ 0 AND Δ neg windows ≤ 0 OR (Δ sortino > 0 AND Δ worst_dd
+< 0) — worst-DD reduction outweighs small median drag because the stated
+objective is smoothness / p10 lift, not median maximisation.
+
+Total expected wall time: ~2.25h end-to-end (9 runs × ~15 min).
+
+## 2026-04-18 09:40 UTC — crypto12_ppo_v8 "2,658.9× per 30d" claim is training-set overfit — NOT DEPLOYABLE
+
+User flagged the v8 headline as suspiciously large; audit confirmed it is
+an **in-training cumulative reward snapshot**, not an OOS simulation
+result. Promoting v8 to prod would ship a degenerate policy.
+
+Evidence trail:
+
+1. The `2658.2209` number appears in `pufferlib_market/logs/training_crypto12_improved_100M.log:4392` as `ret=+2658.2209` — this is the running cumulative reward the RL env hands back during training, computed on the same 60-day block the policy is currently being optimised against.
+2. Same run's `ann_ret` field reaches `10^40%`+ — mathematically impossible for any real return stream, consistent with log-space reward stacking.
+3. Win-rate climbs monotonically to `1.00` by end-of-training — the classic overfit fingerprint.
+4. `holdout_results/crypto12_ppo_v8_*.json` does not exist. There is no train/val/test split: `crypto12_data.bin` is a single contiguous blob, so every "validation" curve is peeking.
+5. The same recipe (`n_layers=4, hidden=1024, annealLR, 300M steps, tp=0.05`) already failed 8/8 seeds on the daily stocks benchmark per `project_stocks_rl_autoresearch.md`.
+
+Decision: v8 **does not go to prod**. Leaving the existing crypto trader
+setup (`binance-5min-collector` + dormant crypto70 checkpoints) untouched.
+Updated memory at `project_crypto12_ppo_v8_training_overfit.md` to mark the
+"2,658.9× / 30d" line as superseded so no future agent promotes it on that
+number.
+
+If we want a real crypto number, the work is:
+
+- Carve a clean holdout split: train on ≤ (t_max − 60d), val on the
+  last 60d, confirmed untouched by training.
+- Re-eval v8 checkpoint on that holdout under binary fills at
+  decision_lag=2 with fee and spread matched to Binance-real.
+- Only then consider deploying; and if we do, the user's "if it's crypto
+  also actually open an order on the prod account so we know it's
+  working" gate applies — first session must place one live order and
+  the log + Alpaca/Binance response must be cross-checked before
+  widening exposure.
+
 ## stocks17 augmented RL training (2026-04-11)
 
 ### Goal
