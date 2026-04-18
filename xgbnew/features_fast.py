@@ -49,6 +49,19 @@ def _read_one_csv_polars(path: Path, symbol: str):
     except Exception as exc:
         logger.warning("failed to read %s: %s", path, exc)
         return None
+    # Some merged CSVs contain both "Dividends" and "dividends" (etc.) from
+    # overlapping yfinance+alpaca ingests. Lowercasing duplicates, so keep the
+    # first occurrence and drop the rest before renaming.
+    seen: set[str] = set()
+    keep_idx: list[int] = []
+    for i, c in enumerate(df.columns):
+        lc = c.strip().lower()
+        if lc in seen:
+            continue
+        seen.add(lc)
+        keep_idx.append(i)
+    if len(keep_idx) != len(df.columns):
+        df = df.select([df.columns[i] for i in keep_idx])
     df = df.rename({c: c.strip().lower() for c in df.columns})
 
     ts_col = "timestamp" if "timestamp" in df.columns else ("date" if "date" in df.columns else None)
