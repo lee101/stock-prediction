@@ -24,6 +24,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from xgbnew.features import DAILY_FEATURE_COLS, build_features_for_symbol
+from xgbnew.features_fast import build_daily_features_fast
 from xgbnew.model import XGBStockModel
 
 
@@ -92,12 +93,19 @@ def main() -> int:
     syms = load_symbols(data_root, args.n_symbols)
     print(f"[bench] using {len(syms)} symbols from {data_root}")
 
-    # Feature build (CPU — baseline)
+    # Feature build (pandas baseline)
     t0 = time.time()
     feat_df = build_features(data_root, syms)
-    t1 = time.time()
-    print(f"[bench] feature build (CPU/pandas): {t1 - t0:.2f}s  "
-          f"({len(feat_df):,} rows, {(t1 - t0) / len(syms) * 1000:.1f} ms/symbol)")
+    t_pandas = time.time() - t0
+    print(f"[bench] feature build (CPU/pandas): {t_pandas:.2f}s  "
+          f"({len(feat_df):,} rows, {t_pandas / len(syms) * 1000:.1f} ms/symbol)")
+
+    # Feature build (polars)
+    t0 = time.time()
+    feat_df_fast = build_daily_features_fast(data_root, syms)
+    t_polars = time.time() - t0
+    print(f"[bench] feature build (polars):     {t_polars:.2f}s  "
+          f"({len(feat_df_fast):,} rows, speedup {t_pandas / max(t_polars, 1e-6):.2f}×)")
 
     xgb_params = dict(
         n_estimators=args.n_estimators,
@@ -121,15 +129,43 @@ def main() -> int:
     print(f"[bench] XGB predict (CPU booster):  {cpu_pred_s:.3f}s")
     print(f"[bench] XGB predict (GPU booster):  {gpu_pred_s:.3f}s")
 
+    # Backtest: NumPy vs CuPy (synthetic y_true/y_pred matched in size)
+    y_pred = model_gpu.predict_scores(feat_df)
+    import numpy as _np
+    rng = _np.random.default_rng(0)
+    y_true = rng.normal(0.0, 0.01, len(y_pred)).astype(_np.float32)
+
+    from boostbaseline.backtest import run_backtest as _bt_np
+    t_bt0 = time.time()
+    _bt_np(y_true, y_pred, is_crypto=True, fee=0.0005, scale=1.0, cap=0.3,
+           turnover_proportional_fee=True)
+    bt_np_s = time.time() - t_bt0
+
+    try:
+        from boostbaseline.gpu_core import run_backtest_gpu as _bt_gpu
+        # Warm up (first CuPy call launches a kernel compilation burst).
+        _bt_gpu(y_true[:64], y_pred[:64], is_crypto=True, fee=0.0005)
+        t_bt0 = time.time()
+        _bt_gpu(y_true, y_pred, is_crypto=True, fee=0.0005, scale=1.0, cap=0.3)
+        bt_gpu_s = time.time() - t_bt0
+        print(f"[bench] backtest (NumPy, N={len(y_pred):,}): {bt_np_s:.4f}s")
+        print(f"[bench] backtest (CuPy,  N={len(y_pred):,}): {bt_gpu_s:.4f}s  "
+              f"(speedup {bt_np_s / max(bt_gpu_s, 1e-9):.2f}×)")
+    except RuntimeError as exc:
+        bt_gpu_s = float("nan")
+        print(f"[bench] backtest (CuPy): skipped — {exc}")
+
     # Total wall-clock summary
-    cpu_total = (t1 - t0) + cpu_train_s + cpu_pred_s
-    gpu_total = (t1 - t0) + gpu_train_s + gpu_pred_s
+    cpu_total = t_pandas + cpu_train_s + cpu_pred_s + bt_np_s
+    gpu_total = t_polars + gpu_train_s + gpu_pred_s + (bt_gpu_s if bt_gpu_s == bt_gpu_s else 0.0)
     print(
-        f"\n[bench] end-to-end wall (CPU features + CPU train): {cpu_total:.2f}s"
-        f"\n[bench] end-to-end wall (CPU features + GPU train): {gpu_total:.2f}s"
-        f"\n[bench] stage shares @GPU-train: features={100 * (t1 - t0) / gpu_total:.0f}%"
+        f"\n[bench] end-to-end (pandas + CPU train + NumPy bt): {cpu_total:.2f}s"
+        f"\n[bench] end-to-end (polars + GPU train + CuPy bt):  {gpu_total:.2f}s"
+        f"  (overall {cpu_total / max(gpu_total, 1e-6):.2f}×)"
+        f"\n[bench] stage shares on fast path: features={100 * t_polars / gpu_total:.0f}%"
         f"  train={100 * gpu_train_s / gpu_total:.0f}%"
         f"  predict={100 * gpu_pred_s / gpu_total:.0f}%"
+        f"  backtest={100 * (bt_gpu_s if bt_gpu_s == bt_gpu_s else 0.0) / gpu_total:.0f}%"
     )
     return 0
 
