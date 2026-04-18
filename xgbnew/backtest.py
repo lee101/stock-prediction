@@ -50,6 +50,9 @@ class BacktestConfig:
     regime_gate_window: int = 0         # 0 disables; 20/50/200 = SPY MA lookback
     vol_target_ann: float = 0.0         # 0 disables; else scale daily allocation by
                                         # min(1, vol_target_ann / realised_20d_ann_vol)
+    allocation_mode: str = "equal"      # equal | softmax | score_norm — how we
+                                        # weight the top_n picks within a day
+    allocation_temp: float = 1.0        # softmax temperature (lower = more concentrated)
 
 
 @dataclass
@@ -172,6 +175,53 @@ def _build_vol_scale(
     ratio = (float(target_ann) / realised_ann).clip(upper=1.0)
     aligned = ratio.reindex(all_dates).fillna(1.0).astype(float)
     return aligned
+
+
+def _allocation_weights(
+    scores: list[float] | np.ndarray,
+    *,
+    mode: str = "equal",
+    temperature: float = 1.0,
+) -> np.ndarray:
+    """Return an array of per-pick weights summing to 1.0.
+
+    ``mode`` selects packing policy:
+
+    * ``"equal"``      — uniform 1/K (legacy behaviour)
+    * ``"softmax"``    — exp(score / temperature) / sum(...)  (temperature>0)
+    * ``"score_norm"`` — score / sum(score) with a non-negativity floor;
+                         all-zero / all-negative → falls back to equal weights.
+
+    The helper is deliberately total so callers don't have to branch on K==0
+    or NaN scores — it always returns a valid non-negative distribution.
+    """
+    arr = np.asarray(list(scores), dtype=np.float64)
+    n = arr.shape[0]
+    if n == 0:
+        return arr
+    mode = (mode or "equal").lower()
+    if mode == "equal":
+        return np.full(n, 1.0 / n)
+    if mode == "softmax":
+        temp = float(temperature) if temperature and temperature > 0 else 1.0
+        # Subtract max for numerical stability; NaNs fall through to equal.
+        if not np.all(np.isfinite(arr)):
+            return np.full(n, 1.0 / n)
+        z = (arr - float(np.max(arr))) / temp
+        e = np.exp(z)
+        s = float(e.sum())
+        if not np.isfinite(s) or s <= 0:
+            return np.full(n, 1.0 / n)
+        return e / s
+    if mode == "score_norm":
+        pos = np.clip(arr, a_min=0.0, a_max=None)
+        s = float(pos.sum())
+        if not np.isfinite(s) or s <= 0:
+            return np.full(n, 1.0 / n)
+        return pos / s
+    raise ValueError(
+        f"Unknown allocation_mode={mode!r}; expected equal|softmax|score_norm"
+    )
 
 
 def simulate(
@@ -310,7 +360,13 @@ def simulate(
         if not trades:
             continue
 
-        daily_ret_pct = float(np.mean([t.net_return_pct for t in trades]))
+        weights = _allocation_weights(
+            [t.score for t in trades],
+            mode=config.allocation_mode,
+            temperature=config.allocation_temp,
+        )
+        rets = np.asarray([t.net_return_pct for t in trades], dtype=np.float64)
+        daily_ret_pct = float(np.dot(weights, rets))
         # Vol-target sizing: scale today's exposure by SPY-regime vol scalar in [0, 1].
         daily_ret_pct *= day_scale
         equity_end = equity * (1.0 + daily_ret_pct / 100.0)
@@ -416,6 +472,7 @@ __all__ = [
     "BacktestResult",
     "DayResult",
     "DayTrade",
+    "_allocation_weights",
     "simulate",
     "print_summary",
 ]

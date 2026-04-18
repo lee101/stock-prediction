@@ -96,6 +96,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--n-estimators", type=int, default=300)
     p.add_argument("--max-depth",    type=int, default=4)
     p.add_argument("--learning-rate", type=float, default=0.05)
+    p.add_argument("--random-state", type=int, default=42,
+                   help="XGBoost training seed (default 42). DD-reduction sweep"
+                        " validated seed=2 for minimal worst-DD across 7-seed cohort.")
 
     p.add_argument("--output-dir", type=Path,
                    default=REPO / "analysis/xgbnew_daily")
@@ -161,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             n_estimators=args.n_estimators,
             max_depth=args.max_depth,
             learning_rate=args.learning_rate,
+            random_state=args.random_state,
         )
         # Train on technical features only (Chronos2 = 0 during training)
         model.fit(train_df, DAILY_FEATURE_COLS, val_df=val_df,
