@@ -264,6 +264,71 @@ def _load_bin_features(path: Union[str, Path]) -> tuple:
     return features, int(num_symbols), int(num_timesteps), int(features_per_sym)
 
 
+def load_bin_full(path: Union[str, Path]) -> dict:
+    """Load a full pufferlib_market .bin file: features + raw OHLCV prices + tradable mask.
+
+    .bin layout (from export_data_daily.py):
+        header: <4sIIIII40s>  (magic, version, S, T, F, PRICE_FEATURES=5, pad40)
+        symbols: S * 16-byte ascii (null-padded)
+        features: [T, S, F] float32
+        prices:   [T, S, 5] float32 (open, high, low, close, volume)
+        tradable: [T, S]    uint8
+
+    Returns dict with keys:
+        features  torch float32 [T, S, F]   (CPU)
+        prices    torch float32 [T, S, 5]   (CPU)  -- raw OHLCV
+        tradable  torch uint8   [T, S]      (CPU)
+        symbols   list[str]
+        T, S, F   ints
+    """
+    import struct
+    import numpy as np
+    path = Path(path)
+    raw = path.read_bytes()
+    HEADER = 64
+    magic, version, num_symbols, num_timesteps, features_per_sym, price_feats = struct.unpack(
+        "<4sIIIII", raw[:24]
+    )
+    if magic != b"MKTD":
+        raise ValueError(f"Bad magic: {magic!r}")
+    S = int(num_symbols)
+    T = int(num_timesteps)
+    F = int(features_per_sym) if features_per_sym else 16
+    PF = int(price_feats) if price_feats else 5
+
+    sym_bytes = raw[HEADER:HEADER + 16 * S]
+    symbols = []
+    for i in range(S):
+        nm = sym_bytes[i * 16:(i + 1) * 16].split(b"\x00", 1)[0].decode("ascii", "replace")
+        symbols.append(nm)
+
+    feat_off = HEADER + 16 * S
+    feat_bytes = T * S * F * 4
+    price_bytes = T * S * PF * 4
+    mask_bytes = T * S
+
+    feat_arr = np.frombuffer(raw[feat_off:feat_off + feat_bytes], dtype=np.float32).copy()
+    price_arr = np.frombuffer(raw[feat_off + feat_bytes:feat_off + feat_bytes + price_bytes],
+                              dtype=np.float32).copy()
+    mask_arr = np.frombuffer(raw[feat_off + feat_bytes + price_bytes:
+                                 feat_off + feat_bytes + price_bytes + mask_bytes],
+                             dtype=np.uint8).copy()
+
+    if feat_arr.size < T * S * F or price_arr.size < T * S * PF:
+        raise ValueError(
+            f"bin truncated: have feat={feat_arr.size} need {T*S*F}, "
+            f"price={price_arr.size} need {T*S*PF}"
+        )
+
+    return {
+        "features": torch.from_numpy(feat_arr.reshape(T, S, F)),
+        "prices":   torch.from_numpy(price_arr.reshape(T, S, PF)),
+        "tradable": torch.from_numpy(mask_arr.reshape(T, S)) if mask_arr.size >= T * S else None,
+        "symbols":  symbols,
+        "T": T, "S": S, "F": F, "PF": PF,
+    }
+
+
 def _build_proxy_ohlc(features: torch.Tensor, num_symbols: int,
                       features_per_sym: int) -> torch.Tensor:
     """Build a [T, 4] proxy OHLC from the multi-symbol feature tensor.
@@ -906,4 +971,4 @@ def make_multisym(
 __all__ = ["make", "make_multi_symbol", "make_multisym", "make_portfolio_bracket",
            "EnvConfig", "PortfolioBracketConfig",
            "EnvHandle", "MultiSymbolEnvHandle", "MultiSymEnv", "PortfolioBracketEnv",
-           "_load_ext", "_EXT_ERR", "_load_bin_features"]
+           "_load_ext", "_EXT_ERR", "_load_bin_features", "load_bin_full"]
