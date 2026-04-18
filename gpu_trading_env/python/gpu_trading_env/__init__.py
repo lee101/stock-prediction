@@ -733,17 +733,24 @@ class PortfolioBracketEnv:
             self.tradable_tape = torch.ones((self.T, S), device=dev, dtype=torch.uint8)
 
     def reset(self, mask: Optional[torch.Tensor] = None) -> None:
+        """Reset envs selected by ``mask`` (None = all). Always graph-safe:
+        no host-syncing branches; uses ``torch.where`` so the topology is
+        identical regardless of how many envs are flagged.
+        """
         dev = self.prices.device
-        if mask is None:
-            idx = torch.ones(self.B, dtype=torch.bool, device=dev)
-        else:
-            idx = mask.to(torch.bool).to(dev)
         s = self.state
-        s["cash"][idx]      = self.cfg.init_cash
-        s["positions"][idx] = 0.0
-        s["t_idx"][idx]     = 1
-        s["done"][idx]      = 0
-        s["equity"][idx]    = self.cfg.init_cash
+        if mask is None:
+            mask_b = torch.ones(self.B, dtype=torch.bool, device=dev)
+        else:
+            mask_b = mask.to(torch.bool).to(dev)
+        ic = self.cfg.init_cash
+        s["cash"].copy_(torch.where(mask_b, torch.full_like(s["cash"], ic), s["cash"]))
+        s["positions"].copy_(torch.where(mask_b.unsqueeze(-1),
+                                         torch.zeros_like(s["positions"]),
+                                         s["positions"]))
+        s["t_idx"].copy_(torch.where(mask_b, torch.ones_like(s["t_idx"]), s["t_idx"]))
+        s["done"].copy_(torch.where(mask_b, torch.zeros_like(s["done"]), s["done"]))
+        s["equity"].copy_(torch.where(mask_b, torch.full_like(s["equity"], ic), s["equity"]))
 
     def step(self, action: torch.Tensor):
         ext = _load_ext()
@@ -759,10 +766,10 @@ class PortfolioBracketEnv:
             action = action.contiguous()
 
         s = self.state
-        # Auto-reset completed envs before stepping.
-        done_mask = s["done"].to(torch.bool)
-        if done_mask.any():
-            self.reset(done_mask)
+        # Auto-reset completed envs unconditionally — `done == 0` rows are a
+        # no-op under torch.where, but the graph topology stays identical
+        # so this is CUDA-Graph capturable.
+        self.reset(s["done"].to(torch.bool))
 
         # Gather per-bar OHLC + tradable for each env's current t_idx.
         ti = s["t_idx"].long()

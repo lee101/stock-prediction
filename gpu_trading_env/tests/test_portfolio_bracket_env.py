@@ -106,6 +106,44 @@ def test_buy_then_close_makes_position():
     assert n_held >= B // 2, f"expected most envs to fill, got {n_held}/{B}"
 
 
+def test_step_is_cuda_graph_capturable():
+    """env.step() must be safe to capture under torch.cuda.graph — no
+    host-syncing branches, identical graph topology each step.
+    """
+    _require_ext()
+    B, T, S = 256, 64, 8
+    prices = _synth_prices(T, S, seed=5)
+    env = gpu_trading_env.make_portfolio_bracket(
+        B=B, prices=prices, params={"episode_len": 200},
+    )
+    action = torch.zeros(B, S, 4, device="cuda", dtype=torch.float32)
+    action[..., 2] = 0.05
+    action[..., 3] = 0.05
+
+    # Warmup (required by CUDA Graphs API — populates allocator caches).
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        for _ in range(3):
+            for _ in range(8):
+                env.step(action)
+    torch.cuda.current_stream().wait_stream(s)
+    torch.cuda.synchronize()
+
+    # Capture
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        for _ in range(8):
+            env.step(action)
+
+    # Replay — should produce a finite reward and not crash.
+    g.replay()
+    torch.cuda.synchronize()
+    assert torch.isfinite(env.state["equity"]).all()
+    assert torch.isfinite(env.state["cash"]).all()
+    assert (env.state["equity"] > 0).all()
+
+
 def test_obs_shape_with_and_without_features():
     _require_ext()
     B, T, S, F = 4, 16, 3, 5
