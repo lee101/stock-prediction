@@ -647,3 +647,58 @@ optimum, modest overfit risk.
 HARD RULE 27%/month is **not** reachable from existing checkpoints. It
 requires new training under the new validation regime, on an expanded symbol
 universe (the 12-ticker mega-cap pool caps the achievable Sortino).
+
+---
+
+## 2026-04-18 — XGB top_n=1 champion lined up for prod (paper); crypto "2658×" flagged as training-set fiction
+
+### Summary
+- XGB `top_n=1 n_est=400 depth=5 lr=0.03` beats the 27%/mo HARD RULE cleanly on the 846-symbol universe across 34 OOS windows (15 months, through April 2026 crash). Model pkl sits ready at `analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1.pkl`.
+- Earlier claim of **"`crypto12_ppo_v8_h1024_300M_annealLR`: 2,658.9× per 30d, 84.5% WR"** (in `PARITY_SESSION_2026_04_07.md` and `currentstate.md`) is **NOT an OOS sim result**. The number is a cumulative training-reward snapshot from `training_crypto12_improved_100M.log` step 4392/6103 (`ret=+2658.2209`). That log also shows `ann_ret` in the 10⁴⁰%+ range and win-rate climbing to 1.00 — textbook overfitting. No `holdout_results/*.json` exists for this checkpoint. The same recipe already failed 8/8 seeds when ported to daily stocks. **Conclusion: do not deploy `crypto12_ppo_v8` based on that number.**
+
+### XGB 1× champion OOS evidence (all binary fills, decision_lag=2, Alpaca-real fee 0.278bps, fill_buffer=5bps, 846-symbol universe, 34 OOS windows thru 2026-04-18)
+| lev | med/mo | p10/mo | worst_dd | neg windows | sortino |
+|-----|--------|--------|----------|-------------|---------|
+| **1.0 (queued for paper)** | **+32.2%** | **+20.3%** | **31.9%** | **0/34** | **8.42** |
+| 1.25 | +40.8% | +25.1% | 39.0% | 0/34 | — |
+| 1.5 (knee) | +49.7% | +29.6% | 45.8% | 0/34 | — |
+
+Artifact: `analysis/xgbnew_leverage_sensitivity/multiwindow_20260418_062758.json`
+
+### Deploy diff queued for `xgbnew/xgb-daily-trader.service` (and `/etc/systemd/system/...`)
+
+```diff
+ ExecStart=/nvme0n1-disk/code/stock-prediction/.venv/bin/python -m xgbnew.live_trader \
+     --symbols-file symbol_lists/stocks_wide_1000_v1.txt \
+     --data-root trainingdata \
+-    --model-path analysis/xgbnew_daily/live_model.pkl \
+-    --top-n 2 \
+-    --allocation 0.25 \
++    --model-path analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1.pkl \
++    --top-n 1 \
++    --allocation 1.0 \
+     --loop \
+     --verbose
+```
+
+Concentration note: `--top-n 1 --allocation 1.0` puts 100% of portfolio into one stock per day (buy-open / sell-close, fully flat overnight → Reg T margin rules don't bite). This matches the sim backtest exactly. Worst OOS window is +14.71% at lev=1×, so the 31.9% max DD is a trough inside the 15-month run, not a single-day loss.
+
+### BLOCKED
+- `xgb-daily-trader.service` has been dead since 2026-04-14 with 401 on the paper REST API. Live keys verified working 2026-04-16 13:35 UTC ($28,679 equity), paper keys still need regeneration at the Alpaca dashboard + env write-through. Once keys are good, flip the service with the diff above.
+
+### Crypto audit receipt
+- Grep for `2658` across the repo shows the only match tied to `crypto12_ppo_v8` is in `training_crypto12_improved_100M.log:4392` — not a sim eval artifact.
+- `pufferlib_market/holdout_results/` has no file for this checkpoint.
+- If a real crypto daily PnL is wanted, we need to:
+  1. Rebuild a clean `crypto12_daily_{train,val}.bin` with a strict date cut, or
+  2. Walk-forward eval on `crypto12_data.bin` treating the last N months as held-out, acknowledging it's still a weak test because training saw the distribution.
+
+### Drawdown reduction levers for XGB top_n=1 (queued; will pick one and land before further lev changes)
+Goal: keep the 1× med/mo near 32% while pushing worst_dd below 25%.
+1. **SPY MA50 regime gate** (proven lever on v7 RL, +1.16%/mo there): go flat when SPY < MA50. Cheapest to test.
+2. **top_n=2 with concentration hedge**: top_n=2 half-weight each. Lower DD expected but round-1 grid showed top_n=1 dominates in absolute med/mo — tradeoff needs measurement.
+3. **Vol-target sizing**: scale daily allocation inversely to realised 20d return stdev. Caps DD but adds turnover.
+4. **Confidence floor**: if day's top score below a calibrated threshold, skip the day. Already tested on RL (dead end there), but XGB score distribution is different — worth a quick look.
+5. **SPY-as-backstop short**: small fixed short on SPY/QQQ when regime is bearish. Converts long-only into long-short.
+
+Proposed first experiment: **SPY MA50 gate** on the same 34-window OOS grid. If med stays ≥ 28% and worst_dd drops below 25%, ship gate + lev=1 together.

@@ -220,6 +220,27 @@ def parse_args(argv=None):
         "divergence on rolling / EWM columns (corr > 0.98) vs pandas path — "
         "fine for exploratory sweeps; use pandas for headline publish.",
     )
+    p.add_argument(
+        "--regime-gate-window",
+        type=int,
+        default=0,
+        help="0 disables. 50 = flat when SPY < 50-day SMA (MA50 regime gate). "
+        "20/200 also supported. Gate evaluated on SPY daily close.",
+    )
+    p.add_argument(
+        "--vol-target-ann",
+        type=float,
+        default=0.0,
+        help="0 disables. Else scale daily allocation by "
+        "min(1, vol_target_ann / SPY_20d_realised_ann_vol). Example 0.15 = "
+        "target 15%% annualised regime vol.",
+    )
+    p.add_argument(
+        "--spy-csv",
+        type=Path,
+        default=REPO / "trainingdata/train/SPY.csv",
+        help="SPY daily OHLCV CSV (used by regime-gate and vol-target knobs).",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -308,6 +329,19 @@ def main(argv=None) -> int:
         print("ERROR: No OOS data found.", file=sys.stderr)
         return 1
 
+    spy_close_by_date: pd.Series | None = None
+    if (int(args.regime_gate_window) > 0 or float(args.vol_target_ann) > 0.0) and args.spy_csv.exists():
+        spy_df = pd.read_csv(args.spy_csv, usecols=["timestamp", "close"])
+        spy_df["timestamp"] = pd.to_datetime(spy_df["timestamp"], utc=True, errors="coerce")
+        spy_df = spy_df.dropna(subset=["timestamp", "close"]).drop_duplicates(subset=["timestamp"])
+        spy_df["date"] = spy_df["timestamp"].dt.date
+        spy_close_by_date = spy_df.set_index("date")["close"].astype(float).sort_index()
+        print(
+            f"[xgb-eval] loaded SPY closes: {len(spy_close_by_date)} days "
+            f"(regime_gate={int(args.regime_gate_window)}, vol_target_ann={float(args.vol_target_ann):.2f})",
+            flush=True,
+        )
+
     all_trading_days = sorted(oos_df["date"].unique())
     windows = _build_windows(all_trading_days, window_days=int(args.window_days), stride_days=int(args.stride_days))
     if not windows:
@@ -359,6 +393,8 @@ def main(argv=None) -> int:
             min_dollar_vol=args.min_dollar_vol,
             fee_rate=float(args.fee_rate),
             fill_buffer_bps=float(args.fill_buffer_bps),
+            regime_gate_window=int(args.regime_gate_window),
+            vol_target_ann=float(args.vol_target_ann),
         )
         combined_scores = _combined_scores_from_predictions(
             oos_df,
@@ -373,7 +409,11 @@ def main(argv=None) -> int:
             if len(w_df) < 5:
                 continue
             w_scores = combined_scores.loc[w_df.index]
-            result = simulate(w_df, model, backtest_cfg, precomputed_scores=w_scores)
+            result = simulate(
+                w_df, model, backtest_cfg,
+                precomputed_scores=w_scores,
+                spy_close_by_date=spy_close_by_date,
+            )
             n_days = len(result.day_results)
             monthly = _monthly_return(result.total_return_pct, max(n_days, 1)) * 100.0
             window_results.append(

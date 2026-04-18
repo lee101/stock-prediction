@@ -24,6 +24,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from src.fees import get_fee_for_symbol
 from .features import CHRONOS_FEATURE_COLS, DAILY_FEATURE_COLS
 from .model import XGBStockModel, combined_scores
 
@@ -37,13 +38,18 @@ TRADING_DAYS_PER_YEAR = 252
 class BacktestConfig:
     top_n: int = 2
     initial_cash: float = 10_000.0
-    commission_bps: float = 10.0        # per side
+    commission_bps: float = 0.0         # per side legacy override; prefer fee_rate
     leverage: float = 1.0               # 1.0 = no leverage, max 2.0
     xgb_weight: float = 0.5             # blend weight for XGB vs Chronos2
     min_score: float = 0.0              # min combined score to trade
     min_dollar_vol: float = 5e6         # skip illiquid stocks (min avg daily $ vol)
     max_spread_bps: float = 30.0        # skip wide-spread stocks (max volume-based cost)
     chronos_col: str = "chronos_oc_return"
+    fee_rate: float | None = None       # per-side fee fraction; defaults by symbol
+    fill_buffer_bps: float = 5.0        # adverse entry/exit fill buffer around bar
+    regime_gate_window: int = 0         # 0 disables; 20/50/200 = SPY MA lookback
+    vol_target_ann: float = 0.0         # 0 disables; else scale daily allocation by
+                                        # min(1, vol_target_ann / realised_20d_ann_vol)
 
 
 @dataclass
@@ -52,8 +58,12 @@ class DayTrade:
     score: float
     actual_open: float
     actual_close: float
+    entry_fill_price: float
+    exit_fill_price: float
     spread_bps: float
     commission_bps: float
+    fee_rate: float
+    fill_buffer_bps: float
     leverage: float
     gross_return_pct: float
     net_return_pct: float
@@ -84,6 +94,7 @@ class BacktestResult:
     win_rate_pct: float
     total_trades: int
     avg_spread_bps: float
+    avg_fee_bps: float
     directional_accuracy_pct: float  # % of picks that had gross_return > 0
 
 
@@ -94,15 +105,84 @@ def _day_margin_cost(leverage: float) -> float:
     return (leverage - 1.0) * ANNUAL_MARGIN_RATE / TRADING_DAYS_PER_YEAR
 
 
+def _resolve_fee_rate(symbol: str, config: BacktestConfig) -> float:
+    if config.fee_rate is not None and np.isfinite(config.fee_rate) and config.fee_rate >= 0.0:
+        return float(config.fee_rate)
+    return float(get_fee_for_symbol(symbol))
+
+
+def _fill_prices(open_price: float, close_price: float, *, fill_buffer_bps: float) -> tuple[float, float]:
+    buffer_frac = max(float(fill_buffer_bps), 0.0) / 10_000.0
+    entry_fill = float(open_price) * (1.0 + buffer_frac)
+    exit_fill = float(close_price) * (1.0 - buffer_frac)
+    return entry_fill, exit_fill
+
+
+def _build_regime_flags(
+    spy_close_by_date: pd.Series | None,
+    all_dates: pd.Index,
+    *,
+    window: int,
+) -> pd.Series:
+    """Return a bool Series indexed by ``all_dates`` — True = gate CLOSED (skip day).
+
+    Gate closed when SPY's same-date close is strictly below its ``window``-day
+    simple moving average (computed on SPY history up to and including that
+    date — no look-ahead). Dates missing from SPY coverage are treated as
+    open (do not gate) so we never silently skip a trading day for data reasons.
+    """
+    closed = pd.Series(False, index=all_dates)
+    if spy_close_by_date is None or window <= 0:
+        return closed
+    sp = spy_close_by_date.sort_index()
+    ma = sp.rolling(window=int(window), min_periods=int(window)).mean()
+    ratio = sp / ma
+    below = ratio < 1.0
+    # Align to all_dates — unknown dates stay False (open).
+    aligned = below.reindex(all_dates).astype("boolean").fillna(False).astype(bool)
+    return aligned
+
+
+def _build_vol_scale(
+    spy_close_by_date: pd.Series | None,
+    all_dates: pd.Index,
+    *,
+    target_ann: float,
+    lookback_days: int = 20,
+    trading_days_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Series:
+    """Return a scalar Series (in [0, 1]) by date — min(1, target / realised).
+
+    Uses SPY as the regime-vol proxy because the XGB signal is market-wide.
+    Dates with insufficient SPY history fall through to 1.0 (no scaling).
+    """
+    scale = pd.Series(1.0, index=all_dates)
+    if spy_close_by_date is None or target_ann <= 0:
+        return scale
+    sp = spy_close_by_date.sort_index().astype(float)
+    log_ret = np.log(sp / sp.shift(1))
+    realised_ann = log_ret.rolling(window=int(lookback_days), min_periods=int(lookback_days)).std() * np.sqrt(trading_days_per_year)
+    ratio = (float(target_ann) / realised_ann).clip(upper=1.0)
+    aligned = ratio.reindex(all_dates).fillna(1.0).astype(float)
+    return aligned
+
+
 def simulate(
     test_df: pd.DataFrame,
     model: XGBStockModel,
     config: BacktestConfig,
+    *,
+    precomputed_scores: pd.Series | np.ndarray | None = None,
+    spy_close_by_date: pd.Series | None = None,
 ) -> BacktestResult:
     """Run the backtest on ``test_df``.
 
     ``test_df`` must have columns: date, symbol, actual_open, actual_close,
     spread_bps, dolvol_20d_log, target_oc, + DAILY_FEATURE_COLS + CHRONOS_FEATURE_COLS.
+
+    ``spy_close_by_date`` is an optional daily SPY close series (index: date)
+    used by the regime-gate and vol-target-sizing knobs on ``config``. Pass
+    ``None`` if both knobs are disabled.
     """
     required = {"date", "symbol", "actual_open", "actual_close", "spread_bps"}
     missing = required - set(test_df.columns)
@@ -110,11 +190,21 @@ def simulate(
         raise ValueError(f"test_df missing columns: {missing}")
 
     # Compute combined scores for every row
-    scores = combined_scores(
-        test_df, model,
-        xgb_weight=config.xgb_weight,
-        chronos_col=config.chronos_col,
-    )
+    if precomputed_scores is None:
+        scores = combined_scores(
+            test_df, model,
+            xgb_weight=config.xgb_weight,
+            chronos_col=config.chronos_col,
+        )
+    elif isinstance(precomputed_scores, pd.Series):
+        scores = precomputed_scores.reindex(test_df.index)
+    else:
+        arr = np.asarray(precomputed_scores, dtype=np.float64)
+        if arr.shape[0] != len(test_df):
+            raise ValueError(
+                f"precomputed_scores length {arr.shape[0]} does not match test_df length {len(test_df)}"
+            )
+        scores = pd.Series(arr, index=test_df.index, name="combined_score")
     test_df = test_df.copy()
     test_df["_score"] = scores.values
 
@@ -130,13 +220,37 @@ def simulate(
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])
     test_df = test_df[(test_df["actual_open"] > 0) & (test_df["actual_close"] > 0)]
+    if config.fee_rate is None:
+        symbol_fee_rates = {
+            str(sym): _resolve_fee_rate(str(sym), config)
+            for sym in pd.unique(test_df["symbol"].astype(str))
+        }
+    else:
+        symbol_fee_rates = {}
+
+    unique_dates = pd.Index(sorted(test_df["date"].unique()))
+    regime_closed = _build_regime_flags(
+        spy_close_by_date, unique_dates, window=config.regime_gate_window
+    )
+    vol_scale = _build_vol_scale(
+        spy_close_by_date, unique_dates, target_ann=config.vol_target_ann
+    )
 
     equity = config.initial_cash
     day_results: list[DayResult] = []
 
     for day, day_df in test_df.groupby("date", sort=True):
-        # Rank by combined score, descending
-        day_df = day_df.sort_values("_score", ascending=False)
+        # Regime gate — if SPY under MA for the day, skip (stay in cash).
+        if bool(regime_closed.get(day, False)):
+            continue
+        day_scale = float(vol_scale.get(day, 1.0))
+        # Rank by combined score; among ties prefer stronger Chronos signal.
+        sort_cols = ["_score"]
+        ascending = [False]
+        if config.chronos_col in day_df.columns:
+            sort_cols.append(config.chronos_col)
+            ascending.append(False)
+        day_df = day_df.sort_values(sort_cols, ascending=ascending, kind="mergesort")
 
         picks = day_df[day_df["_score"] >= config.min_score].head(config.top_n * 3)
 
@@ -154,22 +268,33 @@ def simulate(
             if not np.isfinite(spread) or spread <= 0:
                 spread = 25.0
 
-            gross_oc = (c - o) / o
-            gross_leveraged = config.leverage * gross_oc
+            symbol = str(row["symbol"])
+            fee_rate = symbol_fee_rates.get(symbol, _resolve_fee_rate(symbol, config))
+            entry_fill, exit_fill = _fill_prices(o, c, fill_buffer_bps=config.fill_buffer_bps)
+            if entry_fill <= 0 or exit_fill <= 0:
+                continue
+
+            gross_oc = (exit_fill - entry_fill) / entry_fill
+            round_trip_return = (exit_fill * (1.0 - fee_rate) / (entry_fill * (1.0 + fee_rate))) - 1.0
+            gross_leveraged = config.leverage * round_trip_return
 
             cost_frac = (
-                config.leverage * (spread + 2.0 * config.commission_bps) / 10_000.0
+                config.leverage * (2.0 * config.commission_bps) / 10_000.0
                 + _day_margin_cost(config.leverage)
             )
             net = gross_leveraged - cost_frac
 
             trades.append(DayTrade(
-                symbol=str(row["symbol"]),
+                symbol=symbol,
                 score=float(row["_score"]),
                 actual_open=o,
                 actual_close=c,
+                entry_fill_price=entry_fill,
+                exit_fill_price=exit_fill,
                 spread_bps=spread,
                 commission_bps=config.commission_bps,
+                fee_rate=fee_rate,
+                fill_buffer_bps=float(config.fill_buffer_bps),
                 leverage=config.leverage,
                 gross_return_pct=gross_oc * 100.0,
                 net_return_pct=net * 100.0,
@@ -179,6 +304,8 @@ def simulate(
             continue
 
         daily_ret_pct = float(np.mean([t.net_return_pct for t in trades]))
+        # Vol-target sizing: scale today's exposure by SPY-regime vol scalar in [0, 1].
+        daily_ret_pct *= day_scale
         equity_end = equity * (1.0 + daily_ret_pct / 100.0)
 
         day_results.append(DayResult(
@@ -201,7 +328,7 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
             final_equity=config.initial_cash, total_return_pct=0.0,
             monthly_return_pct=0.0, annualized_return_pct=0.0,
             sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown_pct=0.0,
-            win_rate_pct=0.0, total_trades=0, avg_spread_bps=0.0,
+            win_rate_pct=0.0, total_trades=0, avg_spread_bps=0.0, avg_fee_bps=0.0,
             directional_accuracy_pct=0.0,
         )
 
@@ -228,6 +355,7 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
 
     all_trades = [t for r in day_results for t in r.trades]
     spreads = [t.spread_bps for t in all_trades]
+    fee_bps = [t.fee_rate * 10_000.0 for t in all_trades]
     dir_acc = (float(np.mean([t.gross_return_pct > 0 for t in all_trades])) * 100.0
                if all_trades else 0.0)
 
@@ -245,6 +373,7 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
         win_rate_pct=win_rate,
         total_trades=len(all_trades),
         avg_spread_bps=float(np.mean(spreads)) if spreads else 0.0,
+        avg_fee_bps=float(np.mean(fee_bps)) if fee_bps else 0.0,
         directional_accuracy_pct=dir_acc,
     )
 
@@ -269,7 +398,9 @@ def print_summary(res: BacktestResult, label: str = "") -> None:
     print(f"  Total trades      : {res.total_trades}")
     print(f"  Trading days      : {len(res.day_results)}")
     print(f"  Avg spread        : {res.avg_spread_bps:.1f} bps")
-    print(f"  Commission/side   : {res.config.commission_bps:.0f} bps")
+    print(f"  Avg fee/side      : {res.avg_fee_bps:.3f} bps")
+    print(f"  Fill buffer/side  : {res.config.fill_buffer_bps:.1f} bps")
+    print(f"  Commission/side   : {res.config.commission_bps:.3f} bps")
     print(f"{'='*68}")
 
 

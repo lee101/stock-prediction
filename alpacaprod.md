@@ -7,6 +7,66 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-18 — XGB top_n=1 champion QUEUED for paper (lev=1×; blocked on paper-key regen)
+
+**Status**: ready but not live. The `xgb-daily-trader.service` unit has been
+dead since 2026-04-14 with 401 on the paper REST API. Live keys are fine
+(verified 2026-04-16 13:35 UTC, $28,679 equity returned from `get_account`);
+paper keys need regeneration at the Alpaca dashboard. Once that lands, the
+service will be restarted with the config below.
+
+**What's queued**: `xgbnew.live_trader --top-n 1 --allocation 1.0`
+against `analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1.pkl`
+(XGBoost `n_estimators=400, max_depth=5, learning_rate=0.03`, 846-symbol
+universe, seed-robust per 16-seed Bonferroni).
+
+Diff to apply in `/etc/systemd/system/xgb-daily-trader.service` (and the
+in-repo copy at `xgbnew/xgb-daily-trader.service`):
+```diff
+-    --model-path analysis/xgbnew_daily/live_model.pkl \
+-    --top-n 2 \
+-    --allocation 0.25 \
++    --model-path analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1.pkl \
++    --top-n 1 \
++    --allocation 1.0 \
+```
+
+**OOS evidence (846-sym, 34 windows thru 2026-04-18, binary fills, lag=2, fee=0.278bps, fb=5bps)**:
+| lev | med/mo | p10/mo | worst_dd | neg windows | sortino |
+|-----|--------|--------|----------|-------------|---------|
+| **1.0 (queued)** | **+32.2%** | **+20.3%** | **31.9%** | **0/34** | **8.42** |
+| 1.25 | +40.8% | +25.1% | 39.0% | 0/34 | — |
+| 1.5 | +49.7% | +29.6% | 45.8% | 0/34 | — |
+
+**Concentration**: `top_n=1 + allocation=1.0` → 100% of portfolio in one
+stock per day. Buy-open / sell-close, flat overnight → Reg T's 2× overnight
+margin ceiling does not bite (no positions held). Worst individual window
+was +14.71%/mo, so the 31.9% max DD is a cumulative trough across the
+15-month OOS, not a single-day loss.
+
+**Risk**: Single-stock concentration is the exposure knob. DD-reduction
+sweep queued (SPY MA50 regime gate first — proven +1.16%/mo lever on v7 RL;
+if it keeps med ≥ 28% and cuts worst_dd below 25%, ship gate + lev=1
+together).
+
+**Sim artifact**: `analysis/xgbnew_leverage_sensitivity/multiwindow_20260418_062758.json`
+
+Deploy procedure once paper keys are back:
+1. `sudo vim /etc/systemd/system/xgb-daily-trader.service` (apply the diff)
+2. `sudo systemctl daemon-reload && sudo systemctl restart xgb-daily-trader`
+3. `sudo journalctl -u xgb-daily-trader -f` — watch first session score,
+   confirm one BUY at open and one SELL at close.
+4. Cross-check the filled picks against `analysis/xgbnew_daily/trades_top2_lev1.0_xw0.50.csv` shape (now that top_n=1, only one row per day).
+5. One paper week minimum before any consideration of live flip.
+
+**Note on the earlier crypto headline**: `crypto12_ppo_v8_h1024_300M_annealLR`
+"2,658.9× per 30d, 84.5% WR" from `PARITY_SESSION_2026_04_07.md` and
+`currentstate.md` was a **training-set cumulative reward snapshot**, not an
+OOS sim result. No `holdout_results/*.json` exists for it; the training log
+shows `ann_ret` values in the 10⁴⁰%+ range and WR climbing to 1.00. The
+recipe already failed 8/8 seeds on daily stocks. **That checkpoint is NOT
+deployable as is.** See `alpacaprogress8.md` entry for the audit receipt.
+
 ### 2026-04-17 13:03 UTC — Agreement-gate `min_agree_count=2` DEPLOYED (med +0.32, p10 +0.35, sortino +0.81, neg −2)
 
 **What changed**: `deployments/daily-rl-trader/launch.sh` now passes
