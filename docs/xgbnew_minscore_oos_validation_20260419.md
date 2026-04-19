@@ -341,6 +341,48 @@ is tail-protective rather than dilutive.
 | **top_n=3** | +59.19 | **+43.23** | **2.17** | +34.56 | div0 | 0/30 |
 | **top_n=3 16-seed bonferroni** | **+59.21** | **+41.38** | **2.17** | **+35.23** | div0 | 0/30 |
 
+### ms-knee at N=3 lev=1.25 — ms=0.75 is the NEW optimal cell
+
+Prior ms=0.72 was the N=1 knee. At N=3 the knee shifts right because
+the triple-pick diversification absorbs the slightly-lower-conviction
+0.72-0.75 score range. Full sweep on deploy 5s:
+
+| ms | med | p10 | DD | worst | neg | td |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.60 | +48.38 | +32.17 | 8.15 | +9.03 | 0/30 | 645 |
+| 0.65 | +50.13 | +39.87 | 6.03 | +25.31 | 0/30 | 632 |
+| 0.70 | +58.64 | +42.46 | 2.17 | +35.83 | 0/30 | 611 |
+| 0.72 | +59.19 | +43.23 | 2.17 | +34.56 | 0/30 | 603 |
+| **0.75** | **+61.38** | **+43.24** | **2.48** | **+35.67** | **0/30** | **587** |
+| 0.80 | +58.88 | +41.74 | 2.48 | +33.18 | 0/30 | 558 |
+
+**DD-knee at 0.70** (drops 6.03 → 2.17), **median-peak at 0.75**
+(+2.19pp over 0.72 for same p10, same worst, Δ DD +0.31pp only), past
+peak at 0.80 (median rolls over).
+
+### ms=0.75 × N=3 triple-validation (deploy 5s, deploy 16s, OOS 5s)
+
+| cfg | med | p10 | DD | worst | n_neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **lev=1.25** |
+| deploy 5s | +61.38 | +43.24 | 2.48 | +35.67 | 0/30 |
+| deploy 16s bonferroni | +61.38 | +42.49 | 2.48 | +36.34 | 0/30 |
+| OOS 5s | +59.45 | +42.51 | 2.48 | +36.97 | 0/30 |
+| **lev=1.50** |
+| deploy 5s | +77.11 | +53.57 | 2.98 | +43.94 | 0/30 |
+| deploy 16s bonferroni | +77.13 | +52.63 | 2.98 | +44.80 | 0/30 |
+| OOS 5s | +74.57 | +52.66 | 2.98 | +45.55 | 0/30 |
+
+Median deltas between 5s and 16s are ≤0.02pp on both tiers — **median
+is literally pinned across seed count**. DD identical across seed
+counts. p10 softens ~1pp under bonferroni (same single-symbol tail
+variance pattern seen on prior cells). OOS med 1.93-2.54pp below
+deploy; same robust-shrinkage pattern.
+
+**NEW recommended tiers (replace prior ms=0.72)**:
+- **Tail-protected**: `--min-score 0.75 --top-n 3 --leverage 1.25` → +61.38/+43.24/DD 2.48
+- **Aggressive**:     `--min-score 0.75 --top-n 3 --leverage 1.5`  → +77.11/+53.57/DD 2.98
+
 ### Fill-stress + universe transfer on N=3 lev=1.25 tier
 
 | scenario | med | p10 | DD | worst | n_neg/n_wins |
