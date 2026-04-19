@@ -323,7 +323,27 @@ filter's conviction signal is universe-invariant.
 - Conservative:     `--min-score 0.55`            → +45.94/+29.20/DD 9.77
 - Sweet spot:       `--min-score 0.55 --lev 1.25` → +52.01/+30.61/DD 12.62
 - **Max conviction**: `--min-score 0.72 --lev 1.25` → **+60.59/+35.53/DD 3.81**, OOS+16seed validated
-- Aggressive:       `--min-score 0.72 --lev 1.50` (PnL-boost, not yet tested — extrapolate from ms=0.70 at lev=1.5: expect +75-80/+42-44/DD 4.5)
+- **Aggressive**:   `--min-score 0.72 --lev 1.50` → **+76.04/+43.75/DD 4.58**, 0/30 neg, worst +34.70%/mo
+
+## Final closeout: ms=0.72 aggressive tier + universe confirmation
+
+| config | med | p10 | DD | worst_win | td |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ms=0.72 lev=1.25 wide(846) | +60.59 | +35.53 | 3.81 | +28.41 | 603 |
+| **ms=0.72 lev=1.50 wide(846)** | **+76.04** | **+43.75** | **4.58** | **+34.70** | **603** |
+| ms=0.72 lev=1.25 top200 | +55.49 | +41.34 | 3.81 | +35.00 | 577 |
+| ms=0.70 lev=1.25 top200 (ref) | +55.49 | +37.06 | 3.81 | +31.61 | 593 |
+
+**ms=0.72 × lev=1.5 is the new aggressive tier** (replaces the prior
+ms=0.70 × lev=1.5 in the tier table): +76.04/+43.75/DD 4.58, 0/30 neg,
+worst window +34.70%/mo still beats the 27%/mo target by 7pp. Trade
+days identical to lev=1.25 (603) — leverage is a pure PnL multiplier at
+this filter strength. **p10 +43.75** means 90% of one-month windows
+clear +43%/mo.
+
+**ms=0.72 on top200 confirms universe-invariance at the knee**: same
++55.49 median as ms=0.70 on top200, but p10 tightens +4.28pp and worst
+window tightens +3.39pp. Filter+universe knee effects compound.
 
 ### Leverage sweep at ms=0.70 (deployed pkls, lev=1.0 implicit from prior)
 
