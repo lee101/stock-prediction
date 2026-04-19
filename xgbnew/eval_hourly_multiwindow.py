@@ -136,6 +136,14 @@ def parse_args(argv=None):
     )
     p.add_argument("--min-score", type=float, default=0.0)
     p.add_argument(
+        "--min-score-sweep",
+        type=str,
+        default=None,
+        help="Comma-separated list of min_score values to sweep in one training "
+             "run (e.g. '0.0,0.55,0.65,0.75'). When provided, --min-score is "
+             "ignored and one JSON per value is written.",
+    )
+    p.add_argument(
         "--min-dollar-vol",
         type=float,
         default=5e5,
@@ -293,17 +301,25 @@ def main(argv=None) -> int:
         print(f"    {feat:<22} {imp:.4f}")
 
     # OOS backtest — walk windows across the test slice
-    cfg = BacktestConfig(
-        top_n=int(args.top_n),
-        leverage=float(args.leverage),
-        xgb_weight=float(args.xgb_weight),
-        commission_bps=float(args.commission_bps),
-        fill_buffer_bps=float(args.fill_buffer_bps),
-        fee_rate=float(args.fee_rate) if args.fee_rate is not None else None,
-        min_score=float(args.min_score),
-        min_dollar_vol=float(args.min_dollar_vol),
-        max_spread_bps=float(args.max_spread_bps),
-    )
+    if args.min_score_sweep:
+        ms_list = [float(x) for x in args.min_score_sweep.split(",") if x.strip()]
+    else:
+        ms_list = [float(args.min_score)]
+
+    def _make_cfg(ms: float) -> BacktestConfig:
+        return BacktestConfig(
+            top_n=int(args.top_n),
+            leverage=float(args.leverage),
+            xgb_weight=float(args.xgb_weight),
+            commission_bps=float(args.commission_bps),
+            fill_buffer_bps=float(args.fill_buffer_bps),
+            fee_rate=float(args.fee_rate) if args.fee_rate is not None else None,
+            min_score=ms,
+            min_dollar_vol=float(args.min_dollar_vol),
+            max_spread_bps=float(args.max_spread_bps),
+        )
+
+    cfg = _make_cfg(ms_list[0])
 
     bpy = _bars_per_year(args.universe)
     bpm = _bars_per_month(args.universe)
@@ -342,107 +358,112 @@ def main(argv=None) -> int:
         print("ERROR: no OOS windows could be built", file=sys.stderr)
         return 1
 
-    print(f"[xgb-hourly-mw] running {len(windows)} window(s) "
+    print(f"[xgb-hourly-mw] running {len(windows)} window(s) × {len(ms_list)} min-score value(s) "
           f"({int(args.window_bars)} bars each)...", flush=True)
-
-    window_results: list[dict] = []
-    for w_start, w_end in windows:
-        mask = (test_df["timestamp"] >= w_start) & (test_df["timestamp"] <= w_end)
-        w_df = test_df[mask]
-        if len(w_df) < 5:
-            continue
-        w_scores = oos_prob.loc[w_df.index]
-
-        res = simulate_hourly(
-            w_df, model, cfg,
-            bars_per_year=bpy, bars_per_month=bpm,
-            kind_map=kind_map, precomputed_scores=w_scores,
-        )
-        n_bars = len(res.day_results)
-        monthly = _monthly_return_from_total(res.total_return_pct, n_bars, bpm)
-        window_results.append({
-            "w_start": str(w_start),
-            "w_end": str(w_end),
-            "n_bars": n_bars,
-            "total_return_pct": res.total_return_pct,
-            "monthly_return_pct": monthly,
-            "annualized_return_pct": res.annualized_return_pct,
-            "sharpe": res.sharpe_ratio,
-            "sortino": res.sortino_ratio,
-            "max_dd_pct": res.max_drawdown_pct,
-            "win_rate_pct": res.win_rate_pct,
-            "dir_acc_pct": res.directional_accuracy_pct,
-            "total_trades": res.total_trades,
-            "avg_spread_bps": res.avg_spread_bps,
-            "avg_fee_bps": res.avg_fee_bps,
-        })
-
-    if not window_results:
-        print("ERROR: no window produced results", file=sys.stderr)
-        return 1
-
-    monthly = np.array([r["monthly_return_pct"] for r in window_results], dtype=np.float64)
-    annual = np.array([r["annualized_return_pct"] for r in window_results], dtype=np.float64)
-    sortinos = np.array([r["sortino"] for r in window_results], dtype=np.float64)
-    dd = np.array([r["max_dd_pct"] for r in window_results], dtype=np.float64)
-    n_neg = int(np.sum(monthly < 0.0))
-
-    print(f"\n{'='*78}")
-    print(f"  Hourly XGB multi-window OOS  (universe={args.universe})")
-    print(f"  bars_per_year={bpy:.1f}  bars_per_month={bpm:.1f}")
-    print(f"  top_n={cfg.top_n} lev={cfg.leverage:.2f} fee_rate={cfg.fee_rate}")
-    print(f"{'='*78}")
-    print(f"  Windows              : {len(window_results)} (n_bars each ~ {int(args.window_bars)})")
-    print(f"  Median monthly%      : {float(np.median(monthly)):+.2f}%")
-    print(f"  P10 monthly%         : {float(np.percentile(monthly, 10)):+.2f}%")
-    print(f"  P90 monthly%         : {float(np.percentile(monthly, 90)):+.2f}%")
-    print(f"  Median annualised%   : {float(np.median(annual)):+.2f}%")
-    print(f"  Median sortino       : {float(np.median(sortinos)):.2f}")
-    print(f"  Median max DD%       : {float(np.median(dd)):.2f}%")
-    print(f"  Worst max DD%        : {float(np.max(dd)):.2f}%")
-    print(f"  Neg windows          : {n_neg}/{len(window_results)}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
-    out = {
-        "universe": args.universe,
-        "session_filter": args.session_filter,
-        "train_end": args.train_end,
-        "val_end": args.val_end,
-        "test_end": args.test_end,
-        "bars_per_year": bpy,
-        "bars_per_month": bpm,
-        "config": {
-            "top_n": int(args.top_n),
-            "leverage": float(args.leverage),
-            "xgb_weight": float(args.xgb_weight),
-            "commission_bps": float(args.commission_bps),
-            "fill_buffer_bps": float(args.fill_buffer_bps),
-            "fee_rate": float(args.fee_rate) if args.fee_rate is not None else None,
-            "n_estimators": int(args.n_estimators),
-            "max_depth": int(args.max_depth),
-            "learning_rate": float(args.learning_rate),
-            "random_state": int(args.random_state),
-            "min_dollar_vol": float(args.min_dollar_vol),
-            "max_spread_bps": float(args.max_spread_bps),
-            "window_bars": int(args.window_bars),
-            "stride_bars": int(args.stride_bars),
-        },
-        "median_monthly_pct": float(np.median(monthly)),
-        "p10_monthly_pct": float(np.percentile(monthly, 10)),
-        "median_sortino": float(np.median(sortinos)),
-        "n_neg_monthly": n_neg,
-        "n_windows": len(window_results),
-        "n_symbols": len(kind_map),
-        "kind_counts": {
-            "stocks": sum(1 for k in kind_map.values() if k == "stocks"),
-            "crypto": sum(1 for k in kind_map.values() if k == "crypto"),
-        },
-        "windows": window_results,
-    }
-    out_path = args.output_dir / f"hourly_multiwindow_{args.universe}_{ts}.json"
-    out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    print(f"\n  Results → {out_path}")
+
+    for ms in ms_list:
+        cfg_ms = _make_cfg(ms)
+        window_results: list[dict] = []
+        for w_start, w_end in windows:
+            mask = (test_df["timestamp"] >= w_start) & (test_df["timestamp"] <= w_end)
+            w_df = test_df[mask]
+            if len(w_df) < 5:
+                continue
+            w_scores = oos_prob.loc[w_df.index]
+
+            res = simulate_hourly(
+                w_df, model, cfg_ms,
+                bars_per_year=bpy, bars_per_month=bpm,
+                kind_map=kind_map, precomputed_scores=w_scores,
+            )
+            n_bars = len(res.day_results)
+            monthly_w = _monthly_return_from_total(res.total_return_pct, n_bars, bpm)
+            window_results.append({
+                "w_start": str(w_start),
+                "w_end": str(w_end),
+                "n_bars": n_bars,
+                "total_return_pct": res.total_return_pct,
+                "monthly_return_pct": monthly_w,
+                "annualized_return_pct": res.annualized_return_pct,
+                "sharpe": res.sharpe_ratio,
+                "sortino": res.sortino_ratio,
+                "max_dd_pct": res.max_drawdown_pct,
+                "win_rate_pct": res.win_rate_pct,
+                "dir_acc_pct": res.directional_accuracy_pct,
+                "total_trades": res.total_trades,
+                "avg_spread_bps": res.avg_spread_bps,
+                "avg_fee_bps": res.avg_fee_bps,
+            })
+
+        if not window_results:
+            print(f"WARN: ms={ms} produced no windows — skipping", file=sys.stderr)
+            continue
+
+        monthly = np.array([r["monthly_return_pct"] for r in window_results], dtype=np.float64)
+        annual = np.array([r["annualized_return_pct"] for r in window_results], dtype=np.float64)
+        sortinos = np.array([r["sortino"] for r in window_results], dtype=np.float64)
+        dd = np.array([r["max_dd_pct"] for r in window_results], dtype=np.float64)
+        n_neg = int(np.sum(monthly < 0.0))
+
+        print(f"\n{'='*78}")
+        print(f"  Hourly XGB multi-window OOS  (universe={args.universe}, ms={ms})")
+        print(f"  bars_per_year={bpy:.1f}  bars_per_month={bpm:.1f}")
+        print(f"  top_n={cfg_ms.top_n} lev={cfg_ms.leverage:.2f} fee_rate={cfg_ms.fee_rate}")
+        print(f"{'='*78}")
+        print(f"  Windows              : {len(window_results)} (n_bars each ~ {int(args.window_bars)})")
+        print(f"  Median monthly%      : {float(np.median(monthly)):+.2f}%")
+        print(f"  P10 monthly%         : {float(np.percentile(monthly, 10)):+.2f}%")
+        print(f"  P90 monthly%         : {float(np.percentile(monthly, 90)):+.2f}%")
+        print(f"  Median annualised%   : {float(np.median(annual)):+.2f}%")
+        print(f"  Median sortino       : {float(np.median(sortinos)):.2f}")
+        print(f"  Median max DD%       : {float(np.median(dd)):.2f}%")
+        print(f"  Worst max DD%        : {float(np.max(dd)):.2f}%")
+        print(f"  Neg windows          : {n_neg}/{len(window_results)}")
+
+        out = {
+            "universe": args.universe,
+            "session_filter": args.session_filter,
+            "train_end": args.train_end,
+            "val_end": args.val_end,
+            "test_end": args.test_end,
+            "bars_per_year": bpy,
+            "bars_per_month": bpm,
+            "config": {
+                "top_n": int(args.top_n),
+                "leverage": float(args.leverage),
+                "xgb_weight": float(args.xgb_weight),
+                "commission_bps": float(args.commission_bps),
+                "fill_buffer_bps": float(args.fill_buffer_bps),
+                "fee_rate": float(args.fee_rate) if args.fee_rate is not None else None,
+                "min_score": ms,
+                "n_estimators": int(args.n_estimators),
+                "max_depth": int(args.max_depth),
+                "learning_rate": float(args.learning_rate),
+                "random_state": int(args.random_state),
+                "min_dollar_vol": float(args.min_dollar_vol),
+                "max_spread_bps": float(args.max_spread_bps),
+                "window_bars": int(args.window_bars),
+                "stride_bars": int(args.stride_bars),
+            },
+            "median_monthly_pct": float(np.median(monthly)),
+            "p10_monthly_pct": float(np.percentile(monthly, 10)),
+            "median_sortino": float(np.median(sortinos)),
+            "n_neg_monthly": n_neg,
+            "n_windows": len(window_results),
+            "n_symbols": len(kind_map),
+            "kind_counts": {
+                "stocks": sum(1 for k in kind_map.values() if k == "stocks"),
+                "crypto": sum(1 for k in kind_map.values() if k == "crypto"),
+            },
+            "windows": window_results,
+        }
+        ms_tag = f"_ms{int(round(ms*100)):03d}" if ms > 0 else ""
+        out_path = args.output_dir / f"hourly_multiwindow_{args.universe}_{ts}{ms_tag}.json"
+        out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+        print(f"\n  Results → {out_path}")
     return 0
 
 
