@@ -134,6 +134,9 @@ def parse_args(argv=None):
     p.add_argument("--allocation-mode", default="equal",
                    choices=["equal", "softmax", "score_norm"])
     p.add_argument("--allocation-temp", type=float, default=1.0)
+    p.add_argument("--min-score", type=float, default=0.0,
+                   help="Skip trade if top-1 blended predict_proba < min_score. "
+                        "0.0 (default) = no filter. Values ~0.55-0.70 gate on conviction.")
 
     p.add_argument("--blend-mode", default="mean",
                    choices=["mean", "median", "rank_mean"])
@@ -217,6 +220,7 @@ def main(argv=None) -> int:
         fill_buffer_bps=float(args.fill_buffer_bps),
         allocation_mode=str(args.allocation_mode),
         allocation_temp=float(args.allocation_temp),
+        min_score=float(args.min_score),
     )
 
     window_results = []

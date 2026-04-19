@@ -445,6 +445,10 @@ def parse_args(argv=None):
                    help="Number of stocks to buy per day")
     p.add_argument("--allocation",   type=float, default=0.25,
                    help="Fraction of portfolio to deploy (0.25 = 25%% per pick, shared)")
+    p.add_argument("--min-score",    type=float, default=0.0,
+                   help="Skip pick if blended predict_proba < min_score. "
+                        "0.0 (default) = no filter. 0.55-0.70 gates on conviction. "
+                        "If all top_n candidates fail, session holds cash.")
     p.add_argument("--commission-bps", type=float, default=10.0)
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
     p.add_argument("--live",         action="store_true",
@@ -508,7 +512,20 @@ def run_session(
         print("[xgb-live] ERROR: No scoreable symbols today.", file=sys.stderr)
         return
 
-    picks = scores_df.head(args.top_n)
+    min_score = float(getattr(args, "min_score", 0.0) or 0.0)
+    if min_score > 0.0:
+        filtered = scores_df[scores_df["score"] >= min_score]
+        print(f"[xgb-live] Conviction filter min_score={min_score:.2f}: "
+              f"{len(filtered)}/{len(scores_df)} candidates pass "
+              f"(top score={scores_df['score'].iloc[0]:.4f})", flush=True)
+        if len(filtered) == 0:
+            print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
+                  f"holding cash for {today_str}.", flush=True)
+            return
+        picks = filtered.head(args.top_n)
+    else:
+        picks = scores_df.head(args.top_n)
+
     print(f"\n[xgb-live] Top-{args.top_n} picks for {today_str}:")
     for _, row in picks.iterrows():
         print(f"  {row['symbol']:<8}  score={row['score']:.4f}  "

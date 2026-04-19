@@ -162,3 +162,51 @@ def test_record_and_retrieve_buy_price_roundtrip(tmp_path, monkeypatch):
     raw = json.loads(buy_files[0].read_text())
     assert "RTSYM" in raw
     assert raw["RTSYM"]["price"] == pytest.approx(42.42)
+
+
+def test_min_score_flag_defaults_to_zero_and_parses():
+    """--min-score defaults to 0.0 (no filter, preserves current behavior);
+    accepts values in [0, 1]."""
+    from xgbnew.live_trader import parse_args
+
+    # Default: no --min-score flag → 0.0
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+    ])
+    assert a.min_score == pytest.approx(0.0)
+
+    # Explicit: --min-score 0.55 → 0.55
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+        "--min-score", "0.55",
+    ])
+    assert a.min_score == pytest.approx(0.55)
+
+
+def test_min_score_filter_applied_to_picks(tmp_path, monkeypatch):
+    """When min_score>0, candidates below the floor are dropped before
+    top_n selection. When all fail, session holds cash."""
+    import pandas as pd
+    # Simulate the filter expression directly (mirrors live_trader.run_session
+    # lines 511-527 — no client/orders needed).
+    scores_df = pd.DataFrame([
+        {"symbol": "HIGH", "score": 0.72, "last_close": 100.0, "spread_bps": 3.0},
+        {"symbol": "MID",  "score": 0.58, "last_close": 50.0,  "spread_bps": 2.0},
+        {"symbol": "LOW",  "score": 0.45, "last_close": 25.0,  "spread_bps": 4.0},
+    ])
+
+    # ms=0.55 → only HIGH + MID; top_n=1 returns HIGH
+    filtered = scores_df[scores_df["score"] >= 0.55]
+    assert len(filtered) == 2
+    assert filtered.head(1)["symbol"].iloc[0] == "HIGH"
+
+    # ms=0.70 → only HIGH; top_n=2 requested, only 1 candidate available
+    filtered = scores_df[scores_df["score"] >= 0.70]
+    assert len(filtered) == 1
+    assert filtered.head(2)["symbol"].iloc[0] == "HIGH"
+
+    # ms=0.95 → 0 candidates; caller must handle cash-only session
+    filtered = scores_df[scores_df["score"] >= 0.95]
+    assert len(filtered) == 0
