@@ -241,6 +241,29 @@ tightens +2.14pp on the 3×-larger ensemble. This rules out the 5-seed
 result being a lucky draw — the ms=0.70 conviction-filter effect is
 seed-robust at the ensemble level.
 
+### Fill-stress sweep (ms=0.70 × lev=1.25)
+
+Tests whether the max-conviction config survives realistic slip regimes.
+`fee_rate=10bps` is already ~36× higher than real Alpaca fees (~0.278
+bps/trade), so the nominal case is heavily padded.
+
+| config | total bps | med | p10 | DD | worst_win | neg |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fb=5 fee=10 (nominal) | 15 | +60.59 | +30.96 | 3.81 | +24.93 | 0/30 |
+| fb=15 fee=10 (3× slip) | 25 | +52.41 | +24.27 | 4.05 | +18.55 | 0/30 |
+| fb=20 fee=10 (4× slip) | 30 | +48.48 | +21.06 | 4.24 | +15.48 | 0/30 |
+| fb=10 fee=20 (combined 2×) | 30 | +48.48 | +21.06 | 4.24 | +15.48 | 0/30 |
+
+Sensitivity: **~0.79%/mo per bp of total friction** (linear). The fb and
+fee axes are fungible — at 30 total bps the result is IDENTICAL
+regardless of split (15+15 vs 10+20). Max-stress cell (30 bps total, 4×
+real Alpaca friction) still clears deploy gate on every metric and
+posts 0/30 neg with worst window +15.48%/mo.
+
+**Real-money projection:** at ~5bps fill_buffer (liquid stock half-spread)
+and 0.28 bps fee, real friction is ~5.3 bps total — the nominal +60.59
+is a LOWER BOUND on expected live median, not an optimistic reading.
+
 ### Leverage sweep at ms=0.70 (deployed pkls, lev=1.0 implicit from prior)
 
 | lev | med | p10 | DD | worst_win | neg |
