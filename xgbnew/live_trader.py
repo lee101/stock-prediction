@@ -243,18 +243,26 @@ def _extend_with_live_bars(
 def score_all_symbols(
     symbols: list[str],
     data_root: Path,
-    model: XGBStockModel,
+    model: XGBStockModel | list[XGBStockModel],
     live_bars: dict[str, pd.DataFrame] | None = None,
     min_dollar_vol: float = 5e6,
     now: datetime | None = None,
 ) -> pd.DataFrame:
     """Score all symbols for today's open-to-close trade.
 
+    ``model`` may be a single ``XGBStockModel`` or a list of models — in the
+    latter case per-model ``predict_scores`` are averaged (prob-mean blend,
+    matches ``xgbnew/eval_pretrained.py`` default).
+
     Returns DataFrame with columns [symbol, score, spread_bps, last_close]
     sorted by score descending.
     """
     if live_bars is None:
         live_bars = {}
+
+    models: list[XGBStockModel] = model if isinstance(model, list) else [model]
+    if not models:
+        raise ValueError("score_all_symbols: no models provided")
 
     rows = []
 
@@ -290,7 +298,11 @@ def score_all_symbols(
             if col not in last_row.columns:
                 last_row[col] = 0.0
 
-        score = float(model.predict_scores(last_row).iloc[0])
+        if len(models) == 1:
+            score = float(models[0].predict_scores(last_row).iloc[0])
+        else:
+            seed_scores = [float(m.predict_scores(last_row).iloc[0]) for m in models]
+            score = float(np.mean(seed_scores))
         last_close = float(last_row["actual_close"].iloc[0])
         rows.append({
             "symbol": sym,
@@ -338,7 +350,10 @@ def parse_args(argv=None):
                    default=REPO / "symbol_lists/stocks_wide_1000_v1.txt")
     p.add_argument("--data-root",    type=Path, default=REPO / "trainingdata")
     p.add_argument("--model-path",   type=Path, default=DEFAULT_MODEL_PATH,
-                   help="Pre-trained XGBStockModel pickle (from eval_multiwindow --model-save-path)")
+                   help="Pre-trained XGBStockModel pickle (ignored when --model-paths is set)")
+    p.add_argument("--model-paths",  type=str, default="",
+                   help="Comma-separated list of pickles — ensemble mean-blend (predict_proba avg). "
+                        "Takes precedence over --model-path when set.")
     p.add_argument("--top-n",        type=int,   default=2,
                    help="Number of stocks to buy per day")
     p.add_argument("--allocation",   type=float, default=0.25,
@@ -367,7 +382,7 @@ def _load_symbols(path: Path) -> list[str]:
 def run_session(
     symbols: list[str],
     data_root: Path,
-    model: XGBStockModel,
+    model: XGBStockModel | list[XGBStockModel],
     client,
     args: argparse.Namespace,
 ) -> None:
@@ -477,14 +492,25 @@ def main(argv=None) -> int:
             account_name="alpaca_live_writer",
         )
 
-    # ── Load model ─────────────────────────────────────────────────────────────
-    if not args.model_path.exists():
-        print(f"ERROR: Model not found at {args.model_path}", file=sys.stderr)
-        print("Run eval_multiwindow.py first with --model-save-path to create it.", file=sys.stderr)
-        return 1
-
-    print(f"[xgb-live] Loading model from {args.model_path}", flush=True)
-    model = XGBStockModel.load(args.model_path)
+    # ── Load model(s) ─────────────────────────────────────────────────────────
+    if args.model_paths.strip():
+        paths = [Path(p.strip()) for p in args.model_paths.split(",") if p.strip()]
+        for mp in paths:
+            if not mp.exists():
+                print(f"ERROR: Ensemble model not found at {mp}", file=sys.stderr)
+                return 1
+        print(f"[xgb-live] Loading ensemble of {len(paths)} models", flush=True)
+        for mp in paths:
+            print(f"[xgb-live]   - {mp}", flush=True)
+        model: XGBStockModel | list[XGBStockModel] = [XGBStockModel.load(mp) for mp in paths]
+    else:
+        if not args.model_path.exists():
+            print(f"ERROR: Model not found at {args.model_path}", file=sys.stderr)
+            print("Run train_alltrain.py to create it, or set --model-paths for an ensemble.",
+                  file=sys.stderr)
+            return 1
+        print(f"[xgb-live] Loading model from {args.model_path}", flush=True)
+        model = XGBStockModel.load(args.model_path)
 
     # ── Load symbols ───────────────────────────────────────────────────────────
     symbols = _load_symbols(args.symbols_file)
