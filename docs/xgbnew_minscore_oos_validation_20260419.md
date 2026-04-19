@@ -147,6 +147,33 @@ sudo supervisorctl restart xgb-daily-trader-live
 editing launch.sh.** The result stays documented and user can flip the
 switch when they're ready.
 
+## Stack with leverage — DEPLOYED pkls + ms=0.55 + lev=1.25
+
+The filter collapses DD so hard that leverage headroom appears. Ran the
+stack on the exact same 5 deployed pkls:
+
+| config | med | p10 | sortino | DD | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ms=0.55 lev=1.0  | +45.94 | +29.20 | 52.43 | 9.77  | 0/30 |
+| **ms=0.55 lev=1.25** | **+52.01** | **+30.61** | 45.19 | 12.62 | **0/30** |
+| ms=0   lev=1.25 (16-seed, no filter) | +52.21 | +5.26 | 5.05 | 38.55 | 4/30 |
+
+At 1.25×, PnL climbs ~13% and p10 actually improves (+1.41pp). Sortino
+drops 7.24 but stays well above deploy-gate 18.86. Max DD climbs
+2.85pp to 12.62% — still 60% under baseline's 31.44%. **0/30 negative
+windows preserved.**
+
+Compare to the prior lev=1.25 candidate WITHOUT the filter: DD 38.55%,
+4/30 neg — that one failed the gate. The filter unlocks leverage by
+removing the tail; leverage unlocks the middle by compounding
+high-conviction days. They're complementary, not competing.
+
+**Activation cost**: same — one launch.sh edit, two flags instead of one:
+```bash
+--min-score 0.55 --leverage 1.25
+```
+Same pkls, no retraining. Strict-dominates deploy gate on every metric.
+
 ## Monitor plan after activation
 - First week: cash-only day count. If >3 consecutive cash days, drop to
   ms=0.50.
