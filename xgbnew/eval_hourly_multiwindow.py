@@ -169,8 +169,54 @@ def parse_args(argv=None):
         help="XGBoost device (default 'cuda' when available, falls back to CPU). "
              "Pass 'cpu' to force CPU.",
     )
+    p.add_argument(
+        "--session-filter",
+        choices=["all", "weekend", "offhours"],
+        default="all",
+        help=(
+            "Restrict OOS trading bars. "
+            "'weekend' = Sat 00:00 UTC .. Mon 13:30 UTC (covers Fri 21:00 UTC close through Mon open). "
+            "'offhours' = any hour outside US equity regular session (13:30-21:00 UTC weekdays). "
+            "Useful for carving out a crypto strategy that's additive to stock-hours trading."
+        ),
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
+
+
+def _apply_session_filter(df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """Return rows whose timestamp falls in the requested trading session.
+
+    Timestamps are assumed UTC-aware. US equity regular session spans
+    roughly 13:30-21:00 UTC (14:30-21:00 in standard time; 13:30-20:00
+    during DST). We use the conservative union 13:30-21:00 UTC so that
+    'offhours' is always disjoint from any US stock session and a
+    weekend-crypto strategy is non-overlapping with the daily stocks
+    champion.
+    """
+    if mode == "all":
+        return df
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    dow = ts.dt.dayofweek
+    minute_of_day = ts.dt.hour * 60 + ts.dt.minute
+    session_open = 13 * 60 + 30  # 13:30 UTC
+    session_close = 21 * 60      # 21:00 UTC
+    if mode == "weekend":
+        # Sat+Sun entirely, plus Fri after 21:00 UTC and Mon before 13:30 UTC.
+        weekend_core = dow.isin([5, 6])
+        fri_after = (dow == 4) & (minute_of_day >= session_close)
+        mon_before = (dow == 0) & (minute_of_day < session_open)
+        mask = weekend_core | fri_after | mon_before
+    elif mode == "offhours":
+        # Any weekday hour outside 13:30-21:00 UTC, or any weekend hour.
+        weekend = dow.isin([5, 6])
+        weekday_off = (dow <= 4) & (
+            (minute_of_day < session_open) | (minute_of_day >= session_close)
+        )
+        mask = weekend | weekday_off
+    else:
+        return df
+    return df[mask.values]
 
 
 def main(argv=None) -> int:
@@ -262,6 +308,27 @@ def main(argv=None) -> int:
     bpy = _bars_per_year(args.universe)
     bpm = _bars_per_month(args.universe)
 
+    if args.session_filter != "all":
+        pre_rows = len(test_df)
+        test_df = _apply_session_filter(test_df, args.session_filter)
+        print(
+            f"[xgb-hourly-mw] session_filter={args.session_filter}: "
+            f"{pre_rows:,} → {len(test_df):,} rows",
+            flush=True,
+        )
+        if args.session_filter == "weekend":
+            # Weekend-only runs at 48-72h/week on average → annualise accordingly.
+            bpy = 52.0 * 60.0
+            bpm = bpy / 12.0
+        elif args.session_filter == "offhours":
+            bpy = 52.0 * (24.0 * 7.0 - 5.0 * 7.5)
+            bpm = bpy / 12.0
+        print(f"[xgb-hourly-mw] bars/year adjusted → {bpy:.1f} (session-filtered)", flush=True)
+
+    if len(test_df) < 200:
+        print("ERROR: too few OOS rows after session filter", file=sys.stderr)
+        return 1
+
     # Precompute scores once over the full test slice
     oos_prob = model.predict_scores(test_df)
 
@@ -339,6 +406,7 @@ def main(argv=None) -> int:
     ts = time.strftime("%Y%m%d_%H%M%S")
     out = {
         "universe": args.universe,
+        "session_filter": args.session_filter,
         "train_end": args.train_end,
         "val_end": args.val_end,
         "test_end": args.test_end,
