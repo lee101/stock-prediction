@@ -65,16 +65,26 @@ class XGBStockModel:
                 xgboost build with USE_CUDA=1 (check ``xgboost.build_info()``).
                 When device starts with ``"cuda"`` we also force
                 ``tree_method="hist"`` (the modern GPU path; ``gpu_hist`` is
-                deprecated in xgboost ≥ 2.0).
+                deprecated in xgboost ≥ 2.0). Silently falls back to CPU if
+                the xgboost build lacks CUDA support.
             **kwargs: Overrides for DEFAULT_PARAMS.
         """
         _check_xgb()
-        from xgboost import XGBClassifier
+        from xgboost import XGBClassifier, build_info
         params = {**self.DEFAULT_PARAMS, **kwargs}
+        if device and device.startswith("cuda"):
+            if not build_info().get("USE_CUDA"):
+                logger.warning(
+                    "xgboost built without USE_CUDA; falling back to CPU from device=%r",
+                    device,
+                )
+                device = None
         if device is not None:
             params["device"] = device
             if device.startswith("cuda"):
                 params.setdefault("tree_method", "hist")
+                # XGBoost 3.x on CUDA wants fewer host threads — avoid thread thrash
+                params.setdefault("n_jobs", 1)
         self.device = device
         self.clf = XGBClassifier(**params)
         self.feature_cols: list[str] = []
@@ -167,7 +177,21 @@ class XGBStockModel:
         nan_mask = np.isnan(X)
         X[nan_mask] = np.take(self._col_medians, np.where(nan_mask)[1])
 
-        proba = self.clf.predict_proba(X)[:, 1]
+        # When booster is on CUDA, move X to GPU first to avoid the
+        # "falling back to prediction using DMatrix" warning/slowdown.
+        dev = getattr(self, "device", None)
+        if dev and str(dev).startswith("cuda"):
+            try:
+                import cupy as cp
+                X_in = cp.asarray(X)
+            except ImportError:
+                X_in = X
+        else:
+            X_in = X
+
+        proba = self.clf.predict_proba(X_in)[:, 1]
+        if hasattr(proba, "get"):  # CuPy → NumPy
+            proba = proba.get()
         return pd.Series(proba, index=df.index, name="xgb_score")
 
     def feature_importances(self) -> pd.Series:

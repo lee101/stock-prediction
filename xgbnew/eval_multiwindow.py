@@ -210,8 +210,9 @@ def parse_args(argv=None):
     p.add_argument("--model-save-path", type=Path, default=None)
     p.add_argument(
         "--device",
-        default=None,
-        help="XGBoost device (e.g. 'cuda'). Omit for CPU. Requires xgboost built with USE_CUDA.",
+        default="cuda",
+        help="XGBoost device (default 'cuda' when available, falls back to CPU). "
+             "Pass 'cpu' to force CPU. Requires xgboost built with USE_CUDA for GPU.",
     )
     p.add_argument(
         "--fast-features",

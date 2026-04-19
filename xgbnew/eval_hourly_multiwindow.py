@@ -163,6 +163,12 @@ def parse_args(argv=None):
     p.add_argument("--min-bars", type=int, default=400)
 
     p.add_argument("--output-dir", type=Path, default=REPO / "analysis/xgbnew_hourly")
+    p.add_argument(
+        "--device",
+        default="cuda",
+        help="XGBoost device (default 'cuda' when available, falls back to CPU). "
+             "Pass 'cpu' to force CPU.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -225,6 +231,7 @@ def main(argv=None) -> int:
     print("[xgb-hourly-mw] training XGB...", flush=True)
     t0 = time.perf_counter()
     model = XGBStockModel(
+        device=args.device,
         n_estimators=int(args.n_estimators),
         max_depth=int(args.max_depth),
         learning_rate=float(args.learning_rate),

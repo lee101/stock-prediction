@@ -160,6 +160,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--initial-cash", type=float, default=10_000.0)
     p.add_argument("--n-estimators", type=int, default=200)
     p.add_argument("--max-depth",    type=int, default=4)
+    p.add_argument(
+        "--device",
+        default="cuda",
+        help="XGBoost device (default 'cuda' when available). Pass 'cpu' to force CPU.",
+    )
     p.add_argument("--output-dir", type=Path,
                    default=REPO / "analysis/xgbnew_hourly")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -236,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── Train XGBoost ─────────────────────────────────────────────────────────
     print("[xgb-hourly] Training XGBStockModel...", flush=True)
     model = XGBStockModel(
+        device=args.device,
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
         learning_rate=0.05,

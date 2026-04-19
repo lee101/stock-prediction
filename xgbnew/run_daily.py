@@ -100,6 +100,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="XGBoost training seed (default 42). DD-reduction sweep"
                         " validated seed=2 for minimal worst-DD across 7-seed cohort.")
 
+    p.add_argument(
+        "--device",
+        default="cuda",
+        help="XGBoost device (default 'cuda' when available). Pass 'cpu' to force CPU.",
+    )
     p.add_argument("--output-dir", type=Path,
                    default=REPO / "analysis/xgbnew_daily")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -161,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("[xgb-daily] Training XGBStockModel...", flush=True)
         model = XGBStockModel(
+            device=args.device,
             n_estimators=args.n_estimators,
             max_depth=args.max_depth,
             learning_rate=args.learning_rate,
