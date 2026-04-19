@@ -324,9 +324,20 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
    ```
    If it drifts from the recorded baseline (median +38.85%, 2/30 neg) by > 0.5pp median or ± 1 neg window, investigate — the universe or data file may have moved under us.
 
-2. **16-seed bonferroni re-validation**. 10 extra alltrain seeds are already trained at `analysis/xgbnew_daily/alltrain_ensemble_gpu_extra5/alltrain_seed{1,3,11,23,59}.pkl` plus any additional. A 16-seed ensemble is the cleanest next-gen candidate. Build it:
+2. **Expanded-seed bonferroni re-validation**. As of 2026-04-19, 10 alltrain seeds are on disk: 5 deployed (`alltrain_ensemble_gpu/alltrain_seed{0,7,42,73,197}.pkl`) + 5 extra (`alltrain_ensemble_gpu_extra5/alltrain_seed{1,3,11,23,59}.pkl`). Prior recorded result: 10-seed LOSES to 5-seed by 0.80pp median (+38.05 vs +38.85), diminishing-returns on same-config seeds. A real 16-seed test needs 6 more seeds trained — pick prime-ish unused seeds (e.g. 2, 5, 13, 17, 19, 29) and train with:
    ```bash
-   # (Exact paths may need adjustment; inspect alltrain_ensemble_gpu_extra5 first)
+   # Confirm the alltrain trainer entry point before launching; current live trainer is xgbnew/train_alltrain.py
+   for S in 2 5 13 17 19 29; do
+     setsid nohup python xgbnew/train_alltrain.py \
+         --universe stocks_wide_1000_v1.txt \
+         --seed $S --device cuda \
+         --n-estimators 400 --max-depth 5 --learning-rate 0.03 \
+         --out analysis/xgbnew_daily/alltrain_ensemble_gpu_extra10/alltrain_seed${S}.pkl \
+         < /dev/null > .tmp_train/alltrain_s${S}.log 2>&1 63>&- 62>&- &
+   done
+   ```
+   Then next hour, eval the 16-pkl ensemble:
+   ```bash
    python xgbnew/eval_pretrained.py \
        --models <comma list of 16 pkl paths> \
        --blend-mode mean --top-n 1 --leverage 1.0 \
@@ -334,7 +345,7 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
        --fee 0.0000278 --fill-buffer-bps 5 --decision-lag 2 \
        --out analysis/xgbnew_deploy_baseline/deploy_16seed_$(date -u +%Y%m%d_%H%M).json
    ```
-   Deploy only if all four bars beat. Note: prior run showed 10-seed LOSES to 5-seed by 0.80pp median (diminishing returns on same-config seeds). 16-seed may not beat either — a negative result is still publishable in the docs trail.
+   Deploy only if all four bars beat. 16-seed may not beat 5-seed — a negative result is still publishable. **Don't schedule training during live trading window (13:30-20:00 UTC weekdays)** — XGB's CPU pull contends.
 
 3. **OOS k-fold re-validate** (30-min, GPU). Train an all-data model through each fold's cut-off, score on the held-out post-cut window:
    ```bash
