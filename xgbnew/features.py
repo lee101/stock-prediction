@@ -277,6 +277,13 @@ def build_features_for_symbol_hourly(
     feat["actual_open"]  = open_
     feat["actual_close"] = close
 
+    # XGBoost requires NaN for missing; inf raises. Zero/negative prices in
+    # a few hourly bars can produce log(0)=-inf via log-returns. Keep NaNs
+    # (XGBoost treats as missing) but strip infinities.
+    feat[HOURLY_FEATURE_COLS] = (
+        feat[HOURLY_FEATURE_COLS].replace([np.inf, -np.inf], np.nan)
+    )
+
     return feat
 
 

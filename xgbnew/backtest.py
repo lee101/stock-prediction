@@ -474,5 +474,271 @@ __all__ = [
     "DayTrade",
     "_allocation_weights",
     "simulate",
+    "simulate_hourly",
     "print_summary",
+    "STOCK_HOURS_PER_YEAR",
+    "CRYPTO_HOURS_PER_YEAR",
 ]
+
+
+# ── Hourly backtest (bar-granular, same cost model) ───────────────────────────
+
+# Regular US-equity session: 6.5 hr × 252 td = 1,638 bars/yr
+STOCK_HOURS_PER_YEAR = 252 * 6.5
+# Crypto trades 24/7: 24 hr × 365 d = 8,760 bars/yr  (≈ 5.35× higher budget)
+CRYPTO_HOURS_PER_YEAR = 24 * 365
+# Per-calendar-month bar counts (used for monthly-return annualisation)
+STOCK_HOURS_PER_MONTH = 21 * 6.5          # ≈ 136.5
+CRYPTO_HOURS_PER_MONTH = (24 * 365) / 12  # ≈ 730.0
+
+
+def _hour_margin_cost(leverage: float, *, bars_per_year: float) -> float:
+    """Intraday-hour margin cost fraction (held one bar)."""
+    if leverage <= 1.0:
+        return 0.0
+    return (leverage - 1.0) * ANNUAL_MARGIN_RATE / float(bars_per_year)
+
+
+def simulate_hourly(
+    test_df: pd.DataFrame,
+    model: XGBStockModel,
+    config: BacktestConfig,
+    *,
+    bars_per_year: float = STOCK_HOURS_PER_YEAR,
+    bars_per_month: float | None = None,
+    kind_map: dict[str, str] | None = None,
+    precomputed_scores: pd.Series | np.ndarray | None = None,
+) -> BacktestResult:
+    """Hourly analog of :func:`simulate`.
+
+    Each bar is treated like a mini "day": pick top_n by score, buy at bar's
+    open fill, sell at its close fill, costs applied per bar. PnL compounds
+    across bars.
+
+    ``test_df`` must carry columns: timestamp, symbol, actual_open, actual_close,
+    spread_bps, target_oc, + HOURLY_FEATURE_COLS.
+
+    ``bars_per_year`` controls annualisation; pass ``CRYPTO_HOURS_PER_YEAR``
+    for a pure-crypto universe (24/7). For a mixed universe the caller should
+    segment by kind and re-run.
+
+    ``bars_per_month`` defaults to ``bars_per_year / 12`` so the "monthly
+    return" reported on a stock-only OOS window is ≈ 136.5 bars regardless
+    of window size.
+
+    ``kind_map``: optional {symbol: 'stocks'|'crypto'} for per-symbol fee
+    resolution. Falls back to ``get_fee_for_symbol`` heuristics.
+    """
+    if bars_per_month is None:
+        bars_per_month = float(bars_per_year) / 12.0
+
+    required = {"timestamp", "symbol", "actual_open", "actual_close", "spread_bps"}
+    missing = required - set(test_df.columns)
+    if missing:
+        raise ValueError(f"test_df missing columns: {missing}")
+
+    if precomputed_scores is None:
+        scores = combined_scores(
+            test_df, model,
+            xgb_weight=config.xgb_weight,
+            chronos_col=config.chronos_col,
+        )
+    elif isinstance(precomputed_scores, pd.Series):
+        scores = precomputed_scores.reindex(test_df.index)
+    else:
+        arr = np.asarray(precomputed_scores, dtype=np.float64)
+        if arr.shape[0] != len(test_df):
+            raise ValueError(
+                f"precomputed_scores length {arr.shape[0]} != test_df length {len(test_df)}"
+            )
+        scores = pd.Series(arr, index=test_df.index, name="combined_score")
+
+    df = test_df.copy()
+    df["_score"] = scores.values
+
+    # Drop obvious bad rows
+    df = df.dropna(subset=["actual_open", "actual_close"])
+    df = df[(df["actual_open"] > 0) & (df["actual_close"] > 0)]
+
+    # Spread filter
+    if config.max_spread_bps > 0 and "spread_bps" in df.columns:
+        df = df[df["spread_bps"] <= config.max_spread_bps]
+
+    # Resolve fees once per symbol
+    symbol_fee_rates: dict[str, float] = {}
+    if config.fee_rate is None:
+        for sym in pd.unique(df["symbol"].astype(str)):
+            symbol_fee_rates[str(sym)] = _resolve_fee_rate(str(sym), config)
+
+    margin_per_bar = _hour_margin_cost(config.leverage, bars_per_year=bars_per_year)
+
+    equity = float(config.initial_cash)
+    bar_results: list[DayResult] = []
+
+    # Group by timestamp — each bar is one "decision"
+    for bar_ts, bar_df in df.groupby("timestamp", sort=True):
+        sort_cols = ["_score"]
+        ascending = [False]
+        if config.chronos_col in bar_df.columns:
+            sort_cols.append(config.chronos_col)
+            ascending.append(False)
+        bar_df = bar_df.sort_values(sort_cols, ascending=ascending, kind="mergesort")
+
+        picks = bar_df[bar_df["_score"] >= config.min_score].head(config.top_n * 3)
+
+        trades: list[DayTrade] = []
+        for _, row in picks.iterrows():
+            if len(trades) >= config.top_n:
+                break
+
+            o = float(row["actual_open"])
+            c = float(row["actual_close"])
+            if o <= 0 or c <= 0:
+                continue
+
+            spread = float(row.get("spread_bps", 25.0))
+            if not np.isfinite(spread) or spread <= 0:
+                spread = 25.0
+
+            symbol = str(row["symbol"])
+            fee_rate = (
+                float(config.fee_rate) if config.fee_rate is not None
+                else symbol_fee_rates.get(symbol, _resolve_fee_rate(symbol, config))
+            )
+
+            entry_fill, exit_fill = _fill_prices(
+                o, c, fill_buffer_bps=config.fill_buffer_bps
+            )
+            if entry_fill <= 0 or exit_fill <= 0:
+                continue
+
+            gross_oc = (exit_fill - entry_fill) / entry_fill
+            round_trip_return = (
+                exit_fill * (1.0 - fee_rate) / (entry_fill * (1.0 + fee_rate))
+            ) - 1.0
+            gross_leveraged = config.leverage * round_trip_return
+
+            cost_frac = (
+                config.leverage * (2.0 * config.commission_bps) / 10_000.0
+                + margin_per_bar
+            )
+            net = gross_leveraged - cost_frac
+
+            trades.append(DayTrade(
+                symbol=symbol,
+                score=float(row["_score"]),
+                actual_open=o,
+                actual_close=c,
+                entry_fill_price=entry_fill,
+                exit_fill_price=exit_fill,
+                spread_bps=spread,
+                commission_bps=config.commission_bps,
+                fee_rate=fee_rate,
+                fill_buffer_bps=float(config.fill_buffer_bps),
+                leverage=config.leverage,
+                gross_return_pct=gross_oc * 100.0,
+                net_return_pct=net * 100.0,
+            ))
+
+        if not trades:
+            continue
+
+        weights = _allocation_weights(
+            [t.score for t in trades],
+            mode=config.allocation_mode,
+            temperature=config.allocation_temp,
+        )
+        rets = np.asarray([t.net_return_pct for t in trades], dtype=np.float64)
+        bar_ret_pct = float(np.dot(weights, rets))
+        equity_end = equity * (1.0 + bar_ret_pct / 100.0)
+
+        # DayResult.day stores the bar timestamp — caller can keep timestamp
+        # precision even though the dataclass field is named ``day``.
+        bar_day = bar_ts.to_pydatetime() if hasattr(bar_ts, "to_pydatetime") else bar_ts
+        bar_results.append(DayResult(
+            day=bar_day,  # type: ignore[arg-type]
+            equity_start=equity,
+            equity_end=equity_end,
+            daily_return_pct=bar_ret_pct,
+            trades=trades,
+            n_candidates=len(bar_df),
+        ))
+        equity = equity_end
+
+    return _compute_result_hourly(
+        bar_results, config,
+        bars_per_year=float(bars_per_year),
+        bars_per_month=float(bars_per_month),
+    )
+
+
+def _compute_result_hourly(
+    bar_results: list[DayResult],
+    config: BacktestConfig,
+    *,
+    bars_per_year: float,
+    bars_per_month: float,
+) -> BacktestResult:
+    """Build a ``BacktestResult`` for hourly bars.
+
+    Mirrors ``_compute_result`` but uses bars-per-year / bars-per-month for
+    annualisation. The ``day_results`` list carries one entry per traded bar,
+    not per day, so the caller should not treat ``len(day_results)`` as a day
+    count in hourly context.
+    """
+    if not bar_results:
+        return BacktestResult(
+            config=config, day_results=[], initial_cash=config.initial_cash,
+            final_equity=config.initial_cash, total_return_pct=0.0,
+            monthly_return_pct=0.0, annualized_return_pct=0.0,
+            sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown_pct=0.0,
+            win_rate_pct=0.0, total_trades=0, avg_spread_bps=0.0, avg_fee_bps=0.0,
+            directional_accuracy_pct=0.0,
+        )
+
+    rets = np.array([r.daily_return_pct / 100.0 for r in bar_results])
+    eq = np.array([config.initial_cash] + [r.equity_end for r in bar_results])
+    n_bars = len(bar_results)
+
+    total_ret = (eq[-1] - eq[0]) / eq[0]
+    ann_ret = (1.0 + total_ret) ** (bars_per_year / n_bars) - 1.0
+    monthly_ret = (1.0 + total_ret) ** (bars_per_month / n_bars) - 1.0
+
+    mean_r = float(np.mean(rets))
+    std_r = float(np.std(rets, ddof=1)) if n_bars > 1 else 1e-9
+    sharpe = mean_r / std_r * np.sqrt(bars_per_year) if std_r > 0 else 0.0
+
+    down_r = rets[rets < 0]
+    down_std = float(np.std(down_r, ddof=1)) if len(down_r) > 1 else 1e-9
+    sortino = mean_r / down_std * np.sqrt(bars_per_year) if down_std > 0 else 0.0
+
+    running_max = np.maximum.accumulate(eq)
+    max_dd = float(np.abs(np.min((eq - running_max) / running_max)))
+
+    win_rate = float(np.mean(rets > 0)) * 100.0
+
+    all_trades = [t for r in bar_results for t in r.trades]
+    spreads = [t.spread_bps for t in all_trades]
+    fee_bps = [t.fee_rate * 10_000.0 for t in all_trades]
+    dir_acc = (
+        float(np.mean([t.gross_return_pct > 0 for t in all_trades])) * 100.0
+        if all_trades else 0.0
+    )
+
+    return BacktestResult(
+        config=config,
+        day_results=bar_results,
+        initial_cash=config.initial_cash,
+        final_equity=float(eq[-1]),
+        total_return_pct=total_ret * 100.0,
+        monthly_return_pct=monthly_ret * 100.0,
+        annualized_return_pct=ann_ret * 100.0,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        max_drawdown_pct=max_dd * 100.0,
+        win_rate_pct=win_rate,
+        total_trades=len(all_trades),
+        avg_spread_bps=float(np.mean(spreads)) if spreads else 0.0,
+        avg_fee_bps=float(np.mean(fee_bps)) if fee_bps else 0.0,
+        directional_accuracy_pct=dir_acc,
+    )

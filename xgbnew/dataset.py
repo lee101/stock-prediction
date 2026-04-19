@@ -22,7 +22,9 @@ import pandas as pd
 from .features import (
     CHRONOS_FEATURE_COLS,
     DAILY_FEATURE_COLS,
+    HOURLY_FEATURE_COLS,
     build_features_for_symbol,
+    build_features_for_symbol_hourly,
 )
 
 logger = logging.getLogger(__name__)
@@ -355,4 +357,191 @@ __all__ = [
     "load_chronos_cache",
     "build_daily_dataset",
     "build_features_for_symbol",
+    "build_hourly_dataset",
+    "load_hourly_symbol_csv",
+    "list_hourly_symbols",
 ]
+
+
+# ── Hourly CSV loader ────────────────────────────────────────────────────────
+
+def _classify_symbol(symbol: str) -> str:
+    """Return ``'crypto'`` for crypto pairs (USD/USDT/USDC/FDUSD/BUSD/TUSD/USDP
+    quote suffix) else ``'stocks'``. Uses ``src.symbol_utils.is_crypto_symbol``
+    when available so the rule stays in lock-step with the prod fee path."""
+    sym = str(symbol).upper().strip()
+    try:
+        from src.symbol_utils import is_crypto_symbol  # type: ignore
+        return "crypto" if bool(is_crypto_symbol(sym)) else "stocks"
+    except Exception:
+        for q in ("USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP"):
+            if sym.endswith(q) and len(sym) > len(q):
+                return "crypto"
+        if sym.endswith("USD") and len(sym) > 3:
+            return "crypto"
+        return "stocks"
+
+
+def load_hourly_symbol_csv(symbol: str, data_root: Path) -> pd.DataFrame | None:
+    """Load one symbol's hourly OHLCV CSV from ``<data_root>/<kind>/<symbol>.csv``.
+
+    Tries ``stocks`` and ``crypto`` subdirs. Returns a cleaned DataFrame with
+    ``timestamp, open, high, low, close, volume, symbol, _kind`` columns, or
+    ``None`` if the file is missing / malformed / has <200 rows.
+
+    ``_kind`` is derived from the *symbol* (USD-quote suffix → crypto), not
+    the subdirectory — the legacy ``trainingdatahourly/crypto/`` folder
+    contains a few stock CSVs (AAPL, AMZN, DBX) that should still be priced
+    with stock fees.
+    """
+    root = Path(data_root)
+    for subdir in ("stocks", "crypto"):
+        path = root / subdir / f"{symbol}.csv"
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            return None
+        df.columns = df.columns.str.strip().str.lower()
+        if not {"timestamp", "open", "high", "low", "close"}.issubset(df.columns):
+            return None
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        df = df.drop_duplicates(subset=["timestamp"], keep="last")
+        for col in ("open", "high", "low", "close"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["close"])
+        # Drop bars with non-positive prices (log-returns would blow to -inf)
+        df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0)]
+        if "volume" not in df.columns:
+            df["volume"] = 0.0
+        else:
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+        if len(df) < 200:
+            return None
+        df["symbol"] = symbol.upper()
+        df["_kind"] = _classify_symbol(symbol)
+        return df[["timestamp", "open", "high", "low", "close", "volume", "symbol", "_kind"]]
+    return None
+
+
+def list_hourly_symbols(
+    data_root: Path,
+    *,
+    universe: str = "stocks",
+) -> list[str]:
+    """Return sorted symbol list for the requested universe.
+
+    ``universe`` in {"stocks", "crypto", "both"}.
+    """
+    root = Path(data_root)
+    if universe not in ("stocks", "crypto", "both"):
+        raise ValueError(f"universe must be stocks|crypto|both, got {universe!r}")
+    syms: list[str] = []
+    # Walk both subdirs; classification (stocks vs crypto) goes by symbol, not
+    # the subdir, since the legacy ``crypto/`` dir holds a few stock CSVs.
+    for subdir in ("stocks", "crypto"):
+        d = root / subdir
+        if not d.exists():
+            continue
+        for path in sorted(d.glob("*.csv")):
+            syms.append(path.stem.upper())
+    # De-duplicate while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for s in syms:
+        if s not in seen:
+            seen.add(s)
+            deduped.append(s)
+    if universe == "both":
+        return deduped
+    return [s for s in deduped if _classify_symbol(s) == universe]
+
+
+def build_hourly_dataset(
+    data_root: Path,
+    symbols: list[str] | None,
+    *,
+    train_start: pd.Timestamp | None,
+    train_end: pd.Timestamp,
+    val_end: pd.Timestamp,
+    test_end: pd.Timestamp,
+    universe: str = "stocks",
+    min_bars: int = 400,
+    min_dollar_vol: float = 5e5,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, str]]:
+    """Build train / val / test DataFrames from hourly OHLCV CSVs.
+
+    Splits by timestamp:
+      train:  (..., train_end]
+      val:    (train_end, val_end]
+      test:   (val_end, test_end]
+
+    Returns (train_df, val_df, test_df, kind_map) where ``kind_map`` maps
+    symbol → 'stocks' | 'crypto' (useful for fee / 24-7 calendar branching).
+
+    Features: HOURLY_FEATURE_COLS + target_oc / target_oc_up / actual_open /
+    actual_close / timestamp / symbol.
+
+    ``min_bars``: drop symbols that yield fewer usable feature rows than this.
+    ``min_dollar_vol``: per-bar dollar volume floor (hourly bars, so lower than
+    the daily 5e6).
+    """
+    root = Path(data_root)
+    if symbols is None:
+        symbols = list_hourly_symbols(root, universe=universe)
+
+    train_end_ts = pd.Timestamp(train_end, tz="UTC") if pd.Timestamp(train_end).tzinfo is None else pd.Timestamp(train_end)
+    val_end_ts = pd.Timestamp(val_end, tz="UTC") if pd.Timestamp(val_end).tzinfo is None else pd.Timestamp(val_end)
+    test_end_ts = pd.Timestamp(test_end, tz="UTC") if pd.Timestamp(test_end).tzinfo is None else pd.Timestamp(test_end)
+    train_start_ts = None
+    if train_start is not None:
+        train_start_ts = pd.Timestamp(train_start, tz="UTC") if pd.Timestamp(train_start).tzinfo is None else pd.Timestamp(train_start)
+
+    train_parts: list[pd.DataFrame] = []
+    val_parts: list[pd.DataFrame] = []
+    test_parts: list[pd.DataFrame] = []
+    kind_map: dict[str, str] = {}
+
+    logger.info("build_hourly_dataset: scanning %d symbols in %s", len(symbols), root)
+    for i, sym in enumerate(symbols):
+        raw = load_hourly_symbol_csv(sym, root)
+        if raw is None:
+            continue
+        kind = str(raw["_kind"].iloc[0])
+        feat = build_features_for_symbol_hourly(raw, symbol=sym)
+        # Core feature subset must be non-NaN (ret_1h, ret_4h, rsi_14, vol_4h)
+        feat = feat.dropna(subset=HOURLY_FEATURE_COLS[:4])
+        # Liquidity filter on hourly dolvol
+        if "dolvol_4h_log" in feat.columns:
+            feat = feat[feat["dolvol_4h_log"] >= np.log1p(min_dollar_vol)]
+        if len(feat) < min_bars:
+            continue
+        kind_map[sym.upper()] = kind
+
+        tr_mask = feat["timestamp"] <= train_end_ts
+        if train_start_ts is not None:
+            tr_mask = tr_mask & (feat["timestamp"] >= train_start_ts)
+        va_mask = (feat["timestamp"] > train_end_ts) & (feat["timestamp"] <= val_end_ts)
+        te_mask = (feat["timestamp"] > val_end_ts) & (feat["timestamp"] <= test_end_ts)
+
+        if tr_mask.any():
+            train_parts.append(feat[tr_mask].copy())
+        if va_mask.any():
+            val_parts.append(feat[va_mask].copy())
+        if te_mask.any():
+            test_parts.append(feat[te_mask].copy())
+
+        if (i + 1) % 100 == 0:
+            logger.info("  processed %d / %d symbols", i + 1, len(symbols))
+
+    def _concat(parts: list[pd.DataFrame]) -> pd.DataFrame:
+        if not parts:
+            return pd.DataFrame()
+        df = pd.concat(parts, ignore_index=True)
+        # Provide a 'date' column so regime-gate / multi-window logic can bucket.
+        df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+        return df
+
+    return _concat(train_parts), _concat(val_parts), _concat(test_parts), kind_map
