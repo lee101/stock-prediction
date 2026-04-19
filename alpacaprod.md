@@ -36,7 +36,16 @@ trade session Monday 2026-04-20 09:30 ET.
 `record_buy_price(sym, fill_px)` after each BUY and
 `guard_sell_against_death_spiral(sym, "sell", current_price)` before each
 SELL. Guard RuntimeError propagates (crashes the loop; supervisor
-autorestart). Tests at `tests/test_xgbnew_live_trader_guard.py` (6/6 green).
+autorestart). Tests at `tests/test_xgbnew_live_trader_guard.py` (10/10 green).
+
+**Trading-day gate added 2026-04-19 14:45 UTC** (commit 001686f8). The
+Saturday 10:40 UTC deploy submitted a MSFT DAY BUY at 13:30 UTC — Alpaca
+accepted and queued the order for Monday's open (`status: accepted,
+expires_at: 2026-04-20T20:00:00Z`). Would have double-bought on Monday
+alongside the fresh Monday pick. Cancelled manually (204, filled_qty=0,
+no fill). `_is_today_trading_day()` now queries `/v2/clock` at top of
+`run_session()` and skips the session when the market won't open today.
+See `project_alpaca_weekend_day_orders.md` in memory.
 
 **Monitor**: `sudo tail -f /var/log/supervisor/xgb-daily-trader-live.log`
 or the singleton check `cat strategy_state/account_locks/alpaca_live_writer.lock`.
