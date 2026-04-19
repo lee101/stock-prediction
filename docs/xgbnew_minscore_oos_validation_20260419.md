@@ -358,13 +358,46 @@ floor ENSURES every pick is high-conviction, and the packing tax
 disappears. **Rule refinement**: packing is a function of the filter
 tightness, not top_n alone.
 
+## top_n knee (N=1..5) under ms=0.72 lev=1.25 + aggressive tier refresh
+
+Extended the N-axis to find where dilution takes over again.
+
+| N | med (deploy) | p10 (deploy) | DD (deploy) | worst_win | med (OOS) | p10 (OOS) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | +60.59 | +35.53 | 3.81 | +28.41 | +58.01 | +36.01 |
+| 2 | +60.21 | +41.13 | 2.65 | +38.33 | +58.30 | +42.69 |
+| **3** | **+59.19** | **+43.23** | **2.17** | **+34.56** | **+58.68** | **+43.49** |
+| 4 | +57.25 | +44.27 | 1.79 | +35.53 | +56.91 | +43.65 |
+| 5 | +53.43 | +42.88 | 1.58 | +36.53 | — | — |
+
+**p10 peaks near N=3-4** (44.27 deploy, 43.65 OOS), rolls over at N=5.
+**Median monotone-decreasing** with a knee at N=3 (cost accelerates past
+3: Δmed from N=2→3 is 1.02, from N=3→4 is 1.94, from N=4→5 is 3.82).
+N=3 is the efficient-frontier cell.
+
+### New aggressive tier: N=3 × lev=1.5 strict-dominates N=1 × lev=1.5
+
+| cfg | med | p10 | DD | worst | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| N=1 lev=1.5 (prior aggr) | +76.04 | +43.75 | 4.58 | +34.70 | 0/30 |
+| **N=3 lev=1.5 (new aggr)** | **+74.24** | **+53.60** | **2.61** | **+42.53** | **0/30** |
+| N=3 lev=1.5 OOS | +73.58 | +53.93 | 2.62 | +46.95 | 0/30 |
+
+p10 **+9.85pp**, DD **−1.97pp**, worst-window **+7.83pp** for just
+−1.80 on median. OOS replicates almost exactly on all metrics and
+actually improves worst window (+46.95 vs +42.53 deploy). **90% of
+one-month windows clear +53%/mo** at this config, worst window +42.53.
+Leverage-scaling from N=3 lev=1.25: +74.24 ≈ 1.25 × +59.19 ✓ (nearly
+perfect linearity; DD sublinear at 2.61 vs expected 2.71).
+
 ## Updated activation tiers (top_n=3 is the new tail-protected conviction tier)
 
-- Conservative:       `--min-score 0.55`                     → +45.94/+29.20/DD 9.77
-- Sweet spot:         `--min-score 0.55 --lev 1.25`          → +52.01/+30.61/DD 12.62
-- Max conviction (N1):`--min-score 0.72 --lev 1.25`          → +60.59/+35.53/DD 3.81
-- **Tail-protected (N3)**: `--min-score 0.72 --top-n 3 --lev 1.25` → **+59.19/+43.23/DD 2.17**, OOS +58.68/+43.49/DD 2.18
-- Aggressive:         `--min-score 0.72 --lev 1.50`          → +76.04/+43.75/DD 4.58
+- Conservative:             `--min-score 0.55`                     → +45.94/+29.20/DD 9.77
+- Sweet spot:               `--min-score 0.55 --lev 1.25`          → +52.01/+30.61/DD 12.62
+- Max conviction (N1):      `--min-score 0.72 --lev 1.25`          → +60.59/+35.53/DD 3.81
+- **Tail-protected (N3)**:  `--min-score 0.72 --top-n 3 --lev 1.25` → **+59.19/+43.23/DD 2.17**, OOS +58.68/+43.49/DD 2.18
+- **Aggressive (N3 lev 1.5)**: `--min-score 0.72 --top-n 3 --leverage 1.5` → **+74.24/+53.60/DD 2.61**, OOS +73.58/+53.93/DD 2.62
+- Legacy aggr (N1 lev 1.5): `--min-score 0.72 --leverage 1.5`      → +76.04/+43.75/DD 4.58 (dominated by N3 variant)
 
 Prefer the N3 tail-protected tier if the deployment priority is
 "minimize drawdown variance" over "maximize point estimate." Prefer N1
