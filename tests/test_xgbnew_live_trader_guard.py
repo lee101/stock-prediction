@@ -23,6 +23,7 @@ if str(REPO) not in sys.path:
 
 from xgbnew.live_trader import (  # noqa: E402
     _get_position_details,
+    _is_today_trading_day,
     _poll_filled_avg_price,
 )
 
@@ -94,6 +95,55 @@ def test_guard_allows_sell_within_tolerance(tmp_path, monkeypatch):
     # 30 bps below 100.00 → floor at 50 bps is 99.50, 99.70 is above → OK.
     singleton.guard_sell_against_death_spiral("TESTSYM2", "sell", 99.70)
     singleton.guard_sell_against_death_spiral("TESTSYM2", "sell", 100.50)
+
+
+def test_is_today_trading_day_returns_true_when_market_open():
+    """is_open=True → trading day regardless of next_open."""
+    from datetime import datetime, timezone
+    clock = SimpleNamespace(is_open=True, next_open=None)
+    client = MagicMock()
+    client.get_clock.return_value = clock
+    now = datetime(2026, 4, 20, 14, 0, tzinfo=timezone.utc)  # Monday 10:00 ET
+    ok, reason = _is_today_trading_day(client, now=now)
+    assert ok is True
+    assert "market_open" in reason
+
+
+def test_is_today_trading_day_returns_true_pre_open_same_day():
+    """Before 9:30 ET on a trading day, is_open=False but next_open is today."""
+    from datetime import datetime, timezone
+    # Monday 8:00 ET = 12:00 UTC. next_open = 2026-04-20 09:30 ET.
+    now = datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc)
+    next_open = datetime(2026, 4, 20, 13, 30, tzinfo=timezone.utc)
+    clock = SimpleNamespace(is_open=False, next_open=next_open)
+    client = MagicMock()
+    client.get_clock.return_value = clock
+    ok, reason = _is_today_trading_day(client, now=now)
+    assert ok is True
+    assert "pre-open" in reason
+
+
+def test_is_today_trading_day_returns_false_on_saturday():
+    """Saturday: market closed, next_open is Monday — NOT a trading day."""
+    from datetime import datetime, timezone
+    # Saturday 2026-04-19 14:00 UTC. next_open = Monday 2026-04-20 09:30 ET.
+    now = datetime(2026, 4, 19, 14, 0, tzinfo=timezone.utc)
+    next_open = datetime(2026, 4, 20, 13, 30, tzinfo=timezone.utc)  # Monday 9:30 ET
+    clock = SimpleNamespace(is_open=False, next_open=next_open)
+    client = MagicMock()
+    client.get_clock.return_value = clock
+    ok, reason = _is_today_trading_day(client, now=now)
+    assert ok is False
+    assert "closed" in reason
+
+
+def test_is_today_trading_day_fails_open_on_clock_error():
+    """If Alpaca clock query fails, assume trading day (fail-open for diagnostics)."""
+    client = MagicMock()
+    client.get_clock.side_effect = RuntimeError("network down")
+    ok, reason = _is_today_trading_day(client)
+    assert ok is True
+    assert "clock_query_failed" in reason
 
 
 def test_record_and_retrieve_buy_price_roundtrip(tmp_path, monkeypatch):

@@ -130,6 +130,39 @@ def _get_account(client):
     return client.get_account()
 
 
+def _is_today_trading_day(client, now: datetime | None = None) -> tuple[bool, str]:
+    """Query Alpaca's market clock and return (is_trading_day, reason).
+
+    Uses the broker's own calendar — covers weekends AND holidays without
+    needing pandas_market_calendars. Reason string is for logging.
+
+    The check is: if `is_open` is True, obviously a trading day. Otherwise,
+    if `next_open.date()` equals today (ET), the market will open today →
+    trading day. Anything else (weekend, holiday) is not a trading day.
+    """
+    now_et_date = (now or datetime.now(timezone.utc)).astimezone(ET).date()
+    try:
+        clock = client.get_clock()
+    except Exception as exc:
+        return True, f"clock_query_failed: {exc} (assuming trading day)"
+    is_open = bool(getattr(clock, "is_open", False))
+    next_open = getattr(clock, "next_open", None)
+    next_open_date = None
+    if next_open is not None:
+        try:
+            next_open_date = next_open.astimezone(ET).date()
+        except Exception:
+            try:
+                next_open_date = next_open.date()
+            except Exception:
+                next_open_date = None
+    if is_open:
+        return True, f"market_open (is_open=true)"
+    if next_open_date == now_et_date:
+        return True, f"pre-open (next_open={next_open_date})"
+    return False, f"closed (next_open={next_open_date}, today={now_et_date})"
+
+
 def _get_positions(client) -> dict[str, float]:
     """Return {symbol: qty} for all open positions."""
     positions = client.get_all_positions()
@@ -444,6 +477,18 @@ def run_session(
     paper = not args.live
     today_str = date.today().isoformat()
     print(f"\n[xgb-live] Session {today_str}  paper={paper}  dry_run={args.dry_run}", flush=True)
+
+    # ── Trading-day gate ──────────────────────────────────────────────────────
+    # Alpaca accepts DAY orders submitted outside RTH and queues them for the
+    # next open — which is a footgun: a Saturday BUY fills at Monday's open
+    # BEFORE the daemon has re-scored with fresh data. Always gate the whole
+    # session on Alpaca's own calendar.
+    if client is not None and not args.dry_run:
+        is_trading, reason = _is_today_trading_day(client)
+        if not is_trading:
+            print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
+                  f"skipping session.", flush=True)
+            return
 
     # ── Score ─────────────────────────────────────────────────────────────────
     print("[xgb-live] Fetching live bars from Alpaca...", flush=True)
