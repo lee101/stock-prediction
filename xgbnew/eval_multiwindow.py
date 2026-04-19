@@ -255,6 +255,14 @@ def parse_args(argv=None):
         default=1.0,
         help="Softmax temperature when --allocation-mode=softmax (lower = more concentrated).",
     )
+    p.add_argument(
+        "--hold-through",
+        action="store_true",
+        help="If tomorrow's pick set equals today's, carry the position "
+        "(skip the sell-close+buy-open round-trip). Saves "
+        "2×(fee+buffer) per held day and captures overnight drift. "
+        "Off by default.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -417,6 +425,7 @@ def main(argv=None) -> int:
             vol_target_ann=float(args.vol_target_ann),
             allocation_mode=str(args.allocation_mode),
             allocation_temp=float(args.allocation_temp),
+            hold_through=bool(args.hold_through),
         )
         combined_scores = _combined_scores_from_predictions(
             oos_df,

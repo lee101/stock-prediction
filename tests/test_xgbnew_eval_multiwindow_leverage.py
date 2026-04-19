@@ -95,14 +95,14 @@ def test_config_grid_default_random_state_when_grid_empty():
     assert grid[0].random_state == 42
 
 
-def test_device_default_is_none():
+def test_device_default_is_cuda():
     args = parse_args([
         "--n-estimators", "400",
         "--max-depth", "5",
         "--learning-rate", "0.03",
         "--top-n-grid", "1",
     ])
-    assert args.device is None
+    assert args.device == "cuda"
 
 
 def test_device_cuda_is_parsed():

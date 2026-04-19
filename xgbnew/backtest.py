@@ -53,6 +53,11 @@ class BacktestConfig:
     allocation_mode: str = "equal"      # equal | softmax | score_norm — how we
                                         # weight the top_n picks within a day
     allocation_temp: float = 1.0        # softmax temperature (lower = more concentrated)
+    hold_through: bool = False          # if tomorrow's picks intersect today's,
+                                        # hold the overlap (skip sell-close+buy-open
+                                        # round-trip). Saves 2x(fee+buffer) per held
+                                        # day and captures overnight drift via the
+                                        # close-to-close return on the continuation.
 
 
 @dataclass
@@ -295,10 +300,20 @@ def simulate(
 
     equity = config.initial_cash
     day_results: list[DayResult] = []
+    # Hold-through state: last day's pick set + per-symbol close prices. When
+    # today's pick set equals yesterday's (as a set), we carry the positions
+    # instead of sell-at-close + buy-at-open. The carry day's return is
+    # close-to-close with zero fees/buffer (no trade happens).
+    prev_pick_set: frozenset[str] | None = None
+    prev_close_by_sym: dict[str, float] = {}
 
     for day, day_df in test_df.groupby("date", sort=True):
         # Regime gate — if SPY under MA for the day, skip (stay in cash).
         if bool(regime_closed.get(day, False)):
+            # Flatten hold state on gated days so a re-entry can't claim a
+            # continuation across a cash day.
+            prev_pick_set = None
+            prev_close_by_sym = {}
             continue
         day_scale = float(vol_scale.get(day, 1.0))
         # Rank by combined score; among ties prefer stronger Chronos signal.
@@ -311,21 +326,67 @@ def simulate(
 
         picks = day_df[day_df["_score"] >= config.min_score].head(config.top_n * 3)
 
-        trades: list[DayTrade] = []
+        # Materialize today's pick rows up to top_n (skipping invalid prices).
+        pick_rows: list[pd.Series] = []
         for _, row in picks.iterrows():
-            if len(trades) >= config.top_n:
+            if len(pick_rows) >= config.top_n:
                 break
-
             o = float(row["actual_open"])
             c = float(row["actual_close"])
             if o <= 0 or c <= 0:
                 continue
+            pick_rows.append(row)
 
+        today_sym_list = [str(r["symbol"]) for r in pick_rows]
+        today_pick_set = frozenset(today_sym_list)
+
+        is_continuation = (
+            bool(config.hold_through)
+            and prev_pick_set is not None
+            and len(today_pick_set) > 0
+            and today_pick_set == prev_pick_set
+            and all(
+                prev_close_by_sym.get(sym, 0.0) > 0.0 for sym in today_sym_list
+            )
+        )
+
+        trades: list[DayTrade] = []
+        for row in pick_rows:
+            o = float(row["actual_open"])
+            c = float(row["actual_close"])
             spread = float(row.get("spread_bps", 25.0))
             if not np.isfinite(spread) or spread <= 0:
                 spread = 25.0
-
             symbol = str(row["symbol"])
+
+            if is_continuation:
+                # Position is held across the prior close — no trade fires
+                # today. PnL is close-to-close (captures overnight + intraday).
+                prev_c = prev_close_by_sym[symbol]
+                gross_oc = (c - prev_c) / prev_c
+                gross_leveraged = config.leverage * gross_oc
+                # Only the intraday margin-hold cost applies (no fees, no
+                # fill buffer since there's no trade).
+                cost_frac = _day_margin_cost(config.leverage)
+                net = gross_leveraged - cost_frac
+                trades.append(DayTrade(
+                    symbol=symbol,
+                    score=float(row["_score"]),
+                    actual_open=o,
+                    actual_close=c,
+                    entry_fill_price=prev_c,
+                    exit_fill_price=c,
+                    spread_bps=spread,
+                    commission_bps=0.0,
+                    fee_rate=0.0,
+                    fill_buffer_bps=0.0,
+                    leverage=config.leverage,
+                    gross_return_pct=gross_oc * 100.0,
+                    net_return_pct=net * 100.0,
+                ))
+                continue
+
+            # Churn day — full open-to-close round-trip with fees + buffer.
             fee_rate = symbol_fee_rates.get(symbol, _resolve_fee_rate(symbol, config))
             entry_fill, exit_fill = _fill_prices(o, c, fill_buffer_bps=config.fill_buffer_bps)
             if entry_fill <= 0 or exit_fill <= 0:
@@ -356,6 +417,14 @@ def simulate(
                 gross_return_pct=gross_oc * 100.0,
                 net_return_pct=net * 100.0,
             ))
+
+        # Update hold-through state for next day.
+        if config.hold_through and trades:
+            prev_pick_set = today_pick_set
+            prev_close_by_sym = {t.symbol: float(t.actual_close) for t in trades}
+        else:
+            prev_pick_set = None
+            prev_close_by_sym = {}
 
         if not trades:
             continue
