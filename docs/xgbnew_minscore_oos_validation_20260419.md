@@ -391,6 +391,8 @@ deploy; same robust-shrinkage pattern.
 | fb=15, fee=10bps (3× friction) | +43.59 | +29.18 | 2.92 | +21.35 | 0/30 |
 | fb=20, fee=10bps (4× friction) | +39.88 | +25.84 | 3.17 | +18.21 | 0/30 |
 | top200 universe (fb=5, real fee) | +57.34 | +43.39 | 2.17 | +37.98 | 0/21 |
+| **ms=0.75** baseline | +61.38 | +43.24 | 2.48 | +35.67 | 0/30 |
+| **ms=0.75** fb=15, fee=10bps (3×) | +45.56 | +29.19 | 2.96 | +22.35 | 0/30 |
 
 **Fill-stress**: per-bp sensitivity ~0.78%/mo (consistent with N=1 prior
 stress). At 4× default friction the tier still clears the 27%/mo target
