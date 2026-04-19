@@ -5,64 +5,106 @@ live ledger. This file is a short pointer for the hourly monitor so it knows
 which services should exist, where the best config lives, and what the bar
 is to beat. Keep this file in sync with `alpacaprod.md` whenever we deploy.
 
-Last synced: 2026-04-18 (off-market Saturday)
+Last synced: 2026-04-19 10:40 UTC — **XGB deploy swap**
 
 ---
 
-## 1. Daily RL Trader — LIVE
+## 1. XGB Daily Trader — LIVE (primary, as of 2026-04-19)
 
-- **Process**: `trade_daily_stock_prod.py --daemon --live` under supervisor unit `daily-rl-trader` (launcher `deployments/daily-rl-trader/launch.sh`). The old systemd unit `daily-rl-trader.service` is intentionally inactive.
-- **Broker boundary**: all writes go via `trading_server` on `127.0.0.1:8050` (supervisor unit `trading-server`). Account = `live_prod`. Singleton enforced by `src/alpaca_singleton.py`.
-- **Ensemble**: v7 12-model (`src/daily_stock_defaults.py::DEFAULT_EXTRA_CHECKPOINTS`), primary `C_s7.pt`. Agreement gate `--min-agree-count 2` active since 2026-04-17 13:03Z.
-- **Allocation**: `--allocation-pct 12.5`, leverage 1× (do NOT autonomously bump either).
-- **Deploy bar** (screened32 realism gate, 263 windows, fb=5, binary fills, lag=2):
-  - 1× med monthly ≥ +7.47% / p10 ≥ +3.18% / neg ≤ 10/263 / sortino ≥ 6.74
-  - 1.5× knee med ≥ +10.33%, sortino ≥ 6.13
-- **Signal cadence**: one `DAILY STOCK RL SIGNAL` line per trading day near 13:35 UTC (market open). Flat action at ~5-7% confidence is calibrated (val p90 ≈ 0.055–0.061). Only escalate if flat for >3 days AND conf > 0.10, or never-flat.
-- **Equity baseline**: ≈$28k–$30k. Record exact value each run.
+- **Process**: `xgbnew.live_trader` (supervisor unit `xgb-daily-trader-live`,
+  launcher `deployments/xgb-daily-trader-live/launch.sh`). NOT systemd.
+- **Broker boundary**: **direct Alpaca SDK** — no `trading_server` on
+  `127.0.0.1:8050` anymore. Writes go straight to `api.alpaca.markets` using
+  `ALP_KEY_ID_PROD` / `ALP_SECRET_KEY_PROD`.
+- **Singleton**: `src/alpaca_singleton.py::enforce_live_singleton` fires at
+  startup; the live-writer lock at `strategy_state/account_locks/alpaca_live_writer.lock`
+  must show `service_name: xgb_live_trader` and a `pid` that matches
+  `supervisorctl status xgb-daily-trader-live`.
+- **HARD RULE #3 (death-spiral guard)**: `xgbnew/live_trader.py` calls
+  `record_buy_price(sym, fill_px)` after each BUY and
+  `guard_sell_against_death_spiral(sym, "sell", current_price)` before each
+  SELL. RuntimeError from the guard crashes the loop by design; supervisor
+  autorestart handles reconnection. DO NOT "catch and skip" this exception.
+- **Ensemble**: 5-seed alltrain GPU —
+  `analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed{0,7,42,73,197}.pkl`,
+  blend mode `mean` (predict_proba averaged). Models trained with
+  `n_estimators=400 max_depth=5 learning_rate=0.03` on 2020-01-01 → 2026-04-19
+  (846-symbol universe).
+- **Allocation**: `--allocation 0.25` (25% of portfolio) per pick, `--top-n 1`
+  (1 symbol per day), `--leverage 1.0` bare. Queued upgrade: `lev=1.25`
+  (+10.9pp median in-sample but +6.9pp worst DD; **human-approval only**).
+- **Baseline expected monthly return (IN-SAMPLE 2025-01-02 → 2026-04-10)**:
+  median +38.85%, p10 +4.82%, sortino 18.86, neg 2/30, worst DD 31.44%.
+  Real PnL should track **60–70% of in-sample** → **~+25%/mo healthy,
+  <+10%/mo for 2 weeks = broken**.
+- **Character**: buy-open (9:30 ET) / sell-close (15:50 ET) same session,
+  flat overnight. Top-1 pick is ~$7K notional on $28K equity.
+- **Signal cadence**: one session per trading day. `--loop` sleeps to
+  09:20 ET next business day between sessions.
+- **Logs**: `sudo tail -f /var/log/supervisor/xgb-daily-trader-live.log` and
+  `…-error.log` (singleton lock + stderr).
 
-## 2. XGB Daily Trader — QUEUED (paper API blocker)
+### Deploy gate (what must pass before swapping models or knobs)
 
-- **Process (when live)**: systemd unit `xgb-daily-trader.service` runs `python -m xgbnew.live_trader`. **DEAD since 2026-04-14** (paper REST 401 unauthorized). Live PROD keys fine; paper keys must be regenerated at the Alpaca dashboard and pasted into `env_real.py` (`ALP_KEY_ID_PAPER`, `ALP_SECRET_KEY_PAPER`). No other action needed — unit will restart fine once keys land.
-- **Queued config** (ship after key fix):
-  - `--model-path analysis/xgbnew_daily/live_model_v2_n400_d5_lr003_top1_s2.pkl` *(seed=2 — promoted 2026-04-18, see below; seed=0 pkl kept as rollback)*
-  - `--top-n 1 --allocation 1.0`
-  - XGBoost `n_estimators=400, max_depth=5, learning_rate=0.03`, 846-symbol universe, seed-robust per 16-seed Bonferroni + 7-seed DD sweep.
-- **OOS evidence** (846-sym, 34 windows thru 2026-04-18, binary fills, lag=2, fee=0.278bps, fb=5bps):
-  - 1.0× → med +32.2%/mo, p10 +20.3%, worst_dd 31.9%, **0/34 neg**, sortino 8.42
-  - 1.25× → med +40.8%, p10 +25.1%, dd 39.0%, 0/34 neg
-  - 1.5× → med +49.7%, p10 +29.6%, dd 45.8%, 0/34 neg
-- **In-flight research**: DD-reduction sweep in `analysis/xgbnew_dd_sweep/` (SPY MA50 gate, vol-target sizing, seed variance). Ledger `xgboptimiztions.md`.
-  - **Round 2 closed 2026-04-18 ~10:50 UTC** (commit `0d9026bd`): all 7 DD-reduction knobs FAIL strict ship rule (every Δsortino < 0). Regime gates / vol-target hurt top_n=1.
-  - **Seed axis wins**: baseline at seed=2 posts Δsortino +0.39, Δworst_dd −4.48pt (27.39% from 31.87%, 14% relative DD cut), Δneg 0, Δp10 +0.09.
-  - **7-seed robustness DONE 2026-04-18 ~11:10 UTC** (seeds 0-6). All 7 → 0/34 neg. Pool median_sortino 8.28 ≥ baseline. seed=2 is only seed in top-quartile on BOTH axes (sortino rank 1/7, worst_dd rank 2/7 tied with s4). **seed=2 promoted** — queued pkl is `live_model_v2_n400_d5_lr003_top1_s2.pkl` (already trained at 11:23 UTC, identical 15-feature schema as seed=0 pkl, only `random_state=2` differs).
-- **Character**: buy-open / sell-close same session, flat overnight. `top_n=1 + allocation=1.0` → 100% single-stock concentration per session. No overnight margin hit.
+On same 846-symbol OOS grid (30 windows 2025-01-02 → 2026-04-10, fb=5bps,
+fee=0.278bps, binary fills at `decision_lag=2`):
+- **5-seed top_n=1 lev=1.0 (deployed)**: med +38.85 / p10 +4.82 / sortino 18.86 / neg 2/30 / dd 31.44
+- Never downgrade on median ≥ +35 AND p10 ≥ +4 AND neg ≤ 2/30 AND worst_dd ≤ 32 simultaneously.
 
-## 3. Other services (present but not primary signal)
+## 2. Daily RL Trader — STOPPED (intentional, kept for rollback)
 
-- `llm-stock-trader` — Gemini-driven picks YELP/NET/DBX/OPTX. Status drift; check supervisor, not urgent.
-- `unified-orchestrator.service` — **DEAD** since 2026-03-29 (Gemini API exhausted). Do not attempt to revive without budget.
-- Crypto RL (crypto12_ppo_v8) — training-snapshot only, **not OOS-validated**, do NOT deploy.
+- **Process**: `trade_daily_stock_prod.py --daemon --live` under supervisor
+  unit `daily-rl-trader`. **STOPPED 2026-04-19 10:40 UTC** to free the
+  singleton lock for XGB.
+- **Do NOT start it** while `xgb-daily-trader-live` holds the lock — the two
+  would race and one would crash on import.
+- **Rollback procedure** (only on user's explicit direction):
+  ```bash
+  sudo supervisorctl stop xgb-daily-trader-live
+  sudo supervisorctl start trading-server daily-rl-trader
+  ```
 
-## 4. Realism invariants (marketsim truth vs prod truth)
+## 3. Trading-server (broker boundary) — STOPPED
 
-- Ground truth for gate decisions = pufferlib C env with `validation_use_binary_fills=True`, `fill_buffer=5bps`, `fee=10bps` (XGB uses `fee=0.278bps` to match Alpaca real), `decision_lag=2`, `max_hold=6h`.
-- Soft sigmoid fills have lookahead bias — never trust training sortino alone for deploy. Re-eval with binary fills at slippage 0/5/10/20 bps before any swap.
-- Intrabar replay (`pufferlib_market/intrabar_replay.py`) is the bar-granularity visualizer; MP4/HTML artifacts under `models/artifacts/<run>/videos/`.
+- Supervisor unit `trading-server` **STOPPED 2026-04-19 10:40 UTC**. It was
+  the broker boundary for `daily-rl-trader`, now unused. Port 8050 is
+  CLOSED — do NOT expect `curl http://127.0.0.1:8050/health` to work.
+  The former expected `writer_lock_held_by_me=true` check is retired.
+- Restart only as part of a daily-rl-trader rollback (see §2).
 
-## 5. Where the hourly monitor's deploy authority starts and stops
+## 4. Other services (present but not primary signal)
+
+- `llm-stock-trader` — Gemini-driven picks YELP/NET/DBX/OPTX. Owns its own
+  singleton slot (account `llm_stock_writer`). Check supervisor; not urgent.
+- `unified-orchestrator.service` — **DEAD** since 2026-03-29 (Gemini API
+  exhausted). Do not attempt to revive without budget.
+- Crypto RL (crypto12_ppo_v8) — training-snapshot only, **not OOS-validated**,
+  do NOT deploy.
+
+## 5. Realism invariants (marketsim truth vs prod truth)
+
+- Ground truth for XGB swap decisions = `xgbnew/eval_pretrained.py` on 30
+  windows 2025-01-02 → 2026-04-10 with `fee_rate=0.0000278` (Alpaca real) and
+  `fill_buffer_bps=5`. These match the live fill model.
+- XGB uses `fee=0.278bps` to match Alpaca real. RL used `fee=10bps` and is
+  out of prod; keep the two paths clearly separate in any re-eval.
+- CPU/GPU hist drift: `tree_method=hist` on GPU drifts from CPU. Never
+  promote a GPU-trained config without re-validating on CPU.
+
+## 6. Where the hourly monitor's deploy authority starts and stops
 
 **Auto-deploy authorized** (no human confirmation needed):
-- Replace one v7 ensemble member with a passing 14th-candidate if all five 1× deploy bars clear AND Δp10 ≥ 0 AND Δneg ≤ 0 AND Δsortino ≥ 0 on a current screened32_realism_gate run.
-- Restart a dead supervisor unit that owns a known-healthy config.
-- Fix portfolio state with `health_check.py --fix`.
+- Hot-swap the 5-seed ensemble for a 5-seed / 10-seed variant IFF the new
+  variant beats the deploy gate in §1 on every metric.
+- Restart a crashed `xgb-daily-trader-live` (its singleton + guard state
+  are stable; supervisor autorestart is the happy path).
 
 **Explicitly NOT auto-deploy** (human-only):
-- Paper or live API key rotation.
-- `--allocation-pct` change.
-- `--leverage` change.
-- Adding `--multi-position` > 1.
-- Flipping XGB from paper to live.
-- Any change to `alpaca_singleton.py` or the death-spiral guard.
+- Bump `--leverage` above 1.0 (even to 1.25).
+- Increase `--allocation` above 0.25.
+- Change `--top-n` above 1.
+- Rotate API keys.
+- Any change to `alpaca_singleton.py` or the death-spiral guard (HARD RULE).
+- Bring `daily-rl-trader` back online (that's a rollback, user only).
 
 See `monitoring/hourly_prod_check_prompt.md` for the full per-phase procedure.
