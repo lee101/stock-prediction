@@ -382,6 +382,13 @@ N=3 is the efficient-frontier cell.
 | N=1 lev=1.5 (prior aggr) | +76.04 | +43.75 | 4.58 | +34.70 | 0/30 |
 | **N=3 lev=1.5 (new aggr)** | **+74.24** | **+53.60** | **2.61** | **+42.53** | **0/30** |
 | N=3 lev=1.5 OOS | +73.58 | +53.93 | 2.62 | +46.95 | 0/30 |
+| **N=3 lev=1.5 16-seed bonferroni** | **+74.27** | **+51.21** | **2.61** | **+43.38** | **0/30** |
+
+**16-seed bonferroni confirms**: median IDENTICAL (+74.27 vs +74.24 5s,
+Δ=+0.03), DD IDENTICAL (2.61), 0/30 neg preserved, worst window +43.38.
+p10 softens 2.39pp (53.60 → 51.21) reflecting single-symbol variance that
+the 5-seed averaged out. Triple-validated: deploy-5s / deploy-16s / OOS-5s
+all hit med ~74, DD 2.6, 0 neg, worst ≥+42.5%/mo. **Config is seed-robust.**
 
 p10 **+9.85pp**, DD **−1.97pp**, worst-window **+7.83pp** for just
 −1.80 on median. OOS replicates almost exactly on all metrics and
