@@ -97,6 +97,35 @@ def _submit_market_order(client, *, symbol: str, qty: float, side: str):
     return client.submit_order(req)
 
 
+def _poll_filled_avg_price(client, order_id: str, *, timeout_s: float = 30.0) -> float | None:
+    """Poll an order until it reports a filled_avg_price or timeout.
+
+    Returns the float fill price (None on timeout/no fill). Used to feed the
+    death-spiral guard's buy-price memory so future sells are vetted against
+    the actual cost basis rather than a pre-fill estimate.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            o = client.get_order_by_id(order_id)
+        except Exception:
+            time.sleep(1.0)
+            continue
+        price = getattr(o, "filled_avg_price", None)
+        if price is not None:
+            try:
+                p = float(price)
+                if p > 0:
+                    return p
+            except (TypeError, ValueError):
+                pass
+        status = str(getattr(o, "status", "")).lower()
+        if status in ("canceled", "rejected", "expired"):
+            return None
+        time.sleep(1.0)
+    return None
+
+
 def _get_account(client):
     return client.get_account()
 
@@ -105,6 +134,31 @@ def _get_positions(client) -> dict[str, float]:
     """Return {symbol: qty} for all open positions."""
     positions = client.get_all_positions()
     return {str(p.symbol): float(p.qty) for p in positions}
+
+
+def _get_position_details(client) -> dict[str, dict]:
+    """Return {symbol: {qty, current_price, avg_entry_price}} for open positions.
+
+    current_price is the price the guard consults before submitting a sell.
+    """
+    positions = client.get_all_positions()
+    out: dict[str, dict] = {}
+    for p in positions:
+        sym = str(p.symbol)
+        try:
+            cur = float(getattr(p, "current_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            cur = 0.0
+        try:
+            entry = float(getattr(p, "avg_entry_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry = 0.0
+        out[sym] = {
+            "qty": float(p.qty),
+            "current_price": cur,
+            "avg_entry_price": entry,
+        }
+    return out
 
 
 def _previous_trading_day(day: date) -> date:
@@ -434,6 +488,10 @@ def run_session(
     print(f"\n[xgb-live] Placing BUY orders  portfolio=${portfolio_value:,.0f}  "
           f"notional/pick=${buy_notional:,.0f}", flush=True)
 
+    # HARD RULE #3 (CLAUDE.md): record each buy's actual fill price so future
+    # sells are vetted against the real cost basis by the death-spiral guard.
+    from src.alpaca_singleton import record_buy_price
+
     for _, row in picks.iterrows():
         sym = str(row["symbol"])
         price = float(row["last_close"])
@@ -446,8 +504,18 @@ def run_session(
             continue
         try:
             order = _submit_market_order(client, symbol=sym, qty=qty, side="buy")
+            order_id = str(getattr(order, "id", "") or "")
             print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
-                  f"order_id={getattr(order, 'id', '?')}", flush=True)
+                  f"order_id={order_id or '?'}", flush=True)
+            fill_px = _poll_filled_avg_price(client, order_id) if order_id else None
+            recorded = fill_px if (fill_px and fill_px > 0) else price
+            try:
+                record_buy_price(sym, float(recorded))
+                src = "fill" if fill_px else "last_close"
+                print(f"       recorded buy_price={recorded:.4f} ({src}) for guard",
+                      flush=True)
+            except Exception as rec_exc:
+                logger.warning("record_buy_price failed for %s: %s", sym, rec_exc)
         except Exception as exc:
             logger.error("BUY failed for %s: %s", sym, exc)
 
@@ -457,17 +525,32 @@ def run_session(
     _wait_until(MARKET_CLOSE[0], MARKET_CLOSE[1], ET)
 
     # ── Sell all positions ────────────────────────────────────────────────────
-    positions = _get_positions(client)
-    xgb_positions = {sym: qty for sym, qty in positions.items()
+    # HARD RULE #3: every sell passes through guard_sell_against_death_spiral
+    # with the current quote; if we're >50 bps below the recorded buy, the
+    # guard raises RuntimeError and crashes the loop (supervisor autorestart).
+    from src.alpaca_singleton import guard_sell_against_death_spiral
+
+    position_details = _get_position_details(client)
+    xgb_positions = {sym: det for sym, det in position_details.items()
                      if sym in picks["symbol"].values}
 
     print(f"\n[xgb-live] Placing SELL orders for {len(xgb_positions)} positions", flush=True)
-    for sym, qty in xgb_positions.items():
+    for sym, det in xgb_positions.items():
+        qty = det["qty"]
         if qty <= 0:
             continue
+        current_price = det["current_price"]
+        if current_price <= 0:
+            current_price = det["avg_entry_price"]
+        if current_price <= 0:
+            logger.error("SELL skipped for %s — no current_price or avg_entry_price "
+                         "available; cannot invoke death-spiral guard safely", sym)
+            continue
+        # Guard raises RuntimeError on death-spiral sells → propagate (crash).
+        guard_sell_against_death_spiral(sym, "sell", float(current_price))
         try:
             order = _submit_market_order(client, symbol=sym, qty=abs(qty), side="sell")
-            print(f"  SELL {sym:<8}  qty={qty:.2f}  "
+            print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
                   f"order_id={getattr(order, 'id', '?')}", flush=True)
         except Exception as exc:
             logger.error("SELL failed for %s: %s", sym, exc)

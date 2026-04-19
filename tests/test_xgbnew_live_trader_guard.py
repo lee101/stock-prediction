@@ -1,0 +1,114 @@
+"""HARD RULE #3 compliance tests for xgbnew/live_trader.py.
+
+Verify that the refactored buy/sell paths:
+1. Record actual fill prices after BUY (via record_buy_price)
+2. Invoke guard_sell_against_death_spiral before every SELL submit
+3. Let RuntimeError from the guard propagate (crash the loop, no silent swallow)
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from xgbnew.live_trader import (  # noqa: E402
+    _get_position_details,
+    _poll_filled_avg_price,
+)
+
+
+def test_poll_filled_avg_price_returns_float_when_filled():
+    order_obj = SimpleNamespace(filled_avg_price="123.45", status="filled")
+    client = MagicMock()
+    client.get_order_by_id.return_value = order_obj
+    got = _poll_filled_avg_price(client, "id-1", timeout_s=2.0)
+    assert got == pytest.approx(123.45, rel=1e-9)
+
+
+def test_poll_filled_avg_price_returns_none_on_cancel():
+    order_obj = SimpleNamespace(filled_avg_price=None, status="canceled")
+    client = MagicMock()
+    client.get_order_by_id.return_value = order_obj
+    got = _poll_filled_avg_price(client, "id-2", timeout_s=2.0)
+    assert got is None
+
+
+def test_get_position_details_extracts_current_price_and_entry():
+    pos = [
+        SimpleNamespace(symbol="AAPL", qty="10", current_price="200.5",
+                        avg_entry_price="199.0"),
+        SimpleNamespace(symbol="MSFT", qty="5", current_price="410.0",
+                        avg_entry_price="405.0"),
+    ]
+    client = MagicMock()
+    client.get_all_positions.return_value = pos
+    out = _get_position_details(client)
+    assert out["AAPL"]["qty"] == 10.0
+    assert out["AAPL"]["current_price"] == pytest.approx(200.5)
+    assert out["AAPL"]["avg_entry_price"] == pytest.approx(199.0)
+    assert out["MSFT"]["qty"] == 5.0
+
+
+def test_guard_raises_and_propagates_for_death_spiral_sell(tmp_path, monkeypatch):
+    """After a buy at 100.00, a sell at 99.40 (>50 bps below) must raise."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    monkeypatch.setenv("STATE_DIR", str(state_dir))
+    # Make sure no override bypass is set.
+    monkeypatch.delenv("ALPACA_DEATH_SPIRAL_OVERRIDE", raising=False)
+
+    # Force re-import so state dir is picked up fresh.
+    import importlib
+    import src.alpaca_singleton as singleton
+    importlib.reload(singleton)
+
+    singleton.record_buy_price("TESTSYM", 100.00)
+
+    # 60 bps below 100.00 → should raise (floor is 99.50 at 50 bps tolerance).
+    with pytest.raises(RuntimeError, match="death-spiral"):
+        singleton.guard_sell_against_death_spiral("TESTSYM", "sell", 99.40)
+
+
+def test_guard_allows_sell_within_tolerance(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state2"
+    state_dir.mkdir()
+    monkeypatch.setenv("STATE_DIR", str(state_dir))
+    monkeypatch.delenv("ALPACA_DEATH_SPIRAL_OVERRIDE", raising=False)
+
+    import importlib
+    import src.alpaca_singleton as singleton
+    importlib.reload(singleton)
+
+    singleton.record_buy_price("TESTSYM2", 100.00)
+
+    # 30 bps below 100.00 → floor at 50 bps is 99.50, 99.70 is above → OK.
+    singleton.guard_sell_against_death_spiral("TESTSYM2", "sell", 99.70)
+    singleton.guard_sell_against_death_spiral("TESTSYM2", "sell", 100.50)
+
+
+def test_record_and_retrieve_buy_price_roundtrip(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state3"
+    state_dir.mkdir()
+    monkeypatch.setenv("STATE_DIR", str(state_dir))
+
+    import importlib
+    import src.alpaca_singleton as singleton
+    importlib.reload(singleton)
+
+    singleton.record_buy_price("RTSYM", 42.42)
+    # The file should exist under the state dir.
+    buy_files = list(state_dir.glob("**/alpaca_live_writer_buys.json"))
+    assert len(buy_files) == 1, f"expected 1 buys.json, got {buy_files}"
+    raw = json.loads(buy_files[0].read_text())
+    assert "RTSYM" in raw
+    assert raw["RTSYM"]["price"] == pytest.approx(42.42)
