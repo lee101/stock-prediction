@@ -340,6 +340,27 @@ is tail-protective rather than dilutive.
 | top_n=2 | +60.21 | +41.13 | **2.65** | **+38.33** | 92.9 | 0/30 |
 | **top_n=3** | +59.19 | **+43.23** | **2.17** | +34.56 | div0 | 0/30 |
 | **top_n=3 16-seed bonferroni** | **+59.21** | **+41.38** | **2.17** | **+35.23** | div0 | 0/30 |
+
+### Fill-stress + universe transfer on N=3 lev=1.25 tier
+
+| scenario | med | p10 | DD | worst | n_neg/n_wins |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| baseline (fb=5, ~0.28bps fee) | +59.19 | +43.23 | 2.17 | +34.56 | 0/30 |
+| fb=15, fee=10bps (3× friction) | +43.59 | +29.18 | 2.92 | +21.35 | 0/30 |
+| fb=20, fee=10bps (4× friction) | +39.88 | +25.84 | 3.17 | +18.21 | 0/30 |
+| top200 universe (fb=5, real fee) | +57.34 | +43.39 | 2.17 | +37.98 | 0/21 |
+
+**Fill-stress**: per-bp sensitivity ~0.78%/mo (consistent with N=1 prior
+stress). At 4× default friction the tier still clears the 27%/mo target
+on median and keeps 0/30 neg. Worst window degrades to +18.21%/mo but
+stays positive.
+
+**Universe transfer (top200)**: only 21 of 30 windows have enough
+passing days to score (vs 30/30 on wide-846, because top200 × ms=0.72
+passes fewer triples). But when it does trade: median drops 1.85pp,
+**p10 lifts +0.16pp**, DD identical, **worst window lifts +3.42pp**
+(+37.98). Same tail-improvement pattern as N=1 top200 prior result.
+Filter+universe effects compound at N=3 too.
 | **OOS pkls (train_end=2024-12-31), lev=1.25** |
 | top_n=1 | +58.01 | +36.01 | 5.79 | +27.56 | 52.7 | 0/30 |
 | top_n=2 | +58.30 | +42.69 | **2.65** | +34.67 | div0 | 0/30 |
