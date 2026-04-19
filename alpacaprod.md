@@ -44,6 +44,22 @@ or the singleton check `cat strategy_state/account_locks/alpaca_live_writer.lock
 **Rollback**: `sudo supervisorctl stop xgb-daily-trader-live &&
 sudo supervisorctl start trading-server daily-rl-trader`.
 
+**Deploy-config baseline (in-sample, 2025-01-02 → 2026-04-10, 30d × 14d stride windows, 30 windows)**:
+
+| config | median %/mo | p10 | sortino | worst DD | neg |
+|---|---:|---:|---:|---:|---:|
+| **deployed: 5-seed top_n=1 lev=1.0** | **+38.85** | +4.82 | 18.86 | 31.44 | 2/30 |
+| 10-seed top_n=1 lev=1.0 | +38.05 | +4.74 | 19.63 | 31.62 | 2/30 |
+| 5-seed top_n=1 lev=1.25 | +49.73 | +5.44 | 18.79 | 38.35 | 2/30 |
+| 5-seed top_n=2 lev=1.0 | +34.24 | +5.12 | 18.06 | 31.58 | 3/30 |
+
+Notes:
+- **In-sample** (alltrain train through 2026-04-19 includes full OOS grid). Use as upper-bound, not OOS.
+- 10-seed is NOT strictly better — sortino +0.77 but median −0.80; don't hot-swap.
+- lev=1.25 is the leverage knee: +10.88 med but +6.91 worst DD. Flip via user approval.
+- top_n=1 still dominates 4/6 metrics vs top_n=2. Don't change.
+- Artifacts: `analysis/xgbnew_deploy_baseline/deploy_{5seed,10seed}_lev{1,125}_top{1,2}.json`.
+
 ---
 
 ### 2026-04-18 10:00 UTC — XGB DD-reduction campaign in flight (9-run sweep)
