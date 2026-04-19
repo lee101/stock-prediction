@@ -554,6 +554,151 @@ Leverage scales med and p10 ~linearly with lev; DD scales **sublinearly**
 - **Aggressive**: `--min-score 0.70 --leverage 1.50` → +76.04/+37.93/DD 4.58
 - **Risk-on** (not recommended as first step): `--min-score 0.70 --leverage 2.00` → +111.17/+52.86/DD 6.11
 
+## Turnover / concentration audit (ms=0.75 × N=3 × lev=1.25, 5-seed deploy)
+
+Ran `xgbnew/eval_pretrained.py --log-picks` to emit per-day trades
+across all 30 windows, then computed symbol concentration, pick-count
+distribution, day-to-day turnover, and score-tier returns. Output at
+`analysis/xgbnew_deploy_baseline/deploy_5seed_ms075_topn3_lev125_picks_20260419.json`
+(295 KB, 1631 trades, 281 unique calendar days, 587 window-days).
+
+**Concentration:**
+- 35 unique symbols traded across 281 calendar days (846-symbol universe)
+- HHI 0.060 → effective-N 16.7 symbols
+- Top-5 = 46% of picks: TSLA 10.3%, PLTR 9.8%, NVDA 9.4%, BKNG 8.5%, NOW 7.6%
+- Top-10 = 73.6%
+
+**Pick-count distribution per day (ms=0.75 floor effect):**
+- 3 picks: 84.0% of days (filter rarely binds)
+- 2 picks: 9.9%
+- 1 pick: 6.1%
+- 0 picks (cash day): 0.0% — the floor never fully dries up
+
+**Turnover:** day-to-day Jaccard distance 0.870; 146/280 transitions
+rotate *all* picks; only 1/280 days repeats the prior day's set.
+Strategy is dynamic, not a buy-and-hold of TSLA/PLTR.
+
+**Score tier → PnL monotonicity** (the key finding):
+
+| score tier | n picks | win rate | mean net ret | median net ret |
+| --- | ---: | ---: | ---: | ---: |
+| 0.75-0.80 | 193 (11.8%) | 84.5% | +1.74% | +1.49% |
+| 0.80-0.85 | 535 (32.8%) | 88.0% | +2.15% | +1.88% |
+| 0.85-0.90 | 710 (43.5%) | 94.2% | +2.54% | +2.14% |
+| 0.90+     | 193 (11.8%) | 96.9% | +3.02% | +2.39% |
+
+**Win rate rises monotonically 84→97%, mean net return rises
+monotonically 1.74→3.02%.** Conviction score is a *gradient* signal,
+not just a threshold — higher score is strictly better per-trade.
+This is a structural validation that the min-score filter is picking
+up a real edge quality axis, not a noisy cutoff.
+
+**Implication:** pushing ms higher (0.80 / 0.82) cuts the lowest tier
+(win-rate 84.5%, ret +1.74%) and reallocates into the mean +2.4%
+universe. Already-tested ms=0.70 × lev=1.25 hits +60.59/+30.96/DD 3.81
+OOS-replicated (see knee table). The knee at ms≈0.75 is where
+monotone tier-gain meets enough picks for portfolio completion.
+
+**Confirmed empirically — ms=0.80 loses to ms=0.75** at N=3 × lev=1.25:
+
+| cell | med | p10 | worst DD | worst window | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ms=0.75 N=3 l=1.25 | **+61.38** | **+43.24** | **2.48** | **+35.67** | 0/30 |
+| ms=0.80 N=3 l=1.25 | +58.88 | +41.74 | 2.48 | +33.18 | 0/30 |
+
+Per-trade monotonicity does NOT survive at portfolio level. Portfolio
+completion beats per-pick quality above the knee: the +1.74%/trade
+0.75-0.80 tier still adds net positive expected value when it fills
+the 3rd slot on days with only two 0.85+ picks. Removing it costs
+2.5pp/mo for no drawdown or reliability benefit.
+
+## Packing-mode sweep under ms=0.75 gate (2026-04-19)
+
+The turnover audit showed score→return is monotone, so I tested
+whether score-weighted allocation (softmax, score_norm) beats
+equal-weight under the tight conviction gate. Prior memory
+(`feedback_packing_dilutes_concentration.md`) states packing dilutes
+at ms=0 but inverts under ms≥0.72. **Inversion confirmed, margin is
+small.**
+
+5-seed deploy pkls, N=3, lev=1.25, ms=0.75, 30-window grid:
+
+| allocation | med %/mo | p10 %/mo | worst DD | worst window | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| equal (baseline) | +61.38 | +43.24 | 2.48 | +35.67 | 0/30 |
+| **softmax t=0.5 (sharp)** | **+61.71** | **+43.47** | 2.51 | **+36.06** | 0/30 |
+| softmax t=1.0 | +61.59 | +43.40 | 2.49 | +35.86 | 0/30 |
+| softmax t=2.0 (near-equal) | +61.48 | +43.32 | 2.48 | +35.77 | 0/30 |
+| score_norm | +61.63 | +43.41 | 2.49 | +35.90 | 0/30 |
+
+**softmax t=0.5 strict-dominates equal on every metric except DD**
+(+0.03 pp), with Δmed +0.33%/mo, Δp10 +0.23%/mo, Δworst-window
++0.39pp. Score_norm and softmax t=1.0 also win but by less.
+
+Why the gain is small: inside the ms=0.75 gate, the 3 picks have
+already clustered at high-conviction (median 0.854, p10 0.793). The
+per-pick return spread inside that band is narrow compared to the
+outside→inside spread. Gate does most of the work; packing adds
+a ~0.5% second-order lift.
+
+**OOS replication check** (`oos2024_ensemble_gpu` pkls, train_end=2024-12-31):
+
+| cell | med | p10 | worst DD | worst window |
+| --- | ---: | ---: | ---: | ---: |
+| OOS equal | +59.45 | +42.51 | 2.48 | +36.97 |
+| OOS softmax t=0.5 | +59.81 (+0.36) | +42.58 (+0.07) | 2.50 | +36.78 (−0.19) |
+
+OOS median gain replicates (+0.36 vs +0.33 deploy); p10 gain is
+smaller (+0.07) and worst-window regresses (−0.19). Mixed.
+
+**Activation note:** equivalent deploy flag is `--allocation-mode
+softmax --allocation-temp 0.5`. Live trader currently hardcodes
+allocation_mode="equal" — would need wiring before activation. The
++0.33%/mo gain is below the noise floor of seed/universe variance
+and NOT worth activation churn alone. **Bundle into same deploy as
+ms flag if user activates** — otherwise ship it only after a larger
+cost-justified cell is found (e.g. new model topology).
+
+## Per-seed standalone at champion cell (2026-04-19)
+
+Question: is the 5-seed ensemble load-bearing, or can we thin it?
+
+| model | med | p10 | worst DD | worst window | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| seed 0   | **+62.14** | **+44.44** | 2.48 | +38.09 | 0/30 |
+| seed 7   | +60.08 | +40.44 | 2.48 | +38.23 | 0/30 |
+| seed 42  | +61.62 | +43.31 | 2.48 | +35.91 | 0/30 |
+| seed 73  | +60.99 | +42.50 | 2.48 | +35.72 | 0/30 |
+| seed 197 | +54.02 | +40.33 | 2.48 | +36.58 | 0/30 |
+| **ENSEMBLE 5s** | +61.38 | +43.24 | 2.48 | **+35.67** | 0/30 |
+
+Per-seed median spread 8.12pp; p10 spread only 4.11pp — **gate
+compresses tail risk across seeds**. All 5 seeds standalone hit 0/30
+neg and identical DD 2.48 — the gate does the DD/neg-safety work,
+not the ensemble.
+
+Ensemble gives up 0.76pp med vs best seed in exchange for +2.42pp
+worst-window insurance. At 27%/mo target, paying 0.76pp for tail
+protection against seed-picking-lottery is the correct call. Don't
+2x-weight seed 0 (see `feedback_loo_weight_doesnt_generalize.md`).
+
+## Extended-train window at the gate (2026-04-19)
+
+Prior memory (`project_xgb_train_extend_2020.md`) found +6-8pp lift
+from `train_start=2020` vs `2021` at ms=0. Does the lift stack with
+the conviction gate?
+
+| model | cell | med | p10 | worst DD | neg |
+| --- | --- | ---: | ---: | ---: | ---: |
+| live_model_train2020 (1s, 2020-2024 train) | ms=0.75 N=3 l=1.25 | +57.02 | +41.31 | 2.48 | 0/30 |
+| 5-seed deploy ensemble (2021-2024 train) | same cell | **+61.38** | **+43.24** | 2.48 | 0/30 |
+
+**Training-window advantage does NOT stack with the gate.** The
+single-seed train2020 model underperforms 4/5 single deploy seeds
+and the 5-seed ensemble. Interpretation: the gate already screens
+for high-confidence examples — extra 2020 training data adds noise
+on the gated margin. Don't swap the deployed pkls.
+
 ## Monitor plan after activation
 - First week: cash-only day count. If >3 consecutive cash days, drop to
   ms=0.50.

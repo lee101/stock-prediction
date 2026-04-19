@@ -142,6 +142,8 @@ def parse_args(argv=None):
                    choices=["mean", "median", "rank_mean"])
     p.add_argument("--output-path", type=Path,
                    default=REPO / "analysis/xgbnew_daily/eval_pretrained_latest.json")
+    p.add_argument("--log-picks", action="store_true",
+                   help="Include per-window picks (symbol, score) in output JSON.")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -232,14 +234,23 @@ def main(argv=None) -> int:
         res = simulate(w_df, models[0], backtest_cfg, precomputed_scores=w_scores)
         n_days = len(res.day_results)
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
-        window_results.append({
+        wr = {
             "w_start": str(w_start), "w_end": str(w_end),
             "n_trading_days": n_days,
             "total_return_pct": res.total_return_pct,
             "monthly_return_pct": monthly,
             "sortino": res.sortino_ratio,
             "max_dd_pct": res.max_drawdown_pct,
-        })
+        }
+        if args.log_picks:
+            wr["picks"] = [
+                {"day": str(dr.day),
+                 "trades": [{"sym": t.symbol, "score": float(t.score),
+                             "net_ret_pct": float(t.net_return_pct)}
+                            for t in dr.trades]}
+                for dr in res.day_results
+            ]
+        window_results.append(wr)
 
     if not window_results:
         print("ERROR: no complete windows", file=sys.stderr)
