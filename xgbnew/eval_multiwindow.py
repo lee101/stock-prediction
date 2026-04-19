@@ -263,6 +263,14 @@ def parse_args(argv=None):
         "2×(fee+buffer) per held day and captures overnight drift. "
         "Off by default.",
     )
+    p.add_argument(
+        "--min-score",
+        type=float,
+        default=0.0,
+        help="Conviction gate: drop picks with predict_proba < min_score. "
+        "0.0 = no filter. Memory: 0.55-0.70 on 5-seed ensemble closes the "
+        "tail by holding cash on low-conviction days.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -426,6 +434,7 @@ def main(argv=None) -> int:
             allocation_mode=str(args.allocation_mode),
             allocation_temp=float(args.allocation_temp),
             hold_through=bool(args.hold_through),
+            min_score=float(args.min_score),
         )
         combined_scores = _combined_scores_from_predictions(
             oos_df,
