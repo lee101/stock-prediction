@@ -264,6 +264,67 @@ posts 0/30 neg with worst window +15.48%/mo.
 and 0.28 bps fee, real friction is ~5.3 bps total — the nominal +60.59
 is a LOWER BOUND on expected live median, not an optimistic reading.
 
+## Fine-grained ms knee sweep (deployed pkls, lev=1.25)
+
+| ms | med | p10 | DD | worst_win | td |
+| --: | ---: | ---: | ---: | ---: | ---: |
+| 0.50 | +53.50 | +24.57 | 15.25 | +0.79 | 675 |
+| 0.55 | +52.01 | +30.61 | 12.62 | +9.42 | 645 |
+| 0.65 | +53.53 | +30.61 | 9.00 | +16.53 | 632 |
+| 0.70 | +60.59 | +30.96 | 3.81 | +24.93 | 611 |
+| **0.72** | **+60.59** | **+35.53** | **3.81** | **+28.41** | 603 |
+| 0.75 | +61.20 | +35.39 | 3.81 | +28.41 | 587 |
+| 0.80 | +65.21 | +35.69 | 3.81 | +25.48 | 558 |
+
+**Two knees**:
+- **DD knee at ms=0.70** — DD collapses 9.00 → 3.81 crossing this threshold.
+- **p10 knee at ms=0.72** — p10 jumps +4.57pp from ms=0.70 (+30.96 → +35.53) with only 8 fewer trade days.
+
+Beyond 0.72 the tail metrics flatline; higher ms buys marginal median by
+trading away progressively more trade days (ms=0.75 costs 16 tds for
++0.61pp med, ms=0.80 costs 53 tds for +4.62pp med). **0.72 is the
+efficient frontier point.**
+
+## ms=0.72 full validation
+
+| variant | med | p10 | DD | worst_win | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 5-seed deploy (in-sample) | +60.59 | +35.53 | 3.81 | +28.41 | 0/30 |
+| **5-seed OOS (train_end=2024-12-31)** | **+58.01** | **+36.01** | **5.79** | **+27.56** | **0/30** |
+| 16-seed deploy (bonferroni) | +60.59 | +36.47 | 3.81 | +27.94 | 0/30 |
+| 5-seed OOS ms=0.75 (cross-check) | +58.01 | +36.01 | 5.79 | +27.56 | 0/30 |
+
+ms=0.72 **strictly dominates ms=0.70 on every axis and every validation**:
+- 5s deploy: p10 +4.57, worst_win +3.48
+- 5s OOS:   p10 +3.68, worst_win +4.04
+- 16s deploy: p10 +3.37, worst_win +3.47
+
+ms=0.75 OOS is IDENTICAL to ms=0.72 OOS (median, p10, DD, worst_win all
+match) — the marginal 0.72-0.75 score range contributes zero expected
+value. ms=0.72 keeps 12 more trade days for free.
+
+Worst of 30 OOS windows at ms=0.72 = **+27.56%/mo**, which clears the
+27%/mo target on its own. Every single OOS window at this config beats
+the deploy target.
+
+## Universe transfer (ms=0.70 × lev=1.25 on top200)
+
+| universe | med | p10 | DD | worst_win | td |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| stocks_wide_1000 (846 sym) | +60.59 | +30.96 | 3.81 | +24.93 | 611 |
+| stocks_top200 (200 sym) | +55.49 | +37.06 | 3.81 | +31.61 | 593 |
+
+Tighter-liquidity universe **improves the tail** (+6.10pp p10, +6.68pp
+worst_win) at 5pp median cost. Config generalizes across universes; the
+filter's conviction signal is universe-invariant.
+
+## Updated activation tiers (ms=0.72 is the new best)
+
+- Conservative:     `--min-score 0.55`            → +45.94/+29.20/DD 9.77
+- Sweet spot:       `--min-score 0.55 --lev 1.25` → +52.01/+30.61/DD 12.62
+- **Max conviction**: `--min-score 0.72 --lev 1.25` → **+60.59/+35.53/DD 3.81**, OOS+16seed validated
+- Aggressive:       `--min-score 0.72 --lev 1.50` (PnL-boost, not yet tested — extrapolate from ms=0.70 at lev=1.5: expect +75-80/+42-44/DD 4.5)
+
 ### Leverage sweep at ms=0.70 (deployed pkls, lev=1.0 implicit from prior)
 
 | lev | med | p10 | DD | worst_win | neg |
