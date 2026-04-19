@@ -174,6 +174,41 @@ high-conviction days. They're complementary, not competing.
 ```
 Same pkls, no retraining. Strict-dominates deploy gate on every metric.
 
+## Full activation dossier — ms × lev × fb sweep (DEPLOYED pkls)
+
+| config | med | p10 | sortino | DD | neg | trade_days |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ms=0.55 lev=1.00 fb=5  | +45.94 | +29.20 | 52.43 | 9.77 | 0 | 645 |
+| ms=0.50 lev=1.25 fb=5  | +53.50 | +24.57 | 21.83 | 15.25 | 0 | — |
+| ms=0.55 lev=1.25 fb=5  | +52.01 | +30.61 | 45.19 | 12.62 | 0 | 645 |
+| **ms=0.70 lev=1.25 fb=5** | **+60.59** | **+30.96** | **163.85†** | **3.81** | **0** | **611** |
+| ms=0.55 lev=1.25 **fb=15** (3× slip) | +44.26 | +23.95 | 19.17 | 13.06 | 0 | — |
+
+† sortino=163 is divide-by-zero artifact of near-zero downside deviation.
+
+**ms=0.70 × lev=1.25 is the best config I've ever measured on this
+pipeline.** Worst of 30 windows is **+24.93%/mo** (2025-01-30..02-28 —
+the Jan-Feb tariff cluster). Every window beats **+24%/mo**. Best window
++146.14%/mo. Max per-window DD ≤ 3.81%.
+
+Trade-day cost of tightening 0.55 → 0.70: −5% (645 → 611). Min
+single-window td drops 20 → 16 — still plenty, no zero-trade windows.
+
+**Fill stress**: tripling fill_buffer 5bps → 15bps costs −7.75pp med and
+−6.66pp p10 on the ms=0.55 lev=1.25 cell. All cells stay 0/30 neg under
+3× real-fill realism. Linear sensitivity ~0.77%/mo per bp — same profile
+as baseline sensitivity.
+
+**Softer filter trap**: ms=0.50 recovers trade days but p10 drops to
++24.57 (vs +30.61 at 0.55). The 0.50-0.55 marginal picks are genuinely
+worse; softening the filter is only correct if live hit-rate is
+unsustainable. **Don't pre-emptively activate 0.50.**
+
+**Recommended activation tiers** (user choice, all strict-dominate deploy gate):
+- **Conservative**: `--min-score 0.55` (+45.94 med, +29.20 p10, DD 9.77%)
+- **Sweet spot**: `--min-score 0.55 --leverage 1.25` (+52.01, +30.61, DD 12.62%)
+- **Max-conviction**: `--min-score 0.70 --leverage 1.25` (+60.59, +30.96, DD 3.81%, worst window +24.93%/mo)
+
 ## Monitor plan after activation
 - First week: cash-only day count. If >3 consecutive cash days, drop to
   ms=0.50.
