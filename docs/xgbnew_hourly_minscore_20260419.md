@@ -98,11 +98,75 @@ Hypotheses for the narrower score distribution:
 
 None of these are quick fixes. The daily path is the compute priority.
 
+## 5-seed ensemble × ms sweep (2026-04-19 cycle-3 update)
+
+Added `--n-seeds N` flag to `eval_hourly_multiwindow.py` (mean-blend
+predict_scores across N consecutively-seeded XGB models). Goal: test
+whether ensemble averaging closes the 19/73 neg tail at the hourly
+gate, as it does for daily (2/30 → 0/30 under gate).
+
+### Score-shrinkage finding (the key result)
+
+Ensemble averaging **shrinks** the score distribution. Individual vs
+3-seed ensemble on the same test windows:
+
+| metric | seed 42 | seed 43 | seed 44 | 3-seed ensemble | shrinkage |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| max | 0.6532 | 0.6333 | 0.6372 | **0.6392** | −2.1% vs best |
+| p99 | 0.5726 | ~0.57 | ~0.57 | **0.5567** | tighter |
+| frac ≥ 0.58 | 0.28% | — | — | **0.18%** | fewer survivors |
+
+For daily, individual model max reaches 0.94 so the deploy gate at
+0.75 still sits well below the cap — no meaningful shrinkage effect.
+For hourly, the single-seed cap is already 0.65 and ensemble drives
+it to 0.64, which pushes the usable knee from ms=0.58 down to
+ms=0.57 where tail risk is worse-controlled.
+
+### 5-seed (42..46) ms sweep at top_n=3, lev=1.0 (73 windows)
+
+| cell | med %/mo | p10 %/mo | worst window | worst DD | neg | trades/win |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ms=0.55 | −1.34 | −29.01 | −38.88 | 16.85 | 39/73 | 63.0 |
+| **ms=0.57 (new knee)** | **+39.23** | **−28.28** | −46.40 | 7.17 | 23/73 | 15.5 |
+| ms=0.58 | +16.72 | −57.10 | −85.97 | 5.13 | 25/73 | 6.1 |
+| ms=0.59 | +10.98 | −36.86 | −88.34 | 3.35 | 18/73 | 2.4 |
+| ms=0.60 | +0.00 | −34.88 | −77.73 | 1.09 | 18/73 | 1.3 |
+
+### 1-seed vs 5-seed best cell comparison
+
+| axis | 1-seed best (ms=0.58) | 5-seed best (ms=0.57) | Δ |
+| --- | ---: | ---: | ---: |
+| med %/mo | +44.78 | **+39.23** | −5.55 |
+| p10 %/mo | −22.43 | **−28.28** | −5.85 |
+| worst window | −52.98 | **−46.40** | +6.58 |
+| worst DD | 12.75 | **7.17** | −5.58 |
+| neg | 19/73 | **23/73** | +4 |
+
+**5-seed ensemble LOSES on median, p10, and neg-count. Marginal wins
+on worst-window and DD are not a net improvement.** The ensemble
+shifts the knee left (wider score distribution post-averaging means
+the gate needs to move to compensate), but at the new knee the tail
+is not better protected.
+
+### Verdict: hourly ensemble fails to close the tail
+
+Ensemble averaging does NOT generalize as a rescue lever from daily
+to hourly:
+
+* **Daily**: cap=0.94, gate at 0.75, ensemble has headroom → 5-seed
+  closes 2 neg windows without shifting knee.
+* **Hourly**: cap=0.65, gate at 0.58, ensemble shrinks cap to 0.64 →
+  knee shifts left to 0.57 where tail is inherently worse-filtered.
+
+The root cause — hourly signal's narrow score distribution — is not
+helped by averaging. Next candidates: non-averaging blend (max,
+median, top-k of seed scores), or per-window regime filter (SPY MA50
+already shown to help daily).
+
 ## Next axes (for future cycles, not now)
 
-* **Hourly ensemble**: daily 5-seed collapses 2/30 neg → 0/30 under
-  the gate. Does a 5-seed hourly ensemble (random seeds only) close
-  the 19/73 neg at ms=0.58?
+* **Non-averaging blend**: hourly max-over-seeds or median-over-seeds
+  may preserve conviction tail instead of compressing it.
 * **SPY MA50 regime filter**: already deployed in daily prod; does
   it layer on top of hourly-gate to exit bad windows?
 * **Different hourly objective**: pairwise rank loss or focal loss
@@ -110,5 +174,6 @@ None of these are quick fixes. The daily path is the compute priority.
 
 ## Files
 * `analysis/xgbnew_hourly_ms/hourly_multiwindow_stocks_20260419_192611*.json` — top_n=1 coarse sweep (ms=0.55/0.65/0.72/0.75 all degenerate)
-* `analysis/xgbnew_hourly_ms_n3/hourly_multiwindow_stocks_20260419_192926*.json` — top_n=3 fine sweep
-* Code: `xgbnew/eval_hourly_multiwindow.py` (+`--min-score-sweep`)
+* `analysis/xgbnew_hourly_ms_n3/hourly_multiwindow_stocks_20260419_192926*.json` — top_n=3 fine sweep (1-seed, knee ms=0.58)
+* `analysis/xgbnew_hourly_ms_5s/hourly_multiwindow_stocks_20260419_193947_ms*.json` — 5-seed ensemble sweep (knee ms=0.57, worse on tail)
+* Code: `xgbnew/eval_hourly_multiwindow.py` (+`--min-score-sweep`, +`--n-seeds`)

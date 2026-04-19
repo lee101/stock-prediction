@@ -156,6 +156,13 @@ def parse_args(argv=None):
         help="Skip stocks whose hourly volume-based spread exceeds this (default 30bps).",
     )
 
+    p.add_argument(
+        "--n-seeds",
+        type=int,
+        default=1,
+        help="Train N models with consecutive seeds starting at --random-state "
+             "and mean-blend their predict_scores before the ms sweep (ensemble).",
+    )
     p.add_argument("--n-estimators", type=int, default=400)
     p.add_argument("--max-depth", type=int, default=5)
     p.add_argument("--learning-rate", type=float, default=0.03)
@@ -282,21 +289,28 @@ def main(argv=None) -> int:
         return 1
 
     # Train
-    print("[xgb-hourly-mw] training XGB...", flush=True)
-    t0 = time.perf_counter()
-    model = XGBStockModel(
-        device=args.device,
-        n_estimators=int(args.n_estimators),
-        max_depth=int(args.max_depth),
-        learning_rate=float(args.learning_rate),
-        random_state=int(args.random_state),
-    )
-    model.fit(train_df, HOURLY_FEATURE_COLS, val_df=val_df, verbose=args.verbose)
-    print(f"[xgb-hourly-mw] trained in {time.perf_counter()-t0:.1f}s", flush=True)
+    n_seeds = max(1, int(args.n_seeds))
+    base_seed = int(args.random_state)
+    print(f"[xgb-hourly-mw] training XGB ({n_seeds} seed(s) starting at {base_seed})...", flush=True)
+    models = []
+    for k in range(n_seeds):
+        t0 = time.perf_counter()
+        m = XGBStockModel(
+            device=args.device,
+            n_estimators=int(args.n_estimators),
+            max_depth=int(args.max_depth),
+            learning_rate=float(args.learning_rate),
+            random_state=base_seed + k,
+        )
+        m.fit(train_df, HOURLY_FEATURE_COLS, val_df=val_df, verbose=args.verbose)
+        print(f"[xgb-hourly-mw] seed {base_seed + k} trained in {time.perf_counter()-t0:.1f}s", flush=True)
+        models.append(m)
+    # Representative model for feature-importance reporting.
+    model = models[0]
 
-    # Feature importances
+    # Feature importances (from seed-0 model only; ensemble averaging not meaningful)
     imps = model.feature_importances().head(10)
-    print("\n  Top-10 hourly feature importances:", flush=True)
+    print("\n  Top-10 hourly feature importances (seed 0):", flush=True)
     for feat, imp in imps.items():
         print(f"    {feat:<22} {imp:.4f}")
 
@@ -345,8 +359,16 @@ def main(argv=None) -> int:
         print("ERROR: too few OOS rows after session filter", file=sys.stderr)
         return 1
 
-    # Precompute scores once over the full test slice
-    oos_prob = model.predict_scores(test_df)
+    # Precompute scores once over the full test slice (mean-blend if ensemble).
+    if len(models) == 1:
+        oos_prob = model.predict_scores(test_df)
+    else:
+        sum_prob = None
+        for m in models:
+            p = m.predict_scores(test_df)
+            sum_prob = p if sum_prob is None else (sum_prob + p)
+        oos_prob = sum_prob / float(len(models))
+        print(f"[xgb-hourly-mw] blended {len(models)} seed predictions (mean)", flush=True)
 
     all_ts = sorted(test_df["timestamp"].unique())
     windows = _build_hourly_windows(
