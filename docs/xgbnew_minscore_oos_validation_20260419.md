@@ -222,6 +222,25 @@ Re-ran the max-conviction cell on the truly-OOS 5-seed ensemble
 **Replication tight.** Δmed −3.77pp, Δp10 +1.37pp (better on OOS), worst
 window matches within 1.4pp. Tail behavior is structural.
 
+### Seed-robustness (bonferroni)
+
+Re-ran at ms=0.70 using the full 16-seed alltrain pool (same 5 deployed +
+11 extra-seed pkls, all same 400/0.03 config):
+
+| config | med | p10 | DD | worst_win | neg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 5-seed  ms=0.70 lev=1.00 | +48.45† | +27.62† | 3.04 | +20.39 | 0/30 |
+| 16-seed ms=0.70 lev=1.00 | +46.41 | +25.91 | 3.04 | +19.35 | 0/30 |
+| 5-seed  ms=0.70 lev=1.25 | +60.59 | +30.96 | 3.81 | +24.93 | 0/30 |
+| **16-seed ms=0.70 lev=1.25** | **+60.59** | **+33.10** | **3.81** | **+24.47** | **0/30** |
+
+† 5-seed lev=1.0 inferred from lev=1.25 linear scaling.
+
+**Median at 16-seed lev=1.25 is IDENTICAL to 5-seed** (+60.59 both). p10
+tightens +2.14pp on the 3×-larger ensemble. This rules out the 5-seed
+result being a lucky draw — the ms=0.70 conviction-filter effect is
+seed-robust at the ensemble level.
+
 ### Leverage sweep at ms=0.70 (deployed pkls, lev=1.0 implicit from prior)
 
 | lev | med | p10 | DD | worst_win | neg |
