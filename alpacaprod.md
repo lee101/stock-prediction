@@ -7,6 +7,45 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-19 10:40 UTC — XGB alltrain 5-seed ensemble LIVE (supervisor: `xgb-daily-trader-live`)
+
+**First live XGB deploy.** Supervisor pid 2343601 holds the
+`alpaca_live_writer` singleton lock. Session loops indefinitely; first
+trade session Monday 2026-04-20 09:30 ET.
+
+| field | value |
+|---|---|
+| supervisor unit | `xgb-daily-trader-live` (NOT systemd) |
+| launcher | `deployments/xgb-daily-trader-live/launch.sh` |
+| models | `analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed{0,7,42,73,197}.pkl` |
+| blend | mean over 5 seeds (predict_proba averaged) |
+| universe | `symbol_lists/stocks_wide_1000_v1.txt` (846 tradable) |
+| top_n | 1 |
+| allocation | 25% of portfolio |
+| min dollar vol | $5M |
+| leverage | 1.0 (bare; knee is 1.25 per `project_xgb_leverage_sweet_spot.md`) |
+| paper | **False — LIVE** (`ALP_PAPER=0 ALLOW_ALPACA_LIVE_TRADING=1`) |
+| account equity | $28,679 |
+| Alpaca path | direct SDK (singleton lock + per-call death-spiral guard) |
+
+**Replaces**: `daily-rl-trader` + `trading-server` (both stopped
+10:40 UTC). The RL ensemble delivered +7.47%/mo median; XGB OOS is
++32.48%/mo median 0/34 neg on the same period.
+
+**Safety (HARD RULE #3)**: `xgbnew/live_trader.py` now calls
+`record_buy_price(sym, fill_px)` after each BUY and
+`guard_sell_against_death_spiral(sym, "sell", current_price)` before each
+SELL. Guard RuntimeError propagates (crashes the loop; supervisor
+autorestart). Tests at `tests/test_xgbnew_live_trader_guard.py` (6/6 green).
+
+**Monitor**: `sudo tail -f /var/log/supervisor/xgb-daily-trader-live.log`
+or the singleton check `cat strategy_state/account_locks/alpaca_live_writer.lock`.
+
+**Rollback**: `sudo supervisorctl stop xgb-daily-trader-live &&
+sudo supervisorctl start trading-server daily-rl-trader`.
+
+---
+
 ### 2026-04-18 10:00 UTC — XGB DD-reduction campaign in flight (9-run sweep)
 
 **Context**: user asked "is there some way to also get the worst DD down as
