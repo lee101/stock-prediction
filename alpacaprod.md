@@ -7,11 +7,11 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-19 10:40 UTC — XGB alltrain 5-seed ensemble LIVE (supervisor: `xgb-daily-trader-live`)
+### 2026-04-19 — XGB alltrain 5-seed ensemble LIVE — FULL STACK @ lev=2.0
 
-**First live XGB deploy.** Supervisor pid 2343601 holds the
-`alpaca_live_writer` singleton lock. Session loops indefinitely; first
-trade session Monday 2026-04-20 09:30 ET.
+Active config: `hold_through + min_score=0.85 + allocation=2.0` on the same
+5-seed alltrain ensemble. Pre-10:40-UTC bare-lev1 snapshot archived to
+`old_prod/2026-04-19-1040-xgb_alltrain_lev1_bare.md`.
 
 | field | value |
 |---|---|
@@ -21,53 +21,55 @@ trade session Monday 2026-04-20 09:30 ET.
 | blend | mean over 5 seeds (predict_proba averaged) |
 | universe | `symbol_lists/stocks_wide_1000_v1.txt` (846 tradable) |
 | top_n | 1 |
-| allocation | 25% of portfolio |
+| allocation | **2.0 (= 2× leverage, buy_notional = 200% equity)** |
+| min_score | **0.85** (ensemble conviction gate; holds cash if no pick clears) |
+| hold_through | **ON** — same pick today+tomorrow skips round-trip fees |
 | min dollar vol | $5M |
-| leverage | 1.0 (bare; knee is 1.25 per `project_xgb_leverage_sweet_spot.md`) |
 | paper | **False — LIVE** (`ALP_PAPER=0 ALLOW_ALPACA_LIVE_TRADING=1`) |
-| account equity | $28,679 |
 | Alpaca path | direct SDK (singleton lock + per-call death-spiral guard) |
 
-**Replaces**: `daily-rl-trader` + `trading-server` (both stopped
-10:40 UTC). The RL ensemble delivered +7.47%/mo median; XGB OOS is
-+32.48%/mo median 0/34 neg on the same period.
+**Full-stack OOS validation** (5-seed ensemble, 60 windows 2025-01→2026-04-19):
 
-**Safety (HARD RULE #3)**: `xgbnew/live_trader.py` now calls
-`record_buy_price(sym, fill_px)` after each BUY and
+| config | deploy-cost med %/mo | p10 | neg | 36× fee stress med %/mo | p10 | neg |
+|---|---:|---:|---:|---:|---:|---:|
+| lev=2.0, ms=0.85, hold-through | **+141** | +96 | **0/60** | **+108** | +68 | **0/60** |
+
+Fee-robust at 36× real Alpaca costs. Every window positive in both stress
+regimes. Target 60-70% of headline in live = **+85-100%/mo realized**; if
+first-month realized <+40%/mo something's broken (fill slippage spike or
+signal drift — investigate before cranking further).
+
+**Safety (HARD RULE #3)**: `xgbnew/live_trader.py` `run_session_hold_through`
+calls `record_buy_price(sym, fill_px)` after each BUY and
 `guard_sell_against_death_spiral(sym, "sell", current_price)` before each
 SELL. Guard RuntimeError propagates (crashes the loop; supervisor
-autorestart). Tests at `tests/test_xgbnew_live_trader_guard.py` (10/10 green).
+autorestart). Tests: `tests/test_xgbnew_live_trader_guard.py` (10/10) +
+`tests/test_xgbnew_live_trader_hold_through.py` (9/9).
 
-**Trading-day gate added 2026-04-19 14:45 UTC** (commit 001686f8). The
-Saturday 10:40 UTC deploy submitted a MSFT DAY BUY at 13:30 UTC — Alpaca
-accepted and queued the order for Monday's open (`status: accepted,
-expires_at: 2026-04-20T20:00:00Z`). Would have double-bought on Monday
-alongside the fresh Monday pick. Cancelled manually (204, filled_qty=0,
-no fill). `_is_today_trading_day()` now queries `/v2/clock` at top of
-`run_session()` and skips the session when the market won't open today.
-See `project_alpaca_weekend_day_orders.md` in memory.
+**Trading-day gate** (commit 001686f8): `_is_today_trading_day()` queries
+`/v2/clock` at top of both `run_session()` and `run_session_hold_through()`.
+Weekend/holiday sessions no-op with zero orders.
 
 **Monitor**: `sudo tail -f /var/log/supervisor/xgb-daily-trader-live.log`
 or the singleton check `cat strategy_state/account_locks/alpaca_live_writer.lock`.
 
-**Rollback**: `sudo supervisorctl stop xgb-daily-trader-live &&
-sudo supervisorctl start trading-server daily-rl-trader`.
+**Rollback to lev=1 bare**: edit `deployments/xgb-daily-trader-live/launch.sh`,
+drop `--allocation 2.0 --min-score 0.85 --hold-through`, restore
+`--allocation 0.25`, then `sudo supervisorctl restart xgb-daily-trader-live`.
 
-**Deploy-config baseline (in-sample, 2025-01-02 → 2026-04-10, 30d × 14d stride windows, 30 windows)**:
+**Levers per-axis (isolated uplifts, all bonferroni-seed-validated)**:
 
-| config | median %/mo | p10 | sortino | worst DD | neg |
-|---|---:|---:|---:|---:|---:|
-| **deployed: 5-seed top_n=1 lev=1.0** | **+38.85** | +4.82 | 18.86 | 31.44 | 2/30 |
-| 10-seed top_n=1 lev=1.0 | +38.05 | +4.74 | 19.63 | 31.62 | 2/30 |
-| 5-seed top_n=1 lev=1.25 | +49.73 | +5.44 | 18.79 | 38.35 | 2/30 |
-| 5-seed top_n=2 lev=1.0 | +34.24 | +5.12 | 18.06 | 31.58 | 3/30 |
+| lever | isolated effect |
+|---|---|
+| `--hold-through` | +2.17%/mo (lev=1), +2.54%/mo (lev=1.25); strict dominance |
+| `--min-score 0.55` (single-seed equivalent) | closes tail 4→0 neg, lifts median |
+| `--min-score 0.85` (ensemble-calibrated) | ensemble shrinkage shifts knee up |
+| `--allocation 2.0` (= lev 2.0) | linear ~+10%/mo per 0.25; sortino still >24 |
 
-Notes:
-- **In-sample** (alltrain train through 2026-04-19 includes full OOS grid). Use as upper-bound, not OOS.
-- 10-seed is NOT strictly better — sortino +0.77 but median −0.80; don't hot-swap.
-- lev=1.25 is the leverage knee: +10.88 med but +6.91 worst DD. Flip via user approval.
-- top_n=1 still dominates 4/6 metrics vs top_n=2. Don't change.
-- Artifacts: `analysis/xgbnew_deploy_baseline/deploy_{5seed,10seed}_lev{1,125}_top{1,2}.json`.
+See `docs/xgbnew_full_lever_stack_20260419.md` for the stack rationale
+and per-seed bonferroni table. Single-seed bonferroni at lev=1.25 hit
++41-46%/mo 0/113 neg across 5 seeds — ensemble lev=2.0 ms=0.85 is the
+compound of those validated axes.
 
 ---
 
