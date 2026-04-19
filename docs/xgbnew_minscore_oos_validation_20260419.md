@@ -209,6 +209,50 @@ unsustainable. **Don't pre-emptively activate 0.50.**
 - **Sweet spot**: `--min-score 0.55 --leverage 1.25` (+52.01, +30.61, DD 12.62%)
 - **Max-conviction**: `--min-score 0.70 --leverage 1.25` (+60.59, +30.96, DD 3.81%, worst window +24.93%/mo)
 
+## ms=0.70 OOS replication + leverage scaling
+
+Re-ran the max-conviction cell on the truly-OOS 5-seed ensemble
+(train_end=2024-12-31):
+
+| config | med | p10 | DD | worst_win |
+| --- | ---: | ---: | ---: | ---: |
+| deploy ms=0.70 lev=1.25   | +60.59 | +30.96 | 3.81 | +24.93 |
+| **OOS-2024 ms=0.70 lev=1.25** | **+56.82** | **+32.33** | **5.79** | **+23.52** |
+
+**Replication tight.** Δmed −3.77pp, Δp10 +1.37pp (better on OOS), worst
+window matches within 1.4pp. Tail behavior is structural.
+
+### Leverage sweep at ms=0.70 (deployed pkls, lev=1.0 implicit from prior)
+
+| lev | med | p10 | DD | worst_win | neg |
+| --: | ---: | ---: | ---: | ---: | ---: |
+| 1.25 | +60.59 | +30.96 | 3.81 | +24.93 | 0/30 |
+| 1.50 | +76.04 | +37.93 | 4.58 | +30.33 | 0/30 |
+| 2.00 | +111.17 | +52.86 | 6.11 | +41.71 | 0/30 |
+| 3.00 | +201.79 | +86.99 | 9.18 | +66.82 | 0/30 |
+
+Leverage scales med and p10 ~linearly with lev; DD scales **sublinearly**
+(3× lev → 2.4× DD growth). Worst window at 3× is still **+66.82%/mo**.
+
+**Reality checks before pushing leverage >1.25:**
+- Borrow cost at 5.5% APY on leverage delta ≈ 0.9%/month drag per extra
+  leverage unit — NOT modeled in this sim. At 2× real PnL lift ~−0.9pp,
+  at 3× ~−1.8pp. Real-money impact still dwarfed by the edge, but
+  account for it.
+- Alpaca pattern-day-trader rule: 4× intraday buying power if account
+  >$25k. Holding positions overnight >2× is a margin call risk zone if
+  a single bar prints a 33% drop.
+- 3× leverage on a 1-of-1000 concentrated signal is risk/reward
+  aggressive. Prefer 1.25× or 1.5× for deploy; 2×+ needs explicit risk
+  acknowledgement.
+
+**Recommended tiers update** (all same-topology swaps, all strict-dominate gate):
+- **Conservative**: `--min-score 0.55` → +45.94/+29.20/DD 9.77
+- **Sweet spot**: `--min-score 0.55 --leverage 1.25` → +52.01/+30.61/DD 12.62
+- **Max conviction**: `--min-score 0.70 --leverage 1.25` → +60.59/+30.96/DD 3.81, OOS-replicated
+- **Aggressive**: `--min-score 0.70 --leverage 1.50` → +76.04/+37.93/DD 4.58
+- **Risk-on** (not recommended as first step): `--min-score 0.70 --leverage 2.00` → +111.17/+52.86/DD 6.11
+
 ## Monitor plan after activation
 - First week: cash-only day count. If >3 consecutive cash days, drop to
   ms=0.50.
