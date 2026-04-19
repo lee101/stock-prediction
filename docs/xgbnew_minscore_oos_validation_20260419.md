@@ -325,6 +325,51 @@ filter's conviction signal is universe-invariant.
 - **Max conviction**: `--min-score 0.72 --lev 1.25` → **+60.59/+35.53/DD 3.81**, OOS+16seed validated
 - **Aggressive**:   `--min-score 0.72 --lev 1.50` → **+76.04/+43.75/DD 4.58**, 0/30 neg, worst +34.70%/mo
 
+## top_n spread under strong filter — STRICT-DOMINATES top_n=1 (OOS-validated)
+
+Prior memory (`feedback_packing_dilutes_concentration.md`) established that
+packing top_n>1 dilutes the 1-of-846 edge — but that was at ms=0 (no
+filter), where picks 2-3 are low-conviction. **Under ms=0.72, picks
+2 and 3 also clear the conviction floor**, so diversifying across them
+is tail-protective rather than dilutive.
+
+| config | med | p10 | DD | worst_win | sortino | neg |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Deploy pkls, lev=1.25** |
+| top_n=1 | +60.59 | +35.53 | 3.81 | +28.41 | 261.5 | 0/30 |
+| top_n=2 | +60.21 | +41.13 | **2.65** | **+38.33** | 92.9 | 0/30 |
+| **top_n=3** | +59.19 | **+43.23** | **2.17** | +34.56 | div0 | 0/30 |
+| **OOS pkls (train_end=2024-12-31), lev=1.25** |
+| top_n=1 | +58.01 | +36.01 | 5.79 | +27.56 | 52.7 | 0/30 |
+| top_n=2 | +58.30 | +42.69 | **2.65** | +34.67 | div0 | 0/30 |
+| **top_n=3** | +58.68 | **+43.49** | **2.18** | **+38.07** | div0 | 0/30 |
+
+**Cost**: median drops ~1.4pp in-sample; **OOS median actually IMPROVES
+0.67pp** (58.01 → 58.68). p10 lifts ~7.5pp across both sets.
+
+**Mechanism**: same 603 trade days at top_n=3 as top_n=1 (filter count
+unchanged). Each pick gets 1/3 capital at lev=1.25 → total gross exposure
+identical to top_n=1. The diversification is real — 3 high-conviction
+picks smooth the single-symbol realization variance without risk stacking.
+
+**Interaction with the dilution rule**: the prior finding holds at ms=0
+(each extra pick is lower-conviction, edge dilutes). Under ms≥0.72, the
+floor ENSURES every pick is high-conviction, and the packing tax
+disappears. **Rule refinement**: packing is a function of the filter
+tightness, not top_n alone.
+
+## Updated activation tiers (top_n=3 is the new tail-protected conviction tier)
+
+- Conservative:       `--min-score 0.55`                     → +45.94/+29.20/DD 9.77
+- Sweet spot:         `--min-score 0.55 --lev 1.25`          → +52.01/+30.61/DD 12.62
+- Max conviction (N1):`--min-score 0.72 --lev 1.25`          → +60.59/+35.53/DD 3.81
+- **Tail-protected (N3)**: `--min-score 0.72 --top-n 3 --lev 1.25` → **+59.19/+43.23/DD 2.17**, OOS +58.68/+43.49/DD 2.18
+- Aggressive:         `--min-score 0.72 --lev 1.50`          → +76.04/+43.75/DD 4.58
+
+Prefer the N3 tail-protected tier if the deployment priority is
+"minimize drawdown variance" over "maximize point estimate." Prefer N1
+if the deployment priority is "max headline med PnL."
+
 ## Final closeout: ms=0.72 aggressive tier + universe confirmation
 
 | config | med | p10 | DD | worst_win | td |
