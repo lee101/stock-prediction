@@ -451,6 +451,13 @@ def parse_args(argv=None):
                         "If all top_n candidates fail, session holds cash.")
     p.add_argument("--commission-bps", type=float, default=10.0)
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
+    p.add_argument("--hold-through", action="store_true",
+                   help="If tomorrow's picks match today's held positions, skip the "
+                        "sell-at-close + buy-at-open round-trip. Rotation now happens "
+                        "at next-open (not close): sell only names that dropped out of "
+                        "picks, buy only names that just entered. Saves 2×(fee+buffer) "
+                        "per carried day and captures overnight drift. Backtest-validated "
+                        "strict-dominance upgrade (docs/xgbnew_hold_through_20260419.md).")
     p.add_argument("--live",         action="store_true",
                    help="Use live Alpaca account (default: paper)")
     p.add_argument("--dry-run",      action="store_true",
@@ -470,6 +477,179 @@ def _load_symbols(path: Path) -> list[str]:
     return syms
 
 
+def _score_and_pick(symbols, data_root, model, args) -> pd.DataFrame:
+    """Fetch live bars, score all symbols, apply min_score filter, return top-N picks."""
+    print("[xgb-live] Fetching live bars from Alpaca...", flush=True)
+    try:
+        live_bars = _get_latest_bars(symbols, n_days=10)
+    except Exception as exc:
+        logger.warning("Live bar fetch failed: %s", exc)
+        live_bars = {}
+
+    print(f"[xgb-live] Scoring {len(symbols)} symbols...", flush=True)
+    scores_df = score_all_symbols(
+        symbols, data_root, model, live_bars, min_dollar_vol=args.min_dollar_vol
+    )
+
+    if len(scores_df) == 0:
+        return scores_df
+
+    min_score = float(getattr(args, "min_score", 0.0) or 0.0)
+    if min_score > 0.0:
+        filtered = scores_df[scores_df["score"] >= min_score]
+        print(f"[xgb-live] Conviction filter min_score={min_score:.2f}: "
+              f"{len(filtered)}/{len(scores_df)} candidates pass "
+              f"(top score={scores_df['score'].iloc[0]:.4f})", flush=True)
+        if len(filtered) == 0:
+            return filtered
+        return filtered.head(args.top_n)
+    return scores_df.head(args.top_n)
+
+
+def run_session_hold_through(
+    symbols: list[str],
+    data_root: Path,
+    model: XGBStockModel | list[XGBStockModel],
+    client,
+    args: argparse.Namespace,
+) -> None:
+    """Hold-through variant: rotate at NEXT-OPEN instead of selling at close.
+
+    Flow per session (fired each trading morning):
+      1. Gate on Alpaca calendar (/v2/clock).
+      2. Score + pick top-N.
+      3. Wait for open (9:30 ET).
+      4. Query currently-held positions.
+      5. If held_syms == pick_syms AND both non-empty → HOLD (no trades).
+         This is the win case: skip 2×(fee+buffer) and earn overnight drift.
+      6. Otherwise rotate:
+           SELL (old ∖ new) — each goes through guard_sell_against_death_spiral.
+           BUY (new ∖ old) — each records buy price via record_buy_price.
+      7. Skip the 15:50 sell entirely. Positions carry overnight; next session
+         decides whether to hold or rotate.
+
+    No 15:50 sell means a DOWN day passes through without the "sell at close"
+    mitigation — but the backtest validates this is net-positive because on
+    top_n=1 the same pick repeating is common and saves round-trip cost.
+    Regime gate / trading-calendar skip (weekend, holiday) does NOT flatten
+    positions — but that's correct: we want to carry through the gap and
+    continue holding if the signal agrees on the next trading day.
+    """
+    paper = not args.live
+    today_str = date.today().isoformat()
+    print(f"\n[xgb-live/hold-through] Session {today_str}  paper={paper}  "
+          f"dry_run={args.dry_run}", flush=True)
+
+    if client is not None and not args.dry_run:
+        is_trading, reason = _is_today_trading_day(client)
+        if not is_trading:
+            print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
+                  f"skipping session.", flush=True)
+            return
+
+    picks = _score_and_pick(symbols, data_root, model, args)
+    if len(picks) == 0:
+        print(f"[xgb-live] No picks today — holding current positions (if any).",
+              flush=True)
+        return
+
+    pick_syms = set(picks["symbol"].astype(str))
+
+    print(f"\n[xgb-live/hold-through] Top-{args.top_n} picks for {today_str}:")
+    for _, row in picks.iterrows():
+        print(f"  {row['symbol']:<8}  score={row['score']:.4f}  "
+              f"last_close=${row['last_close']:.2f}  spread={row['spread_bps']:.1f}bps")
+
+    if args.dry_run:
+        print("[xgb-live/hold-through] DRY RUN — no orders placed.", flush=True)
+        return
+
+    now_et = datetime.now(ET)
+    if now_et.hour < MARKET_OPEN[0] or (now_et.hour == MARKET_OPEN[0] and
+                                         now_et.minute < MARKET_OPEN[1]):
+        print(f"[xgb-live] Waiting for {MARKET_OPEN[0]:02d}:{MARKET_OPEN[1]:02d} ET...",
+              flush=True)
+        _wait_until(MARKET_OPEN[0], MARKET_OPEN[1], ET)
+
+    position_details = _get_position_details(client)
+    held_syms = {s for s, det in position_details.items() if det["qty"] > 0}
+
+    if held_syms == pick_syms:
+        print(f"[xgb-live/hold-through] HOLD — picks unchanged "
+              f"({sorted(pick_syms)}). Skipping round-trip.", flush=True)
+        return
+
+    to_sell = held_syms - pick_syms
+    to_buy = pick_syms - held_syms
+    print(f"[xgb-live/hold-through] Rotation: sell={sorted(to_sell)}  "
+          f"buy={sorted(to_buy)}  keep={sorted(held_syms & pick_syms)}", flush=True)
+
+    # HARD RULE #3: every sell must pass through guard_sell_against_death_spiral.
+    from src.alpaca_singleton import (
+        guard_sell_against_death_spiral,
+        record_buy_price,
+    )
+
+    # SELL dropped-out names FIRST (frees up buying power before buys).
+    for sym in sorted(to_sell):
+        det = position_details[sym]
+        qty = det["qty"]
+        if qty <= 0:
+            continue
+        current_price = det["current_price"] or det["avg_entry_price"]
+        if current_price <= 0:
+            logger.error("SELL skipped for %s — no usable price for death-spiral "
+                         "guard", sym)
+            continue
+        guard_sell_against_death_spiral(sym, "sell", float(current_price))
+        try:
+            order = _submit_market_order(client, symbol=sym, qty=abs(qty), side="sell")
+            print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
+                  f"order_id={getattr(order, 'id', '?')}", flush=True)
+        except Exception as exc:
+            logger.error("SELL failed for %s: %s", sym, exc)
+
+    # BUY new picks.
+    account = _get_account(client)
+    portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
+    buy_notional = portfolio_value * args.allocation / args.top_n
+    print(f"[xgb-live/hold-through] BUY notional=${buy_notional:,.0f}/pick "
+          f"(portfolio=${portfolio_value:,.0f})", flush=True)
+
+    for _, row in picks.iterrows():
+        sym = str(row["symbol"])
+        if sym not in to_buy:
+            continue
+        price = float(row["last_close"])
+        if price <= 0:
+            logger.warning("Skipping BUY %s — invalid last_close %s", sym, price)
+            continue
+        qty = _target_buy_qty(buy_notional=buy_notional, price=price)
+        if qty <= 0:
+            logger.warning("Skipping BUY %s — invalid target qty", sym)
+            continue
+        try:
+            order = _submit_market_order(client, symbol=sym, qty=qty, side="buy")
+            order_id = str(getattr(order, "id", "") or "")
+            print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
+                  f"order_id={order_id or '?'}", flush=True)
+            fill_px = _poll_filled_avg_price(client, order_id) if order_id else None
+            recorded = fill_px if (fill_px and fill_px > 0) else price
+            try:
+                record_buy_price(sym, float(recorded))
+                src = "fill" if fill_px else "last_close"
+                print(f"       recorded buy_price={recorded:.4f} ({src}) for guard",
+                      flush=True)
+            except Exception as rec_exc:
+                logger.warning("record_buy_price failed for %s: %s", sym, rec_exc)
+        except Exception as exc:
+            logger.error("BUY failed for %s: %s", sym, exc)
+
+    print(f"[xgb-live/hold-through] Rotation complete: "
+          f"sold {len(to_sell)}, bought {len(to_buy)}, held across "
+          f"{len(held_syms & pick_syms)}.", flush=True)
+
+
 def run_session(
     symbols: list[str],
     data_root: Path,
@@ -478,6 +658,9 @@ def run_session(
     args: argparse.Namespace,
 ) -> None:
     """Execute one full trading session (score → buy → sell)."""
+    if getattr(args, "hold_through", False):
+        return run_session_hold_through(symbols, data_root, model, client, args)
+
     paper = not args.live
     today_str = date.today().isoformat()
     print(f"\n[xgb-live] Session {today_str}  paper={paper}  dry_run={args.dry_run}", flush=True)
