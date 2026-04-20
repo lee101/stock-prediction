@@ -1,0 +1,39 @@
+# XGB weekly auto-retrain — systemd service (one-shot, triggered by the
+# matching .timer unit). Re-fits the live 5-seed ensemble with
+# train_end=today, verifies artifacts, snapshots the old live dir, then
+# atomically rotates in and restarts the xgb-daily-trader-live
+# supervisor process.
+#
+# Install:
+#   sudo cp deployments/xgb-auto-retrain/xgb-auto-retrain.service \
+#           deployments/xgb-auto-retrain/xgb-auto-retrain.timer \
+#           /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now xgb-auto-retrain.timer
+#   sudo systemctl list-timers xgb-auto-retrain.timer
+#
+# Manual trigger:
+#   sudo systemctl start xgb-auto-retrain.service
+#
+# Logs: sudo journalctl -u xgb-auto-retrain -f
+
+[Unit]
+Description=XGB weekly auto-retrain (5-seed alltrain ensemble)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=administrator
+WorkingDirectory=/nvme0n1-disk/code/stock-prediction
+ExecStart=/nvme0n1-disk/code/stock-prediction/scripts/xgb_weekly_retrain.sh
+
+# The script itself is ~2 min on a warm cache; give it plenty of
+# headroom in case the trainingdata/ cache is cold.
+TimeoutStartSec=1800
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

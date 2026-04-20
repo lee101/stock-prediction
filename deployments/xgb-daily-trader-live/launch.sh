@@ -59,6 +59,7 @@ exec python -u -m xgbnew.live_trader \
   --hold-through \
   --min-dollar-vol 50000000 \
   --min-vol-20d 0.10 \
+  --trade-log-dir analysis/xgb_live_trade_log \
   --live \
   --loop \
   --verbose

@@ -51,6 +51,7 @@ from xgbnew.dataset import build_daily_dataset, _load_symbol_csv
 from xgbnew.features import DAILY_FEATURE_COLS, build_features_for_symbol
 from xgbnew.model import XGBStockModel
 from xgbnew.backtest import BacktestConfig
+from xgbnew.trade_log import TradeLogger, slippage_bps
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -393,15 +394,13 @@ def score_all_symbols(
             if col not in last_row.columns:
                 last_row[col] = 0.0
 
-        if len(models) == 1:
-            score = float(models[0].predict_scores(last_row).iloc[0])
-        else:
-            seed_scores = [float(m.predict_scores(last_row).iloc[0]) for m in models]
-            score = float(np.mean(seed_scores))
+        seed_scores = [float(m.predict_scores(last_row).iloc[0]) for m in models]
+        score = float(np.mean(seed_scores)) if len(seed_scores) > 1 else seed_scores[0]
         last_close = float(last_row["actual_close"].iloc[0])
         rows.append({
             "symbol": sym,
             "score": score,
+            "per_seed_scores": seed_scores,
             "spread_bps": spread,
             "last_close": last_close,
             "dolvol_20d_log": dolvol,
@@ -474,6 +473,13 @@ def parse_args(argv=None):
                    help="Use live Alpaca account (default: paper)")
     p.add_argument("--dry-run",      action="store_true",
                    help="Score only — do not place any orders")
+    p.add_argument("--trade-log-dir", type=Path, default=None,
+                   help="Per-session JSONL event log (picks, per-seed scores, "
+                        "order ids, fill slippage vs last_close, equity). "
+                        "Defaults to analysis/xgb_live_trade_log/ when unset. "
+                        "Set to '' to disable.")
+    p.add_argument("--no-trade-log", action="store_true",
+                   help="Disable the trade log entirely.")
     p.add_argument("--loop",         action="store_true",
                    help="Keep running (wait for next market open after each session)")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -489,8 +495,11 @@ def _load_symbols(path: Path) -> list[str]:
     return syms
 
 
-def _score_and_pick(symbols, data_root, model, args) -> pd.DataFrame:
-    """Fetch live bars, score all symbols, apply min_score filter, return top-N picks."""
+def _score_and_pick(
+    symbols, data_root, model, args,
+    trade_logger: TradeLogger | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fetch live bars, score all symbols, apply min_score filter, return (picks, all_scores)."""
     print("[xgb-live] Fetching live bars from Alpaca...", flush=True)
     try:
         live_bars = _get_latest_bars(symbols, n_days=10)
@@ -505,8 +514,16 @@ def _score_and_pick(symbols, data_root, model, args) -> pd.DataFrame:
         min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
     )
 
+    if trade_logger is not None:
+        top20 = scores_df.head(20) if len(scores_df) else scores_df
+        trade_logger.log(
+            "scored",
+            n_candidates=int(len(scores_df)),
+            top20=top20.to_dict(orient="records"),
+        )
+
     if len(scores_df) == 0:
-        return scores_df
+        return scores_df, scores_df
 
     min_score = float(getattr(args, "min_score", 0.0) or 0.0)
     if min_score > 0.0:
@@ -514,10 +531,18 @@ def _score_and_pick(symbols, data_root, model, args) -> pd.DataFrame:
         print(f"[xgb-live] Conviction filter min_score={min_score:.2f}: "
               f"{len(filtered)}/{len(scores_df)} candidates pass "
               f"(top score={scores_df['score'].iloc[0]:.4f})", flush=True)
+        if trade_logger is not None:
+            trade_logger.log(
+                "filtered",
+                min_score=min_score,
+                n_pass=int(len(filtered)),
+                n_total=int(len(scores_df)),
+                top_score=float(scores_df["score"].iloc[0]),
+            )
         if len(filtered) == 0:
-            return filtered
-        return filtered.head(args.top_n)
-    return scores_df.head(args.top_n)
+            return filtered, scores_df
+        return filtered.head(args.top_n), scores_df
+    return scores_df.head(args.top_n), scores_df
 
 
 def run_session_hold_through(
@@ -554,28 +579,57 @@ def run_session_hold_through(
     print(f"\n[xgb-live/hold-through] Session {today_str}  paper={paper}  "
           f"dry_run={args.dry_run}", flush=True)
 
+    tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
+    equity_pre = None
+    if client is not None and not args.dry_run:
+        try:
+            equity_pre = float(getattr(_get_account(client), "equity", 0.0) or 0.0)
+        except Exception:
+            equity_pre = None
+    tlog.log(
+        "session_start",
+        mode="hold_through",
+        paper=paper,
+        dry_run=bool(args.dry_run),
+        top_n=int(args.top_n),
+        allocation=float(args.allocation),
+        min_score=float(getattr(args, "min_score", 0.0) or 0.0),
+        min_dollar_vol=float(args.min_dollar_vol),
+        min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
+        equity_pre=equity_pre,
+    )
+
     if client is not None and not args.dry_run:
         is_trading, reason = _is_today_trading_day(client)
         if not is_trading:
             print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
                   f"skipping session.", flush=True)
+            tlog.log("session_skipped", reason=reason)
             return
 
-    picks = _score_and_pick(symbols, data_root, model, args)
+    picks, _all_scores = _score_and_pick(symbols, data_root, model, args,
+                                         trade_logger=tlog)
     if len(picks) == 0:
         print(f"[xgb-live] No picks today — holding current positions (if any).",
               flush=True)
+        tlog.log("no_picks")
         return
 
     pick_syms = set(picks["symbol"].astype(str))
 
     print(f"\n[xgb-live/hold-through] Top-{args.top_n} picks for {today_str}:")
-    for _, row in picks.iterrows():
+    for rank, (_, row) in enumerate(picks.iterrows(), start=1):
         print(f"  {row['symbol']:<8}  score={row['score']:.4f}  "
               f"last_close=${row['last_close']:.2f}  spread={row['spread_bps']:.1f}bps")
+        tlog.log("pick", rank=rank, symbol=str(row["symbol"]),
+                 score=float(row["score"]),
+                 per_seed_scores=list(row.get("per_seed_scores", []) or []),
+                 last_close=float(row["last_close"]),
+                 spread_bps=float(row["spread_bps"]))
 
     if args.dry_run:
         print("[xgb-live/hold-through] DRY RUN — no orders placed.", flush=True)
+        tlog.log("dry_run_end")
         return
 
     now_et = datetime.now(ET)
@@ -591,12 +645,16 @@ def run_session_hold_through(
     if held_syms == pick_syms:
         print(f"[xgb-live/hold-through] HOLD — picks unchanged "
               f"({sorted(pick_syms)}). Skipping round-trip.", flush=True)
+        tlog.log("hold", held=sorted(pick_syms))
+        _log_session_end(tlog, client, equity_pre)
         return
 
     to_sell = held_syms - pick_syms
     to_buy = pick_syms - held_syms
     print(f"[xgb-live/hold-through] Rotation: sell={sorted(to_sell)}  "
           f"buy={sorted(to_buy)}  keep={sorted(held_syms & pick_syms)}", flush=True)
+    tlog.log("rotate", to_sell=sorted(to_sell), to_buy=sorted(to_buy),
+             keep=sorted(held_syms & pick_syms))
 
     # HARD RULE #3: every sell must pass through guard_sell_against_death_spiral.
     from src.alpaca_singleton import (
@@ -618,10 +676,14 @@ def run_session_hold_through(
         guard_sell_against_death_spiral(sym, "sell", float(current_price))
         try:
             order = _submit_market_order(client, symbol=sym, qty=abs(qty), side="sell")
+            order_id = str(getattr(order, "id", "") or "")
             print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
-                  f"order_id={getattr(order, 'id', '?')}", flush=True)
+                  f"order_id={order_id or '?'}", flush=True)
+            tlog.log("sell_submitted", symbol=sym, qty=float(qty),
+                     expected_price=float(current_price), order_id=order_id)
         except Exception as exc:
             logger.error("SELL failed for %s: %s", sym, exc)
+            tlog.log("sell_failed", symbol=sym, error=str(exc))
 
     # BUY new picks.
     account = _get_account(client)
@@ -647,6 +709,8 @@ def run_session_hold_through(
             order_id = str(getattr(order, "id", "") or "")
             print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
                   f"order_id={order_id or '?'}", flush=True)
+            tlog.log("buy_submitted", symbol=sym, qty=float(qty),
+                     expected_price=float(price), order_id=order_id)
             fill_px = _poll_filled_avg_price(client, order_id) if order_id else None
             recorded = fill_px if (fill_px and fill_px > 0) else price
             try:
@@ -656,12 +720,37 @@ def run_session_hold_through(
                       flush=True)
             except Exception as rec_exc:
                 logger.warning("record_buy_price failed for %s: %s", sym, rec_exc)
+            tlog.log("buy_filled", symbol=sym,
+                     fill_price=(float(fill_px) if fill_px else None),
+                     fill_source=("fill" if fill_px else "last_close"),
+                     slippage_bps_vs_last_close=slippage_bps(fill_px, price),
+                     last_close=float(price))
         except Exception as exc:
             logger.error("BUY failed for %s: %s", sym, exc)
+            tlog.log("buy_failed", symbol=sym, error=str(exc))
 
     print(f"[xgb-live/hold-through] Rotation complete: "
           f"sold {len(to_sell)}, bought {len(to_buy)}, held across "
           f"{len(held_syms & pick_syms)}.", flush=True)
+    _log_session_end(tlog, client, equity_pre)
+
+
+def _log_session_end(tlog: TradeLogger, client, equity_pre: float | None) -> None:
+    """Record post-session equity + computed session PnL."""
+    equity_post = None
+    if client is not None:
+        try:
+            equity_post = float(getattr(_get_account(client), "equity", 0.0) or 0.0)
+        except Exception:
+            equity_post = None
+    pnl_abs = None
+    pnl_pct = None
+    if equity_pre is not None and equity_post is not None and equity_pre > 0:
+        pnl_abs = equity_post - equity_pre
+        pnl_pct = 100.0 * pnl_abs / equity_pre
+    tlog.log("session_end",
+             equity_pre=equity_pre, equity_post=equity_post,
+             session_pnl_abs=pnl_abs, session_pnl_pct=pnl_pct)
 
 
 def run_session(
@@ -679,6 +768,26 @@ def run_session(
     today_str = date.today().isoformat()
     print(f"\n[xgb-live] Session {today_str}  paper={paper}  dry_run={args.dry_run}", flush=True)
 
+    tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
+    equity_pre = None
+    if client is not None and not args.dry_run:
+        try:
+            equity_pre = float(getattr(_get_account(client), "equity", 0.0) or 0.0)
+        except Exception:
+            equity_pre = None
+    tlog.log(
+        "session_start",
+        mode="open_to_close",
+        paper=paper,
+        dry_run=bool(args.dry_run),
+        top_n=int(args.top_n),
+        allocation=float(args.allocation),
+        min_score=float(getattr(args, "min_score", 0.0) or 0.0),
+        min_dollar_vol=float(args.min_dollar_vol),
+        min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
+        equity_pre=equity_pre,
+    )
+
     # ── Trading-day gate ──────────────────────────────────────────────────────
     # Alpaca accepts DAY orders submitted outside RTH and queues them for the
     # next open — which is a footgun: a Saturday BUY fills at Monday's open
@@ -689,6 +798,7 @@ def run_session(
         if not is_trading:
             print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
                   f"skipping session.", flush=True)
+            tlog.log("session_skipped", reason=reason)
             return
 
     # ── Score ─────────────────────────────────────────────────────────────────
@@ -707,8 +817,14 @@ def run_session(
         min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
     )
 
+    tlog.log(
+        "scored",
+        n_candidates=int(len(scores_df)),
+        top20=scores_df.head(20).to_dict(orient="records") if len(scores_df) else [],
+    )
     if len(scores_df) == 0:
         print("[xgb-live] ERROR: No scoreable symbols today.", file=sys.stderr)
+        tlog.log("no_candidates")
         return
 
     min_score = float(getattr(args, "min_score", 0.0) or 0.0)
@@ -717,21 +833,31 @@ def run_session(
         print(f"[xgb-live] Conviction filter min_score={min_score:.2f}: "
               f"{len(filtered)}/{len(scores_df)} candidates pass "
               f"(top score={scores_df['score'].iloc[0]:.4f})", flush=True)
+        tlog.log("filtered", min_score=min_score, n_pass=int(len(filtered)),
+                 n_total=int(len(scores_df)),
+                 top_score=float(scores_df["score"].iloc[0]))
         if len(filtered) == 0:
             print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
                   f"holding cash for {today_str}.", flush=True)
+            tlog.log("no_picks", reason="min_score")
             return
         picks = filtered.head(args.top_n)
     else:
         picks = scores_df.head(args.top_n)
 
     print(f"\n[xgb-live] Top-{args.top_n} picks for {today_str}:")
-    for _, row in picks.iterrows():
+    for rank, (_, row) in enumerate(picks.iterrows(), start=1):
         print(f"  {row['symbol']:<8}  score={row['score']:.4f}  "
               f"last_close=${row['last_close']:.2f}  spread={row['spread_bps']:.1f}bps")
+        tlog.log("pick", rank=rank, symbol=str(row["symbol"]),
+                 score=float(row["score"]),
+                 per_seed_scores=list(row.get("per_seed_scores", []) or []),
+                 last_close=float(row["last_close"]),
+                 spread_bps=float(row["spread_bps"]))
 
     if args.dry_run:
         print("[xgb-live] DRY RUN — no orders placed.", flush=True)
+        tlog.log("dry_run_end")
         return
 
     # ── Wait for market open ──────────────────────────────────────────────────
@@ -768,6 +894,8 @@ def run_session(
             order_id = str(getattr(order, "id", "") or "")
             print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
                   f"order_id={order_id or '?'}", flush=True)
+            tlog.log("buy_submitted", symbol=sym, qty=float(qty),
+                     expected_price=float(price), order_id=order_id)
             fill_px = _poll_filled_avg_price(client, order_id) if order_id else None
             recorded = fill_px if (fill_px and fill_px > 0) else price
             try:
@@ -777,8 +905,14 @@ def run_session(
                       flush=True)
             except Exception as rec_exc:
                 logger.warning("record_buy_price failed for %s: %s", sym, rec_exc)
+            tlog.log("buy_filled", symbol=sym,
+                     fill_price=(float(fill_px) if fill_px else None),
+                     fill_source=("fill" if fill_px else "last_close"),
+                     slippage_bps_vs_last_close=slippage_bps(fill_px, price),
+                     last_close=float(price))
         except Exception as exc:
             logger.error("BUY failed for %s: %s", sym, exc)
+            tlog.log("buy_failed", symbol=sym, error=str(exc))
 
     # ── Wait for close ────────────────────────────────────────────────────────
     print(f"\n[xgb-live] Waiting for {MARKET_CLOSE[0]:02d}:{MARKET_CLOSE[1]:02d} ET to sell...",
@@ -811,12 +945,17 @@ def run_session(
         guard_sell_against_death_spiral(sym, "sell", float(current_price))
         try:
             order = _submit_market_order(client, symbol=sym, qty=abs(qty), side="sell")
+            order_id = str(getattr(order, "id", "") or "")
             print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
-                  f"order_id={getattr(order, 'id', '?')}", flush=True)
+                  f"order_id={order_id or '?'}", flush=True)
+            tlog.log("sell_submitted", symbol=sym, qty=float(qty),
+                     expected_price=float(current_price), order_id=order_id)
         except Exception as exc:
             logger.error("SELL failed for %s: %s", sym, exc)
+            tlog.log("sell_failed", symbol=sym, error=str(exc))
 
     print(f"[xgb-live] Session {today_str} complete.", flush=True)
+    _log_session_end(tlog, client, equity_pre)
 
 
 def main(argv=None) -> int:
@@ -871,7 +1010,18 @@ def main(argv=None) -> int:
         client = None
 
     # ── Run session(s) ─────────────────────────────────────────────────────────
+    trade_log_dir = args.trade_log_dir
+    log_disabled = bool(args.no_trade_log) or (
+        trade_log_dir is not None and str(trade_log_dir) == ""
+    )
     while True:
+        args._trade_logger = TradeLogger(
+            log_dir=trade_log_dir if trade_log_dir else REPO / "analysis/xgb_live_trade_log",
+            disabled=log_disabled,
+            session_date=date.today(),
+        )
+        if not log_disabled:
+            print(f"[xgb-live] trade_log -> {args._trade_logger.path}", flush=True)
         run_session(symbols, args.data_root, model, client, args)
 
         if not args.loop:

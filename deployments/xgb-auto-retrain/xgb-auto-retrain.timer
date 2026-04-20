@@ -1,0 +1,17 @@
+# XGB weekly auto-retrain — systemd timer unit.
+#
+# Schedule: every Sunday at 23:00 UTC (Monday 11:00 NZ / 19:00 ET Sun).
+# Picks up the full week's new daily bars, lands ~10 hours before
+# Monday's US pre-market. Persistent=true catches missed firings if the
+# box was offline.
+
+[Unit]
+Description=XGB weekly auto-retrain timer (Sunday 23:00 UTC)
+
+[Timer]
+OnCalendar=Sun *-*-* 23:00:00 UTC
+Persistent=true
+Unit=xgb-auto-retrain.service
+
+[Install]
+WantedBy=timers.target
