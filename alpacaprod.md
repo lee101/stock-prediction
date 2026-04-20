@@ -24,15 +24,22 @@ Active config: `hold_through + min_score=0.85 + allocation=2.0` on the same
 | allocation | **2.0 (= 2× leverage, buy_notional = 200% equity)** |
 | min_score | **0.85** (ensemble conviction gate; holds cash if no pick clears) |
 | hold_through | **ON** — same pick today+tomorrow skips round-trip fees |
-| min dollar vol | $5M |
+| min dollar vol | **$50M** (inference floor, strict-dom OOS 2026-04-20) |
+| min vol_20d | **0.12** (tightened 0.10→0.12 on 2026-04-20 13:17 UTC, strict-dom TRUE-OOS) |
 | paper | **False — LIVE** (`ALP_PAPER=0 ALLOW_ALPACA_LIVE_TRADING=1`) |
 | Alpaca path | direct SDK (singleton lock + per-call death-spiral guard) |
 
-**Full-stack OOS validation** (5-seed ensemble, 60 windows 2025-01→2026-04-19):
+**Full-stack OOS validation** (5-seed ensemble, 60 windows 2025-01→2026-04-19,
+dolvol floor $50M, vol_20d floor 0.12):
 
 | config | deploy-cost med %/mo | p10 | neg | 36× fee stress med %/mo | p10 | neg |
 |---|---:|---:|---:|---:|---:|---:|
-| lev=2.0, ms=0.85, hold-through | **+141** | +96 | **0/60** | **+108** | +68 | **0/60** |
+| lev=2.0, ms=0.85, hold-through (vol=0.10, archived) | +141 | +96 | 0/60 | +108 | +68 | 0/60 |
+| **lev=2.0, ms=0.85, hold-through (vol=0.12 LIVE)** | **+153** | **+97** | **0/60** | **+102** | **+58** | **0/60** |
+
+Δ from 0.10→0.12 vol floor: deploy med +9.80/mo, p10 +0.84, same ddW/idW/neg.
+Stress36x med +8.30, p10 +1.98, same ddW/idW/neg. Zero DD regression — the
+cleanest strict-dom candidate in the 2026-04-20 vol-grid sweep.
 
 Fee-robust at 36× real Alpaca costs. Every window positive in both stress
 regimes. Target 60-70% of headline in live = **+85-100%/mo realized**; if

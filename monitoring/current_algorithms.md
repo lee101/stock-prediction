@@ -5,7 +5,7 @@ live ledger. This file is a short pointer for the hourly monitor so it knows
 which services should exist, where the best config lives, and what the bar
 is to beat. Keep this file in sync with `alpacaprod.md` whenever we deploy.
 
-Last synced: **2026-04-20 — full-stack deploy live (lev=2.0, ms=0.85, hold-through, 50M/0.10 inference floors)**
+Last synced: **2026-04-20 13:17 UTC — vol-floor tightened 0.10→0.12 (strict-dom OOS); lev=2.0, ms=0.85, hold-through, 50M/0.12 inference floors**
 
 ---
 
@@ -50,12 +50,13 @@ Last synced: **2026-04-20 — full-stack deploy live (lev=2.0, ms=0.85, hold-thr
     the current position is also held (does not flat at close).
   - `--min-dollar-vol 50000000` — inference liquidity floor. Drops
     ~240 symbols with $ADV < $50M. Strict-dominance win in OOS (+5.23 p10).
-  - `--min-vol-20d 0.10` — inference volatility floor. Drops dead-zone
-    low-vol names. Stacks with 50M for another Δp10 +2.62 at deploy fees.
+  - `--min-vol-20d 0.12` — inference volatility floor (tightened 0.10→0.12
+    on 2026-04-20 13:17 UTC, strict-dom TRUE-OOS on `oos2024_ensemble_gpu`).
+    Drops dead-zone low-vol names; stacks cleanly with 50M dolvol floor.
 - **Baseline expected monthly return (TRUE OOS on `oos2024_ensemble_gpu`,
-  2025-01-02 → 2026-04-19, 60 windows, fee=0.278bps fb=5bps)**:
-  - deploy fees: **median +141%/mo, p10 +96%, 0/60 neg, worst DD 7.18%**
-  - 36× fee stress: **median +108%/mo, p10 +68%, 0/60 neg, worst DD 8.34%**
+  2025-01-02 → 2026-04-19, 60 windows, fee=0.278bps fb=5bps, vol_20d=0.12)**:
+  - deploy fees: **median +153%/mo, p10 +97%, 0/60 neg, worst DD 7.18%**
+  - 36× fee stress: **median +102%/mo, p10 +58%, 0/60 neg, worst DD 8.34%**
   - intraday worst-DD (unrealised): ~13% both regimes
 - **Health check threshold for realised PnL**: target 60-70% of in-sample
   headline = **≥ +40%/mo** in first month. **< +10%/mo over 2 trading
