@@ -112,6 +112,13 @@ def parse_args(argv=None):
     p.add_argument("--allocation-mode", default="equal",
                    choices=["equal", "softmax", "score_norm"])
     p.add_argument("--allocation-temp", type=float, default=1.0)
+    p.add_argument("--hold-through", action="store_true",
+                   help="Carry positions when today's pick set == yesterday's "
+                        "(skip sell-close + buy-open round-trip).")
+    p.add_argument("--min-score", type=float, default=0.0,
+                   help="Conviction gate: drop picks with ensemble score < min_score. "
+                        "NOTE: ensemble blending shrinks the score distribution, so "
+                        "the usable knee differs from single-seed. Sweep per ensemble.")
 
     p.add_argument("--device", default="cuda",
                    help="'cuda' or 'cpu'. Bonferroni-style validations should use 'cpu' to match prod.")
@@ -214,6 +221,8 @@ def main(argv=None) -> int:
         min_dollar_vol=float(args.min_dollar_vol),
         allocation_mode=str(args.allocation_mode),
         allocation_temp=float(args.allocation_temp),
+        hold_through=bool(args.hold_through),
+        min_score=float(args.min_score),
     )
 
     # Dummy model just to satisfy simulate() signature — backtest uses precomputed_scores

@@ -113,6 +113,38 @@ def _day_margin_cost(leverage: float) -> float:
     return (leverage - 1.0) * ANNUAL_MARGIN_RATE / TRADING_DAYS_PER_YEAR
 
 
+# Cap for annualised Sortino so the degenerate "almost no losses" case
+# doesn't produce astronomical numbers downstream (e.g. grid sweep tables
+# showing Sortino = 6.3e8 when 0-1 windows have losses).
+_SORTINO_CAP = 100.0
+
+
+def _sortino_semi(rets: np.ndarray, mean_r: float, ann_factor: float) -> float:
+    """Annualised Sortino using the full-length semi-deviation.
+
+    Semi-deviation = sqrt( sum(min(r, 0)^2) / (N-1) ). This is the textbook
+    downside-deviation definition (Sortino 1994): squared losses weighted
+    by the full sample size, not only by the count of losing periods. This
+    stays stable when very few losses occur, instead of the len(down_r)-1
+    denominator (which blows up to infinity once len(down_r) ≤ 1).
+
+    The ratio is clipped to ±_SORTINO_CAP so tables and cross-window
+    comparisons remain meaningful when downside is vanishingly small.
+    """
+    n = len(rets)
+    if n < 2:
+        return 0.0
+    down = np.minimum(rets, 0.0)
+    semi_var = float(np.sum(down * down) / (n - 1))
+    semi_dev = float(np.sqrt(semi_var))
+    if semi_dev < 1e-9:
+        # No meaningful downside observed over the window — flag by
+        # returning +cap for positive-mean runs, 0 otherwise.
+        return _SORTINO_CAP if mean_r > 0 else 0.0
+    raw = mean_r / semi_dev * ann_factor
+    return float(np.clip(raw, -_SORTINO_CAP, _SORTINO_CAP))
+
+
 def _resolve_fee_rate(symbol: str, config: BacktestConfig) -> float:
     if config.fee_rate is not None and np.isfinite(config.fee_rate) and config.fee_rate >= 0.0:
         return float(config.fee_rate)
@@ -476,9 +508,7 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
     std_r  = float(np.std(rets, ddof=1)) if n > 1 else 1e-9
     sharpe = mean_r / std_r * np.sqrt(TRADING_DAYS_PER_YEAR) if std_r > 0 else 0.0
 
-    down_r = rets[rets < 0]
-    down_std = float(np.std(down_r, ddof=1)) if len(down_r) > 1 else 1e-9
-    sortino = mean_r / down_std * np.sqrt(TRADING_DAYS_PER_YEAR) if down_std > 0 else 0.0
+    sortino = _sortino_semi(rets, mean_r, ann_factor=np.sqrt(TRADING_DAYS_PER_YEAR))
 
     running_max = np.maximum.accumulate(eq)
     max_dd = float(np.abs(np.min((eq - running_max) / running_max)))
@@ -776,10 +806,7 @@ def _compute_result_hourly(
     mean_r = float(np.mean(rets))
     std_r = float(np.std(rets, ddof=1)) if n_bars > 1 else 1e-9
     sharpe = mean_r / std_r * np.sqrt(bars_per_year) if std_r > 0 else 0.0
-
-    down_r = rets[rets < 0]
-    down_std = float(np.std(down_r, ddof=1)) if len(down_r) > 1 else 1e-9
-    sortino = mean_r / down_std * np.sqrt(bars_per_year) if down_std > 0 else 0.0
+    sortino = _sortino_semi(rets, mean_r, ann_factor=np.sqrt(bars_per_year))
 
     running_max = np.maximum.accumulate(eq)
     max_dd = float(np.abs(np.min((eq - running_max) / running_max)))

@@ -250,6 +250,7 @@ def test_cells_to_rows_shapes():
         fee_regime="deploy", n_windows=60,
         median_monthly_pct=141.0, p10_monthly_pct=96.0,
         median_sortino=40.0, worst_dd_pct=12.0, n_neg=0,
+        goodness_score=84.0,
     )
     rows = sweep._cells_to_rows([c])
     assert len(rows) == 1
@@ -257,3 +258,53 @@ def test_cells_to_rows_shapes():
     assert r["leverage"] == 2.0
     assert r["n_neg"] == 0
     assert r["hold_through"] is True
+    assert r["goodness_score"] == 84.0
+
+
+def test_goodness_score_formula():
+    # Baseline: p10=96, worst_dd=7.18, 0 neg → 96 - 7.18 - 0 = 88.82
+    g = sweep.compute_goodness(p10_monthly_pct=96.0, worst_dd_pct=7.18,
+                                n_neg=0, n_windows=60)
+    assert g == pytest.approx(88.82, abs=1e-6)
+
+    # 1 neg in 60 → extra penalty = 100 * (1/60) = 1.6667
+    g2 = sweep.compute_goodness(p10_monthly_pct=96.0, worst_dd_pct=7.18,
+                                n_neg=1, n_windows=60)
+    assert g2 == pytest.approx(88.82 - 100.0 / 60.0, abs=1e-6)
+
+
+def test_goodness_score_responds_to_levers():
+    """Improving p10 should lift goodness; widening DD should lower it."""
+    base = sweep.compute_goodness(96.0, 7.0, 0, 60)
+    better_p10 = sweep.compute_goodness(108.0, 7.0, 0, 60)
+    worse_dd = sweep.compute_goodness(96.0, 9.0, 0, 60)
+    worse_neg = sweep.compute_goodness(96.0, 7.0, 1, 60)
+    assert better_p10 > base
+    assert worse_dd < base
+    assert worse_neg < base
+
+
+def test_cells_populated_with_goodness(monkeypatch, tmp_path):
+    """Run the sweep end-to-end and verify goodness_score is plumbed."""
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0, 2.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[True],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+    )
+    for c in cells:
+        # goodness matches the public formula for this cell.
+        expected = sweep.compute_goodness(
+            c.p10_monthly_pct, c.worst_dd_pct, c.n_neg, c.n_windows,
+        )
+        assert c.goodness_score == pytest.approx(expected, abs=1e-9)

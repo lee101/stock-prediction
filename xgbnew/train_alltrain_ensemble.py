@@ -76,8 +76,38 @@ def parse_args(argv=None):
                         "(rank_ret_1d, rank_ret_5d, rank_vol_20d, "
                         "rank_dolvol_20d_log, rank_rsi_14). Saved into the "
                         "pkl feature_cols so predict-time knows to use them.")
+    p.add_argument("--shapes", default="",
+                   help="Architectural-diversity mode. Comma-separated tuples "
+                        "'n_est:depth:lr:seed', one model per tuple. Overrides "
+                        "--seeds / --n-estimators / --max-depth / --learning-rate. "
+                        "Example: "
+                        "'400:5:0.03:42,800:4:0.05:42,1600:5:0.01:42,300:7:0.02:42,200:3:0.10:42'")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
+
+
+def _parse_shapes(s: str) -> list[dict]:
+    """Parse --shapes string into list of {n_est, depth, lr, seed} dicts.
+
+    Format: 'n_est:depth:lr:seed' comma-separated. Empty string → [].
+    """
+    out: list[dict] = []
+    for raw in s.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        parts = raw.split(":")
+        if len(parts) != 4:
+            raise ValueError(
+                f"--shapes tuple must be 'n_est:depth:lr:seed', got {raw!r}"
+            )
+        out.append({
+            "n_est": int(parts[0]),
+            "depth": int(parts[1]),
+            "lr":    float(parts[2]),
+            "seed":  int(parts[3]),
+        })
+    return out
 
 
 def main(argv=None) -> int:
@@ -85,10 +115,18 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
 
-    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
-    if len(seeds) < 2:
-        print("ERROR: need at least 2 seeds", file=sys.stderr)
-        return 1
+    shapes = _parse_shapes(args.shapes) if args.shapes else []
+    if shapes:
+        # Architectural-diversity mode: shapes list drives training.
+        seeds = [sp["seed"] for sp in shapes]
+        if len(shapes) < 2:
+            print("ERROR: --shapes needs at least 2 tuples", file=sys.stderr)
+            return 1
+    else:
+        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+        if len(seeds) < 2:
+            print("ERROR: need at least 2 seeds", file=sys.stderr)
+            return 1
 
     symbols = _load_symbols(args.symbols_file)
     train_start = date.fromisoformat(args.train_start)
@@ -125,22 +163,49 @@ def main(argv=None) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     saved = []
-    for i, seed in enumerate(seeds, start=1):
-        print(f"\n[xgb-alltrain-ens] {i}/{len(seeds)} training seed={seed}...", flush=True)
-        t_fit = time.perf_counter()
-        model = XGBStockModel(
-            device=args.device,
-            n_estimators=int(args.n_estimators),
-            max_depth=int(args.max_depth),
-            learning_rate=float(args.learning_rate),
-            random_state=int(seed),
-        )
-        model.fit(train_df, feature_cols, verbose=args.verbose)
-        out_pkl = args.out_dir / f"alltrain_seed{seed}.pkl"
-        model.save(out_pkl)
-        saved.append({"seed": int(seed), "path": str(out_pkl),
-                      "fit_seconds": round(time.perf_counter() - t_fit, 2)})
-        print(f"  seed={seed} fit in {saved[-1]['fit_seconds']:.1f}s -> {out_pkl.name}", flush=True)
+    if shapes:
+        for i, sp in enumerate(shapes, start=1):
+            seed = sp["seed"]
+            print(f"\n[xgb-alltrain-ens] {i}/{len(shapes)} training "
+                  f"n_est={sp['n_est']} d={sp['depth']} lr={sp['lr']} "
+                  f"seed={seed}...", flush=True)
+            t_fit = time.perf_counter()
+            model = XGBStockModel(
+                device=args.device,
+                n_estimators=sp["n_est"],
+                max_depth=sp["depth"],
+                learning_rate=sp["lr"],
+                random_state=seed,
+            )
+            model.fit(train_df, feature_cols, verbose=args.verbose)
+            tag = f"n{sp['n_est']}_d{sp['depth']}_lr{str(sp['lr']).replace('.', '')}_s{seed}"
+            out_pkl = args.out_dir / f"alltrain_{tag}.pkl"
+            model.save(out_pkl)
+            saved.append({"seed": seed, "n_estimators": sp["n_est"],
+                          "max_depth": sp["depth"], "learning_rate": sp["lr"],
+                          "path": str(out_pkl),
+                          "fit_seconds": round(time.perf_counter() - t_fit, 2)})
+            print(f"  {tag} fit in {saved[-1]['fit_seconds']:.1f}s -> {out_pkl.name}",
+                  flush=True)
+    else:
+        for i, seed in enumerate(seeds, start=1):
+            print(f"\n[xgb-alltrain-ens] {i}/{len(seeds)} training seed={seed}...",
+                  flush=True)
+            t_fit = time.perf_counter()
+            model = XGBStockModel(
+                device=args.device,
+                n_estimators=int(args.n_estimators),
+                max_depth=int(args.max_depth),
+                learning_rate=float(args.learning_rate),
+                random_state=int(seed),
+            )
+            model.fit(train_df, feature_cols, verbose=args.verbose)
+            out_pkl = args.out_dir / f"alltrain_seed{seed}.pkl"
+            model.save(out_pkl)
+            saved.append({"seed": int(seed), "path": str(out_pkl),
+                          "fit_seconds": round(time.perf_counter() - t_fit, 2)})
+            print(f"  seed={seed} fit in {saved[-1]['fit_seconds']:.1f}s -> {out_pkl.name}",
+                  flush=True)
 
     manifest = {
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -159,6 +224,8 @@ def main(argv=None) -> int:
             "min_dollar_vol": float(args.min_dollar_vol),
             "include_ranks": bool(args.include_ranks),
             "feature_cols": feature_cols,
+            "shapes_mode": bool(shapes),
+            "shapes": shapes,
         },
         "blend_recipe": "predict_proba mean across seeds then pick top_n=1",
     }

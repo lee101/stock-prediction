@@ -72,6 +72,44 @@ class CellResult:
     median_sortino: float
     worst_dd_pct: float
     n_neg: int
+    # Composite "one-scalar" optimization target — see compute_goodness().
+    goodness_score: float = 0.0
+
+
+# Default weights: p10 drives the reward; worst-DD is a unit-for-unit
+# penalty; any negative window is a 10pp penalty apiece. Keeping these
+# here (not as CLI flags) because the output JSON now embeds them and
+# the table uses the same numbers, so they need a single source of truth.
+GOODNESS_WEIGHTS = {
+    "p10_coef":   1.0,   # 1× p10 monthly %
+    "dd_coef":    1.0,   # subtract worst_dd_pct
+    "neg_coef": 100.0,   # subtract neg_frac * 100 (so 1/60 neg = −1.67pp)
+}
+
+
+def compute_goodness(
+    p10_monthly_pct: float,
+    worst_dd_pct: float,
+    n_neg: int,
+    n_windows: int,
+    weights: dict | None = None,
+) -> float:
+    """Composite optimization target in "%/month-equivalent" units.
+
+    goodness = p10_coef * p10 − dd_coef * worst_dd − neg_coef * neg_frac
+
+    Units: same scale as p10 monthly %. Higher is better. Designed so a
+    strategy that lifts p10 by +5pp but widens worst_dd by +2pp still
+    shows a clear +3 improvement, while ANY negative window is punished
+    proportionally (1 neg window out of 60 = −1.67 goodness).
+    """
+    w = GOODNESS_WEIGHTS if weights is None else weights
+    neg_frac = float(n_neg) / float(max(n_windows, 1))
+    return (
+        w["p10_coef"] * p10_monthly_pct
+        - w["dd_coef"] * worst_dd_pct
+        - w["neg_coef"] * neg_frac
+    )
 
 
 def _build_windows(days, window_days: int, stride_days: int):
@@ -162,9 +200,13 @@ def _run_cell(
     n = len(monthlies)
     if n == 0:
         return CellResult(leverage, min_score, hold_through, top_n, fee_regime,
-                          0, 0.0, 0.0, 0.0, 0.0, 0)
+                          0, 0.0, 0.0, 0.0, 0.0, 0, 0.0)
 
     arr = np.array(monthlies)
+    p10 = float(np.percentile(arr, 10))
+    worst_dd = float(np.max(dds))
+    n_neg = int(np.sum(arr < 0))
+    goodness = compute_goodness(p10, worst_dd, n_neg, n)
     return CellResult(
         leverage=leverage,
         min_score=min_score,
@@ -173,10 +215,11 @@ def _run_cell(
         fee_regime=fee_regime,
         n_windows=n,
         median_monthly_pct=float(np.median(arr)),
-        p10_monthly_pct=float(np.percentile(arr, 10)),
+        p10_monthly_pct=p10,
         median_sortino=float(np.median(sortinos)),
-        worst_dd_pct=float(np.max(dds)),
-        n_neg=int(np.sum(arr < 0)),
+        worst_dd_pct=worst_dd,
+        n_neg=n_neg,
+        goodness_score=goodness,
     )
 
 
@@ -298,6 +341,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "median_sortino": c.median_sortino,
             "worst_dd_pct": c.worst_dd_pct,
             "n_neg": c.n_neg,
+            "goodness_score": c.goodness_score,
         }
         for c in cells
     ]
@@ -394,17 +438,20 @@ def main(argv=None) -> int:
     }, indent=2))
     print(f"[sweep] wrote {out}  ({len(rows)} cells)", flush=True)
 
-    # Pretty table
+    # Pretty table — sorted by goodness descending for easy frontier read.
+    rows_sorted = sorted(rows, key=lambda r: -r["goodness_score"])
     print(f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
-          f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'neg':>6}")
-    print("-" * 74)
-    for r in rows:
+          f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'neg':>6} "
+          f"{'good':>8}")
+    print("-" * 83)
+    for r in rows_sorted:
         print(f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
               f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
               f"{r['fee_regime']:>10} "
               f"{r['median_monthly_pct']:+8.2f} {r['p10_monthly_pct']:+8.2f} "
               f"{r['median_sortino']:6.2f} {r['worst_dd_pct']:6.2f} "
-              f"{r['n_neg']:3d}/{r['n_windows']:3d}")
+              f"{r['n_neg']:3d}/{r['n_windows']:3d} "
+              f"{r['goodness_score']:+8.2f}")
     return 0
 
 
