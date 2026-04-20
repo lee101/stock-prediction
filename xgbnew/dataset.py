@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 # ── CSV loader (reuse screener approach) ─────────────────────────────────────
 
 def _load_symbol_csv(symbol: str, data_root: Path) -> pd.DataFrame | None:
-    for sub in ("train", "stocks", ""):
+    # Prefer the ROOT CSV (refreshed daily by update_daily_data.py) over the
+    # legacy ``trainingdata/train/`` snapshot, which is only rewritten when
+    # someone explicitly runs the full rebuild. See
+    # project_xgb_stale_training_csvs.md for the 2026-04-20 audit — root CSVs
+    # had 6 days more data than train/ at the time of the finding.
+    for sub in ("", "stocks", "train"):
         path = (data_root / sub / f"{symbol}.csv") if sub else (data_root / f"{symbol}.csv")
         if path.exists():
             try:

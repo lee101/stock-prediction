@@ -87,25 +87,40 @@ def _read_one_csv_polars(path: Path, symbol: str):
 
 
 def _read_ohlcv_polars(
-    data_root: Path, symbols: Sequence[str], subdir: str = "train",
+    data_root: Path, symbols: Sequence[str], subdir: str | None = None,
 ):
     """Read all symbols' CSVs with polars (per-file, schema-tolerant).
 
     Returns a single long DataFrame keyed by (symbol, timestamp, date) with
     OHLCV columns, sorted ascending.
+
+    When ``subdir`` is None (default) we walk the same preference list as
+    ``xgbnew.dataset._load_symbol_csv`` — ``""`` (root) → ``stocks`` →
+    ``train``. This matters because ``update_daily_data.py`` refreshes the
+    ROOT CSVs, but the legacy ``train/`` snapshot is only rewritten by
+    the full-rebuild path. An explicit ``subdir`` is still honoured for
+    back-compat / tests.
     """
     import polars as pl
 
+    subdirs = (subdir,) if subdir is not None else ("", "stocks", "train")
     parts = []
     for sym in symbols:
-        p = data_root / subdir / f"{sym}.csv"
-        if not p.exists():
+        picked = None
+        for sub in subdirs:
+            p = (data_root / sub / f"{sym}.csv") if sub else (data_root / f"{sym}.csv")
+            if p.exists():
+                picked = p
+                break
+        if picked is None:
             continue
-        piece = _read_one_csv_polars(p, sym)
+        piece = _read_one_csv_polars(picked, sym)
         if piece is not None:
             parts.append(piece)
     if not parts:
-        raise FileNotFoundError(f"no usable CSVs under {data_root}/{subdir} for {len(symbols)} symbols")
+        raise FileNotFoundError(
+            f"no usable CSVs under {data_root}/(root|stocks|train) for {len(symbols)} symbols"
+        )
 
     df = pl.concat(parts, how="vertical")
     df = df.with_columns(pl.col("timestamp").dt.date().alias("date"))
@@ -130,7 +145,7 @@ def build_daily_features_fast(
     data_root: Path,
     symbols: Sequence[str],
     *,
-    subdir: str = "train",
+    subdir: str | None = None,
 ) -> pd.DataFrame:
     """Polars-native replacement for iterating ``build_features_for_symbol``.
 
