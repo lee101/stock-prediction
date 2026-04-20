@@ -340,8 +340,10 @@ def _build_daily_dataset_fast(
     feat = feat.dropna(subset=DAILY_FEATURE_COLS[:5])
     feat = feat[feat["dolvol_20d_log"] >= np.log1p(min_dollar_vol)]
     # Drop raw OHLCV columns left over from the polars path so the returned
-    # DataFrame has the same column set as the pandas builder.
-    for _extra in ("high", "low", "volume"):
+    # DataFrame has the same column set as the pandas builder. Note that
+    # the polars features renamed high→actual_high and low→actual_low — we
+    # keep those two; only drop stragglers.
+    for _extra in ("volume",):
         if _extra in feat.columns:
             feat = feat.drop(columns=_extra)
     # Drop any symbol group that ended up with < 50 usable rows, to match

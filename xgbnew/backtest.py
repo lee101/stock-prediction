@@ -75,6 +75,12 @@ class DayTrade:
     leverage: float
     gross_return_pct: float
     net_return_pct: float
+    # Intraday unrealized excursions vs entry price, at leverage.
+    # worst_dd:  max adverse excursion during the bar   (≥ 0 always — absolute)
+    # best_runup: max favourable excursion during the bar (≥ 0 always)
+    # Zero when actual_high / actual_low are missing from the row.
+    intraday_worst_dd_pct:  float = 0.0
+    intraday_best_runup_pct: float = 0.0
 
 
 @dataclass
@@ -85,6 +91,11 @@ class DayResult:
     daily_return_pct: float
     trades: list[DayTrade] = field(default_factory=list)
     n_candidates: int = 0
+    # Portfolio-weighted intraday excursions (long-side, pct of equity at
+    # day open, at leverage). Proxy for "how deep did we dip before close".
+    # Computed via same weights as the realized daily return.
+    intraday_worst_dd_pct:   float = 0.0
+    intraday_best_runup_pct: float = 0.0
 
 
 @dataclass
@@ -104,6 +115,14 @@ class BacktestResult:
     avg_spread_bps: float
     avg_fee_bps: float
     directional_accuracy_pct: float  # % of picks that had gross_return > 0
+    # Intraday unrealized excursions, aggregated across all traded days.
+    # worst_intraday_dd_pct   = max over days of that day's portfolio DD
+    # avg_intraday_dd_pct     = mean
+    # worst_intraday_runup_pct = symmetric upside metric
+    # 0.0 when high/low data unavailable.
+    worst_intraday_dd_pct:   float = 0.0
+    avg_intraday_dd_pct:     float = 0.0
+    worst_intraday_runup_pct: float = 0.0
 
 
 def _day_margin_cost(leverage: float) -> float:
@@ -156,6 +175,36 @@ def _fill_prices(open_price: float, close_price: float, *, fill_buffer_bps: floa
     entry_fill = float(open_price) * (1.0 + buffer_frac)
     exit_fill = float(close_price) * (1.0 - buffer_frac)
     return entry_fill, exit_fill
+
+
+def _intraday_excursion_pct(
+    row: pd.Series,
+    entry_ref: float,
+    leverage: float,
+) -> tuple[float, float]:
+    """Return (worst_dd_pct, best_runup_pct) for one long trade.
+
+    ``entry_ref`` is the price from which we measure excursions — usually
+    the entry fill (open-side) or the prior close on a continuation day.
+    Uses ``actual_high`` / ``actual_low`` from the row when present; when
+    the columns are missing or invalid (<= 0), returns (0.0, 0.0) so
+    downstream aggregates are a proxy of "what we observed" and not an
+    accidental floor.
+
+    Long-direction only (XGB daily picks are always long). The returned
+    values are POSITIVE percentages at the requested leverage:
+      worst_dd  = max(0, (entry_ref - bar_low ) / entry_ref * L * 100)
+      best_runup = max(0, (bar_high - entry_ref) / entry_ref * L * 100)
+    """
+    if entry_ref <= 0:
+        return (0.0, 0.0)
+    hi = float(row.get("actual_high", 0.0) or 0.0)
+    lo = float(row.get("actual_low",  0.0) or 0.0)
+    if not (np.isfinite(hi) and np.isfinite(lo)) or hi <= 0 or lo <= 0:
+        return (0.0, 0.0)
+    worst = max(0.0, (entry_ref - lo) / entry_ref) * float(leverage) * 100.0
+    runup = max(0.0, (hi - entry_ref) / entry_ref) * float(leverage) * 100.0
+    return (float(worst), float(runup))
 
 
 def _build_regime_flags(
@@ -401,6 +450,9 @@ def simulate(
                 # fill buffer since there's no trade).
                 cost_frac = _day_margin_cost(config.leverage)
                 net = gross_leveraged - cost_frac
+                worst_dd, best_runup = _intraday_excursion_pct(
+                    row, prev_c, config.leverage,
+                )
                 trades.append(DayTrade(
                     symbol=symbol,
                     score=float(row["_score"]),
@@ -415,6 +467,8 @@ def simulate(
                     leverage=config.leverage,
                     gross_return_pct=gross_oc * 100.0,
                     net_return_pct=net * 100.0,
+                    intraday_worst_dd_pct=worst_dd,
+                    intraday_best_runup_pct=best_runup,
                 ))
                 continue
 
@@ -434,6 +488,9 @@ def simulate(
             )
             net = gross_leveraged - cost_frac
 
+            worst_dd, best_runup = _intraday_excursion_pct(
+                row, entry_fill, config.leverage,
+            )
             trades.append(DayTrade(
                 symbol=symbol,
                 score=float(row["_score"]),
@@ -448,6 +505,8 @@ def simulate(
                 leverage=config.leverage,
                 gross_return_pct=gross_oc * 100.0,
                 net_return_pct=net * 100.0,
+                intraday_worst_dd_pct=worst_dd,
+                intraday_best_runup_pct=best_runup,
             ))
 
         # Update hold-through state for next day.
@@ -472,6 +531,17 @@ def simulate(
         daily_ret_pct *= day_scale
         equity_end = equity * (1.0 + daily_ret_pct / 100.0)
 
+        # Portfolio-weighted intraday excursions (proxy for worst-within-day
+        # DD on today's positions at today's allocation).
+        dd_vec = np.asarray(
+            [t.intraday_worst_dd_pct for t in trades], dtype=np.float64
+        )
+        runup_vec = np.asarray(
+            [t.intraday_best_runup_pct for t in trades], dtype=np.float64
+        )
+        day_intraday_dd    = float(np.dot(weights, dd_vec))    * day_scale
+        day_intraday_runup = float(np.dot(weights, runup_vec)) * day_scale
+
         day_results.append(DayResult(
             day=day,  # type: ignore[arg-type]
             equity_start=equity,
@@ -479,6 +549,8 @@ def simulate(
             daily_return_pct=daily_ret_pct,
             trades=trades,
             n_candidates=len(day_df),
+            intraday_worst_dd_pct=day_intraday_dd,
+            intraday_best_runup_pct=day_intraday_runup,
         ))
         equity = equity_end
 
@@ -521,6 +593,12 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
     dir_acc = (float(np.mean([t.gross_return_pct > 0 for t in all_trades])) * 100.0
                if all_trades else 0.0)
 
+    dd_series   = np.asarray([r.intraday_worst_dd_pct   for r in day_results])
+    runup_series = np.asarray([r.intraday_best_runup_pct for r in day_results])
+    worst_intraday_dd    = float(np.max(dd_series))    if dd_series.size    else 0.0
+    avg_intraday_dd      = float(np.mean(dd_series))   if dd_series.size    else 0.0
+    worst_intraday_runup = float(np.max(runup_series)) if runup_series.size else 0.0
+
     return BacktestResult(
         config=config,
         day_results=day_results,
@@ -537,6 +615,9 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
         avg_spread_bps=float(np.mean(spreads)) if spreads else 0.0,
         avg_fee_bps=float(np.mean(fee_bps)) if fee_bps else 0.0,
         directional_accuracy_pct=dir_acc,
+        worst_intraday_dd_pct=worst_intraday_dd,
+        avg_intraday_dd_pct=avg_intraday_dd,
+        worst_intraday_runup_pct=worst_intraday_runup,
     )
 
 

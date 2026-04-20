@@ -74,6 +74,12 @@ class CellResult:
     n_neg: int
     # Composite "one-scalar" optimization target — see compute_goodness().
     goodness_score: float = 0.0
+    # Intraday unrealized excursions, aggregated across windows.
+    # worst_intraday_dd_pct = max over windows of that window's worst
+    #   within-day unrealized drawdown (from entry fill to bar low, at
+    #   leverage). 0.0 when actual_high/actual_low missing from dataset.
+    worst_intraday_dd_pct: float = 0.0
+    avg_intraday_dd_pct:   float = 0.0
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -185,6 +191,8 @@ def _run_cell(
     monthlies: list[float] = []
     sortinos: list[float] = []
     dds: list[float] = []
+    intra_dds_worst: list[float] = []
+    intra_dds_avg:   list[float] = []
     for w_start, w_end in windows:
         w_df = oos_df[(oos_df["date"] >= w_start) & (oos_df["date"] <= w_end)]
         if len(w_df) < 5:
@@ -196,6 +204,8 @@ def _run_cell(
         monthlies.append(monthly)
         sortinos.append(res.sortino_ratio)
         dds.append(res.max_drawdown_pct)
+        intra_dds_worst.append(res.worst_intraday_dd_pct)
+        intra_dds_avg.append(res.avg_intraday_dd_pct)
 
     n = len(monthlies)
     if n == 0:
@@ -207,6 +217,8 @@ def _run_cell(
     worst_dd = float(np.max(dds))
     n_neg = int(np.sum(arr < 0))
     goodness = compute_goodness(p10, worst_dd, n_neg, n)
+    worst_intra = float(np.max(intra_dds_worst)) if intra_dds_worst else 0.0
+    avg_intra   = float(np.mean(intra_dds_avg))  if intra_dds_avg   else 0.0
     return CellResult(
         leverage=leverage,
         min_score=min_score,
@@ -220,6 +232,8 @@ def _run_cell(
         worst_dd_pct=worst_dd,
         n_neg=n_neg,
         goodness_score=goodness,
+        worst_intraday_dd_pct=worst_intra,
+        avg_intraday_dd_pct=avg_intra,
     )
 
 
@@ -342,6 +356,8 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "worst_dd_pct": c.worst_dd_pct,
             "n_neg": c.n_neg,
             "goodness_score": c.goodness_score,
+            "worst_intraday_dd_pct": c.worst_intraday_dd_pct,
+            "avg_intraday_dd_pct":   c.avg_intraday_dd_pct,
         }
         for c in cells
     ]
@@ -439,17 +455,22 @@ def main(argv=None) -> int:
     print(f"[sweep] wrote {out}  ({len(rows)} cells)", flush=True)
 
     # Pretty table — sorted by goodness descending for easy frontier read.
+    # ddW    = worst realized (equity) drawdown across windows
+    # idW    = worst INTRADAY unrealized drawdown (OHLC proxy)
+    # Divergence between ddW and idW quantifies the "what we were briefly
+    # exposed to" gap vs "what hit the equity curve at close".
     rows_sorted = sorted(rows, key=lambda r: -r["goodness_score"])
     print(f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
-          f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'neg':>6} "
-          f"{'good':>8}")
-    print("-" * 83)
+          f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
+          f"{'neg':>6} {'good':>8}")
+    print("-" * 92)
     for r in rows_sorted:
         print(f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
               f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
               f"{r['fee_regime']:>10} "
               f"{r['median_monthly_pct']:+8.2f} {r['p10_monthly_pct']:+8.2f} "
               f"{r['median_sortino']:6.2f} {r['worst_dd_pct']:6.2f} "
+              f"{r['worst_intraday_dd_pct']:6.2f} "
               f"{r['n_neg']:3d}/{r['n_windows']:3d} "
               f"{r['goodness_score']:+8.2f}")
     return 0

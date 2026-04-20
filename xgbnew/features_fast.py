@@ -249,8 +249,14 @@ def build_daily_features_fast(
         (pl.col("target_oc") > 0.0).cast(pl.Int8).alias("target_oc_up")
     )
 
-    # Keep actual_open / actual_close for backtest.
-    df = df.rename({"open": "actual_open", "close": "actual_close"})
+    # Keep actual_{open,close,high,low} for backtest — high/low are used by
+    # the intraday worst-DD / best-runup proxies.
+    df = df.rename({
+        "open":  "actual_open",
+        "close": "actual_close",
+        "high":  "actual_high",
+        "low":   "actual_low",
+    })
 
     drop_cols = [
         "prev_close", "prev_high", "prev_low", "prev_vol", "close_lag2",

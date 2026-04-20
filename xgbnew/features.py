@@ -202,9 +202,13 @@ def build_features_for_symbol(
     feat["target_oc"] = ((close - open_) / open_.clip(lower=0.01)).clip(-0.5, 0.5)
     feat["target_oc_up"] = (feat["target_oc"] > 0.0).astype(np.int8)
 
-    # ── Actual open/close for backtest use ───────────────────────────────────
+    # ── Actual open/close/high/low for backtest use ──────────────────────────
+    # high/low are saved (look-ahead — NOT features) so the backtest can
+    # compute intraday worst-DD / best-runup proxies from same-day OHLC.
     feat["actual_open"]  = open_
     feat["actual_close"] = close
+    feat["actual_high"]  = high
+    feat["actual_low"]   = low
 
     return feat
 
