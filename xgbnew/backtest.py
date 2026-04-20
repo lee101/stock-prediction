@@ -43,6 +43,10 @@ class BacktestConfig:
     xgb_weight: float = 0.5             # blend weight for XGB vs Chronos2
     min_score: float = 0.0              # min combined score to trade
     min_dollar_vol: float = 5e6         # skip illiquid stocks (min avg daily $ vol)
+    min_vol_20d: float = 0.0            # 0 disables; else require annualised
+                                        # 20-day realised vol ≥ this (so we
+                                        # skip the dead-zone / bot-vol quartile
+                                        # that LOBO flagged as a net drag).
     max_spread_bps: float = 30.0        # skip wide-spread stocks (max volume-based cost)
     chronos_col: str = "chronos_oc_return"
     fee_rate: float | None = None       # per-side fee fraction; defaults by symbol
@@ -359,6 +363,11 @@ def simulate(
     # Spread filter — skip stocks with unrealistically wide volume-based spreads
     if "spread_bps" in test_df.columns and config.max_spread_bps > 0:
         test_df = test_df[test_df["spread_bps"] <= config.max_spread_bps]
+
+    # Realised-vol floor — drops the dead-zone names that LOBO flagged
+    # as a net drag. Inference-only; training universe stays broader.
+    if config.min_vol_20d > 0.0 and "vol_20d" in test_df.columns:
+        test_df = test_df[test_df["vol_20d"] >= float(config.min_vol_20d)]
 
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])

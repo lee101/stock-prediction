@@ -83,6 +83,9 @@ class CellResult:
     # Inference-side liquidity floor applied to the pick pool — stays at
     # 5M$ unless explicitly swept via --inference-min-dolvol-grid.
     inference_min_dolvol: float = 5_000_000.0
+    # Inference-side realised-vol floor on vol_20d (annualised). 0 disables.
+    # Swept via --inference-min-vol-grid.
+    inference_min_vol_20d: float = 0.0
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -173,6 +176,7 @@ def _run_cell(
     top_n: int,
     fee_regime: str,
     inference_min_dolvol: float = 5_000_000.0,
+    inference_min_vol_20d: float = 0.0,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     cfg = BacktestConfig(
@@ -183,6 +187,7 @@ def _run_cell(
         fill_buffer_bps=float(fees["fill_buffer_bps"]),
         commission_bps=float(fees["commission_bps"]),
         min_dollar_vol=float(inference_min_dolvol),
+        min_vol_20d=float(inference_min_vol_20d),
         hold_through=bool(hold_through),
         min_score=float(min_score),
     )
@@ -239,6 +244,7 @@ def _run_cell(
         worst_intraday_dd_pct=worst_intra,
         avg_intraday_dd_pct=avg_intra,
         inference_min_dolvol=float(inference_min_dolvol),
+        inference_min_vol_20d=float(inference_min_vol_20d),
     )
 
 
@@ -262,6 +268,7 @@ def run_sweep(
     chronos_cache_path: Path | None = None,
     min_dollar_vol: float = 5_000_000.0,
     inference_min_dolvol_grid: list[float] | None = None,
+    inference_min_vol_grid: list[float] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -322,12 +329,13 @@ def run_sweep(
         raise RuntimeError("no eval windows — check OOS date range")
 
     inf_grid = list(inference_min_dolvol_grid) if inference_min_dolvol_grid else [float(min_dollar_vol)]
+    vol_grid = list(inference_min_vol_grid) if inference_min_vol_grid else [0.0]
 
     cells: list[CellResult] = []
     total = (
         len(leverage_grid) * len(min_score_grid)
         * len(hold_through_grid) * len(top_n_grid) * len(fee_regimes)
-        * len(inf_grid)
+        * len(inf_grid) * len(vol_grid)
     )
     i = 0
     for lev in leverage_grid:
@@ -336,21 +344,25 @@ def run_sweep(
                 for tn in top_n_grid:
                     for reg in fee_regimes:
                         for inf_dv in inf_grid:
-                            i += 1
-                            cell = _run_cell(
-                                oos_df=oos_df, scores=scores, windows=windows,
-                                leverage=lev, min_score=ms, hold_through=ht,
-                                top_n=tn, fee_regime=reg,
-                                inference_min_dolvol=inf_dv,
-                            )
-                            logger.info(
-                                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                "inf_dv=%.0e med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                i, total, lev, ms, ht, tn, reg, inf_dv,
-                                cell.median_monthly_pct, cell.p10_monthly_pct,
-                                cell.n_neg, cell.n_windows,
-                            )
-                            cells.append(cell)
+                            for inf_vol in vol_grid:
+                                i += 1
+                                cell = _run_cell(
+                                    oos_df=oos_df, scores=scores, windows=windows,
+                                    leverage=lev, min_score=ms, hold_through=ht,
+                                    top_n=tn, fee_regime=reg,
+                                    inference_min_dolvol=inf_dv,
+                                    inference_min_vol_20d=inf_vol,
+                                )
+                                logger.info(
+                                    "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                    "inf_dv=%.0e inf_vol=%.3f med=%+.2f%% p10=%+.2f%% "
+                                    "neg=%d/%d",
+                                    i, total, lev, ms, ht, tn, reg,
+                                    inf_dv, inf_vol,
+                                    cell.median_monthly_pct, cell.p10_monthly_pct,
+                                    cell.n_neg, cell.n_windows,
+                                )
+                                cells.append(cell)
     return cells
 
 
@@ -370,6 +382,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "worst_intraday_dd_pct": c.worst_intraday_dd_pct,
             "avg_intraday_dd_pct":   c.avg_intraday_dd_pct,
             "inference_min_dolvol":  c.inference_min_dolvol,
+            "inference_min_vol_20d": c.inference_min_vol_20d,
         }
         for c in cells
     ]
@@ -409,6 +422,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "pick pool AFTER model scoring — lets us sweep "
                         "'train broad, trade narrow'. Empty = single cell "
                         "at --min-dollar-vol.")
+    p.add_argument("--inference-min-vol-grid", type=str, default="",
+                   help="Optional comma-separated inference-time vol_20d "
+                        "(annualised realised-vol) floors. 0 or empty "
+                        "disables. Higher = drop more of the dead-zone / "
+                        "bot-vol quartile.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -463,6 +481,10 @@ def main(argv=None) -> int:
             _parse_float_list(args.inference_min_dolvol_grid)
             if args.inference_min_dolvol_grid else None
         ),
+        inference_min_vol_grid=(
+            _parse_float_list(args.inference_min_vol_grid)
+            if args.inference_min_vol_grid else None
+        ),
     )
 
     rows = _cells_to_rows(cells)
@@ -486,13 +508,16 @@ def main(argv=None) -> int:
     # exposed to" gap vs "what hit the equity curve at close".
     rows_sorted = sorted(rows, key=lambda r: -r["goodness_score"])
     inf_grid_active = len({r["inference_min_dolvol"] for r in rows}) > 1
+    vol_grid_active = len({r["inference_min_vol_20d"] for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
            f"{'neg':>6} {'good':>8}")
     if inf_grid_active:
         hdr += f" {'inf$V':>8}"
+    if vol_grid_active:
+        hdr += f" {'infVol':>7}"
     print(hdr)
-    print("-" * (92 + (9 if inf_grid_active else 0)))
+    print("-" * (92 + (9 if inf_grid_active else 0) + (8 if vol_grid_active else 0)))
     for r in rows_sorted:
         line = (f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
                 f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
@@ -504,6 +529,8 @@ def main(argv=None) -> int:
                 f"{r['goodness_score']:+8.2f}")
         if inf_grid_active:
             line += f" {r['inference_min_dolvol']:8.2e}"
+        if vol_grid_active:
+            line += f" {r['inference_min_vol_20d']:7.3f}"
         print(line)
     return 0
 

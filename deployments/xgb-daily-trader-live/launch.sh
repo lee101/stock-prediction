@@ -14,6 +14,12 @@
 #     ddW 5.34 & idW 12.93. Predicted by symbol-LOBO (+5.23 goodness)
 #     and confirmed by inference-min-dolvol sweep. No retraining needed:
 #     the 50M gate only narrows the pick pool at inference time.
+#   - Inference-side min_vol_20d 0.10 (2026-04-20): stacked strict-dominance
+#     on top of the 50M liq floor — at deploy fees Δp10 +2.62, at 36×
+#     stress Δp10 +6.09, unchanged med/ddW/idW/neg. Drops the dead-zone
+#     symbols LOBO flagged. Vol floors ≥0.15 lift PnL further but widen
+#     worst-DD by +2.33pp — that's a tradeoff, not strict-dominance, so
+#     we stay at 0.10.
 #
 # Safety: xgbnew/live_trader.py imports src.alpaca_singleton for the
 # fcntl live-writer lock. Only one live process allowed at a time.
@@ -52,6 +58,7 @@ exec python -u -m xgbnew.live_trader \
   --min-score 0.85 \
   --hold-through \
   --min-dollar-vol 50000000 \
+  --min-vol-20d 0.10 \
   --live \
   --loop \
   --verbose

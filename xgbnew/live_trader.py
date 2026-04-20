@@ -333,6 +333,7 @@ def score_all_symbols(
     model: XGBStockModel | list[XGBStockModel],
     live_bars: dict[str, pd.DataFrame] | None = None,
     min_dollar_vol: float = 5e6,
+    min_vol_20d: float = 0.0,
     now: datetime | None = None,
 ) -> pd.DataFrame:
     """Score all symbols for today's open-to-close trade.
@@ -378,6 +379,13 @@ def score_all_symbols(
         spread = float(last_row.get("spread_bps", pd.Series([25.0])).iloc[0])
         if spread > 30.0:  # skip illiquid
             continue
+
+        # Realised-vol floor — matches BacktestConfig.min_vol_20d.
+        # Drops dead-zone names LOBO flagged; strict-dominance at vol=0.10.
+        if min_vol_20d > 0.0 and "vol_20d" in last_row.columns:
+            v20 = float(last_row["vol_20d"].iloc[0])
+            if not np.isfinite(v20) or v20 < min_vol_20d:
+                continue
 
         # Add Chronos2 zeros
         for col in ["chronos_oc_return", "chronos_cc_return",
@@ -451,6 +459,10 @@ def parse_args(argv=None):
                         "If all top_n candidates fail, session holds cash.")
     p.add_argument("--commission-bps", type=float, default=10.0)
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
+    p.add_argument("--min-vol-20d", type=float, default=0.0,
+                   help="Realised 20d annualised vol floor (e.g. 0.10). 0 "
+                        "disables. Drops dead-zone symbols that LOBO flagged; "
+                        "strict-dominance at 0.10 (deploy + stress36x).")
     p.add_argument("--hold-through", action="store_true",
                    help="If tomorrow's picks match today's held positions, skip the "
                         "sell-at-close + buy-at-open round-trip. Rotation now happens "
@@ -488,7 +500,9 @@ def _score_and_pick(symbols, data_root, model, args) -> pd.DataFrame:
 
     print(f"[xgb-live] Scoring {len(symbols)} symbols...", flush=True)
     scores_df = score_all_symbols(
-        symbols, data_root, model, live_bars, min_dollar_vol=args.min_dollar_vol
+        symbols, data_root, model, live_bars,
+        min_dollar_vol=args.min_dollar_vol,
+        min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
     )
 
     if len(scores_df) == 0:
@@ -688,7 +702,9 @@ def run_session(
 
     print(f"[xgb-live] Scoring {len(symbols)} symbols...", flush=True)
     scores_df = score_all_symbols(
-        symbols, data_root, model, live_bars, min_dollar_vol=args.min_dollar_vol
+        symbols, data_root, model, live_bars,
+        min_dollar_vol=args.min_dollar_vol,
+        min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
     )
 
     if len(scores_df) == 0:
