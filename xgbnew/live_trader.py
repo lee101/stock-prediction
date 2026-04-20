@@ -84,13 +84,26 @@ def _build_trading_client(paper: bool):
     return TradingClient(key_id, secret, paper=paper)
 
 
+def _to_alpaca_symbol(sym: str) -> str:
+    """Translate local dash-form tickers to Alpaca's dot form.
+
+    Our symbol lists use ``BRK-B`` / ``BF-B`` but Alpaca's trading and data
+    APIs require ``BRK.B`` / ``BF.B``. A single ``-`` in a ticker always
+    represents a share class on the real exchange — the translation is
+    unambiguous for US equities.
+    """
+    if not sym:
+        return sym
+    return sym.replace("-", ".") if "-" in sym else sym
+
+
 def _submit_market_order(client, *, symbol: str, qty: float, side: str):
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
 
     side_val = OrderSide.BUY if side == "buy" else OrderSide.SELL
     req = MarketOrderRequest(
-        symbol=symbol,
+        symbol=_to_alpaca_symbol(symbol),
         qty=round(float(qty), 4),
         side=side_val,
         time_in_force=TimeInForce.DAY,
@@ -273,14 +286,11 @@ def _get_latest_bars(
         start = end - timedelta(days=max(n_days * 2, 14))  # extra buffer for holidays
         # Alpaca uses BRK.B / BF.B; symbol list uses BRK-B / BF-B. Translate
         # on the wire then map back when stitching results.
-        def _to_api(sym: str) -> str:
-            return sym.replace("-", ".") if "-" in sym else sym
-
-        api_to_local = {_to_api(s): s for s in symbols}
+        api_to_local = {_to_alpaca_symbol(s): s for s in symbols}
 
         result = {}
         for batch in _iter_symbol_batches(symbols, batch_size=batch_size):
-            api_batch = [_to_api(s) for s in batch]
+            api_batch = [_to_alpaca_symbol(s) for s in batch]
             req = StockBarsRequest(
                 symbol_or_symbols=api_batch,
                 timeframe=TimeFrame.Day,

@@ -173,6 +173,7 @@ if "alpaca" not in sys.modules:
     alpaca_trading.client.TradingClient = MagicMock()
     alpaca_trading.TradingClient = MagicMock()
     alpaca_trading.enums.OrderSide = MagicMock()
+    alpaca_trading.enums.TimeInForce = MagicMock()
     alpaca_trading.requests.MarketOrderRequest = MagicMock()
 
     sys.modules["alpaca"] = alpaca_mod
