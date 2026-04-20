@@ -82,6 +82,13 @@ class CellResult:
     #   leverage). 0.0 when actual_high/actual_low missing from dataset.
     worst_intraday_dd_pct: float = 0.0
     avg_intraday_dd_pct:   float = 0.0
+    # Equity-curve pain metrics aggregated across windows.
+    # time_under_water_pct = median over windows of %-of-days the equity
+    #   curve is strictly below its prior peak.
+    # ulcer_index          = median over windows of sqrt(mean(dd_pct^2)).
+    # Paired median aggregation mirrors median_monthly_pct / median_sortino.
+    time_under_water_pct: float = 0.0
+    ulcer_index:          float = 0.0
     # Inference-side liquidity floor applied to the pick pool — stays at
     # 5M$ unless explicitly swept via --inference-min-dolvol-grid.
     inference_min_dolvol: float = 5_000_000.0
@@ -261,6 +268,8 @@ def _run_cell(
     dds: list[float] = []
     intra_dds_worst: list[float] = []
     intra_dds_avg:   list[float] = []
+    tuws: list[float] = []
+    ulcers: list[float] = []
     for w_start, w_end in windows:
         w_df = oos_df[(oos_df["date"] >= w_start) & (oos_df["date"] <= w_end)]
         if len(w_df) < 5:
@@ -274,6 +283,8 @@ def _run_cell(
         dds.append(res.max_drawdown_pct)
         intra_dds_worst.append(res.worst_intraday_dd_pct)
         intra_dds_avg.append(res.avg_intraday_dd_pct)
+        tuws.append(res.time_under_water_pct)
+        ulcers.append(res.ulcer_index)
 
     n = len(monthlies)
     if n == 0:
@@ -288,6 +299,8 @@ def _run_cell(
     robust_goodness = compute_robust_goodness(arr, worst_dd)
     worst_intra = float(np.max(intra_dds_worst)) if intra_dds_worst else 0.0
     avg_intra   = float(np.mean(intra_dds_avg))  if intra_dds_avg   else 0.0
+    tuw_med     = float(np.median(tuws))    if tuws    else 0.0
+    ulcer_med   = float(np.median(ulcers))  if ulcers  else 0.0
     return CellResult(
         leverage=leverage,
         min_score=min_score,
@@ -304,6 +317,8 @@ def _run_cell(
         robust_goodness_score=robust_goodness,
         worst_intraday_dd_pct=worst_intra,
         avg_intraday_dd_pct=avg_intra,
+        time_under_water_pct=tuw_med,
+        ulcer_index=ulcer_med,
         inference_min_dolvol=float(inference_min_dolvol),
         inference_min_vol_20d=float(inference_min_vol_20d),
         skip_prob=float(skip_prob),
@@ -455,6 +470,8 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "robust_goodness_score": c.robust_goodness_score,
             "worst_intraday_dd_pct": c.worst_intraday_dd_pct,
             "avg_intraday_dd_pct":   c.avg_intraday_dd_pct,
+            "time_under_water_pct":  c.time_under_water_pct,
+            "ulcer_index":           c.ulcer_index,
             "inference_min_dolvol":  c.inference_min_dolvol,
             "inference_min_vol_20d": c.inference_min_vol_20d,
             "skip_prob":             c.skip_prob,
@@ -604,7 +621,7 @@ def main(argv=None) -> int:
     sp_grid_active  = len({r["skip_prob"] for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
-           f"{'neg':>6} {'good':>8} {'robG':>8}")
+           f"{'tuw%':>6} {'ulc':>6} {'neg':>6} {'good':>8} {'robG':>8}")
     if inf_grid_active:
         hdr += f" {'inf$V':>8}"
     if vol_grid_active:
@@ -612,7 +629,7 @@ def main(argv=None) -> int:
     if sp_grid_active:
         hdr += f" {'skip':>5} {'sd':>3}"
     print(hdr)
-    print("-" * (101
+    print("-" * (115
                  + (9 if inf_grid_active else 0)
                  + (8 if vol_grid_active else 0)
                  + (9 if sp_grid_active else 0)))
@@ -623,6 +640,8 @@ def main(argv=None) -> int:
                 f"{r['median_monthly_pct']:+8.2f} {r['p10_monthly_pct']:+8.2f} "
                 f"{r['median_sortino']:6.2f} {r['worst_dd_pct']:6.2f} "
                 f"{r['worst_intraday_dd_pct']:6.2f} "
+                f"{r['time_under_water_pct']:6.2f} "
+                f"{r['ulcer_index']:6.2f} "
                 f"{r['n_neg']:3d}/{r['n_windows']:3d} "
                 f"{r['goodness_score']:+8.2f} "
                 f"{r['robust_goodness_score']:+8.2f}")

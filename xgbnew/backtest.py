@@ -135,6 +135,13 @@ class BacktestResult:
     worst_intraday_dd_pct:   float = 0.0
     avg_intraday_dd_pct:     float = 0.0
     worst_intraday_runup_pct: float = 0.0
+    # Equity-curve pain metrics — computed from the same running-max
+    # decomposition as ``max_drawdown_pct`` but summarising duration
+    # and integrated depth, not just the worst point.
+    # time_under_water_pct = % of equity-curve samples below the prior peak
+    # ulcer_index          = RMS of drawdown-depth % across the curve
+    time_under_water_pct: float = 0.0
+    ulcer_index:          float = 0.0
 
 
 def _day_margin_cost(leverage: float) -> float:
@@ -623,7 +630,15 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
     sortino = _sortino_semi(rets, mean_r, ann_factor=np.sqrt(TRADING_DAYS_PER_YEAR))
 
     running_max = np.maximum.accumulate(eq)
-    max_dd = float(np.abs(np.min((eq - running_max) / running_max)))
+    dd_frac = (running_max - eq) / running_max  # ≥ 0 always
+    max_dd = float(np.max(dd_frac))
+    # TuW: fraction of samples strictly below the prior peak. Excludes the
+    # initial cash point (dd_frac == 0 by construction).
+    tuw_pct = float(np.mean(dd_frac > 0.0)) * 100.0
+    # Ulcer Index: RMS of drawdown depth as %. Integrates pain over the
+    # whole curve, so a short-but-deep dip and a long-but-shallow dip can
+    # land at the same Max DD yet have very different UI.
+    ulcer = float(np.sqrt(np.mean(dd_frac * dd_frac))) * 100.0
 
     win_rate = float(np.mean(rets > 0)) * 100.0
 
@@ -658,6 +673,8 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
         worst_intraday_dd_pct=worst_intraday_dd,
         avg_intraday_dd_pct=avg_intraday_dd,
         worst_intraday_runup_pct=worst_intraday_runup,
+        time_under_water_pct=tuw_pct,
+        ulcer_index=ulcer,
     )
 
 
@@ -930,7 +947,10 @@ def _compute_result_hourly(
     sortino = _sortino_semi(rets, mean_r, ann_factor=np.sqrt(bars_per_year))
 
     running_max = np.maximum.accumulate(eq)
-    max_dd = float(np.abs(np.min((eq - running_max) / running_max)))
+    dd_frac = (running_max - eq) / running_max
+    max_dd = float(np.max(dd_frac))
+    tuw_pct = float(np.mean(dd_frac > 0.0)) * 100.0
+    ulcer = float(np.sqrt(np.mean(dd_frac * dd_frac))) * 100.0
 
     win_rate = float(np.mean(rets > 0)) * 100.0
 
@@ -958,4 +978,6 @@ def _compute_result_hourly(
         avg_spread_bps=float(np.mean(spreads)) if spreads else 0.0,
         avg_fee_bps=float(np.mean(fee_bps)) if fee_bps else 0.0,
         directional_accuracy_pct=dir_acc,
+        time_under_water_pct=tuw_pct,
+        ulcer_index=ulcer,
     )

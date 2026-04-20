@@ -408,3 +408,42 @@ def test_robust_goodness_sweep_end_to_end(monkeypatch, tmp_path):
         # With DD=0 and all monthlies positive they coincide; otherwise not.
         # Just sanity-check the column is populated:
         assert c.robust_goodness_score != 0.0 or c.worst_dd_pct == 0.0
+
+
+def test_tuw_and_ulcer_in_cell_result_and_rows():
+    """TuW + Ulcer round-trip through CellResult → _cells_to_rows → JSON row."""
+    c = sweep.CellResult(
+        leverage=2.0, min_score=0.85, hold_through=True, top_n=1,
+        fee_regime="deploy", n_windows=60,
+        median_monthly_pct=141.0, p10_monthly_pct=96.0,
+        median_sortino=40.0, worst_dd_pct=7.18, n_neg=0,
+        goodness_score=88.82, robust_goodness_score=85.23,
+        time_under_water_pct=42.5, ulcer_index=3.17,
+    )
+    rows = sweep._cells_to_rows([c])
+    assert rows[0]["time_under_water_pct"] == pytest.approx(42.5)
+    assert rows[0]["ulcer_index"] == pytest.approx(3.17)
+
+
+def test_tuw_and_ulcer_sweep_end_to_end(monkeypatch, tmp_path):
+    """End-to-end sweep populates tuw + ulcer aggregates."""
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0], min_score_grid=[0.0],
+        hold_through_grid=[True], top_n_grid=[1],
+        fee_regimes=["deploy"],
+    )
+    assert cells, "expected at least one cell"
+    for c in cells:
+        # TuW is a percentage in [0, 100]; Ulcer ≥ 0.
+        assert 0.0 <= c.time_under_water_pct <= 100.0
+        assert c.ulcer_index >= 0.0
+        # Ulcer ≤ max-DD in %. RMS ≤ max by definition.
+        assert c.ulcer_index <= c.worst_dd_pct + 1e-9
