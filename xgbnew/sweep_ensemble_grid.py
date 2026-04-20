@@ -74,6 +74,8 @@ class CellResult:
     n_neg: int
     # Composite "one-scalar" optimization target — see compute_goodness().
     goodness_score: float = 0.0
+    # Asymmetric-downside variant — see compute_robust_goodness().
+    robust_goodness_score: float = 0.0
     # Intraday unrealized excursions, aggregated across windows.
     # worst_intraday_dd_pct = max over windows of that window's worst
     #   within-day unrealized drawdown (from entry fill to bar low, at
@@ -86,6 +88,9 @@ class CellResult:
     # Inference-side realised-vol floor on vol_20d (annualised). 0 disables.
     # Swept via --inference-min-vol-grid.
     inference_min_vol_20d: float = 0.0
+    # Missed-order Monte Carlo params — 0.0 = classic identity sim.
+    skip_prob: float = 0.0
+    skip_seed: int = 0
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -96,6 +101,23 @@ GOODNESS_WEIGHTS = {
     "p10_coef":   1.0,   # 1× p10 monthly %
     "dd_coef":    1.0,   # subtract worst_dd_pct
     "neg_coef": 100.0,   # subtract neg_frac * 100 (so 1/60 neg = −1.67pp)
+}
+
+
+# Robust variant — asymmetric downside. Rationale:
+#   * dd_coef=1.5        — deeper DDs bite more than shallow ones
+#   * neg_count_coef=50  — softer than 100 because we also add magnitude
+#   * neg_magnitude_coef=2.0 — mean-of-losses term distinguishes 5× (−3%) mo
+#                              from 5× (−15%) mo, which the plain count
+#                              formula cannot do.
+# See feedback: "1.2-1.5x on short-side volatility/drawdowns or realized
+# losses" — this is that knob, as a separate sort-key so the existing
+# frontier analysis is not disrupted.
+ROBUST_GOODNESS_WEIGHTS = {
+    "p10_coef":            1.0,
+    "dd_coef":             1.5,
+    "neg_count_coef":     50.0,
+    "neg_magnitude_coef":  2.0,
 }
 
 
@@ -121,6 +143,39 @@ def compute_goodness(
         w["p10_coef"] * p10_monthly_pct
         - w["dd_coef"] * worst_dd_pct
         - w["neg_coef"] * neg_frac
+    )
+
+
+def compute_robust_goodness(
+    monthlies: "list[float] | np.ndarray",
+    worst_dd_pct: float,
+    weights: dict | None = None,
+) -> float:
+    """Asymmetric-downside goodness: magnitude-aware, DD-weighted.
+
+    robust = p10 − 1.5·worst_dd − 50·neg_frac − 2·mean_abs_neg_return
+
+    where ``mean_abs_neg_return = Σ |m_i| for m_i<0  /  n_windows``  (so
+    it's 0 when every window is positive, and grows with both the count
+    AND the magnitude of losses). A 5/60-neg config at −3%/mo pays
+    −0.5pp from the magnitude term; the same count at −15%/mo pays
+    −2.5pp. Identical under the plain count formula, distinguished here.
+    """
+    w = ROBUST_GOODNESS_WEIGHTS if weights is None else weights
+    arr = np.asarray(monthlies, dtype=float)
+    n = int(arr.size)
+    if n == 0:
+        return 0.0
+    p10 = float(np.percentile(arr, 10))
+    neg_mask = arr < 0
+    neg_count = int(neg_mask.sum())
+    neg_frac = neg_count / n
+    mean_abs_neg = float(-arr[neg_mask].sum()) / n if neg_count else 0.0
+    return (
+        w["p10_coef"] * p10
+        - w["dd_coef"] * worst_dd_pct
+        - w["neg_count_coef"] * neg_frac
+        - w["neg_magnitude_coef"] * mean_abs_neg
     )
 
 
@@ -177,6 +232,8 @@ def _run_cell(
     fee_regime: str,
     inference_min_dolvol: float = 5_000_000.0,
     inference_min_vol_20d: float = 0.0,
+    skip_prob: float = 0.0,
+    skip_seed: int = 0,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     cfg = BacktestConfig(
@@ -190,6 +247,8 @@ def _run_cell(
         min_vol_20d=float(inference_min_vol_20d),
         hold_through=bool(hold_through),
         min_score=float(min_score),
+        skip_prob=float(skip_prob),
+        skip_seed=int(skip_seed),
     )
 
     dummy = XGBStockModel(device="cpu", n_estimators=1, max_depth=1, learning_rate=0.1)
@@ -219,13 +278,14 @@ def _run_cell(
     n = len(monthlies)
     if n == 0:
         return CellResult(leverage, min_score, hold_through, top_n, fee_regime,
-                          0, 0.0, 0.0, 0.0, 0.0, 0, 0.0)
+                          0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
 
     arr = np.array(monthlies)
     p10 = float(np.percentile(arr, 10))
     worst_dd = float(np.max(dds))
     n_neg = int(np.sum(arr < 0))
     goodness = compute_goodness(p10, worst_dd, n_neg, n)
+    robust_goodness = compute_robust_goodness(arr, worst_dd)
     worst_intra = float(np.max(intra_dds_worst)) if intra_dds_worst else 0.0
     avg_intra   = float(np.mean(intra_dds_avg))  if intra_dds_avg   else 0.0
     return CellResult(
@@ -241,10 +301,13 @@ def _run_cell(
         worst_dd_pct=worst_dd,
         n_neg=n_neg,
         goodness_score=goodness,
+        robust_goodness_score=robust_goodness,
         worst_intraday_dd_pct=worst_intra,
         avg_intraday_dd_pct=avg_intra,
         inference_min_dolvol=float(inference_min_dolvol),
         inference_min_vol_20d=float(inference_min_vol_20d),
+        skip_prob=float(skip_prob),
+        skip_seed=int(skip_seed),
     )
 
 
@@ -269,6 +332,8 @@ def run_sweep(
     min_dollar_vol: float = 5_000_000.0,
     inference_min_dolvol_grid: list[float] | None = None,
     inference_min_vol_grid: list[float] | None = None,
+    skip_prob_grid: list[float] | None = None,
+    skip_seeds: list[int] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -330,12 +395,14 @@ def run_sweep(
 
     inf_grid = list(inference_min_dolvol_grid) if inference_min_dolvol_grid else [float(min_dollar_vol)]
     vol_grid = list(inference_min_vol_grid) if inference_min_vol_grid else [0.0]
+    sp_grid  = [float(x) for x in (skip_prob_grid or [0.0])]
+    ss_list  = [int(x) for x in (skip_seeds or [0])]
 
     cells: list[CellResult] = []
     total = (
         len(leverage_grid) * len(min_score_grid)
         * len(hold_through_grid) * len(top_n_grid) * len(fee_regimes)
-        * len(inf_grid) * len(vol_grid)
+        * len(inf_grid) * len(vol_grid) * len(sp_grid) * len(ss_list)
     )
     i = 0
     for lev in leverage_grid:
@@ -345,24 +412,30 @@ def run_sweep(
                     for reg in fee_regimes:
                         for inf_dv in inf_grid:
                             for inf_vol in vol_grid:
-                                i += 1
-                                cell = _run_cell(
-                                    oos_df=oos_df, scores=scores, windows=windows,
-                                    leverage=lev, min_score=ms, hold_through=ht,
-                                    top_n=tn, fee_regime=reg,
-                                    inference_min_dolvol=inf_dv,
-                                    inference_min_vol_20d=inf_vol,
-                                )
-                                logger.info(
-                                    "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                    "inf_dv=%.0e inf_vol=%.3f med=%+.2f%% p10=%+.2f%% "
-                                    "neg=%d/%d",
-                                    i, total, lev, ms, ht, tn, reg,
-                                    inf_dv, inf_vol,
-                                    cell.median_monthly_pct, cell.p10_monthly_pct,
-                                    cell.n_neg, cell.n_windows,
-                                )
-                                cells.append(cell)
+                                for sp in sp_grid:
+                                    # Only iterate seeds when skipping;
+                                    # at skip=0 the sim is deterministic.
+                                    seed_iter = ss_list if sp > 0 else [0]
+                                    for sseed in seed_iter:
+                                        i += 1
+                                        cell = _run_cell(
+                                            oos_df=oos_df, scores=scores, windows=windows,
+                                            leverage=lev, min_score=ms, hold_through=ht,
+                                            top_n=tn, fee_regime=reg,
+                                            inference_min_dolvol=inf_dv,
+                                            inference_min_vol_20d=inf_vol,
+                                            skip_prob=sp, skip_seed=sseed,
+                                        )
+                                        logger.info(
+                                            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                            "inf_dv=%.0e inf_vol=%.3f skp=%.2f/%d "
+                                            "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
+                                            i, total, lev, ms, ht, tn, reg,
+                                            inf_dv, inf_vol, sp, sseed,
+                                            cell.median_monthly_pct, cell.p10_monthly_pct,
+                                            cell.n_neg, cell.n_windows,
+                                        )
+                                        cells.append(cell)
     return cells
 
 
@@ -379,10 +452,13 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "worst_dd_pct": c.worst_dd_pct,
             "n_neg": c.n_neg,
             "goodness_score": c.goodness_score,
+            "robust_goodness_score": c.robust_goodness_score,
             "worst_intraday_dd_pct": c.worst_intraday_dd_pct,
             "avg_intraday_dd_pct":   c.avg_intraday_dd_pct,
             "inference_min_dolvol":  c.inference_min_dolvol,
             "inference_min_vol_20d": c.inference_min_vol_20d,
+            "skip_prob":             c.skip_prob,
+            "skip_seed":             c.skip_seed,
         }
         for c in cells
     ]
@@ -427,6 +503,15 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "(annualised realised-vol) floors. 0 or empty "
                         "disables. Higher = drop more of the dead-zone / "
                         "bot-vol quartile.")
+    p.add_argument("--skip-prob-grid", type=str, default="",
+                   help="Missed-order Monte Carlo — comma-separated skip "
+                        "probabilities, e.g. '0.0,0.05,0.10,0.20'. Each "
+                        "value simulates 'Alpaca rejects this pick' at "
+                        "that rate. Empty = single cell at 0.0.")
+    p.add_argument("--skip-seeds", type=str, default="0,1,2",
+                   help="Comma-separated RNG seeds for each non-zero skip "
+                        "probability (gives MC variance). Ignored at "
+                        "skip_prob=0.0 since the sim is deterministic.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -485,6 +570,11 @@ def main(argv=None) -> int:
             _parse_float_list(args.inference_min_vol_grid)
             if args.inference_min_vol_grid else None
         ),
+        skip_prob_grid=(
+            _parse_float_list(args.skip_prob_grid)
+            if args.skip_prob_grid else None
+        ),
+        skip_seeds=_parse_int_list(args.skip_seeds),
     )
 
     rows = _cells_to_rows(cells)
@@ -497,6 +587,8 @@ def main(argv=None) -> int:
         "window_days": int(args.window_days), "stride_days": int(args.stride_days),
         "fee_regimes": {k: FEE_REGIMES[k] for k in
                         [r.strip() for r in args.fee_regimes.split(",")]},
+        "goodness_weights": GOODNESS_WEIGHTS,
+        "robust_goodness_weights": ROBUST_GOODNESS_WEIGHTS,
         "cells": rows,
     }, indent=2))
     print(f"[sweep] wrote {out}  ({len(rows)} cells)", flush=True)
@@ -509,15 +601,21 @@ def main(argv=None) -> int:
     rows_sorted = sorted(rows, key=lambda r: -r["goodness_score"])
     inf_grid_active = len({r["inference_min_dolvol"] for r in rows}) > 1
     vol_grid_active = len({r["inference_min_vol_20d"] for r in rows}) > 1
+    sp_grid_active  = len({r["skip_prob"] for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
-           f"{'neg':>6} {'good':>8}")
+           f"{'neg':>6} {'good':>8} {'robG':>8}")
     if inf_grid_active:
         hdr += f" {'inf$V':>8}"
     if vol_grid_active:
         hdr += f" {'infVol':>7}"
+    if sp_grid_active:
+        hdr += f" {'skip':>5} {'sd':>3}"
     print(hdr)
-    print("-" * (92 + (9 if inf_grid_active else 0) + (8 if vol_grid_active else 0)))
+    print("-" * (101
+                 + (9 if inf_grid_active else 0)
+                 + (8 if vol_grid_active else 0)
+                 + (9 if sp_grid_active else 0)))
     for r in rows_sorted:
         line = (f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
                 f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
@@ -526,11 +624,14 @@ def main(argv=None) -> int:
                 f"{r['median_sortino']:6.2f} {r['worst_dd_pct']:6.2f} "
                 f"{r['worst_intraday_dd_pct']:6.2f} "
                 f"{r['n_neg']:3d}/{r['n_windows']:3d} "
-                f"{r['goodness_score']:+8.2f}")
+                f"{r['goodness_score']:+8.2f} "
+                f"{r['robust_goodness_score']:+8.2f}")
         if inf_grid_active:
             line += f" {r['inference_min_dolvol']:8.2e}"
         if vol_grid_active:
             line += f" {r['inference_min_vol_20d']:7.3f}"
+        if sp_grid_active:
+            line += f" {r['skip_prob']:5.2f} {r['skip_seed']:3d}"
         print(line)
     return 0
 

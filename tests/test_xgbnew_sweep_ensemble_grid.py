@@ -308,3 +308,103 @@ def test_cells_populated_with_goodness(monkeypatch, tmp_path):
             c.p10_monthly_pct, c.worst_dd_pct, c.n_neg, c.n_windows,
         )
         assert c.goodness_score == pytest.approx(expected, abs=1e-9)
+
+
+# ─── robust_goodness tests ────────────────────────────────────────────────────
+
+def test_robust_goodness_all_positive_matches_expected():
+    # All-positive deploy-style case: 0 neg, 0 magnitude penalty;
+    # robust = p10 − 1.5·worst_dd. Use a flat distribution so p10
+    # is unambiguously the shared value.
+    monthlies = [100.0] * 60
+    worst_dd = 5.34
+    rg = sweep.compute_robust_goodness(monthlies, worst_dd)
+    assert rg == pytest.approx(100.0 - 1.5 * 5.34, abs=1e-6)
+
+
+def test_robust_goodness_dd_penalty_is_1p5x_plain():
+    """Doubling DD should subtract exactly 1.5x more than compute_goodness."""
+    monthlies = [10.0] * 60
+    g_base = sweep.compute_goodness(10.0, 10.0, 0, 60)
+    g_dd2 = sweep.compute_goodness(10.0, 20.0, 0, 60)
+    rg_base = sweep.compute_robust_goodness(monthlies, 10.0)
+    rg_dd2 = sweep.compute_robust_goodness(monthlies, 20.0)
+    # Plain: −1pp per 1pp DD. Robust: −1.5pp per 1pp DD.
+    assert (g_base - g_dd2) == pytest.approx(10.0, abs=1e-9)
+    assert (rg_base - rg_dd2) == pytest.approx(15.0, abs=1e-9)
+
+
+def test_robust_goodness_distinguishes_loss_magnitude():
+    """Same neg count, different magnitudes → robust differs, plain doesn't."""
+    shallow = [-3.0] * 5 + [40.0] * 55   # 5 neg at −3%, p10 ≈ −3
+    deep    = [-15.0] * 5 + [40.0] * 55  # 5 neg at −15%, p10 ≈ −15
+    # compute_goodness at identical DD / n_neg is identical iff p10 matches;
+    # these cases differ in p10 so they'll already differ, but the
+    # *magnitude* term adds an additional gap — exactly what we want.
+    rg_shallow = sweep.compute_robust_goodness(shallow, 10.0)
+    rg_deep = sweep.compute_robust_goodness(deep, 10.0)
+    # Magnitude term alone: shallow pays 2 * (15/60) = 0.5,
+    # deep pays 2 * (75/60) = 2.5 → extra spread 2.0 on top of p10 gap.
+    gap = rg_shallow - rg_deep
+    assert gap > 0, "deep losses should be strictly worse"
+    # The magnitude term contributes EXACTLY +2.0 to the gap.
+    p10_gap = np.percentile(shallow, 10) - np.percentile(deep, 10)
+    count_gap = 0.0  # same neg_frac
+    magnitude_gap = 2.0 * (60 / 60.0) * (15 - 3) / 60 * 5  # derivation below
+    # Actually: mean_abs_neg_shallow = 15/60 = 0.25
+    #           mean_abs_neg_deep    = 75/60 = 1.25
+    #   gap from magnitude = 2 * (1.25 − 0.25) = 2.0
+    assert gap == pytest.approx(p10_gap + 2.0, abs=1e-6)
+
+
+def test_robust_goodness_zero_on_empty():
+    assert sweep.compute_robust_goodness([], 10.0) == 0.0
+
+
+def test_robust_goodness_custom_weights():
+    monthlies = [-5.0] * 5 + [30.0] * 55
+    default = sweep.compute_robust_goodness(monthlies, 10.0)
+    zero_dd_penalty = sweep.compute_robust_goodness(
+        monthlies, 10.0,
+        weights={**sweep.ROBUST_GOODNESS_WEIGHTS, "dd_coef": 0.0},
+    )
+    # Dropping the DD penalty only should raise goodness by exactly 1.5*10.
+    assert (zero_dd_penalty - default) == pytest.approx(15.0, abs=1e-9)
+
+
+def test_robust_goodness_in_cell_result_and_rows():
+    c = sweep.CellResult(
+        leverage=2.0, min_score=0.85, hold_through=True, top_n=1,
+        fee_regime="deploy", n_windows=60,
+        median_monthly_pct=141.0, p10_monthly_pct=96.0,
+        median_sortino=40.0, worst_dd_pct=7.18, n_neg=0,
+        goodness_score=88.82, robust_goodness_score=85.23,
+    )
+    rows = sweep._cells_to_rows([c])
+    assert rows[0]["robust_goodness_score"] == pytest.approx(85.23)
+
+
+def test_robust_goodness_sweep_end_to_end(monkeypatch, tmp_path):
+    """End-to-end sweep populates robust_goodness_score alongside goodness."""
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0, 2.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[True],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+    )
+    for c in cells:
+        # robust_goodness must be a finite float, and should not equal
+        # plain goodness in general (different coefficients).
+        assert np.isfinite(c.robust_goodness_score)
+        # With DD=0 and all monthlies positive they coincide; otherwise not.
+        # Just sanity-check the column is populated:
+        assert c.robust_goodness_score != 0.0 or c.worst_dd_pct == 0.0

@@ -62,6 +62,14 @@ class BacktestConfig:
                                         # round-trip). Saves 2x(fee+buffer) per held
                                         # day and captures overnight drift via the
                                         # close-to-close return on the continuation.
+    # Missed-order Monte Carlo: each new pick has ``skip_prob`` chance of
+    # being dropped (simulates Alpaca rejection / spread-too-wide /
+    # stale-price). Hold-through continuations are NOT skipped — no new
+    # order fires — so this tests order-entry risk, not position risk.
+    # Seed is drawn once per simulate() call so sweeps are reproducible.
+    # 0.0 disables (identity with pre-MC sim).
+    skip_prob: float = 0.0
+    skip_seed: int = 0
 
 
 @dataclass
@@ -397,6 +405,15 @@ def simulate(
     prev_pick_set: frozenset[str] | None = None
     prev_close_by_sym: dict[str, float] = {}
 
+    # Missed-order RNG — seeded once at entry so the whole sim is
+    # reproducible under the same (skip_prob, skip_seed). Pre-building it
+    # here (rather than per-day) avoids any dependence on day ordering.
+    _skip_prob = float(max(0.0, min(1.0, config.skip_prob)))
+    _skip_rng = (
+        np.random.default_rng(int(config.skip_seed))
+        if _skip_prob > 0.0 else None
+    )
+
     for day, day_df in test_df.groupby("date", sort=True):
         # Regime gate — if SPY under MA for the day, skip (stay in cash).
         if bool(regime_closed.get(day, False)):
@@ -439,6 +456,20 @@ def simulate(
                 prev_close_by_sym.get(sym, 0.0) > 0.0 for sym in today_sym_list
             )
         )
+
+        # Missed-order Monte Carlo — only applies to churn days (new
+        # orders firing). Draw once per pick; failures reduce today's
+        # pick set, mimicking an Alpaca 403 / spread-too-wide / stale
+        # price. Continuations carry the previous position, so no order
+        # fires and nothing can be "missed".
+        if _skip_rng is not None and not is_continuation and pick_rows:
+            draws = _skip_rng.random(len(pick_rows))
+            surviving = [
+                r for r, u in zip(pick_rows, draws) if u >= _skip_prob
+            ]
+            pick_rows = surviving
+            today_sym_list = [str(r["symbol"]) for r in pick_rows]
+            today_pick_set = frozenset(today_sym_list)
 
         trades: list[DayTrade] = []
         for row in pick_rows:
