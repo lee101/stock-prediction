@@ -51,11 +51,23 @@ from src.alpaca_account_lock import (
 )
 
 
-# Default tolerance: refuse a sell if it's priced more than this many bps
+# Intraday tolerance: refuse a sell if it's priced more than this many bps
 # BELOW the most recent buy for the symbol. 50 bps = 0.5% of buy price —
 # generous enough to accommodate spread/slippage but tight enough to catch
-# runaway loops that keep slashing the ask.
+# runaway loops that keep slashing the ask within a single session.
 DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS = 50.0
+
+# Overnight/hold-through tolerance. Hold-through mode carries a position
+# overnight and rotates at the NEXT open, so a normal overnight drift of
+# 100-300 bps must not trigger the guard (otherwise a down-day crashes the
+# daemon in a restart loop). Anything wider than 500 bps is still caught.
+DEFAULT_OVERNIGHT_TOLERANCE_BPS = 500.0
+
+# A buy record whose timestamp is older than this is treated as an
+# overnight/multi-session hold — the overnight tolerance applies. 8 hours
+# keeps same-day 09:30→15:50 (6h20m) rotations on the tight 50 bps while
+# flipping any next-morning rotation (>= ~17h) onto the wide tolerance.
+DEFAULT_OVERNIGHT_THRESHOLD_SECONDS = 8 * 60 * 60  # 8 hours
 
 # Buy-price memory window. Older entries are pruned so a week-old buy
 # doesn't block a legitimate market-driven sell.
@@ -117,6 +129,8 @@ class SingletonState:
     lock: Optional[AlpacaAccountLock] = None
     death_spiral_guard_enabled: bool = True
     death_spiral_tolerance_bps: float = DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS
+    overnight_tolerance_bps: float = DEFAULT_OVERNIGHT_TOLERANCE_BPS
+    overnight_threshold_seconds: int = DEFAULT_OVERNIGHT_THRESHOLD_SECONDS
     buy_memory_seconds: int = DEFAULT_BUY_MEMORY_SECONDS
     _mu: RLock = field(default_factory=RLock)
 
@@ -339,8 +353,21 @@ def guard_sell_against_death_spiral(
     price: float,
     *,
     tolerance_bps: Optional[float] = None,
+    stale_tolerance_bps: Optional[float] = None,
+    stale_after_seconds: Optional[int] = None,
 ) -> None:
     """Raise RuntimeError if the sell would put us below the remembered buy.
+
+    Tolerance is time-aware. If the recorded buy is less than
+    ``stale_after_seconds`` old (default 8h), the tight intraday tolerance
+    (``tolerance_bps`` override OR ``DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS``)
+    applies. Otherwise the overnight tolerance (``stale_tolerance_bps``
+    override OR ``DEFAULT_OVERNIGHT_TOLERANCE_BPS``) is used — holding
+    through a normal overnight gap must not trigger a crash-loop.
+
+    If ``tolerance_bps`` is given explicitly it is used regardless of age
+    (backward-compatible path for callers that already know which regime
+    they are in).
 
     Raises:
       RuntimeError — refused sell (sellers in a death spiral). Callers
@@ -359,12 +386,6 @@ def guard_sell_against_death_spiral(
     with _STATE_MU:
         state = _STATE
     account_name = _current_account_name()
-    tol_bps = (
-        float(tolerance_bps)
-        if tolerance_bps is not None
-        else (state.death_spiral_tolerance_bps if state is not None
-              else DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS)
-    )
 
     if _env_flag(DEATH_SPIRAL_OVERRIDE_ENV_VAR):
         _write_marker(
@@ -391,19 +412,48 @@ def guard_sell_against_death_spiral(
         if buy_price <= 0:
             return
 
+        # Time-aware tolerance selection. An explicit tolerance_bps wins
+        # (back-compat / per-call override). Otherwise: age-of-buy decides.
+        if tolerance_bps is not None:
+            tol_bps = float(tolerance_bps)
+            regime = "explicit"
+        else:
+            intraday_tol = (
+                state.death_spiral_tolerance_bps if state is not None
+                else DEFAULT_DEATH_SPIRAL_TOLERANCE_BPS
+            )
+            overnight_tol = (
+                float(stale_tolerance_bps) if stale_tolerance_bps is not None
+                else (state.overnight_tolerance_bps if state is not None
+                      else DEFAULT_OVERNIGHT_TOLERANCE_BPS)
+            )
+            threshold = (
+                int(stale_after_seconds) if stale_after_seconds is not None
+                else (state.overnight_threshold_seconds if state is not None
+                      else DEFAULT_OVERNIGHT_THRESHOLD_SECONDS)
+            )
+            age = time.time() - float(rec.get("ts", 0.0))
+            if age > threshold:
+                tol_bps = float(overnight_tol)
+                regime = "overnight"
+            else:
+                tol_bps = float(intraday_tol)
+                regime = "intraday"
+
         floor = buy_price * (1.0 - float(tol_bps) / 10000.0)
         if price < floor:
             _write_marker(
                 "guard_sell_against_death_spiral",
                 f"REFUSING SELL of {symbol} at {price:.4f}: "
                 f"last buy at {buy_price:.4f}, floor {floor:.4f} "
-                f"(tolerance {tol_bps} bps). Set ALPACA_DEATH_SPIRAL_OVERRIDE=1 "
-                f"to bypass. This refusal raises RuntimeError to stop the loop.",
+                f"(tolerance {tol_bps} bps, regime={regime}). Set "
+                f"ALPACA_DEATH_SPIRAL_OVERRIDE=1 to bypass. This refusal "
+                f"raises RuntimeError to stop the loop.",
             )
             raise RuntimeError(
                 f"alpaca_singleton: refusing death-spiral SELL of {symbol} "
                 f"at {price} (last buy {buy_price}, floor {floor}, "
-                f"tolerance {tol_bps} bps)"
+                f"tolerance {tol_bps} bps, regime={regime})"
             )
 
 

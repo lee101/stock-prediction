@@ -460,3 +460,169 @@ def test_death_spiral_guard_prunes_stale_buys_using_configured_buy_memory_second
     singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 100.0)
 
     assert singleton_mod._load_buys("alpaca_test_writer") == {}
+
+
+# ---------------------------------------------------------------------------
+# Time-aware tolerance tests (intraday 50bps vs overnight 500bps).
+#
+# Hold-through mode rotates positions at the NEXT open. A normal overnight
+# drift of 100-300 bps must NOT crash the daemon, or the bot goes into a
+# restart loop. These tests pin the regime:
+#   - fresh buy (age <= 8h) → tight 50bps intraday tolerance
+#   - stale buy (age > 8h)   → wide 500bps overnight tolerance
+# ---------------------------------------------------------------------------
+
+
+def test_death_spiral_overnight_tolerance_allows_normal_overnight_drop(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Stale buy (12h ago) + 300 bps overnight drop must be allowed.
+
+    Hold-through rotation at next-open is the common case; a 1-3% overnight
+    move is normal market behavior, not a death spiral.
+    """
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.setattr(
+        singleton_mod,
+        "_STATE",
+        singleton_mod.SingletonState(account_name="alpaca_test_writer"),
+    )
+    # 12h ago → well past the 8h threshold → overnight regime.
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {
+            "AAPL": {
+                "price": 200.0,
+                "ts": time.time() - 12 * 60 * 60,
+                "iso": "2026-04-19T00:00:00+00:00",
+            }
+        },
+    )
+
+    # 300 bps below 200 → 194.0. Well inside the 500 bps overnight floor
+    # (floor = 190.0). Must be allowed.
+    singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 194.0)
+    # 480 bps below → 190.40. Still inside the 500 bps floor.
+    singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 190.40)
+
+
+def test_death_spiral_overnight_still_refuses_big_crash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Stale buy + 600 bps drop is beyond overnight tolerance → refuse.
+
+    500 bps is the outer envelope; a 6%+ gap-down is a signal that
+    something is wrong (halt, delisting, bad fill) and the loop should
+    halt rather than mass-sell into the hole.
+    """
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.setattr(
+        singleton_mod,
+        "_STATE",
+        singleton_mod.SingletonState(account_name="alpaca_test_writer"),
+    )
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {
+            "AAPL": {
+                "price": 200.0,
+                "ts": time.time() - 12 * 60 * 60,
+                "iso": "2026-04-19T00:00:00+00:00",
+            }
+        },
+    )
+
+    # 600 bps below 200 → 188.0. Past the 500bps floor of 190.0.
+    try:
+        singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 188.0)
+    except RuntimeError as exc:
+        assert "overnight" in str(exc)
+        assert "AAPL" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError on 600bps overnight drop")
+
+
+def test_death_spiral_intraday_tight_tolerance_unchanged(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Fresh buy (1h ago) keeps the tight 50bps intraday tolerance.
+
+    Intra-session death spirals (the original failure mode the guard was
+    built for) must still crash the loop. The overnight relaxation only
+    applies when a buy has aged past the threshold.
+    """
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.setattr(
+        singleton_mod,
+        "_STATE",
+        singleton_mod.SingletonState(account_name="alpaca_test_writer"),
+    )
+    # 1h ago → well under 8h → intraday regime, tight 50bps.
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {
+            "AAPL": {
+                "price": 200.0,
+                "ts": time.time() - 60 * 60,
+                "iso": "2026-04-20T13:00:00+00:00",
+            }
+        },
+    )
+
+    # 100 bps below 200 → 198.0. Well below the 50bps intraday floor of 199.0.
+    try:
+        singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 198.0)
+    except RuntimeError as exc:
+        assert "intraday" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError on intraday 100bps drop")
+
+    # Sanity: 40 bps below → 199.20, inside the 199.0 floor → allowed.
+    singleton_mod.guard_sell_against_death_spiral("AAPL", "sell", 199.20)
+
+
+def test_death_spiral_explicit_tolerance_overrides_regime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Explicit ``tolerance_bps`` wins regardless of buy age.
+
+    Callers that know their regime (e.g. a per-pick helper that always
+    passes 75.0) should not be flipped into the overnight envelope just
+    because the buy record is old.
+    """
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+    monkeypatch.setattr(
+        singleton_mod,
+        "_STATE",
+        singleton_mod.SingletonState(account_name="alpaca_test_writer"),
+    )
+    # Old buy — would be overnight regime by default.
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {
+            "AAPL": {
+                "price": 200.0,
+                "ts": time.time() - 12 * 60 * 60,
+                "iso": "2026-04-19T00:00:00+00:00",
+            }
+        },
+    )
+
+    # Explicit 75 bps tolerance → floor 198.5. Sell at 198.0 must refuse.
+    try:
+        singleton_mod.guard_sell_against_death_spiral(
+            "AAPL", "sell", 198.0, tolerance_bps=75.0,
+        )
+    except RuntimeError as exc:
+        assert "explicit" in str(exc)
+        assert "75" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError with explicit 75bps tolerance")

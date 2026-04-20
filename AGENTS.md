@@ -30,9 +30,17 @@
 ### Death-spiral guard: no selling below last buy
 - `alpaca_wrapper.alpaca_order_stock` calls
   `src/alpaca_singleton.py::guard_sell_against_death_spiral` before every
-  order. Any sell priced more than **50 bps below the last recorded buy**
-  for that symbol raises `RuntimeError` and the order never leaves the
-  process — stops the "keep lowering the ask until we fill" death loop.
+  order. Tolerance is **time-aware**:
+  - **Intraday** (buy ≤8h old): any sell more than **50 bps below** the
+    last recorded buy raises `RuntimeError` — stops the "keep lowering
+    the ask until we fill" intra-session death loop.
+  - **Overnight / hold-through** (buy >8h old): tolerance widens to
+    **500 bps** so a normal overnight gap-down on a rotated position
+    does not crash the daemon in a restart loop. A >5% gap still
+    refuses — that's the cliff where "something is genuinely wrong"
+    (halt, delisting, bad fill).
+  - Explicit `tolerance_bps=` on the call overrides regime selection
+    (back-compat path for callers that already know their regime).
 - Buy prices are tracked per-symbol on disk under
   `<state>/alpaca_singleton/alpaca_live_writer_buys.json` so the guard
   survives restarts. The record window is 3 days; older buys are pruned.

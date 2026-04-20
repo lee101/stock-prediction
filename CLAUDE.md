@@ -17,10 +17,14 @@
    Break-glass: `ALPACA_SINGLETON_OVERRIDE=1` (human-only, never in systemd).
 
 3. **No death-spiral sells.** `alpaca_wrapper.alpaca_order_stock` calls
-   `guard_sell_against_death_spiral` before every order. Any sell
-   priced >50 bps below the most recent buy for the same symbol raises
-   `RuntimeError` and crashes the loop — that's the desired behaviour.
-   Buy prices are tracked on disk at
+   `guard_sell_against_death_spiral` before every order. Tolerance is
+   **time-aware**: if the recorded buy is ≤8h old (intraday regime), any
+   sell >50 bps below the buy is refused; if the buy is older (overnight
+   / hold-through regime), the tolerance widens to 500 bps so a normal
+   overnight gap does not trigger a restart loop. Either way a refused
+   sell raises `RuntimeError` and crashes the loop — that's the desired
+   behaviour. Explicit `tolerance_bps=` on the call overrides regime
+   selection. Buy prices are tracked on disk at
    `<state>/alpaca_singleton/alpaca_live_writer_buys.json` (3-day TTL).
    Break-glass: `ALPACA_DEATH_SPIRAL_OVERRIDE=1` (human-only, loudly logged).
 
