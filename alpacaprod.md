@@ -7,6 +7,46 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+---
+
+### 🚩 PROPOSED (needs user approval) — raise `--min-score` 0.85 → 0.87 (2026-04-20 15:00 UTC)
+
+**Evidence (TRUE-OOS, `oos2024_ensemble_gpu`, 5 seeds, 60 windows
+2025-01-02 → 2026-04-19, fee=0.0000278, fb=5/15bps, binary fills, lag=2,
+vol_20d=0.12, dolvol=50M)** — from
+`analysis/xgbnew_ensemble_sweep/oos_ms_lev_grid_20260420_1400/sweep_20260420_141505.json`:
+
+| config | deploy med | p10 | ddW | idW | neg | stress36x med | p10 | ddW | idW | neg |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| LIVE ms=0.85 | +152.87 | +96.91 | 7.18 | 12.93 | 0/60 | +101.85 | +58.06 | 8.34 | 13.12 | 0/60 |
+| candidate ms=**0.87** | **+167.45** | **+105.48** | **7.18** | **12.81** | **0/60** | **+114.41** | **+60.80** | **8.34** | **12.81** | **0/60** |
+| Δ | +14.58 | +8.58 | ±0.00 | −0.13 | ±0 | +12.56 | +2.75 | ±0.00 | −0.31 | ±0 |
+
+Strict-dominance on every metric at BOTH fee regimes. Analogous to the
+2026-04-20 13:17 UTC vol_20d 0.10→0.12 tightening — a conservative gate
+knob that strict-doms on TRUE-OOS. **NOT auto-deployed** because
+`current_algorithms.md §6` itemizes `--min-dollar-vol` and `--min-vol-20d`
+as auto-deploy inference floors but does NOT list `--min-score` (and lists
+"Lower --min-score below 0.85" as human-only). Raising sits in the gap.
+
+**To deploy** (one-line edit + restart):
+```bash
+sed -i 's/--min-score 0.85/--min-score 0.87/' deployments/xgb-daily-trader-live/launch.sh
+echo ilu | sudo -S supervisorctl restart xgb-daily-trader-live
+# Verify:
+echo ilu | sudo -S tail -30 /var/log/supervisor/xgb-daily-trader-live.log
+# Should show "--min-score 0.87" in the new session log + new pid in lock.
+```
+
+**Rollback**: revert the `sed`, restart supervisor.
+
+Finer-grain follow-up sweep at ms ∈ {0.83, 0.86, 0.88, 0.89} is in flight
+(pid 1573842, output:
+`analysis/xgbnew_ensemble_sweep/oos_ms_finegrain_20260420_1500/`) — may
+refine the optimal value. Next hour will harvest.
+
+---
+
 ### 2026-04-19 — XGB alltrain 5-seed ensemble LIVE — FULL STACK @ lev=2.0
 
 Active config: `hold_through + min_score=0.85 + allocation=2.0` on the same
