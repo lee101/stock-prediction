@@ -98,6 +98,11 @@ class CellResult:
     # Missed-order Monte Carlo params — 0.0 = classic identity sim.
     skip_prob: float = 0.0
     skip_seed: int = 0
+    # Per-cell fill-buffer override in bps. Sentinel -1.0 = "use the fee
+    # regime's default FB". Non-negative = override. The sweep default is
+    # sentinel so existing eval paths that don't pass ``fill_buffer_bps``
+    # still see the historic 5-bps/15-bps regimes exactly.
+    fill_buffer_bps: float = -1.0
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -241,14 +246,22 @@ def _run_cell(
     inference_min_vol_20d: float = 0.0,
     skip_prob: float = 0.0,
     skip_seed: int = 0,
+    fill_buffer_bps: float | None = None,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
+    # Override fill_buffer if the caller explicitly set it; otherwise
+    # fall through to the regime default so legacy behaviour is stable.
+    fb_resolved = (
+        float(fees["fill_buffer_bps"])
+        if fill_buffer_bps is None or float(fill_buffer_bps) < 0.0
+        else float(fill_buffer_bps)
+    )
     cfg = BacktestConfig(
         top_n=int(top_n),
         leverage=float(leverage),
         xgb_weight=1.0,
         fee_rate=float(fees["fee_rate"]),
-        fill_buffer_bps=float(fees["fill_buffer_bps"]),
+        fill_buffer_bps=fb_resolved,
         commission_bps=float(fees["commission_bps"]),
         min_dollar_vol=float(inference_min_dolvol),
         min_vol_20d=float(inference_min_vol_20d),
@@ -288,8 +301,10 @@ def _run_cell(
 
     n = len(monthlies)
     if n == 0:
-        return CellResult(leverage, min_score, hold_through, top_n, fee_regime,
-                          0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+        empty = CellResult(leverage, min_score, hold_through, top_n, fee_regime,
+                           0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+        empty.fill_buffer_bps = fb_resolved
+        return empty
 
     arr = np.array(monthlies)
     p10 = float(np.percentile(arr, 10))
@@ -323,6 +338,7 @@ def _run_cell(
         inference_min_vol_20d=float(inference_min_vol_20d),
         skip_prob=float(skip_prob),
         skip_seed=int(skip_seed),
+        fill_buffer_bps=fb_resolved,
     )
 
 
@@ -349,6 +365,7 @@ def run_sweep(
     inference_min_vol_grid: list[float] | None = None,
     skip_prob_grid: list[float] | None = None,
     skip_seeds: list[int] | None = None,
+    fill_buffer_bps_grid: list[float] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -412,12 +429,15 @@ def run_sweep(
     vol_grid = list(inference_min_vol_grid) if inference_min_vol_grid else [0.0]
     sp_grid  = [float(x) for x in (skip_prob_grid or [0.0])]
     ss_list  = [int(x) for x in (skip_seeds or [0])]
+    # -1.0 sentinel = "use regime default fill_buffer_bps".
+    fb_grid  = [float(x) for x in (fill_buffer_bps_grid or [-1.0])]
 
     cells: list[CellResult] = []
     total = (
         len(leverage_grid) * len(min_score_grid)
         * len(hold_through_grid) * len(top_n_grid) * len(fee_regimes)
         * len(inf_grid) * len(vol_grid) * len(sp_grid) * len(ss_list)
+        * len(fb_grid)
     )
     i = 0
     for lev in leverage_grid:
@@ -432,25 +452,28 @@ def run_sweep(
                                     # at skip=0 the sim is deterministic.
                                     seed_iter = ss_list if sp > 0 else [0]
                                     for sseed in seed_iter:
-                                        i += 1
-                                        cell = _run_cell(
-                                            oos_df=oos_df, scores=scores, windows=windows,
-                                            leverage=lev, min_score=ms, hold_through=ht,
-                                            top_n=tn, fee_regime=reg,
-                                            inference_min_dolvol=inf_dv,
-                                            inference_min_vol_20d=inf_vol,
-                                            skip_prob=sp, skip_seed=sseed,
-                                        )
-                                        logger.info(
-                                            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                            "inf_dv=%.0e inf_vol=%.3f skp=%.2f/%d "
-                                            "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                            i, total, lev, ms, ht, tn, reg,
-                                            inf_dv, inf_vol, sp, sseed,
-                                            cell.median_monthly_pct, cell.p10_monthly_pct,
-                                            cell.n_neg, cell.n_windows,
-                                        )
-                                        cells.append(cell)
+                                        for fb in fb_grid:
+                                            i += 1
+                                            cell = _run_cell(
+                                                oos_df=oos_df, scores=scores, windows=windows,
+                                                leverage=lev, min_score=ms, hold_through=ht,
+                                                top_n=tn, fee_regime=reg,
+                                                inference_min_dolvol=inf_dv,
+                                                inference_min_vol_20d=inf_vol,
+                                                skip_prob=sp, skip_seed=sseed,
+                                                fill_buffer_bps=fb,
+                                            )
+                                            logger.info(
+                                                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                                "inf_dv=%.0e inf_vol=%.3f skp=%.2f/%d fb=%.1f "
+                                                "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
+                                                i, total, lev, ms, ht, tn, reg,
+                                                inf_dv, inf_vol, sp, sseed,
+                                                cell.fill_buffer_bps,
+                                                cell.median_monthly_pct, cell.p10_monthly_pct,
+                                                cell.n_neg, cell.n_windows,
+                                            )
+                                            cells.append(cell)
     return cells
 
 
@@ -476,6 +499,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "inference_min_vol_20d": c.inference_min_vol_20d,
             "skip_prob":             c.skip_prob,
             "skip_seed":             c.skip_seed,
+            "fill_buffer_bps":       c.fill_buffer_bps,
         }
         for c in cells
     ]
@@ -529,6 +553,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Comma-separated RNG seeds for each non-zero skip "
                         "probability (gives MC variance). Ignored at "
                         "skip_prob=0.0 since the sim is deterministic.")
+    p.add_argument("--fill-buffer-bps-grid", type=str, default="",
+                   help="Override fill_buffer_bps for the cell. "
+                        "Comma-separated bps, e.g. '3,5,8,15,30' — "
+                        "tests how the config degrades as executions "
+                        "get progressively worse. Empty = single cell at "
+                        "the fee regime's default FB (deploy=5, "
+                        "stress36x=15).")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -592,6 +623,10 @@ def main(argv=None) -> int:
             if args.skip_prob_grid else None
         ),
         skip_seeds=_parse_int_list(args.skip_seeds),
+        fill_buffer_bps_grid=(
+            _parse_float_list(args.fill_buffer_bps_grid)
+            if args.fill_buffer_bps_grid else None
+        ),
     )
 
     rows = _cells_to_rows(cells)
@@ -619,6 +654,7 @@ def main(argv=None) -> int:
     inf_grid_active = len({r["inference_min_dolvol"] for r in rows}) > 1
     vol_grid_active = len({r["inference_min_vol_20d"] for r in rows}) > 1
     sp_grid_active  = len({r["skip_prob"] for r in rows}) > 1
+    fb_grid_active  = len({r["fill_buffer_bps"] for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
            f"{'tuw%':>6} {'ulc':>6} {'neg':>6} {'good':>8} {'robG':>8}")
@@ -628,11 +664,14 @@ def main(argv=None) -> int:
         hdr += f" {'infVol':>7}"
     if sp_grid_active:
         hdr += f" {'skip':>5} {'sd':>3}"
+    if fb_grid_active:
+        hdr += f" {'fb':>5}"
     print(hdr)
     print("-" * (115
                  + (9 if inf_grid_active else 0)
                  + (8 if vol_grid_active else 0)
-                 + (9 if sp_grid_active else 0)))
+                 + (9 if sp_grid_active else 0)
+                 + (6 if fb_grid_active else 0)))
     for r in rows_sorted:
         line = (f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
                 f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
@@ -651,6 +690,8 @@ def main(argv=None) -> int:
             line += f" {r['inference_min_vol_20d']:7.3f}"
         if sp_grid_active:
             line += f" {r['skip_prob']:5.2f} {r['skip_seed']:3d}"
+        if fb_grid_active:
+            line += f" {r['fill_buffer_bps']:5.1f}"
         print(line)
     return 0
 
