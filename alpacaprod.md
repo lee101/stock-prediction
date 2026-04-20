@@ -40,10 +40,27 @@ echo ilu | sudo -S tail -30 /var/log/supervisor/xgb-daily-trader-live.log
 
 **Rollback**: revert the `sed`, restart supervisor.
 
-Finer-grain follow-up sweep at ms ∈ {0.83, 0.86, 0.88, 0.89} is in flight
-(pid 1573842, output:
-`analysis/xgbnew_ensemble_sweep/oos_ms_finegrain_20260420_1500/`) — may
-refine the optimal value. Next hour will harvest.
+**Finer-grain harvest (2026-04-20 17:00 UTC)** — sweep
+`analysis/xgbnew_ensemble_sweep/oos_ms_finegrain_20260420_1500/sweep_20260420_151201.json`
+ran cells {0.83, 0.86, 0.88, 0.89}. Verdict (vs LIVE ms=0.85):
+
+| ms | dep Δmed | Δp10 | ΔddW | ΔidW | Δneg | str Δmed | Δp10 | ΔddW | ΔidW | Δneg | strict-dom |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|
+| 0.83 | −3.89 | +4.76 | +1.74 | +1.62 | 0 | −2.93 | +2.26 | +1.73 | +1.61 | 0 | NO (DD/med worse) |
+| **0.86** | **+12.00** | **+11.89** | =0 | −0.13 | 0 | **+9.78** | **+8.89** | =0 | −0.31 | 0 | **YES** |
+| **0.87** (prior) | **+14.58** | **+8.58** | =0 | −0.13 | 0 | **+12.56** | **+2.75** | =0 | −0.31 | 0 | **YES** |
+| **0.88** | **+58.13** | **+9.77** | =0 | **−4.65** | 0 | **+43.46** | **+3.68** | =0 | **−4.65** | 0 | **YES** |
+| 0.89 | +55.90 | +7.99 | −3.71 | −4.65 | 0 | +40.53 | +2.29 | −3.70 | −4.65 | **+2** | NO (neg+2 stress) |
+
+Three strict-dom cells: **ms=0.86** (best p10 deltas — most conservative
+tail), **ms=0.87** (middle), **ms=0.88** (biggest absolute uplift +58/+43
+median plus −4.65 idW intraday-DD). All three preserve 0/60 neg both
+regimes, ddW invariant. ms=0.89 fails on +2 stress neg.
+
+**Recommendation for user**: ms=0.88 has the largest goodness gain but
+gates more aggressively (fewer trade days). ms=0.86 is the smallest
+behavior change while still strict-dom. Pick by trade-frequency tolerance:
+0.86 ≈ same as 0.85 (~44% pick rate), 0.88 cuts pick rate further (~30-35%).
 
 ---
 
