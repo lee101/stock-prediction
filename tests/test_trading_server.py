@@ -96,6 +96,17 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+class FakeClock:
+    def __init__(self, start: datetime | None = None) -> None:
+        self.now = start or datetime(2026, 3, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
+
+
 def test_engine_uses_registry_path_env_by_default(tmp_path, monkeypatch):
     registry = tmp_path / "custom-registry.json"
     _write_registry(registry)
@@ -282,6 +293,25 @@ def test_engine_explicit_config_overrides_env_defaults(tmp_path, monkeypatch):
     assert engine.settings.shared_quote_cache_size == 11
 
 
+def test_engine_prime_live_broker_guard_imports_once_when_live_trading_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _build_engine(tmp_path)
+    monkeypatch.setenv("ALLOW_ALPACA_LIVE_TRADING", "1")
+    imports: list[str] = []
+
+    def fake_import_module(name: str):
+        imports.append(name)
+        return object()
+
+    monkeypatch.setattr(trading_server_module.importlib, "import_module", fake_import_module)
+
+    assert engine.prime_live_broker_guard() is True
+    assert engine.prime_live_broker_guard() is False
+    assert imports == ["alpaca_wrapper"]
+
+
 def test_invalid_runtime_env_values_fall_back_to_safe_defaults(tmp_path, monkeypatch):
     registry = tmp_path / "registry.json"
     _write_registry(registry)
@@ -434,6 +464,37 @@ def test_create_app_uses_engine_settings_snapshot(tmp_path, monkeypatch):
     assert calls["poll_seconds"] == 42
     assert calls["engine"] is engine
     assert calls["stopped_engine"] is engine
+
+
+def test_create_app_primes_live_broker_guard_before_background_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _build_engine(tmp_path)
+    events: list[str] = []
+
+    def fake_prime() -> bool:
+        events.append("prime")
+        return True
+
+    def fake_ensure(current_engine, *, poll_seconds=None):
+        assert current_engine is engine
+        assert events == ["prime"]
+        events.append("ensure")
+        return threading.current_thread()
+
+    def fake_stop(current_engine=None, timeout=1.0):
+        assert current_engine is engine
+        events.append("stop")
+
+    monkeypatch.setattr(engine, "prime_live_broker_guard", fake_prime)
+    monkeypatch.setattr(trading_server_module, "ensure_background_refresh", fake_ensure)
+    monkeypatch.setattr(trading_server_module, "stop_background_refresh", fake_stop)
+
+    with TestClient(create_app(engine)):
+        pass
+
+    assert events == ["prime", "ensure", "stop"]
 
 
 def test_runtime_config_endpoint_reports_effective_values_and_sources(tmp_path, monkeypatch):
@@ -1321,6 +1382,138 @@ def test_open_order_fills_on_price_refresh(tmp_path):
     assert refreshed["accounts"][0]["filled_orders"]
     snapshot = engine.get_account_snapshot("paper_test")
     assert snapshot["positions"]["ETHUSD"]["qty"] == 0.2
+
+
+def test_inmemory_paper_client_can_fast_forward_order_fill(tmp_path):
+    clock = FakeClock(datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc))
+
+    def quote_provider(_symbol: str):
+        if clock.now < datetime(2026, 3, 29, 20, 5, 0, tzinfo=timezone.utc):
+            ask = 2006.0
+            bid = 2004.0
+        else:
+            ask = 1998.0
+            bid = 1997.0
+        return {
+            "symbol": "ETHUSD",
+            "bid_price": bid,
+            "ask_price": ask,
+            "last_price": (bid + ask) / 2.0,
+            "as_of": clock.now.isoformat(),
+        }
+
+    registry = tmp_path / "registry.json"
+    _write_registry(registry)
+    engine = TradingServerEngine(
+        registry_path=registry,
+        state_dir=tmp_path / "state",
+        quote_provider=quote_provider,
+        now_fn=clock,
+    )
+    from src.trading_server.client import InMemoryTradingServerClient
+
+    client = InMemoryTradingServerClient(
+        engine=engine,
+        account="paper_test",
+        bot_id="paper_test_v1",
+        execution_mode="paper",
+        session_id="paper-sim",
+    )
+    client.claim_writer()
+
+    submitted = client.submit_limit_order(symbol="ETHUSD", side="buy", qty=0.2, limit_price=1998.0)
+    assert submitted["filled"] is False
+    assert len(client.get_orders()["open_orders"]) == 1
+
+    clock.advance(5 * 60)
+    refreshed = client.refresh_prices(symbols=["ETHUSD"])
+
+    assert refreshed["accounts"][0]["filled_orders"]
+    snapshot = client.get_account()
+    assert snapshot["positions"]["ETHUSD"]["qty"] == 0.2
+    assert snapshot["positions"]["ETHUSD"]["opened_at"] == clock.now.isoformat()
+
+
+def test_http_paper_server_can_fast_forward_order_fill_and_writer_lease(tmp_path):
+    clock = FakeClock(datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc))
+
+    def quote_provider(_symbol: str):
+        if clock.now < datetime(2026, 3, 29, 20, 5, 0, tzinfo=timezone.utc):
+            ask = 2006.0
+            bid = 2004.0
+        else:
+            ask = 1998.0
+            bid = 1997.0
+        return {
+            "symbol": "ETHUSD",
+            "bid_price": bid,
+            "ask_price": ask,
+            "last_price": (bid + ask) / 2.0,
+            "as_of": clock.now.isoformat(),
+        }
+
+    registry = tmp_path / "registry.json"
+    _write_registry(registry)
+    engine = TradingServerEngine(
+        registry_path=registry,
+        state_dir=tmp_path / "state",
+        quote_provider=quote_provider,
+        now_fn=clock,
+    )
+
+    with TestClient(create_app(engine)) as client:
+        first_claim = client.post(
+            "/api/v1/writer/claim",
+            json={
+                "account": "paper_test",
+                "bot_id": "paper_test_v1",
+                "session_id": "owner-a",
+                "ttl_seconds": 60,
+            },
+        )
+        assert first_claim.status_code == 200
+
+        submitted = client.post(
+            "/api/v1/orders",
+            json={
+                "account": "paper_test",
+                "bot_id": "paper_test_v1",
+                "session_id": "owner-a",
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.2,
+                "limit_price": 1998.0,
+                "execution_mode": "paper",
+            },
+        )
+        assert submitted.status_code == 200
+        assert submitted.json()["filled"] is False
+
+        clock.advance(5 * 60)
+        refreshed = client.post(
+            "/api/v1/prices/refresh",
+            json={"account": "paper_test", "symbols": ["ETHUSD"]},
+        )
+        assert refreshed.status_code == 200
+        assert refreshed.json()["accounts"][0]["filled_orders"]
+
+        snapshot = client.get("/api/v1/account/paper_test")
+        assert snapshot.status_code == 200
+        payload = snapshot.json()
+        assert payload["positions"]["ETHUSD"]["qty"] == 0.2
+        assert payload["positions"]["ETHUSD"]["opened_at"] == clock.now.isoformat()
+
+        reclaimed = client.post(
+            "/api/v1/writer/claim",
+            json={
+                "account": "paper_test",
+                "bot_id": "paper_test_v1",
+                "session_id": "owner-b",
+                "ttl_seconds": 60,
+            },
+        )
+        assert reclaimed.status_code == 200
+        assert reclaimed.json()["session_id"] == "owner-b"
 
 
 def test_public_account_endpoints_redact_writer_credentials(tmp_path):

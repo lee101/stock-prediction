@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import sys
 import types
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 import unified_hourly_experiment.trade_unified_hourly as live
@@ -445,3 +448,54 @@ def test_run_cycle_passes_live_entry_ttl(monkeypatch: pytest.MonkeyPatch) -> Non
         }
     ]
     assert poll_reasons == ["pre_cycle", "post_cycle"]
+
+
+def test_load_symbol_latest_action_rejects_stale_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 3, 11, 17, 5, tzinfo=timezone.utc)
+    events: list[tuple[str, dict]] = []
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    class _DummyDataModule:
+        def __init__(self, config):
+            self.frame = pd.DataFrame(
+                {
+                    "timestamp": [pd.Timestamp("2026-03-11T14:00:00Z")],
+                    "close": [100.0],
+                }
+            )
+            self.normalizer = object()
+
+    monkeypatch.setattr(live, "datetime", FakeDateTime)
+    monkeypatch.setattr(meta_mod, "BinanceHourlyDataModule", _DummyDataModule)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+    monkeypatch.setattr(
+        meta_mod,
+        "generate_latest_action",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale frame should not reach inference")),
+    )
+
+    action = meta_mod.load_symbol_latest_action(
+        symbol="NVDA",
+        strategy=SimpleNamespace(
+            name="s1",
+            horizons=(1,),
+            sequence_length=1,
+            normalizer=None,
+            model=object(),
+            feature_columns=["close"],
+        ),
+        data_root=Path("trainingdatahourly/stocks"),
+        cache_root=Path("unified_hourly_experiment/forecast_cache"),
+        device=None,
+        history_days=120,
+    )
+
+    assert action is None
+    assert any(
+        event_type == "meta_signal_frame_rejected" and fields.get("reason") == "stale_timestamp"
+        for event_type, fields in events
+    )

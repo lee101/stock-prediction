@@ -903,3 +903,71 @@ bandwidth-bound kernel — the kernel is already near the DRAM roofline.
    `(target_pos, offset_bps)` jointly, optimized by backprop through
    this kernel + `daily_eod_interest` accumulated over a whole month.
 
+## [DONE] Ensemble-Orthogonal PPO (EO-PPO) — design + module + train.py wiring (2026-04-17)
+
+**Motivation.** 8 consecutive 14th-member REJECTs this session, plus
+AD_s9's 0/13 swap-in sweep, confirm the 13-model v6 ensemble is locally
+optimal under any blind one-at-a-time add/swap test. The bottleneck is
+no longer "find a stronger seed" — the composition is already
+Pareto-tight. The remaining degree of freedom is the **training recipe
+itself**: force a specialist to disagree with v6 at training time.
+
+**Diagnosis from `docs/diversity_screen/best_diversity.json`.**
+Baseline v6 loses 11/263 windows, ALL clustered at start_idx 248-259
+(one contiguous run of 10 + one at 259). Single-regime failure — almost
+certainly the 2026 tariff-crash band. Strong-standalone candidates share
+this blind spot (high Pearson corr + overlapping neg windows), so they
+dilute normal-regime consensus without fixing the crash.
+
+**Algorithm.** Add one loss term to standard PPO:
+
+```
+L_total = L_ppo  -  beta * w(s) * KL( pi_specialist(·|s) || pi_v6(·|s) )
+```
+
+Minus sign → maximise KL. Gate `w(s) = H(pi_v6) / max H` keeps pressure
+on states where the ensemble is unsure; clamp to `[w_min, 1]`.
+Per-sample KL clamped to `[0, kl_clamp]` for stability. Linear beta
+ramp over first 30% of training, flat thereafter.
+
+Drew on:
+- **MED-RL** (Sheikh et al., ICLR 2022) — ensemble inequality metrics,
+  up to 300% gains on Mujoco/Atari. We use the *policy-distribution*
+  variant rather than activation-space (cheaper, directly aligned with
+  argmax-averaged ensemble inference at deploy).
+- **Dynamic NCL** (JSAI 2025) — motivates the beta ramp schedule.
+- **Ensemble Policy Gradient KL-constraint** (Shitanda 2026) — warns
+  that *excessive* inter-policy diversity hurts stability; hence the
+  entropy gate keeps diversity pressure on uncertain states only.
+
+**Artifacts landed.**
+- `docs/ensemble_orthogonal_ppo.md` — full design, hyperparams, gate
+  criteria, risk analysis.
+- `src/ensemble_orthogonal.py` — clean module:
+  `EnsembleOrthogonalLoss.load(checkpoints=...)` loads frozen v6 on
+  same device, exposes `.loss(specialist_logits, obs, beta)` → scalar
+  loss term + `OrthogonalTermDiagnostics`.
+- `tests/test_ensemble_orthogonal.py` — 12 tests covering: beta=0 is
+  no-op, grad flows only to specialist (not ensemble), KL clamped,
+  gate weight bounded, softmax_avg math matches prod ensemble formula,
+  sign of gradient step actually *increases* KL, PPO-like composition.
+  All 12 pass. Combined run with existing
+  `tests/test_trainer_checkpoint_selection.py` → 15/15 green.
+- `pufferlib_market/train.py` — 4 new flags:
+  `--ensemble-kl-beta` (default 0 = zero-cost when disabled),
+  `--ensemble-kl-checkpoints`, `--ensemble-kl-gate` (`entropy|off`),
+  `--ensemble-kl-warmup-frac`. Incompatible with `--cuda-graph-ppo`
+  (raises at init). Eager-path hook only (24 added lines at the
+  existing minibatch loss-compute site).
+
+**Gate for promotion.** EO-PPO specialist enters candidate pool iff:
+1. `neg_windows <= 11` (no risk regression),
+2. median monthly ≥ baseline median,
+3. at least 1 of the 11 baseline-negative windows flips to positive in
+   the standalone run (proves the KL actually bought signal in the
+   failure regime, not just orthogonal noise).
+
+**Next.** Pilot run: D recipe, seed=1, `--ensemble-kl-beta 0.03`,
+`--ensemble-kl-checkpoints` = 13 v6 paths. Compare to D_s1 baseline at
+the 14th-member gate. Result lands here.
+

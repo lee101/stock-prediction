@@ -1212,6 +1212,35 @@ def train(args):
     if _use_fused_obs_encode:
         print("  fused_obs_norm_linear_relu enabled (GPU obs-normalize + first linear fused)")
 
+    # EO-PPO: load frozen v6 ensemble as anti-target for orthogonality loss.
+    # Only loaded when --ensemble-kl-beta > 0; zero-cost when disabled.
+    _eo_ppo_orth = None
+    _eo_ppo_peak_beta = float(getattr(args, "ensemble_kl_beta", 0.0) or 0.0)
+    if _eo_ppo_peak_beta > 0.0:
+        _cp_list = [p.strip() for p in (args.ensemble_kl_checkpoints or "").split(",") if p.strip()]
+        if not _cp_list:
+            raise ValueError(
+                "--ensemble-kl-beta > 0 but --ensemble-kl-checkpoints is empty. "
+                "Pass a comma-separated list of frozen v6 .pt paths."
+            )
+        if getattr(args, "cuda_graph_ppo", False):
+            raise ValueError(
+                "EO-PPO is incompatible with --cuda-graph-ppo: the orthogonality "
+                "term runs outside the captured graph. Disable cuda_graph_ppo."
+            )
+        from src.ensemble_orthogonal import EnsembleOrthogonalLoss
+        _eo_ppo_orth = EnsembleOrthogonalLoss.load(
+            checkpoints=_cp_list,
+            num_symbols=num_symbols,
+            features_per_sym=int(getattr(args, "features_per_sym", 16)),
+            device=device,
+        )
+        print(
+            f"  EO-PPO: loaded {_eo_ppo_orth.n_members} frozen ensemble members, "
+            f"peak_beta={_eo_ppo_peak_beta:.4f}, gate={args.ensemble_kl_gate}, "
+            f"warmup_frac={args.ensemble_kl_warmup_frac:.2f}"
+        )
+
     if args.optimizer == "muon":
         from pufferlib_market.muon import make_muon_optimizer
         _norm_update = getattr(args, "muon_norm_update", False)
@@ -1898,6 +1927,27 @@ def train(args):
                             _b_advantages[mb_idx], _b_returns[mb_idx], _b_values[mb_idx],
                             _clip_eps_t, _vf_coef_t, _ent_coef_t, args.clip_vloss,
                         )
+                        # EO-PPO auxiliary term: maximise KL(specialist || v6_ensemble)
+                        # on the same minibatch, gated by ensemble entropy.
+                        if _eo_ppo_orth is not None:
+                            from src.ensemble_orthogonal import beta_schedule
+                            _current_beta = beta_schedule(
+                                step=update,
+                                total_steps=num_updates,
+                                peak_beta=_eo_ppo_peak_beta,
+                                warmup_frac=float(args.ensemble_kl_warmup_frac),
+                                start_frac=float(args.ensemble_kl_start_frac),
+                            )
+                            if _current_beta > 0.0:
+                                _mb_obs = _b_obs[mb_idx]
+                                _mb_logits, _ = policy(_mb_obs)
+                                _orth_loss, _orth_diag = _eo_ppo_orth.loss(
+                                    specialist_logits=_mb_logits,
+                                    obs=_mb_obs,
+                                    beta=_current_beta,
+                                    gate=args.ensemble_kl_gate,
+                                )
+                                loss = loss + _orth_loss
                         optimizer.zero_grad(set_to_none=True)
                         loss.backward()
                         loss_value = float(loss.detach().item())
@@ -2725,6 +2775,47 @@ def main():
         type=int,
         default=0,
         help="Wrap first N PPO updates with torch.profiler and export Chrome trace to profile_output/.",
+    )
+
+    # Ensemble-Orthogonal PPO (EO-PPO) — auxiliary loss pushing specialist AWAY
+    # from a frozen v6 ensemble to generate a genuinely-novel 14th member.
+    # See docs/ensemble_orthogonal_ppo.md for design rationale.
+    parser.add_argument(
+        "--ensemble-kl-beta",
+        type=float,
+        default=0.0,
+        help="Peak beta for EO-PPO orthogonality term. 0 = disabled (default). "
+             "Recommended 0.01-0.05 when enabled; incompatible with --cuda-graph-ppo.",
+    )
+    parser.add_argument(
+        "--ensemble-kl-checkpoints",
+        type=str,
+        default="",
+        help="Comma-separated list of frozen v6 checkpoint paths used as the "
+             "anti-target for EO-PPO. Required when --ensemble-kl-beta > 0.",
+    )
+    parser.add_argument(
+        "--ensemble-kl-gate",
+        type=str,
+        default="entropy",
+        choices=["entropy", "off"],
+        help="Gate for per-state KL weight. 'entropy' (default) upweights "
+             "states where the ensemble is unsure; 'off' uses equal weights.",
+    )
+    parser.add_argument(
+        "--ensemble-kl-warmup-frac",
+        type=float,
+        default=0.3,
+        help="Fraction of total updates over which beta linearly ramps from 0 "
+             "to --ensemble-kl-beta. Flat at peak thereafter.",
+    )
+    parser.add_argument(
+        "--ensemble-kl-start-frac",
+        type=float,
+        default=0.0,
+        help="Fraction of training before orthogonality kicks in (pure PPO). "
+             "Default 0.0 = start ramping from step 0. Set e.g. 0.4 to train "
+             "vanilla for first 40%% then ramp to peak over [start, start+warmup].",
     )
 
     # Weights & Biases

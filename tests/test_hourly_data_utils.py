@@ -61,3 +61,17 @@ def test_hourly_data_validator_reports_close_value(tmp_path: Path):
     assert isinstance(status, HourlyDataStatus)
     assert status.symbol == "ETHUSD"
     assert abs(status.latest_close - 1.2) < 1e-6
+
+
+def test_hourly_data_validator_flags_future_timestamp(tmp_path: Path) -> None:
+    future_ts = datetime.now(timezone.utc) + timedelta(hours=6)
+    _write_hourly_csv(tmp_path / "stocks" / "AAPL.csv", [future_ts])
+
+    validator = HourlyDataValidator(tmp_path, max_staleness_hours=2)
+    statuses, issues = validator.filter_ready(["AAPL"])
+
+    assert statuses == []
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.symbol == "AAPL"
+    assert issue.reason == "future"

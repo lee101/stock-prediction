@@ -2905,14 +2905,15 @@ def execute_signal(
                     client, symbol=managed_symbol, qty=abs(qty),
                     side=close_side, limit_price=limit_sell_price,
                 )
-            elif paper:
+            else:
+                # Policy: never submit market orders (uncapped slippage on thin books).
+                # If no defensible limit price, skip this tick and retry next run.
                 logger.warning(
-                    "Skipping paper close for %s because no defensible limit price was available",
+                    "Skipping close for %s because no defensible limit price was available (paper=%s)",
                     managed_symbol,
+                    paper,
                 )
                 return False
-            else:
-                order = submit_market_order(client, symbol=managed_symbol, qty=abs(qty), side=close_side)
             state.last_order_id = str(getattr(order, "id", ""))
             state.pending_close_symbol = managed_symbol
             state.pending_close_order_id = state.last_order_id
@@ -2972,14 +2973,15 @@ def execute_signal(
     if not dry_run:
         if limit_buy_price > 0:
             order = submit_limit_order(client, symbol=desired_symbol, qty=qty, side="buy", limit_price=limit_buy_price)
-        elif paper:
+        else:
+            # Policy: never submit market orders (uncapped slippage on thin books).
+            # If no defensible limit price, skip this tick and retry next run.
             logger.warning(
-                "Skipping paper open for %s because no defensible limit price was available",
+                "Skipping open for %s because no defensible limit price was available (paper=%s)",
                 desired_symbol,
+                paper,
             )
             return False
-        else:
-            order = submit_market_order(client, symbol=desired_symbol, qty=qty, side="buy")
         state.last_order_id = str(getattr(order, "id", ""))
         state.active_symbol = desired_symbol
         state.active_qty = qty

@@ -70,3 +70,48 @@ the same GPU hours.
     Both the add-test (14th-member) and the swap-test (replace member i) confirm the same thing:
     the 13m v5 ensemble is tighter than any single swap / addition with AD_s9 can produce. Drop from
     candidate pool.
+
+- **EO-PPO seed=1 beta=0.03 warmup_frac=0.3** (2026-04-17, first EO-PPO pilot):
+  - **Early-stopped at update 100** on `val_neg > 25` for 2 consecutive evals.
+  - First val: med=-15.2%, neg=50/50, best_score=-54.0, best_neg=26 → catastrophic.
+  - Training return never crossed zero (hovered -0.15 to -0.20 across all 100 updates).
+  - **Diagnosis — design-doc risk #1 confirmed**: beta=0.03 with warmup_frac=0.3 ramps to
+    ~0.022 by update 100, overwhelming the PPO policy gradient before the policy has found
+    any profitable trading signal on its own. KL pressure in probability space is much
+    stronger than early-policy PG.
+  - **Takeaway**: beta range 0.01-0.05 from design doc was too aggressive. Try
+    beta=0.005 + warmup_frac=0.7 (KL stays near-zero for first 70% of training). Seed=2
+    launched 2026-04-17 09:15 UTC.
+  - Checkpoint: `pufferlib_market/checkpoints/eo_ppo_pilot/b0.03_s1/` (kept for postmortem
+    analysis of how the KL loss drove the policy away from profitability; this is useful
+    data for tuning the next run).
+
+- **EO-PPO seed=2 beta=0.005 warmup_frac=0.7** (2026-04-17, second EO-PPO pilot):
+  - Training: peaked val med=+8.7%, neg=0/50 at update 50 (captured in `val_best.pt`),
+    degraded by update 100 (val med=-2.6%, neg=34/50), early-stopped at update 200.
+  - Standalone val_best looked promising (+8.7% med / 0 neg) but...
+  - **14th-member realism gate REJECT**: adding val_best.pt to v7 (12-model) ensemble
+    @ fb=5 1× gave med +7.19% (Δ −0.28%), p10 +2.65% (Δ −0.53%), neg 16/263 (Δ +6).
+    `docs/realism_gate_v7_plus_eo_ppo_b005_s2/`
+  - **Diagnosis — design-doc risk #2 revealed**: EO-PPO pushes specialist AWAY from
+    ensemble MEAN distribution. But v7's residual errors are NOT distributed around the
+    mean — they cluster on specific 2026-tariff-crash windows (start_idx 248-259).
+    "Away in probability space" ≠ "helpful on failed windows". We're adding disagreement
+    that's NOT aligned with the ensemble's actual weaknesses.
+  - **Takeaway**: KL-based orthogonality is the wrong diversity axis for this ensemble.
+    Options to try next:
+      (a) Error-targeted training — hard-mine 248-259-like windows at train time.
+      (b) Finetune-from-existing with small beta (script staged at
+         `scripts/launch_eo_ppo_finetune.sh`), warm-starting AD_s9/D_s64 so PG doesn't
+         collapse early.
+      (c) Architecture diversity — different hidden size / activation rather than loss-based.
+  - Checkpoints kept: `pufferlib_market/checkpoints/eo_ppo_pilot/b0.005_s2/{best,val_best}.pt`
+    for post-mortem.
+
+- **D_s97 swap-in sweep** (2026-04-17):
+  - Script started but output `docs/swap_in/d_s97_swap.json` never materialized; must have
+    errored silently. Process ran 2h58m accumulating 44 CPU-hours before exiting.
+  - Earlier simpler 14th-member test at `/tmp/ensemble14_tests/D_s97.json` (April 14) already
+    showed median_monthly −17.37% (wait, median_total_return 17.37% but 15 neg windows) —
+    inconclusive but not a clear win vs v7's 10 neg baseline.
+  - **Takeaway**: not pursuing D_s97 further unless we can reproduce the swap sweep cleanly.

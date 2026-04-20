@@ -13,7 +13,15 @@ from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.data import MultiSymbolDataModule
 from binanceneural.config import DatasetConfig, TrainingConfig
 from loguru import logger
+from unified_hourly_experiment.classic_training_common import parse_horizons
+from unified_hourly_experiment.symbol_validation import parse_symbols
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
+
+
+def _parse_optional_symbols(raw: str | None) -> list[str]:
+    if raw is None or not str(raw).strip():
+        return []
+    return parse_symbols(str(raw))
 
 
 def main():
@@ -100,13 +108,12 @@ def main():
     parser.add_argument("--wandb-log-metrics", action="store_true")
     args = parser.parse_args()
 
-    if args.symbols:
-        stocks = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    else:
-        stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
-    cryptos = [s.strip().upper() for s in args.crypto_symbols.split(",") if s.strip()]
-
-    horizons = [int(h.strip()) for h in args.forecast_horizons.split(",")]
+    try:
+        stocks = parse_symbols(args.symbols if args.symbols is not None else args.stock_symbols)
+        cryptos = _parse_optional_symbols(args.crypto_symbols)
+        horizons = parse_horizons(args.forecast_horizons)
+    except Exception as exc:
+        raise SystemExit(f"Plan error: {exc}") from exc
     logger.info("Training unified policy on {} stocks + {} crypto, horizons={}", len(stocks), len(cryptos), horizons)
 
     stock_config = DatasetConfig(

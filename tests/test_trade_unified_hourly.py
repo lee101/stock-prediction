@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 import unified_hourly_experiment.trade_unified_hourly as live
@@ -1397,3 +1398,71 @@ def test_run_cycle_polls_broker_events_pre_and_post_cycle(monkeypatch) -> None:
     )
 
     assert poll_reasons == ["pre_cycle", "post_cycle"]
+
+
+def test_assess_live_frame_freshness_accepts_weekend_stock_bars(monkeypatch) -> None:
+    now = datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc)  # Sunday
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(live, "datetime", FakeDateTime)
+    frame = live.pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2026-03-06T20:00:00Z")],  # Friday close hour
+        }
+    )
+
+    freshness = live.assess_live_frame_freshness(frame, symbol="NVDA")
+
+    assert freshness["fresh"] is True
+    assert freshness["age_clock"] == "market"
+    assert freshness["reason"] == "fresh"
+
+
+def test_generate_signal_for_symbol_rejects_stale_hourly_frame(monkeypatch) -> None:
+    now = datetime(2026, 3, 11, 17, 5, tzinfo=timezone.utc)
+    events: list[tuple[str, dict]] = []
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    class _DummyDataModule:
+        def __init__(self, config):
+            self.frame = live.pd.DataFrame(
+                {
+                    "timestamp": [pd.Timestamp("2026-03-11T14:00:00Z")],
+                    "close": [100.0],
+                }
+            )
+            self.normalizer = object()
+
+    monkeypatch.setattr(live, "datetime", FakeDateTime)
+    monkeypatch.setattr(live, "BinanceHourlyDataModule", _DummyDataModule)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+    monkeypatch.setattr(
+        live,
+        "generate_latest_action",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale frame should not reach inference")),
+    )
+
+    action = live.generate_signal_for_symbol(
+        symbol="NVDA",
+        model=object(),
+        feature_columns=["close"],
+        sequence_length=1,
+        data_root=Path("trainingdatahourly/stocks"),
+        cache_root=Path("unified_hourly_experiment/forecast_cache"),
+        device=None,
+        saved_normalizer=None,
+    )
+
+    assert action is None
+    assert any(
+        event_type == "signal_frame_rejected" and fields.get("reason") == "stale_timestamp"
+        for event_type, fields in events
+    )

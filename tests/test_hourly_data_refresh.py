@@ -133,6 +133,46 @@ def test_hourly_refresher_chunks_large_crypto_gaps(tmp_path: Path) -> None:
     assert all((end - start) <= timedelta(hours=100) for start, end in calls)
 
 
+def test_hourly_refresher_trims_future_rows_from_existing_file(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    target = tmp_path / "stocks" / "AAPL.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = pd.DataFrame(
+        {
+            "timestamp": [
+                (now - timedelta(hours=1)).isoformat(),
+                (now + timedelta(hours=6)).isoformat(),
+            ],
+            "open": [1.0, 2.0],
+            "high": [1.1, 2.1],
+            "low": [0.9, 1.9],
+            "close": [1.05, 2.05],
+            "volume": [10.0, 20.0],
+            "trade_count": [5.0, 6.0],
+            "vwap": [1.02, 2.02],
+            "symbol": ["AAPL", "AAPL"],
+        }
+    )
+    existing.to_csv(target, index=False)
+
+    validator = HourlyDataValidator(tmp_path, max_staleness_hours=3)
+    refresher = HourlyDataRefresher(
+        data_root=tmp_path,
+        validator=validator,
+        stock_fetcher=lambda symbol, start, end: pd.DataFrame(),
+        crypto_fetcher=_build_frame,
+    )
+
+    statuses, issues = refresher.refresh(["AAPL"])
+
+    assert not issues
+    assert len(statuses) == 1
+    updated = pd.read_csv(target)
+    latest = pd.to_datetime(updated["timestamp"], utc=True).max()
+    assert latest <= pd.Timestamp(now + timedelta(minutes=5))
+    assert len(updated) == 1
+
+
 def test_fetch_binance_bars_parses_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(hours=2)

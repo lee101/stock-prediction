@@ -330,3 +330,27 @@ neg > 17 standalone are essentially guaranteed to fail too.
 | 2026-04-17T09:16:33Z | AD/s25 | 36 | — | — | — | skip (over neg bar) |
 | 2026-04-17T09:02:00Z | D/s92 (manual) | 20 | 0.0716 | 13 | 6.35 | reject (1x: Δmed −0.31%, Δp10 −0.69%, Δneg +3) |
 | 2026-04-17T09:02:00Z | D/s92 (manual, 1.5x) | 20 | 0.1033 | 11 | 6.58 | PROMISING @ 1.5x (Δmed +0.02%, Δp10 +0.33%, Δneg −2, Δsortino +0.45) |
+| 2026-04-17T10:17:25Z | AE/s1 | 43 | — | — | — | skip (over neg bar) |
+| 2026-04-17T11:29:01Z | AE/s2 | 34 | — | — | — | skip (over neg bar) |
+| 2026-04-17T12:30:42Z | AE/s3 | 37 | — | — | — | skip (over neg bar) |
+| 2026-04-17T13:42:33Z | AE/s4 | 36 | — | — | — | skip (over neg bar) |
+| 2026-04-17T15:04:31Z | AE/s5 | 25 | — | — | — | skip (over neg bar) |
+| 2026-04-17T15:45:15Z | AE/s6 | 38 | — | — | — | skip (over neg bar) |
+| 2026-04-17T16:25:35Z | AF/s1 | 30 | — | — | — | skip (over neg bar) |
+| 2026-04-17T16:46:08Z | AF/s2 | 32 | — | — | — | skip (over neg bar) |
+| 2026-04-17T17:17:06Z | AF/s3 | 60 | — | — | — | skip (over neg bar) |
+| 2026-04-17T18:39:39Z | AG/s1 | 27 | — | — | — | skip (over neg bar) |
+| 2026-04-17T19:32:04Z | AG/s2 | 10 | 0.0657 | 12 | 6.32 | reject |
+| 2026-04-17T19:52:38Z | AG/s3 | 31 | — | — | — | skip (over neg bar) |
+| 2026-04-17T20:02:42Z | AG/s4 | 28 | — | — | — | skip (over neg bar) |
+| 2026-04-17T20:16:45Z | AG/s5 | 16 | 0.0635 | 15 | 5.44 | reject |
+| 2026-04-17T20:26:50Z | AG/s6 | 37 | — | — | — | skip (over neg bar) |
+| 2026-04-17T22:17:45Z | AG/s7 | 39 | — | — | — | skip (over neg bar) |
+| 2026-04-17T22:27:50Z | AG/s8 | 58 | — | — | — | skip (over neg bar) |
+| 2026-04-17T22:37:59Z | AG/s9 | 48 | — | — | — | skip (over neg bar) |
+| 2026-04-17T22:48:04Z | AG/s10 | 34 | — | — | — | skip (over neg bar) |
+| 2026-04-17T22:58:09Z | AG/s11 | 58 | — | — | — | skip (over neg bar) |
+| 2026-04-17T23:08:14Z | AG/s12 | 60 | — | — | — | skip (over neg bar) |
+| 2026-04-17T23:18:19Z | AG/s13 | 62 | — | — | — | skip (over neg bar) |
+| 2026-04-17T23:28:24Z | AG/s14 | 57 | — | — | — | skip (over neg bar) |
+| 2026-04-17T23:38:29Z | AG/s15 | 63 | — | — | — | skip (over neg bar) |

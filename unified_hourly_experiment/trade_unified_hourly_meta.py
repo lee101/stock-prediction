@@ -151,6 +151,30 @@ def _load_symbol_frame(
     frame = dm.frame.copy()
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
     frame["symbol"] = symbol
+    freshness = live.assess_live_frame_freshness(frame, symbol=symbol)
+    if not bool(freshness.get("fresh")):
+        logger.warning(
+            "{} {}: frame rejected for live inference ({}, latest={}, age_hours={})",
+            strategy.name,
+            symbol,
+            freshness.get("reason"),
+            freshness.get("latest_timestamp"),
+            freshness.get("age_hours"),
+        )
+        live.log_event(
+            "meta_signal_frame_rejected",
+            strategy=str(strategy.name),
+            symbol=symbol,
+            reason=str(freshness.get("reason") or "unknown"),
+            latest_bar_timestamp=(
+                freshness["latest_timestamp"].isoformat()
+                if hasattr(freshness.get("latest_timestamp"), "isoformat")
+                else None
+            ),
+            bar_age_hours=freshness.get("age_hours"),
+            bar_age_clock=freshness.get("age_clock"),
+        )
+        return None
     if history_days > 0 and not frame.empty:
         cutoff = frame["timestamp"].max() - pd.Timedelta(days=int(history_days))
         frame = frame[frame["timestamp"] >= cutoff].reset_index(drop=True)

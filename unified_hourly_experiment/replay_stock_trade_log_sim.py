@@ -88,6 +88,22 @@ def _as_positive_int(value: Any) -> int | None:
     return parsed
 
 
+def _normalize_logged_symbols(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        raw_symbols = value.replace(",", " ").split()
+    else:
+        raw_symbols = []
+        try:
+            iterator = iter(value)
+        except TypeError:
+            iterator = iter((value,))
+        for symbol in iterator:
+            raw_symbols.extend(str(symbol).replace(",", " ").split())
+    return {str(symbol).upper() for symbol in raw_symbols if str(symbol).strip()}
+
+
 def infer_live_replay_context(
     *,
     event_log: Path,
@@ -121,11 +137,7 @@ def infer_live_replay_context(
             if gap > _REPLAY_CONTEXT_MAX_GAP:
                 continue
 
-            signal_symbols = {
-                str(symbol).upper()
-                for symbol in payload.get("signal_symbols", [])
-                if str(symbol).strip()
-            }
+            signal_symbols = _normalize_logged_symbols(payload.get("signal_symbols"))
             overlap = len(signal_symbols & normalized_symbols) if normalized_symbols and signal_symbols else 0
             if normalized_symbols and signal_symbols and overlap <= 0:
                 continue

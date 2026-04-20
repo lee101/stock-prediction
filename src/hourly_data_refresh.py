@@ -16,6 +16,7 @@ from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDa
 
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from src.hourly_data_utils import (
+    FUTURE_TIMESTAMP_TOLERANCE_MINUTES,
     HourlyDataIssue,
     HourlyDataStatus,
     HourlyDataValidator,
@@ -283,11 +284,17 @@ class HourlyDataRefresher:
         statuses: Sequence[HourlyDataStatus],
         issues: Sequence[HourlyDataIssue],
     ) -> List[str]:
-        refresh = {issue.symbol for issue in issues if issue.reason in {"missing", "stale"}}
+        refresh = {issue.symbol for issue in issues if issue.reason in {"missing", "stale", "future"}}
         for status in statuses:
             if is_crypto_symbol(status.symbol) and status.staleness_hours > self.crypto_max_staleness_hours:
                 refresh.add(status.symbol)
         return sorted(refresh)
+
+    def _trim_future_rows(self, frame: pd.DataFrame, *, now: datetime) -> pd.DataFrame:
+        if frame.empty:
+            return frame
+        cutoff = now + timedelta(minutes=FUTURE_TIMESTAMP_TOLERANCE_MINUTES)
+        return frame[frame.index <= cutoff].copy()
 
     def _fetch_in_chunks(
         self,
@@ -324,6 +331,10 @@ class HourlyDataRefresher:
     def _refresh_symbol(self, symbol: str, now: datetime) -> bool:
         path = self._resolve_target_path(symbol)
         existing = self._load_existing_frame(path)
+        trimmed_existing = self._trim_future_rows(existing, now=now)
+        trimmed_existing_rows = len(trimmed_existing)
+        existing_rows = len(existing)
+        existing = trimmed_existing
         last_timestamp = existing.index.max().to_pydatetime() if not existing.empty else None
         if last_timestamp is None:
             start = now - timedelta(hours=self.backfill_hours)
@@ -337,7 +348,8 @@ class HourlyDataRefresher:
         fetcher = self.crypto_fetcher if is_crypto_symbol(symbol) else self.stock_fetcher
         chunk_hours = self.max_request_hours_crypto if is_crypto_symbol(symbol) else self.max_request_hours_stock
         new_frame = self._fetch_in_chunks(symbol, fetcher, start, end, chunk_hours=chunk_hours)
-        if new_frame.empty:
+        new_frame = self._trim_future_rows(new_frame, now=now)
+        if new_frame.empty and trimmed_existing_rows == existing_rows:
             return False
         combined = new_frame if existing.empty else pd.concat([existing, new_frame])
         combined = combined[~combined.index.duplicated(keep="last")]

@@ -8,6 +8,8 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
+FUTURE_TIMESTAMP_TOLERANCE_MINUTES = 5.0
+
 
 def _candidate_hourly_paths(symbol: str, data_root: Path) -> List[Path]:
     upper = symbol.upper()
@@ -57,6 +59,10 @@ class HourlyDataMissing(HourlyDataError):
 
 class HourlyDataStale(HourlyDataError):
     reason = "stale"
+
+
+class HourlyDataFuture(HourlyDataError):
+    reason = "future"
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,14 @@ class HourlyDataValidator:
             latest_timestamp = latest_timestamp.astimezone(timezone.utc)
 
         now = datetime.now(timezone.utc)
+        future_tolerance = FUTURE_TIMESTAMP_TOLERANCE_MINUTES / 60.0
+        future_hours = (latest_timestamp - now).total_seconds() / 3600.0
+        if future_hours > future_tolerance:
+            raise HourlyDataFuture(
+                f"{symbol} hourly data is {future_hours:.2f}h in the future "
+                f"(tolerance {future_tolerance:.2f}h)"
+            )
+
         staleness_hours = max(0.0, (now - latest_timestamp).total_seconds() / 3600.0)
         if staleness_hours > self.max_staleness_hours:
             raise HourlyDataStale(

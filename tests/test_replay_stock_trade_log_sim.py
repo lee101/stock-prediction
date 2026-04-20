@@ -639,6 +639,33 @@ def test_infer_live_replay_context_reads_nearest_execute_trades_start(tmp_path: 
     assert out.effective_market_order_entry is True
 
 
+def test_infer_live_replay_context_accepts_string_signal_symbols(tmp_path: Path) -> None:
+    event_log = tmp_path / "stock_event_log.jsonl"
+    _write_log(
+        event_log,
+        [
+            {
+                "event_type": "execute_trades_start",
+                "logged_at": "2026-03-20T15:01:02Z",
+                "max_positions": 5,
+                "signal_symbols": "ABEV, TSLA",
+                "account": {"equity": 40_219.2},
+            }
+        ],
+    )
+
+    out = replay_mod.infer_live_replay_context(
+        event_log=event_log,
+        symbols={"ABEV", "TSLA"},
+        anchor_ts=pd.Timestamp("2026-03-20T15:01:03Z"),
+    )
+
+    assert out is not None
+    assert out.logged_at == "2026-03-20T15:01:02Z"
+    assert out.initial_cash == 40_219.2
+    assert out.max_positions == 5
+
+
 def test_resolve_replay_runtime_config_prefers_inferred_live_values(tmp_path: Path) -> None:
     event_log = tmp_path / "stock_event_log.jsonl"
     _write_log(

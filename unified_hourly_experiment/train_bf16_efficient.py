@@ -31,6 +31,8 @@ from binanceneural.trainer import BinanceHourlyTrainer
 from binanceneural.data import MultiSymbolDataModule
 from binanceneural.config import DatasetConfig, TrainingConfig
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS, resolve_trade_directions
+from unified_hourly_experiment.classic_training_common import parse_horizons
+from unified_hourly_experiment.symbol_validation import parse_symbols
 
 
 def setup_bf16_optimizations():
@@ -52,6 +54,12 @@ def setup_bf16_optimizations():
         gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         logger.info("GPU: {} ({:.1f} GB)", gpu_name, gpu_mem)
         logger.info("BF16 support: {}", torch.cuda.is_bf16_supported())
+
+
+def _parse_optional_symbols(raw: str | None) -> list[str]:
+    if raw is None or not str(raw).strip():
+        return []
+    return parse_symbols(str(raw))
 
 
 def main():
@@ -143,9 +151,12 @@ def main():
     # Setup BF16 optimizations
     setup_bf16_optimizations()
 
-    stocks = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    cryptos = [s.strip().upper() for s in args.crypto_symbols.split(",") if s.strip()]
-    horizons = [int(h.strip()) for h in args.forecast_horizons.split(",")]
+    try:
+        stocks = parse_symbols(args.symbols)
+        cryptos = _parse_optional_symbols(args.crypto_symbols)
+        horizons = parse_horizons(args.forecast_horizons)
+    except Exception as exc:
+        raise SystemExit(f"Plan error: {exc}") from exc
 
     logger.info("=== BF16 Efficient Training ===")
     logger.info("Symbols: {} stocks + {} crypto", len(stocks), len(cryptos))

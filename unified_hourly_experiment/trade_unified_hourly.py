@@ -66,6 +66,8 @@ BROKER_EVENT_LOOKBACK_HOURS = 48.0
 BROKER_EVENT_KEY_LIMIT = 512
 ENTRY_REPLACE_CANCEL_WAIT_SECONDS = 0.75
 ENTRY_REPLACE_CANCEL_POLL_SECONDS = 0.25
+LIVE_SIGNAL_MAX_DATA_AGE_HOURS = 2.25
+LIVE_SIGNAL_FUTURE_TOLERANCE_MINUTES = 5.0
 
 
 @dataclass(frozen=True)
@@ -428,6 +430,72 @@ def calendar_hours_between(start_utc: datetime, end_utc: datetime) -> float:
     else:
         end_utc = end_utc.astimezone(timezone.utc)
     return max((end_utc - start_utc).total_seconds(), 0.0) / 3600.0
+
+
+def assess_live_frame_freshness(
+    frame: pd.DataFrame,
+    *,
+    symbol: str,
+    now: Optional[datetime] = None,
+    max_data_age_hours: float = LIVE_SIGNAL_MAX_DATA_AGE_HOURS,
+    future_tolerance_minutes: float = LIVE_SIGNAL_FUTURE_TOLERANCE_MINUTES,
+) -> dict[str, Any]:
+    if frame.empty or "timestamp" not in frame.columns:
+        return {
+            "fresh": False,
+            "reason": "missing_timestamp_data",
+            "latest_timestamp": None,
+            "age_hours": None,
+            "age_clock": "calendar" if is_crypto_symbol(symbol) else "market",
+        }
+
+    timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dropna()
+    if timestamps.empty:
+        return {
+            "fresh": False,
+            "reason": "no_valid_timestamps",
+            "latest_timestamp": None,
+            "age_hours": None,
+            "age_clock": "calendar" if is_crypto_symbol(symbol) else "market",
+        }
+
+    latest_timestamp = timestamps.iloc[-1].to_pydatetime()
+    if latest_timestamp.tzinfo is None:
+        latest_timestamp = latest_timestamp.replace(tzinfo=timezone.utc)
+    else:
+        latest_timestamp = latest_timestamp.astimezone(timezone.utc)
+
+    reference_now = now or datetime.now(timezone.utc)
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=timezone.utc)
+    else:
+        reference_now = reference_now.astimezone(timezone.utc)
+
+    future_tolerance = timedelta(minutes=max(float(future_tolerance_minutes), 0.0))
+    if latest_timestamp > reference_now + future_tolerance:
+        return {
+            "fresh": False,
+            "reason": "future_timestamp",
+            "latest_timestamp": latest_timestamp,
+            "age_hours": max((latest_timestamp - reference_now).total_seconds(), 0.0) / 3600.0,
+            "age_clock": "calendar" if is_crypto_symbol(symbol) else "market",
+        }
+
+    if is_crypto_symbol(symbol):
+        age_clock = "calendar"
+        age_hours = calendar_hours_between(latest_timestamp, reference_now)
+    else:
+        age_clock = "market"
+        age_hours = market_hours_between(latest_timestamp, reference_now)
+
+    fresh = age_hours <= max(float(max_data_age_hours), 0.0)
+    return {
+        "fresh": bool(fresh),
+        "reason": "fresh" if fresh else "stale_timestamp",
+        "latest_timestamp": latest_timestamp,
+        "age_hours": float(age_hours),
+        "age_clock": age_clock,
+    }
 
 
 def get_alpaca_client(paper: bool = True):
@@ -1422,6 +1490,28 @@ def generate_signal_for_symbol(
 
     frame = data_module.frame.copy()
     frame["symbol"] = symbol
+    freshness = assess_live_frame_freshness(frame, symbol=symbol)
+    if not bool(freshness.get("fresh")):
+        logger.warning(
+            "{}: skipping signal generation due to {} (latest={} age_hours={})",
+            symbol,
+            freshness.get("reason"),
+            freshness.get("latest_timestamp"),
+            freshness.get("age_hours"),
+        )
+        log_event(
+            "signal_frame_rejected",
+            symbol=symbol,
+            reason=str(freshness.get("reason") or "unknown"),
+            latest_bar_timestamp=(
+                freshness["latest_timestamp"].isoformat()
+                if isinstance(freshness.get("latest_timestamp"), datetime)
+                else None
+            ),
+            bar_age_hours=freshness.get("age_hours"),
+            bar_age_clock=freshness.get("age_clock"),
+        )
+        return None
 
     try:
         norm = saved_normalizer if saved_normalizer is not None else data_module.normalizer
@@ -1434,6 +1524,11 @@ def generate_signal_for_symbol(
             horizon=1,
             device=device,
         )
+        action["bar_fresh"] = True
+        action["bar_age_hours"] = freshness.get("age_hours")
+        action["bar_age_clock"] = freshness.get("age_clock")
+        latest_ts = freshness.get("latest_timestamp")
+        action["latest_bar_timestamp"] = latest_ts.isoformat() if isinstance(latest_ts, datetime) else None
         log_event(
             "signal_generated_raw",
             symbol=symbol,

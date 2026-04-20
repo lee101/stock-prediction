@@ -5891,6 +5891,69 @@ def test_execute_signal_skips_paper_market_fallback_without_quote(monkeypatch) -
     assert state.active_symbol is None
 
 
+def test_execute_signal_never_submits_market_orders_in_live_mode(monkeypatch) -> None:
+    """Policy: never emit market orders. Live + no defensible limit price must skip, not fall back."""
+    called_market = False
+
+    def _fake_submit_market_order(client, *, symbol: str, qty: float, side: str):
+        nonlocal called_market
+        called_market = True
+        return SimpleNamespace(id=f"{symbol}-{side}")
+
+    monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+
+    client = _FakeClient([])
+    state = daily_stock.StrategyState(active_symbol=None, active_qty=0.0)
+    signal = SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT")
+
+    changed = daily_stock.execute_signal(
+        signal,
+        client=client,
+        paper=False,
+        quotes={"MSFT": 0.0},
+        state=state,
+        symbols=["MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+    )
+
+    assert changed is False
+    assert called_market is False, "Live-mode no-quote path must skip, never fall back to market order"
+    assert state.active_symbol is None
+
+
+def test_execute_signal_never_submits_market_orders_when_closing_live(monkeypatch) -> None:
+    """Policy: never emit market orders — applies to the close path too."""
+    called_market = False
+
+    def _fake_submit_market_order(client, *, symbol: str, qty: float, side: str):
+        nonlocal called_market
+        called_market = True
+        return SimpleNamespace(id=f"{symbol}-{side}")
+
+    monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+
+    client = _FakeClient([SimpleNamespace(symbol="AAPL", qty="10", side="long")])
+    state = daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0)
+    signal = SimpleNamespace(symbol=None, direction=None, action="flat")
+
+    changed = daily_stock.execute_signal(
+        signal,
+        client=client,
+        paper=False,
+        quotes={"AAPL": 0.0},  # no quote -> no defensible limit
+        state=state,
+        symbols=["AAPL"],
+        allocation_pct=25.0,
+        dry_run=False,
+    )
+
+    assert called_market is False, "Live-mode close with no quote must skip, never fall back to market order"
+    # Position remains managed because close was skipped
+    assert state.active_symbol == "AAPL"
+    assert changed is False
+
+
 def test_execute_signal_with_trading_server_closes_managed_then_opens_new(tmp_path: Path) -> None:
     current_now = datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc)
     quotes = {

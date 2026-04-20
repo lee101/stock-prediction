@@ -115,6 +115,16 @@ def normalize_bars(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df[out_cols].copy()
 
 
+def _to_alpaca_symbol(sym: str) -> str:
+    """Translate local dash-form tickers (BRK-B, BF-B) to Alpaca dot form.
+
+    Alpaca's data API rejects BRK-B with "invalid symbol" and fails the
+    entire batch. A single '-' in a US equity ticker is always a share
+    class separator — the translation is unambiguous.
+    """
+    return sym.replace("-", ".") if ("-" in sym and not sym.endswith("USD")) else sym
+
+
 def download_batch(
     client: StockHistoricalDataClient,
     symbols: list[str],
@@ -125,7 +135,11 @@ def download_batch(
     force: bool = False,
     min_rows: int = 50,
 ) -> dict[str, str]:
-    """Download a batch of symbols. Returns {symbol: status}."""
+    """Download a batch of symbols. Returns {symbol: status}.
+
+    Symbols are saved to disk under the local (dash) name but sent to
+    Alpaca under the dot-form share-class name.
+    """
     # Filter out already-done symbols (unless force)
     if not force:
         to_fetch = []
@@ -141,8 +155,11 @@ def download_batch(
     if not to_fetch:
         return {sym: "skip" for sym in symbols}
 
+    api_to_local = {_to_alpaca_symbol(s): s for s in to_fetch}
+    api_batch = list(api_to_local.keys())
+
     request = StockBarsRequest(
-        symbol_or_symbols=to_fetch,
+        symbol_or_symbols=api_batch,
         timeframe=TimeFrame.Day,
         start=start_date,
         end=end_date,
@@ -166,9 +183,10 @@ def download_batch(
 
     for sym in to_fetch:
         dest = output_dir / f"{sym}.csv"
+        api_sym = _to_alpaca_symbol(sym)
         try:
             if "symbol" in bars_df.columns:
-                sym_df = bars_df[bars_df["symbol"] == sym].copy()
+                sym_df = bars_df[bars_df["symbol"] == api_sym].copy()
             else:
                 sym_df = bars_df.copy()
 
@@ -176,7 +194,24 @@ def download_batch(
                 results[sym] = f"thin:{len(sym_df)}"
                 continue
 
+            # Rewrite symbol column from Alpaca's dot-form (BRK.B) to our
+            # local dash-form (BRK-B) before normalize_bars, which re-filters
+            # on `symbol` column and would otherwise drop every row.
+            if "symbol" in sym_df.columns:
+                sym_df["symbol"] = sym
             normalized = normalize_bars(sym_df, sym)
+            # Safety: never overwrite an existing CSV with FEWER rows than
+            # it currently has. Protects against Alpaca returning partial
+            # history on a refresh call (e.g., delisted symbols, SIP
+            # subscription gaps). If incoming is thinner, keep disk copy.
+            if dest.exists():
+                try:
+                    existing_rows = sum(1 for _ in dest.open("r", encoding="utf-8")) - 1
+                    if existing_rows > len(normalized):
+                        results[sym] = f"kept:{existing_rows}>{len(normalized)}"
+                        continue
+                except Exception:
+                    pass
             normalized.to_csv(dest, index=False)
             results[sym] = f"ok:{len(normalized)}"
         except Exception as exc:

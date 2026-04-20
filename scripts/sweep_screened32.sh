@@ -60,7 +60,10 @@ case "$VARIANT" in
   AB) TP=0.05; STEPS=15000000; MAX_STEPS=252; EXTRA_FLAGS=(--optimizer muon --group-relative-mix 0.3) ;;  # D + group-relative advantage (mix=0.3) per E1
   AC) TP=0.05; STEPS=15000000; MAX_STEPS=252; EXTRA_FLAGS=(--optimizer muon --lr-schedule cosine --anneal-ent --anneal-clip --group-relative-mix 0.3) ;;  # D + full E1 stack
   AD) TP=0.05; STEPS=15000000; MAX_STEPS=252; EXTRA_FLAGS=(--optimizer muon); TRAIN="pufferlib_market/data/screened32_aprcrash_augmented_train.bin"; VAL="pufferlib_market/data/screened32_aprcrash_augmented_val.bin" ;;  # D baseline on aprcrash data (train through 2026-02-28 incl Mar-Apr crash context)
-  *) echo "Unknown variant $VARIANT (use A B C D E F G H I J K L M N P Q R S T U V W X Y Z AA AB AC AD)"; exit 1 ;;
+  AE) TP=0.05; STEPS=50000000; MAX_STEPS=252; EXTRA_FLAGS=(--optimizer muon); TRAIN="pufferlib_market/data/screened32_aprcrash_augmented_train.bin"; VAL="pufferlib_market/data/screened32_aprcrash_augmented_val.bin" ;;  # AD but 50M steps (3.3x longer) — long training for deeper features
+  AF) TP=0.05; STEPS=15000000; MAX_STEPS=252; EXTRA_FLAGS=(--optimizer muon --hidden-size 2048); TRAIN="pufferlib_market/data/screened32_aprcrash_augmented_train.bin"; VAL="pufferlib_market/data/screened32_aprcrash_augmented_val.bin" ;;  # AD + wider MLP (h=2048) on aprcrash data
+  AG) TP=0.05; STEPS=15000000; MAX_STEPS=252; EXTRA_FLAGS=(--optimizer muon --clip-eps 0.1); TRAIN="pufferlib_market/data/screened32_aprcrash_augmented_train.bin"; VAL="pufferlib_market/data/screened32_aprcrash_augmented_val.bin" ;;  # AD + tighter clip (0.1 vs 0.2) on aprcrash data
+  *) echo "Unknown variant $VARIANT (use A B C D E F G H I J K L M N P Q R S T U V W X Y Z AA AB AC AD AE AF AG)"; exit 1 ;;
 esac
 
 SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}
