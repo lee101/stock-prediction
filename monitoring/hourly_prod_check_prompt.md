@@ -9,7 +9,12 @@ You are the senior engineer on the live Alpaca stock trading system. Every hour 
 
 **Read first, every run**: `monitoring/current_algorithms.md` (short ledger of which services should exist, what the best configs are, and what is auto-deploy-authorized vs human-only). Also `alpacaprod.md` top block for any in-hour deploy deltas.
 
-**As of 2026-04-19 the primary LIVE algorithm is XGB, not RL.** The supervisor unit is `xgb-daily-trader-live`. The previous RL daemon (`daily-rl-trader`) and its broker boundary (`trading-server` on :8050) are **STOPPED intentionally**. Do not restart them — they would race XGB for the singleton lock and crash it. The full rollback procedure is in `monitoring/current_algorithms.md §2`; only the user triggers it.
+**As of 2026-04-19 the primary LIVE algorithm is XGB, not RL.** The supervisor unit is `xgb-daily-trader-live`. Live flags (from `deployments/xgb-daily-trader-live/launch.sh`):
+`--top-n 1 --allocation 2.0 --min-score 0.85 --hold-through --min-dollar-vol 50000000 --min-vol-20d 0.10`.
+
+**Key behavior change vs previous RL deploy**: the `--min-score 0.85` conviction gate means **~56% of trading days intentionally result in NO BUY** — only days where the top-1 blended `predict_proba ≥ 0.85` fire an order. This is NOT a bug; it's the gate design. `--hold-through` further means: if today's top pick equals the currently-held symbol, XGB skips the round-trip and carries the position overnight. **Flat overnight is no longer the default.** See `current_algorithms.md §EXPECTED BEHAVIOR — healthy "no pick" vs silent bug` for the HEALTHY vs BROKEN signature split.
+
+The previous RL daemon (`daily-rl-trader`) and its broker boundary (`trading-server` on :8050) are **STOPPED intentionally**. Do not restart them — they would race XGB for the singleton lock and crash it. The full rollback procedure is in `monitoring/current_algorithms.md §2`; only the user triggers it.
 
 This is the **process, in strict priority order**. Finish each phase before moving to the next. Don't start Phase 3 if Phase 1 or 2 found something you didn't fully resolve.
 
@@ -32,12 +37,12 @@ Do these reads **in parallel** where possible:
    echo ilu | sudo -S tail -200 /var/log/supervisor/xgb-daily-trader-live.log 2>/dev/null | tail -80
    echo ilu | sudo -S tail -100 /var/log/supervisor/xgb-daily-trader-live-error.log 2>/dev/null | tail -40
    ```
-   The stdout log should show a recent "Top-1 picks" line (scoring pass), "BUY " or "SELL " lines on trading days, and periodic "sleeping until 09:20 ET" lines between sessions. The error log should show singleton-claim success at startup and nothing else urgent.
+   The stdout log should show a recent `Scoring N symbols` line, followed by either a `Conviction filter min_score=0.85: K/M candidates pass` + `BUY ` pair OR a `No picks today` line, plus periodic "sleeping until 09:20 ET" lines between sessions. The error log should show singleton-claim success at startup and nothing else urgent.
 
    Expected states:
-   - **Trading day, 13:30–20:00 UTC**: supervisor `RUNNING`, last log entry within the hour, at most one open position (top_n=1).
-   - **Trading day, outside 13:30–20:00 UTC**: supervisor `RUNNING`, sleeping between sessions, 0 positions.
-   - **Weekend / holiday**: supervisor `RUNNING`, sleeping through the calendar gap, 0 positions, BUYs attempted at 13:30 UTC Saturday/Sunday may show as clean failures (market closed) in the log — benign.
+   - **Trading day, 13:30–20:00 UTC**: supervisor `RUNNING`, last log entry within the hour, 0 or 1 open stock positions (top_n=1, gate may fire no-pick).
+   - **Trading day, outside 13:30–20:00 UTC**: supervisor `RUNNING`, sleeping between sessions, 0 or 1 positions (hold-through can carry overnight).
+   - **Weekend / holiday**: supervisor `RUNNING`, `_is_today_trading_day()` queries `/v2/clock` and the session is a no-op; 0 BUYs submitted (weekend DAY orders would otherwise queue to Monday — see `alpacaprod.md`).
 
 3. **Singleton lock holder** — the LIVE Alpaca writer lock must be held by `xgb_live_trader` and its pid must match supervisor's process.
    ```bash
@@ -79,7 +84,7 @@ Do these reads **in parallel** where possible:
    ```
    A fresh `.marker` in the last hour → guard fired → Recovery R2.
 
-8. **Trades-actually-happening check** — "daemon alive" does NOT equal "orders filled". Reconcile the last 10 trading days:
+8. **Trades-actually-happening check** — "daemon alive" does NOT equal "orders filled", but with `min_score=0.85` gating ~56% of days to no-op, "no fills today" is NOT automatically a bug. Reconcile the last 10 trading days AND cross-reference conviction-gate decisions:
    ```bash
    source .venv/bin/activate && python -c "
    import env_real, urllib.request, json, datetime as dt
@@ -92,14 +97,26 @@ Do these reads **in parallel** where possible:
        print(f'  {f[\"transaction_time\"][:19]} {f[\"symbol\"]} {f[\"side\"]} qty={f[\"qty\"]} px={f[\"price\"]}')
    "
    # XGB session markers on the service side over the same window
-   echo ilu | sudo -S grep -E 'Top-1 picks|BUY |SELL |death-spiral' /var/log/supervisor/xgb-daily-trader-live.log 2>/dev/null | tail -30
+   echo ilu | sudo -S grep -E 'Scoring |Conviction filter|BUY |SELL |No picks today|death-spiral' /var/log/supervisor/xgb-daily-trader-live.log 2>/dev/null | tail -40
+   # Trade log top-score distribution — the real signal-health indicator
+   ls -1t analysis/xgb_live_trade_log/*.jsonl 2>/dev/null | head -10 | xargs -I{} python -c "
+   import json, sys, pathlib
+   p = pathlib.Path('{}')
+   rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+   scored = [r for r in rows if r.get('event') == 'scored']
+   filt = [r for r in rows if r.get('event') == 'filtered']
+   picks = [r for r in rows if r.get('event') == 'pick']
+   print(f'{p.name}: scored={len(scored)} filtered={len(filt)} picks={len(picks)} top_score={scored[-1][\"top20\"][0][\"score\"] if scored and scored[-1].get(\"top20\") else \"?\"}')
+   " 2>/dev/null
    ```
-   XGB character: **buy at 09:30 ET, sell at 15:50 ET same session, flat overnight. One pick per day.** Expected fill count over 10 trading days ≈ 20 (1 buy + 1 sell per session). Flag conditions:
-   - 0 fills over ≥ 5 trading days and the service is RUNNING → the buy path is silently failing (likely: model load error, universe pull, or an Alpaca submit-but-never-fill). Phase 2.
+   XGB character (post-2026-04-19 full stack): **on a pick day, BUY at 09:30 ET; the position usually holds into the next session via hold-through. On a no-pick day (gate fires, top score < 0.85), NO BUY is submitted and the existing position (if any) is held.** Expected fill count over 10 trading days ≈ **8 to 12** (not 20 — gate fires ~56% and hold-through compresses the rest). Flag conditions:
+   - 0 fills AND 0 `BUY ` log lines over ≥ 10 trading days and the service is RUNNING → signal collapse or buy path silently failing. Phase 2, R9a.
+   - > 5 consecutive days of `Conviction filter ... 0/M candidates pass` with identical `top score` (e.g. 0.7036 every day) → **stale features** (R9a, BROKEN signature in `current_algorithms.md`).
+   - > 5 consecutive `No picks today` lines with varying top scores (e.g. 0.71, 0.68, 0.72, 0.79, 0.83) → **low-conviction regime, not a bug** (R9b, HEALTHY signature — leave alone).
    - Fills exist but include a symbol the XGB log did NOT score-and-pick → **rogue writer**, singleton violation, escalate.
    - Guard crash loop (supervisor status shows > 3 restarts in the hour) → Recovery R2.
 
-9. **Orphan-position reconciliation** — XGB holds at most 1 stock position, intraday:
+9. **Orphan-position reconciliation** — XGB holds at most 1 stock position. With `--hold-through`, overnight holds are EXPECTED.
    ```bash
    source .venv/bin/activate && python -c "
    import env_real, urllib.request, json, datetime as dt
@@ -114,7 +131,7 @@ Do these reads **in parallel** where possible:
    print(f'in_trading_window_utc: {in_window}')
    "
    ```
-   Rule: position count must be **0 after 20:05 UTC** on a trading day. Inside the window, 0 or 1 is fine. > 1 inside the window is a rogue-writer flag. Any non-zero at 20:05+ UTC → Phase 2 (flatten via `alpaca_wrapper.close_position`).
+   Rule (post-hold-through): position count ∈ {0, 1} is fine at ALL times including overnight/weekend. > 1 is a rogue-writer flag regardless of time. A single position that persists > 5 trading days without any SELL log line → likely the conviction gate keeps picking the same symbol via hold-through; cross-reference the trade log `pick` events. If instead the log shows fresh picks that are NOT the held symbol and no SELL is firing, the hold-through logic is broken — Phase 2.
 
 10. **Error-log scan** — last hour across all prod log sources:
     ```bash
@@ -134,11 +151,13 @@ Do these reads **in parallel** where possible:
     ```
     **If any of these three commands shows activity**: that's an unauthorized rollback attempt from another operator OR a stale process from before 2026-04-19 10:40 UTC. Stop XGB would be a BAD idea; instead, stop the RL path and escalate (see Phase 2 R8).
 
-### Expected healthy state (XGB, deployed 2026-04-19)
+### Expected healthy state (XGB, full-stack deploy 2026-04-19)
 - supervisor `xgb-daily-trader-live`: `RUNNING` with a stable pid.
 - Singleton lock: `service_name: xgb_live_trader`, pid matches supervisor.
-- Alpaca equity in the ~$28k range (record exact value each run); 0 positions outside 13:30–20:00 UTC on a trading day.
-- Latest Top-1 scoring log within 24h (or within 1h of 09:30 ET on trading days).
+- Alpaca equity in the ~$28k range (record exact value each run); 0 or 1 stock positions at any hour (hold-through allows overnight).
+- Latest `Scoring N symbols` log line within 24h (or within 1h of 09:30 ET on trading days). Log may then show EITHER a `BUY` (gate fired) OR `No picks today` (gate held cash) — both are healthy.
+- Trade log `analysis/xgb_live_trade_log/YYYY-MM-DD.jsonl` has a `session_start` for today (if trading day).
+- Top-score distribution across the last 5 sessions varies (not identical to 3 decimal places — that would indicate stale features).
 - `daily-rl-trader` + `trading-server`: STOPPED.
 
 ---
@@ -155,7 +174,7 @@ You are authorized to take these actions without asking:
 - **Disk > 85% on either `/` or `/nvme0n1-disk`** → Recovery R6.
 - **Orphan stock position confirmed after 20:05 UTC** → `python -c "import alpaca_wrapper; alpaca_wrapper.close_position('<SYM>')"` — the wrapper enforces singleton + death-spiral guard, so this will fail cleanly if the guard says no. Then tail the XGB log for why the EOD close didn't fire.
 - **RL path (daily-rl-trader / trading-server / port 8050) unexpectedly active** → Recovery R8.
-- **XGB running but 0 picks in the last trading day** (no "Top-1 picks" line) → Recovery R9.
+- **XGB running but conviction gate looks wrong** (see R9a/R9b split) → Recovery R9. With `--min-score 0.85` ~56% of days intentionally have 0 picks; DO NOT treat every 0-pick day as a fault.
 - **claude CLI broken** (hourly cron log shows `claude native binary not installed` / `postinstall did not run`) → `cd /home/administrator/.bun/install/global/node_modules/@anthropic-ai/claude-code && node install.cjs`, then `/home/administrator/.bun/bin/claude --version` to verify.
 
 Re-run Phase 1 after every fix. If any issue persists after one fix attempt, stop, log, move on — escalate at end.
@@ -264,23 +283,63 @@ ls -la /etc/supervisor/conf.d/ | grep -iE 'daily-rl|trading-server'
 ```
 If the conf files still exist as `*.conf`: they can be started manually; that's fine for the rollback path. If something kicked them automatically → check cron, systemd boot units, external MCP tools.
 
-#### R9. XGB running but no picks
-**Symptom**: supervisor shows RUNNING, but the XGB log has no "Top-1 picks" or "BUY " lines within the expected window.
+#### R9. XGB running but 0 picks — is it BROKEN (R9a) or HEALTHY LOW-CONVICTION (R9b)?
+**Symptom**: supervisor shows RUNNING, but recent sessions have no `BUY ` lines. Split by the signature before acting:
 
-**Diagnose**:
+**Diagnose** (run these first — they distinguish R9a from R9b):
 ```bash
-# Check the session loop is advancing
-echo ilu | sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live.log | grep -E 'scoring|universe|Top-1|sleeping|market|ensemble' | tail -30
-# Check the model files still exist
-ls -la analysis/xgbnew_daily/alltrain_ensemble_gpu/
-# Check the universe file
+# Session-loop progression
+echo ilu | sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live.log \
+    | grep -E 'Scoring |Conviction filter|No picks|sleeping|ensemble|Trading day check' | tail -40
+# Top-score distribution across the last 10 trade-log sessions
+ls -1t analysis/xgb_live_trade_log/*.jsonl 2>/dev/null | head -10 | while read p; do
+  python - <<PY
+import json, pathlib
+p = pathlib.Path("$p")
+rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+scored = [r for r in rows if r.get('event') == 'scored']
+if scored and scored[-1].get('top20'):
+    top = scored[-1]['top20'][0]
+    per_seed = scored[-1].get('per_seed_scores') or {}
+    vals = list(per_seed.get(top.get('symbol',''), {}).values())
+    sd = (max(vals)-min(vals)) if vals else None
+    print(f"{p.name}: top={top.get('symbol')} score={top.get('score'):.4f} per_seed_spread={sd}")
+else:
+    print(f"{p.name}: no scored event")
+PY
+done
+# Model files + universe file
+ls -la analysis/xgbnew_daily/alltrain_ensemble_gpu/ 2>/dev/null | head
 wc -l stocks_wide_1000_v1.txt 2>/dev/null || find . -maxdepth 2 -name 'stocks_wide*.txt' | head
 ```
 
-**Common causes and fixes**:
-- Universe pull failed (Alpaca bars API rate limit) → the loop skips the session. Next 09:20 ET wake-up should retry; if two consecutive days fail, widen the retry budget in `xgbnew/live_trader.py`.
-- Model pkl missing or corrupt → restore from `analysis/xgbnew_daily/alltrain_ensemble_gpu_extra5/` (those are extra seeds, NOT replacements — re-train if the ensemble seeds themselves are gone).
-- Service is sleeping on a holiday it didn't recognize as one → cross-check `pandas_market_calendars`; add the missing holiday to the loop's calendar.
+**R9b. HEALTHY low-conviction regime (leave alone)**
+Signatures (must hold across ≥ 3 recent trade log files):
+- `top score` varies meaningfully (no two sessions identical to 3 decimals; σ across sessions > 0.01).
+- `top score` is always < 0.85 but in a plausible range like 0.60–0.84.
+- `per_seed_spread` > 0.01 (the 5 seeds disagree — ensemble is working).
+- `n_candidates` (scored universe after filters) > 400 and varies session-to-session.
+
+Interpretation: the gate is doing its job. With `min_score=0.85` the OOS base rate is ~56% no-pick days. Up to ~8 consecutive no-pick days is within the historical distribution. DO NOT restart, retrain, or lower the gate. Log it and move on.
+
+**R9a. BROKEN (escalate / fix)**
+Signatures (any ONE is sufficient):
+- `top score` identical across ≥ 3 sessions to 4 decimals (e.g. 0.7036 on Mon/Tue/Wed) → **stale features**, likely the CSV loader is hitting frozen data. Confirm with:
+  ```bash
+  # live_trader fetches fresh bars — it should NOT read trainingdata/train
+  grep -n 'trainingdata' /var/log/supervisor/xgb-daily-trader-live.log | tail
+  ```
+  If the live log is reading local CSVs instead of API bars, something has diverged from the launch config. If it's really reading API bars but they're stale, the Alpaca bars endpoint is returning cached/stale data → wait one cycle and re-check, if still stale call the Alpaca status page.
+- `top score` near 0.5 (± 0.02) across sessions or NaN → model broken. Verify with `python -c "import pickle; m=pickle.load(open('analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed0.pkl','rb')); print(type(m))"`. If pkl unreadable → restore from `analysis/xgbnew_daily/alltrain_ensemble_gpu_extra5/` (that dir has 5 additional seeds trained with same config).
+- `n_candidates` = 0 for any session → universe pull failed (Alpaca bars 429 rate limit OR universe file missing). Check `stocks_wide_1000_v1.txt` exists; check next session's retry.
+- `per_seed_spread` = 0 across all candidates → ensemble blend broken, only one model is being queried. Check the `--models` arg in `deployments/xgb-daily-trader-live/launch.sh` still lists all 5 pkls; restart supervisor.
+- 10+ consecutive no-pick days even with varying scores → signal regime has shifted beyond historical distribution (probability < 2% on priors). Launch an OOS re-eval to see if the deployed ensemble's gate still fires on ~44% of recent days.
+
+Fixes:
+- Stale features → see `project_xgb_stale_training_csvs.md`; the fix is at the retrain path, not live_trader. Live should self-heal once Alpaca bars return fresh data.
+- Model corrupt → hot-swap from `_extra5/` copies (they are fully trained models, NOT checkpoints-in-progress).
+- Universe pull → widen `--retries` in `xgbnew/live_trader.py` or re-run the session manually.
+- Holiday miscalendar → cross-check `pandas_market_calendars`; XGB uses `/v2/clock` which is authoritative for trading-day status.
 
 ---
 
@@ -288,16 +347,23 @@ wc -l stocks_wide_1000_v1.txt 2>/dev/null || find . -maxdepth 2 -name 'stocks_wi
 
 When Phase 1 is green and Phase 2 did nothing, you work the model.
 
-**North-star metric**: the current deployed XGB 5-seed alltrain ensemble at `top_n=1 lev=1.0` on the 30-window OOS grid 2025-01-02 → 2026-04-10 (fee=0.278bps Alpaca real, fill_buffer=5bps, decision_lag=2, binary fills). Numbers from `monitoring/current_algorithms.md §1`:
+**North-star metric**: the currently deployed config is the 5-seed alltrain ensemble with the **full-stack flags**: `--top-n 1 --allocation 2.0 --min-score 0.85 --hold-through --min-dollar-vol 50000000 --min-vol-20d 0.10`. The deploy gate is evaluated on the **TRUE-OOS** `oos2024_ensemble_gpu` artifacts (trained through 2024-12-31), NOT on `alltrain_ensemble_gpu` (which is retrained through today and is therefore in-sample on the validation window). 60-window OOS grid 2025-01-02 → 2026-04-19, `fee=0.0000278`, `fill_buffer_bps=5`, `decision_lag=2`, binary fills. Numbers from `monitoring/current_algorithms.md §Deploy gate`:
 
-- median %/mo ≥ **+35**
-- p10 ≥ **+4**
-- neg windows ≤ **2/30**
-- worst DD ≤ **32%**
+| metric | deploy fees (0.278bps) | 36× fee stress (10bps) |
+|---|---:|---:|
+| median %/mo | **+141** | **+108** |
+| p10 | **+96** | **+68** |
+| n_neg | **0/60** | **0/60** |
+| worst realised DD | **7.18%** | **8.34%** |
+| worst intraday DD | **12.93%** | **13.12%** |
 
-A candidate replaces the current ensemble **only if it meets all four simultaneously**. If it wins 3/4 with a tiny regression on one, write up the tradeoff in a new `docs/xgbnew_*` entry but don't deploy — send to the next hour for more seeds.
+A candidate replaces the current ensemble **only if it meets all five bars simultaneously** at BOTH deploy fees AND 36× fee stress (i.e. 10 cells in total). If it wins 9/10 with a regression on one, write it up in a new `docs/xgbnew_*` file and leave for the user — don't deploy autonomously.
 
-⚠ **In-sample caveat**: the 5-seed alltrain model trains through 2026-04-19 so the 2025-01-02 → 2026-04-10 grid is fully inside training data. These numbers are an UPPER BOUND. When real Monday-Friday PnL arrives, honest bar is **60-70% of in-sample → ~+25%/mo healthy**. A candidate that beats the *in-sample* grid by ≥ 1pp on median is still suspect until it also beats on the OOS k-fold grid (`project_xgb_kfold_5fold_validated.md`, cross-fold mean +31.2%/mo).
+Prefer sweeping via `xgbnew/sweep_ensemble_grid.py --ensemble-sort-key goodness` (or `robG` as secondary — asymmetric-downside goodness w/ missed-order MC). A winner must also survive the `--skip-prob-grid 0.0,0.1,0.2` missed-order MC without breaking 0-neg at deploy fees.
+
+⚠ **`alltrain_ensemble_gpu` IS NOT OOS** — its "60-window" numbers are fully inside its training window. If you score any filter/feature candidate on `alltrain_ensemble_gpu` you'll get optimistic medians and a false 0-neg claim. Always use `oos2024_ensemble_gpu`. See `feedback_alltrain_is_not_oos.md`.
+
+Honest real-PnL bar: **60-70% of OOS median = ≥ +40%/mo in first month**, < +10%/mo over 2 trading weeks = broken. The OOS 0/60 neg on 60 windows translates to a prior of ~0.05 neg-month probability, NOT "guaranteed never negative."
 
 ### Concrete experiments worth running
 
@@ -309,20 +375,20 @@ ls docs/realism_gate_*/*.json 2>/dev/null
 ls analysis/xgbnew_*/*.json 2>/dev/null | tail -20
 ```
 
-1. **Re-run the in-sample baseline eval** (sanity check; fast — ~15 min):
+1. **Re-run the TRUE-OOS deploy-gate eval** (sanity check; the monitor must verify the gate numbers are reproducible before deciding to promote anything):
    ```bash
-   python xgbnew/eval_pretrained.py \
-       --models analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed0.pkl,\
-analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed7.pkl,\
-analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed42.pkl,\
-analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed73.pkl,\
-analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
-       --blend-mode mean --top-n 1 --leverage 1.0 \
-       --start 2025-01-02 --end 2026-04-10 \
+   python xgbnew/sweep_ensemble_grid.py \
+       --ensemble-dir analysis/xgbnew_daily/oos2024_ensemble_gpu \
+       --leverage-grid 2.0 --min-score-grid 0.85 --top-n-grid 1 \
+       --hold-through-grid 1 \
+       --min-dollar-vol-grid 50000000 --min-vol-20d-grid 0.10 \
+       --stress-fee-multiplier-grid 1,36 \
+       --skip-prob-grid 0.0 \
+       --start 2025-01-02 --end 2026-04-19 \
        --fee 0.0000278 --fill-buffer-bps 5 --decision-lag 2 \
-       --out analysis/xgbnew_deploy_baseline/deploy_reeval_$(date -u +%Y%m%d_%H%M).json
+       --out analysis/xgbnew_ensemble_sweep/deploy_gate_reeval_$(date -u +%Y%m%d_%H%M).json
    ```
-   If it drifts from the recorded baseline (median +38.85%, 2/30 neg) by > 0.5pp median or ± 1 neg window, investigate — the universe or data file may have moved under us.
+   If the resulting single-cell output drifts from the recorded gate (median +141%/mo, p10 +96%, 0/60 neg, worst DD 7.18% at deploy fees) by > 1pp on median or ± 1 neg window, investigate — the universe or data file may have moved under us.
 
 2. **Expanded-seed bonferroni re-validation**. As of 2026-04-19, 10 alltrain seeds are on disk: 5 deployed (`alltrain_ensemble_gpu/alltrain_seed{0,7,42,73,197}.pkl`) + 5 extra (`alltrain_ensemble_gpu_extra5/alltrain_seed{1,3,11,23,59}.pkl`). Prior recorded result: 10-seed LOSES to 5-seed by 0.80pp median (+38.05 vs +38.85), diminishing-returns on same-config seeds. A real 16-seed test needs 6 more seeds trained — pick prime-ish unused seeds (e.g. 2, 5, 13, 17, 19, 29) and train with:
    ```bash
@@ -356,23 +422,26 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
    ```
    If cross-fold mean ≥ +31.2%/mo (prior recorded baseline) and 2/49 neg → stable; if drift > 2pp, investigate.
 
-4. **leverage=1.25 realism gate re-run** — the +10.88pp median upgrade path, human-approval-only but worth staying ready to deploy on request:
+4. **Leverage sensitivity sweep** (human-approval-only — the deployed config is already at 2.0). Worth running to keep a live curve in case the user wants to dial up/down:
    ```bash
-   python xgbnew/eval_pretrained.py \
-       --models <5-seed ensemble> --top-n 1 --leverage 1.25 \
-       --start 2025-01-02 --end 2026-04-10 \
+   python xgbnew/sweep_ensemble_grid.py \
+       --ensemble-dir analysis/xgbnew_daily/oos2024_ensemble_gpu \
+       --leverage-grid 1.0,1.25,1.5,1.75,2.0,2.5,3.0 \
+       --min-score-grid 0.85 --top-n-grid 1 --hold-through-grid 1 \
+       --min-dollar-vol-grid 50000000 --min-vol-20d-grid 0.10 \
+       --stress-fee-multiplier-grid 1,36 --skip-prob-grid 0.0 \
+       --start 2025-01-02 --end 2026-04-19 \
        --fee 0.0000278 --fill-buffer-bps 5 --decision-lag 2 \
-       --stress-slip 0,5,10,20 \
-       --out analysis/xgbnew_deploy_baseline/deploy_lev125_$(date -u +%Y%m%d_%H%M).json
+       --out analysis/xgbnew_ensemble_sweep/leverage_curve_$(date -u +%Y%m%d_%H%M).json
    ```
-   Record each cell. User decides whether to promote. **Do NOT autonomously deploy lev=1.25.**
+   Record each cell. User decides whether to promote. **Do NOT autonomously bump leverage — that's `current_algorithms.md §6` human-only.**
 
 5. **Feature-set diversity experiments** — the XGB features are in `xgbnew/features.py`. Adding orthogonal signals (sector momentum, VIX regime, earnings-window filter) could raise floor without sacrificing ceiling. Train a candidate on the enlarged feature set, re-run eval_pretrained at parity; if it passes all four bars, it's a deploy candidate.
 
 ### What you do NOT do
 
 - Don't restart `daily-rl-trader` or `trading-server`. They are STOPPED intentionally; restart is a rollback and is user-only per `monitoring/current_algorithms.md §2`.
-- Don't bump `--leverage` above 1.0, `--allocation` above 0.25, or `--top-n` above 1 autonomously (human-only per `monitoring/current_algorithms.md §6`).
+- Don't bump `--allocation` above 2.0, `--top-n` above 1, or lower `--min-score` below 0.85, and don't disable `--hold-through` autonomously (all human-only per `monitoring/current_algorithms.md §6`).
 - Don't change `alpaca_singleton.py` or the death-spiral guard (HARD RULE).
 - Don't train from scratch during the XGB trading window (13:30–20:00 UTC) — XGB needs CPU+network headroom; sweep training can coexist on GPU but heavy CPU-bound xgboost training on CPU cores contends. Check `nvidia-smi` and CPU load before launching.
 - Don't touch production model pkls in place — always write to a new filename, update the launcher, then restart.

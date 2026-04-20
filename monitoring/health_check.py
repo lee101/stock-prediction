@@ -58,32 +58,70 @@ def run_cmd(cmd: str, timeout: int = 15) -> tuple[int, str, str]:
 # Individual checks
 # ---------------------------------------------------------------------------
 
-def check_daily_rl_trader() -> CheckResult:
-    """Check daily-rl-trader under supervisor (the authoritative path).
-
-    The legacy systemd unit `daily-rl-trader.service` is intentionally
-    inactive — prod is hosted by supervisord, not systemd. The earlier
-    version of this check probed systemd and so always reported "fail"
-    while the daemon was actually healthy.
+def check_xgb_daily_trader_live() -> CheckResult:
+    """Check `xgb-daily-trader-live` under supervisor — the primary LIVE writer
+    since 2026-04-19. Verifies supervisor RUNNING, pid matches singleton lock,
+    and no recent auth/traceback errors in the stdout log.
     """
-    rc, out, err = run_cmd("sudo -n supervisorctl status daily-rl-trader 2>&1")
+    rc, out, err = run_cmd("sudo -n supervisorctl status xgb-daily-trader-live 2>&1")
     if "RUNNING" not in out:
         return CheckResult(
-            "daily-rl-trader",
+            "xgb-daily-trader-live",
             "fail",
             f"supervisor not RUNNING: {out or err}",
             {"raw": out},
         )
 
-    # Error scan: ONLY recent-day lines. The log is long-lived so an unfiltered
-    # grep catches errors from days ago (e.g. a singleton race on 2026-04-14
-    # that resolved itself). We only want *today or yesterday*.
+    # Extract supervisor pid to compare against singleton lock holder.
+    sup_pid: Optional[int] = None
+    for token in out.split():
+        if token.startswith("pid"):
+            try:
+                sup_pid = int(out.split("pid")[1].split(",")[0].strip())
+            except (ValueError, IndexError):
+                pass
+            break
+    # Fallback: grep for a bare pid= pattern
+    if sup_pid is None:
+        import re
+        m = re.search(r"pid\s+(\d+)", out)
+        if m:
+            sup_pid = int(m.group(1))
+
+    lock_path = REPO_ROOT / "strategy_state" / "account_locks" / "alpaca_live_writer.lock"
+    lock_svc: Optional[str] = None
+    lock_pid: Optional[int] = None
+    if lock_path.exists():
+        try:
+            rec = json.loads(lock_path.read_text())
+            lock_svc = rec.get("service_name")
+            lock_pid = rec.get("pid")
+        except Exception:
+            pass
+
+    if lock_svc != "xgb_live_trader":
+        return CheckResult(
+            "xgb-daily-trader-live",
+            "fail",
+            f"supervisor RUNNING but live-writer lock held by service={lock_svc!r} "
+            f"(expected 'xgb_live_trader') — possible rogue writer",
+            {"sup_pid": sup_pid, "lock_svc": lock_svc, "lock_pid": lock_pid},
+        )
+    if sup_pid is not None and lock_pid is not None and sup_pid != lock_pid:
+        return CheckResult(
+            "xgb-daily-trader-live",
+            "fail",
+            f"supervisor pid ({sup_pid}) != lock pid ({lock_pid}) — stale lock or double writer",
+            {"sup_pid": sup_pid, "lock_pid": lock_pid},
+        )
+
+    # Error scan on today/yesterday only.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     yday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     rc2, out2, _ = run_cmd(
-        "sudo -n tail -2000 /var/log/supervisor/daily-rl-trader-error.log 2>&1 | "
+        "sudo -n tail -3000 /var/log/supervisor/xgb-daily-trader-live.log 2>&1 | "
         f"grep -E '^({today}|{yday})' | "
-        "grep -iE '401|unauthorized|Traceback' | wc -l"
+        "grep -iE '401|unauthorized|Traceback|death-spiral|RuntimeError' | wc -l"
     )
     try:
         error_count = int(out2)
@@ -92,64 +130,72 @@ def check_daily_rl_trader() -> CheckResult:
 
     if error_count > 0:
         return CheckResult(
-            "daily-rl-trader",
+            "xgb-daily-trader-live",
             "fail",
-            f"supervisor RUNNING but {error_count} error lines today/yesterday",
-            {"error_count": error_count, "raw": out},
+            f"supervisor RUNNING but {error_count} error lines today/yesterday "
+            f"(401/Traceback/death-spiral/RuntimeError)",
+            {"error_count": error_count, "sup_pid": sup_pid},
         )
 
     return CheckResult(
-        "daily-rl-trader",
+        "xgb-daily-trader-live",
         "ok",
-        "supervisor RUNNING, no recent auth errors",
+        f"supervisor RUNNING (pid={sup_pid}), singleton lock held by xgb_live_trader, "
+        f"no recent errors",
+        {"sup_pid": sup_pid, "lock_pid": lock_pid},
+    )
+
+
+def check_daily_rl_trader_stopped() -> CheckResult:
+    """Verify `daily-rl-trader` is STOPPED (intentional, since 2026-04-19).
+
+    If this unit is RUNNING while `xgb-daily-trader-live` is also RUNNING,
+    they'll race for the singleton lock and one will crash. Expected state
+    is STOPPED / EXITED / FATAL / not-in-config.
+    """
+    rc, out, _ = run_cmd("sudo -n supervisorctl status daily-rl-trader 2>&1")
+    if "RUNNING" in out:
+        return CheckResult(
+            "daily-rl-trader-stopped",
+            "fail",
+            f"daily-rl-trader is RUNNING but must be STOPPED (XGB holds the singleton) — "
+            f"immediate `sudo supervisorctl stop daily-rl-trader` needed",
+            {"raw": out},
+        )
+    return CheckResult(
+        "daily-rl-trader-stopped",
+        "ok",
+        "daily-rl-trader is STOPPED as expected (XGB is the live writer)",
         {"raw": out},
     )
 
 
-def check_trading_server() -> CheckResult:
-    """Check trading_server broker boundary on 127.0.0.1:8050.
+def check_trading_server_stopped() -> CheckResult:
+    """Verify `trading-server` (broker boundary on :8050) is STOPPED.
 
-    Uses the auth-free /health endpoint which reports the lock-holder pid —
-    this is the single source of truth for "is the Alpaca writer boundary
-    alive AND held by this process?". A healthy result requires both:
-      - uvicorn responding on :8050
-      - writer_lock_held_by_me == True
+    It was the broker boundary for the now-stopped `daily-rl-trader`. Since
+    XGB writes direct to Alpaca SDK, port 8050 should be CLOSED. If the
+    port is open, either the rollback was triggered without stopping XGB
+    (race condition) or a stale process is lingering.
     """
-    import urllib.request
-    import urllib.error
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:8050/health", timeout=5) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.URLError as exc:
-        return CheckResult("trading-server", "fail", f"unreachable on :8050: {exc}")
-    except Exception as exc:
-        return CheckResult("trading-server", "fail", f"/health failed: {exc}")
-
-    held = data.get("writer_lock_held_by_me")
-    holder = data.get("writer_lock", {})
-    acct_count = len(data.get("accounts", []))
-    if held is True and acct_count > 0:
+    rc, out, _ = run_cmd("sudo -n supervisorctl status trading-server 2>&1")
+    supervisor_running = "RUNNING" in out
+    # Also probe the port directly — even a non-supervisor process would
+    # be a violation since we expect :8050 CLOSED.
+    rc_ss, out_ss, _ = run_cmd("ss -ltn 2>/dev/null | grep ':8050' | head -1")
+    port_open = bool(out_ss.strip())
+    if supervisor_running or port_open:
         return CheckResult(
-            "trading-server",
-            "ok",
-            f"up, writer lock held by server pid={data.get('pid')}, {acct_count} accounts",
-            {"pid": data.get("pid"), "accounts": acct_count, "holder": holder},
-        )
-    if held is False:
-        return CheckResult(
-            "trading-server",
+            "trading-server-stopped",
             "fail",
-            f"server up but writer lock held by a DIFFERENT pid — "
-            f"server_pid={data.get('pid')} holder_pid={holder.get('pid')} "
-            f"holder_service={holder.get('service_name')}",
-            {"server_pid": data.get("pid"), "holder": holder},
+            f"trading-server activity detected (supervisor_running={supervisor_running}, "
+            f"port_8050_open={port_open}) — must be STOPPED while XGB is live",
+            {"supervisor": out, "ss": out_ss},
         )
-    # held is None → lock file missing
     return CheckResult(
-        "trading-server",
-        "warn",
-        f"server up but writer lock file missing (singleton override?)",
-        {"server_pid": data.get("pid"), "accounts": acct_count},
+        "trading-server-stopped",
+        "ok",
+        "trading-server STOPPED and :8050 closed as expected",
     )
 
 
@@ -316,33 +362,56 @@ def check_portfolio_state() -> CheckResult:
 
 
 def check_recent_activity() -> CheckResult:
-    """Check if daily-rl-trader has emitted a run-summary today or yesterday.
+    """Check that XGB emitted a trading-session marker today or yesterday.
 
-    The daemon logs one `Run summary` JSON per scheduled run (~daily at
-    13:35 UTC). If we can't see one in the last 48h, something is wedged —
-    the supervisor-status check covers process liveness, but this covers
-    "liveness without progress".
-
-    Reads /var/log/supervisor/daily-rl-trader-error.log (where loguru writes
-    INFO records by default) rather than the dead systemd journal.
+    The daemon writes one JSONL per trading day under
+    `analysis/xgb_live_trade_log/YYYY-MM-DD.jsonl` with events like
+    `session_start`, `scored`, `filtered`, `pick`, `buy_submitted`,
+    `buy_filled`, `sell_submitted`, `session_end`. Also cross-checks
+    the supervisor stdout log for recent `Scoring` or `No picks` lines.
     """
+    log_dir = REPO_ROOT / "analysis" / "xgb_live_trade_log"
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     yday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    session_events = 0
+    last_file = None
+    if log_dir.exists():
+        for day in (today, yday):
+            p = log_dir / f"{day}.jsonl"
+            if p.exists():
+                last_file = p
+                try:
+                    rows = [l for l in p.read_text().splitlines() if l.strip()]
+                    session_events += len(rows)
+                except Exception:
+                    pass
+
+    # Also count supervisor stdout Scoring/No-picks lines as a
+    # secondary activity signal.
     rc, out, _ = run_cmd(
-        "sudo -n tail -3000 /var/log/supervisor/daily-rl-trader-error.log 2>&1 | "
+        "sudo -n tail -4000 /var/log/supervisor/xgb-daily-trader-live.log 2>&1 | "
         f"grep -E '^({today}|{yday})' | "
-        "grep -c 'Run summary\\|daily_stock_run_once\\|Signal\\|allow_open'"
+        "grep -cE 'Scoring |No picks today|Conviction filter|BUY |SELL '"
     )
     try:
-        activity_count = int(out)
+        sup_count = int(out)
     except ValueError:
-        activity_count = 0
+        sup_count = 0
 
-    if activity_count == 0:
-        return CheckResult("recent-activity", "warn",
-                           "no Run summary log lines in last 48h")
-    return CheckResult("recent-activity", "ok",
-                       f"{activity_count} run-summary log lines in last 48h")
+    if session_events == 0 and sup_count == 0:
+        return CheckResult(
+            "recent-activity",
+            "warn",
+            "no XGB session events in last 48h (trade-log dir empty AND "
+            "supervisor stdout has no Scoring/No-picks/BUY/SELL lines)",
+        )
+    return CheckResult(
+        "recent-activity",
+        "ok",
+        f"{session_events} trade-log events + {sup_count} stdout session markers "
+        f"in last 48h" + (f" (latest: {last_file.name})" if last_file else ""),
+    )
 
 
 def check_gpu_available() -> CheckResult:
@@ -445,8 +514,9 @@ def auto_fix(results: list[CheckResult]) -> list[str]:
 
 def run_all_checks() -> list[CheckResult]:
     checks = [
-        check_daily_rl_trader,
-        check_trading_server,
+        check_xgb_daily_trader_live,
+        check_daily_rl_trader_stopped,
+        check_trading_server_stopped,
         check_stale_writer_locks,
         check_death_spiral_markers,
         check_llm_stock_trader,
