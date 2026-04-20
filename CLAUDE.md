@@ -13,7 +13,15 @@
    second live import exits 42 with the holder's PID/host. Paper mode
    (`ALP_PAPER=1`) bypasses this — paper can run unlimited instances.
    Do NOT add a second path to Alpaca's write API; make new entry
-   points import `alpaca_wrapper` so they inherit the gate.
+   points import `alpaca_wrapper` so they inherit the gate. ALWAYS
+   redeploy via `scripts/deploy_live_trader.sh <unit>` — it stops every
+   other registered live-writer supervisor unit, starts the target, and
+   refuses to report OK unless the lock file's holder-PID matches the
+   new supervisor PID (or its descendant). Audit trail at
+   `deployments/live_trader_history.log`. The `LIVE_WRITER_UNITS`
+   registry inside that script is the source of truth — any new entry
+   point that can win the lock MUST be added to the registry in the
+   same commit, or future redeploys will leak a conflicting writer.
    Break-glass: `ALPACA_SINGLETON_OVERRIDE=1` (human-only, never in systemd).
 
 3. **No death-spiral sells.** `alpaca_wrapper.alpaca_order_stock` calls

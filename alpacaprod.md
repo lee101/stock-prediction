@@ -7,6 +7,44 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### Redeploying the single live writer
+
+**Always use `scripts/deploy_live_trader.sh <unit>`** — do NOT
+`supervisorctl restart` a live-writer unit directly. The script is the
+only path that enforces HARD RULE #2 (exactly one Alpaca live writer at
+a time) by stopping every other registered writer, starting the target,
+and refusing to report OK until the fcntl-lock holder PID matches the
+new supervisor PID (or its descendant).
+
+```bash
+# Rotate between live writers — pick one of:
+scripts/deploy_live_trader.sh xgb-daily-trader-live     # current champion
+scripts/deploy_live_trader.sh trading-server            # broker-boundary server
+scripts/deploy_live_trader.sh daily-rl-trader           # legacy RL ensemble
+scripts/deploy_live_trader.sh none                      # stop ALL live writers
+```
+
+Exit codes: `0` OK, `2` bad/missing unit name, `3` failed to stop a
+conflicting unit, `4` failed to start the requested unit, `5` started
+but something else owns the lock. Audit trail is appended to
+`deployments/live_trader_history.log` on every run.
+
+The registry `LIVE_WRITER_UNITS` inside the script is the source of
+truth — if you add a new supervisor unit that can win the Alpaca live
+lock, add it to the registry in the same commit, or the next redeploy
+will leak the old writer.
+
+**Typical redeploy flow** when updating `launch.sh` flags:
+
+```bash
+# 1. edit flags
+vim deployments/xgb-daily-trader-live/launch.sh
+# 2. redeploy (stops others, restarts target, verifies lock claim)
+scripts/deploy_live_trader.sh xgb-daily-trader-live
+# 3. tail logs to confirm new flags took effect
+sudo tail -n 40 /var/log/supervisor/xgb-daily-trader-live.log
+```
+
 ---
 
 ### 🚩 PROPOSED (needs user approval) — raise `--min-score` 0.85 → 0.87 (2026-04-20 15:00 UTC)
