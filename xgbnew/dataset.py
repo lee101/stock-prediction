@@ -23,6 +23,7 @@ from .features import (
     CHRONOS_FEATURE_COLS,
     DAILY_FEATURE_COLS,
     HOURLY_FEATURE_COLS,
+    add_cross_sectional_ranks,
     build_features_for_symbol,
     build_features_for_symbol_hourly,
 )
@@ -220,6 +221,7 @@ def build_daily_dataset(
     chronos_cache: dict[date, dict[str, dict]] | None = None,
     min_dollar_vol: float = 1e6,
     fast_features: bool = False,
+    include_cross_sectional_ranks: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build train / val / test DataFrames for daily XGBoost model.
 
@@ -244,6 +246,7 @@ def build_daily_dataset(
             data_root, symbols, train_start, train_end, val_start, val_end,
             test_start, test_end, chronos_cache=chronos_cache,
             min_dollar_vol=min_dollar_vol,
+            include_cross_sectional_ranks=include_cross_sectional_ranks,
         )
 
     train_parts, val_parts, test_parts = [], [], []
@@ -290,6 +293,18 @@ def build_daily_dataset(
     val_df   = _concat(val_parts)
     test_df  = _concat(test_parts)
 
+    # Cross-sectional per-day ranks must be computed on the merged multi-symbol
+    # panel (not per-symbol). Compute within each split independently so a
+    # row's rank is only over symbols present in the SAME split+day — avoids
+    # train leaking into val/test.
+    if include_cross_sectional_ranks:
+        if len(train_df) > 0:
+            train_df = add_cross_sectional_ranks(train_df)
+        if len(val_df) > 0:
+            val_df = add_cross_sectional_ranks(val_df)
+        if len(test_df) > 0:
+            test_df = add_cross_sectional_ranks(test_df)
+
     # Attach Chronos2 features to test set (and optionally val)
     if chronos_cache and len(test_df) > 0:
         test_df = _attach_chronos_features_fast(test_df, chronos_cache)
@@ -312,6 +327,7 @@ def _build_daily_dataset_fast(
     test_end: date,
     chronos_cache: dict[date, dict[str, dict]] | None = None,
     min_dollar_vol: float = 1e6,
+    include_cross_sectional_ranks: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Polars-native dataset builder. Same splits and columns as the pandas
     path, but features come from ``xgbnew.features_fast.build_daily_features_fast``
@@ -342,6 +358,14 @@ def _build_daily_dataset_fast(
         for col in CHRONOS_FEATURE_COLS:
             if col not in df.columns:
                 df[col] = 0.0
+
+    if include_cross_sectional_ranks:
+        if len(tr) > 0:
+            tr = add_cross_sectional_ranks(tr)
+        if len(va) > 0:
+            va = add_cross_sectional_ranks(va)
+        if len(te) > 0:
+            te = add_cross_sectional_ranks(te)
 
     if chronos_cache and len(te) > 0:
         te = _attach_chronos_features_fast(te, chronos_cache)

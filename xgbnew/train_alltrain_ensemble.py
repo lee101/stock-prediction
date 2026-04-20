@@ -38,7 +38,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS
+from xgbnew.features import DAILY_FEATURE_COLS, DAILY_RANK_FEATURE_COLS
 from xgbnew.model import XGBStockModel
 
 
@@ -71,6 +71,11 @@ def parse_args(argv=None):
     p.add_argument("--device", default="cpu")
     p.add_argument("--out-dir", type=Path,
                    default=REPO / "analysis/xgbnew_daily/alltrain_ensemble")
+    p.add_argument("--include-ranks", action="store_true",
+                   help="Add 5 per-day cross-sectional pct-rank features "
+                        "(rank_ret_1d, rank_ret_5d, rank_vol_20d, "
+                        "rank_dolvol_20d_log, rank_rsi_14). Saved into the "
+                        "pkl feature_cols so predict-time knows to use them.")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -106,9 +111,16 @@ def main(argv=None) -> int:
         chronos_cache=chronos_cache if chronos_cache else None,
         min_dollar_vol=args.min_dollar_vol,
         fast_features=False,
+        include_cross_sectional_ranks=bool(args.include_ranks),
     )
     print(f"[xgb-alltrain-ens] dataset built in {time.perf_counter()-t0:.1f}s | "
           f"rows={len(train_df):,}  train_symbols={train_df['symbol'].nunique()}", flush=True)
+
+    feature_cols = list(DAILY_FEATURE_COLS)
+    if args.include_ranks:
+        feature_cols += list(DAILY_RANK_FEATURE_COLS)
+    print(f"[xgb-alltrain-ens] feature_cols={len(feature_cols)} "
+          f"ranks_on={bool(args.include_ranks)}", flush=True)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,7 +135,7 @@ def main(argv=None) -> int:
             learning_rate=float(args.learning_rate),
             random_state=int(seed),
         )
-        model.fit(train_df, DAILY_FEATURE_COLS, verbose=args.verbose)
+        model.fit(train_df, feature_cols, verbose=args.verbose)
         out_pkl = args.out_dir / f"alltrain_seed{seed}.pkl"
         model.save(out_pkl)
         saved.append({"seed": int(seed), "path": str(out_pkl),
@@ -145,6 +157,8 @@ def main(argv=None) -> int:
             "learning_rate": float(args.learning_rate),
             "device": args.device,
             "min_dollar_vol": float(args.min_dollar_vol),
+            "include_ranks": bool(args.include_ranks),
+            "feature_cols": feature_cols,
         },
         "blend_recipe": "predict_proba mean across seeds then pick top_n=1",
     }

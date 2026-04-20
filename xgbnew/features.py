@@ -93,6 +93,18 @@ DAILY_FEATURE_COLS = [
     "last_close_log",
 ]
 
+# Cross-sectional pct-rank features (per-day across all symbols).
+# Opt-in: only present when the dataset builder is called with
+# include_cross_sectional_ranks=True. Models trained without them keep
+# working because XGBStockModel.feature_cols is saved per-pkl.
+DAILY_RANK_FEATURE_COLS = [
+    "rank_ret_1d",
+    "rank_ret_5d",
+    "rank_vol_20d",
+    "rank_dolvol_20d_log",
+    "rank_rsi_14",
+]
+
 CHRONOS_FEATURE_COLS = [
     "chronos_oc_return",
     "chronos_cc_return",
@@ -287,13 +299,66 @@ def build_features_for_symbol_hourly(
     return feat
 
 
+def add_cross_sectional_ranks(
+    df: pd.DataFrame,
+    *,
+    source_to_rank: dict[str, str] | None = None,
+    fill_value: float = 0.5,
+) -> pd.DataFrame:
+    """Add per-day pct-rank columns across all symbols.
+
+    For each (source_col → rank_col) pair, computes
+    ``df.groupby("date")[source_col].rank(pct=True, method="average")`` — a
+    float in (0, 1] per row. NaN source values stay NaN in the rank output;
+    they are then filled with ``fill_value`` (default 0.5 = neutral) so
+    XGBoost doesn't silently impute with column median (which would be
+    meaningless for a rank).
+
+    The base per-symbol features in ``source_col`` must already be computed
+    (call this AFTER ``build_features_for_symbol`` per-symbol + concat).
+
+    Single-symbol days (only one row for that date) get rank = 1.0; that's
+    the pandas default and is OK — such days shouldn't exist in the trading
+    universe we evaluate on, but guard anyway so the code doesn't crash on
+    toy tests.
+
+    Does not modify ``df`` in place.
+    """
+    if source_to_rank is None:
+        source_to_rank = {
+            "ret_1d":         "rank_ret_1d",
+            "ret_5d":         "rank_ret_5d",
+            "vol_20d":        "rank_vol_20d",
+            "dolvol_20d_log": "rank_dolvol_20d_log",
+            "rsi_14":         "rank_rsi_14",
+        }
+    if "date" not in df.columns:
+        raise ValueError(
+            "add_cross_sectional_ranks requires a 'date' column in df; "
+            "call this after the per-symbol features are concatenated."
+        )
+    out = df.copy()
+    grp = out.groupby("date", sort=False)
+    for src, dst in source_to_rank.items():
+        if src not in out.columns:
+            raise ValueError(
+                f"add_cross_sectional_ranks: source column {src!r} missing "
+                f"from df (columns={list(out.columns)[:20]}...)"
+            )
+        ranks = grp[src].rank(pct=True, method="average")
+        out[dst] = ranks.fillna(fill_value).astype(np.float32)
+    return out
+
+
 __all__ = [
     "DAILY_FEATURE_COLS",
+    "DAILY_RANK_FEATURE_COLS",
     "CHRONOS_FEATURE_COLS",
     "ALL_FEATURE_COLS",
     "HOURLY_FEATURE_COLS",
     "build_features_for_symbol",
     "build_features_for_symbol_hourly",
+    "add_cross_sectional_ranks",
     "_rsi_series",
     "_cs_spread_series",
 ]

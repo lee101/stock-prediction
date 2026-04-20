@@ -44,7 +44,7 @@ import pandas as pd
 
 from xgbnew.backtest import BacktestConfig, simulate
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS
+from xgbnew.features import DAILY_FEATURE_COLS, DAILY_RANK_FEATURE_COLS
 from xgbnew.model import XGBStockModel
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,28 @@ def run_sweep(
     if chronos_cache_path is not None and chronos_cache_path.exists():
         chronos_cache = load_chronos_cache(chronos_cache_path)
 
+    # Load models first so we can peek at their feature_cols and decide
+    # whether the dataset needs cross-sectional ranks attached.
+    models: list[XGBStockModel] = []
+    for p in model_paths:
+        logger.info("loading %s", p)
+        models.append(XGBStockModel.load(p))
+    def _model_has_ranks(m) -> bool:
+        fc = getattr(m, "feature_cols", None) or []
+        return any(c in fc for c in DAILY_RANK_FEATURE_COLS)
+
+    have_ranks = [_model_has_ranks(m) for m in models]
+    needs_ranks = any(have_ranks)
+    # All models must agree — a mixed ensemble (some with ranks, some without)
+    # would silently produce different feature sets per member. Reject.
+    if any(have_ranks) and not all(have_ranks):
+        raise ValueError(
+            "Ensemble mixes rank-trained and non-rank-trained models. "
+            f"feature_cols per model: "
+            f"{[len(m.feature_cols) for m in models]}"
+        )
+    logger.info("ensemble feature-mode: ranks=%s", needs_ranks)
+
     _t = time.perf_counter()
     train_df, _, oos_df = build_daily_dataset(
         data_root=data_root,
@@ -224,14 +246,10 @@ def run_sweep(
         chronos_cache=chronos_cache if chronos_cache else None,
         min_dollar_vol=min_dollar_vol,
         fast_features=False,
+        include_cross_sectional_ranks=needs_ranks,
     )
     logger.info("dataset built in %.1fs | train=%d oos=%d",
                 time.perf_counter() - _t, len(train_df), len(oos_df))
-
-    models: list[XGBStockModel] = []
-    for p in model_paths:
-        logger.info("loading %s", p)
-        models.append(XGBStockModel.load(p))
 
     scores = _blend_scores(oos_df, models, blend_mode)
 
