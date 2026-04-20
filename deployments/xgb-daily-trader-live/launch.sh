@@ -9,6 +9,11 @@
 #   - Full-stack ensemble eval (OOS 2025-01→2026-04-19, 60 windows):
 #       deploy-cost (fb=5bps fee=0.28bps): +141%/mo med, p10 +96%, 0/60 neg
 #       36× fees stress   (fb=15 fee=10): +108%/mo med, p10 +68%, 0/60 neg
+#   - Inference-side min_dollar_vol 50M (2026-04-20): strict-dominance lift
+#     over 5M floor — med +2.08%/mo, p10 +5.23%/mo, same 0/60 neg, same
+#     ddW 5.34 & idW 12.93. Predicted by symbol-LOBO (+5.23 goodness)
+#     and confirmed by inference-min-dolvol sweep. No retraining needed:
+#     the 50M gate only narrows the pick pool at inference time.
 #
 # Safety: xgbnew/live_trader.py imports src.alpaca_singleton for the
 # fcntl live-writer lock. Only one live process allowed at a time.
@@ -46,7 +51,7 @@ exec python -u -m xgbnew.live_trader \
   --allocation 2.0 \
   --min-score 0.85 \
   --hold-through \
-  --min-dollar-vol 5000000 \
+  --min-dollar-vol 50000000 \
   --live \
   --loop \
   --verbose
