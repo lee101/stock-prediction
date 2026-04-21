@@ -575,6 +575,46 @@ def test_sweep_inv_vol_axis_matches_product(monkeypatch, tmp_path):
         assert c.inv_vol_cap == pytest.approx(3.0)
 
 
+def test_sweep_invert_scores_flips_picks(monkeypatch, tmp_path):
+    """invert_scores=True should pick the opposite set of symbols and
+    produce a different PnL when the model rank-orders the panel."""
+    # Panel with a clear monotone bias in score (via _FakeModel: SYM0<<SYM5).
+    sym_vols = {f"SYM{k}": 0.10 for k in range(6)}
+    _install_fakes_with_vol(monkeypatch, sym_vols)
+    paths = _fake_paths(tmp_path, 1)
+
+    cells_norm = sweep.run_sweep(
+        symbols=list(sym_vols),
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0], min_score_grid=[0.0],
+        hold_through_grid=[False], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        invert_scores=False,
+    )
+    cells_inv = sweep.run_sweep(
+        symbols=list(sym_vols),
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0], min_score_grid=[0.0],
+        hold_through_grid=[False], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        invert_scores=True,
+    )
+    assert len(cells_norm) == 1 and len(cells_inv) == 1
+    # PnL must differ (different picks → different trades).
+    assert (cells_norm[0].median_monthly_pct
+            != pytest.approx(cells_inv[0].median_monthly_pct, abs=0.01)), (
+        f"invert_scores had no effect: {cells_norm[0]} vs {cells_inv[0]}"
+    )
+
+
 def test_sweep_inv_vol_changes_results(monkeypatch, tmp_path):
     """inv-vol target=0 vs 0.25 must produce different PnL when vol varies."""
     # Spread vol widely so scales push and pull across picks.

@@ -413,6 +413,7 @@ def run_sweep(
     inv_vol_target_grid: list[float] | None = None,
     inv_vol_floor: float = 0.05,
     inv_vol_cap: float = 3.0,
+    invert_scores: bool = False,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -466,6 +467,12 @@ def run_sweep(
                 time.perf_counter() - _t, len(train_df), len(oos_df))
 
     scores = _blend_scores(oos_df, models, blend_mode)
+    if invert_scores:
+        # Flip rank-order so "top-N" becomes the worst-scored names. Kept
+        # in [0,1] so existing min_score gates stay meaningful on the
+        # inverted distribution (callers should LOWER the gate).
+        logger.info("invert_scores=True → flipping score ranks for short-side test")
+        scores = (1.0 - scores).rename("ensemble_score_inv")
 
     all_days = sorted(oos_df["date"].unique())
     windows = _build_windows(all_days, window_days, stride_days)
@@ -690,6 +697,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--inv-vol-cap", type=float, default=3.0,
                    help="Symmetric cap on the inv-vol multiplier. Scale is "
                         "clipped to [1/cap, cap]. Default 3.0 (so 0.333×..3×).")
+    p.add_argument("--invert-scores", action="store_true",
+                   help="Replace blended scores with 1 - scores so the sim "
+                        "picks the bottom-N (originally worst) symbols. "
+                        "Long-only sim is still used — POSITIVE median here "
+                        "means the model rank-orders correctly (winners & "
+                        "losers separable) and a proper short-side sim "
+                        "WOULD profit. NEGATIVE median + negative PnL in "
+                        "the regular sweep means the model is noise. "
+                        "Experimental diagnostic only; LOWER --min-score-grid "
+                        "when using this since the inverted distribution "
+                        "skews toward lower values.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -776,6 +794,7 @@ def main(argv=None) -> int:
         ),
         inv_vol_floor=float(args.inv_vol_floor),
         inv_vol_cap=float(args.inv_vol_cap),
+        invert_scores=bool(args.invert_scores),
     )
 
     rows = _cells_to_rows(cells)
