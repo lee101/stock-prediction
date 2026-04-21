@@ -44,7 +44,11 @@ import pandas as pd
 
 from xgbnew.backtest import BacktestConfig, simulate
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS, DAILY_RANK_FEATURE_COLS
+from xgbnew.features import (
+    DAILY_DISPERSION_FEATURE_COLS,
+    DAILY_FEATURE_COLS,
+    DAILY_RANK_FEATURE_COLS,
+)
 from xgbnew.model import XGBStockModel
 
 logger = logging.getLogger(__name__)
@@ -465,8 +469,14 @@ def run_sweep(
         fc = getattr(m, "feature_cols", None) or []
         return any(c in fc for c in DAILY_RANK_FEATURE_COLS)
 
+    def _model_has_dispersion(m) -> bool:
+        fc = getattr(m, "feature_cols", None) or []
+        return any(c in fc for c in DAILY_DISPERSION_FEATURE_COLS)
+
     have_ranks = [_model_has_ranks(m) for m in models]
+    have_disp = [_model_has_dispersion(m) for m in models]
     needs_ranks = any(have_ranks)
+    needs_disp = any(have_disp)
     # All models must agree — a mixed ensemble (some with ranks, some without)
     # would silently produce different feature sets per member. Reject.
     if any(have_ranks) and not all(have_ranks):
@@ -475,7 +485,13 @@ def run_sweep(
             f"feature_cols per model: "
             f"{[len(m.feature_cols) for m in models]}"
         )
-    logger.info("ensemble feature-mode: ranks=%s", needs_ranks)
+    if any(have_disp) and not all(have_disp):
+        raise ValueError(
+            "Ensemble mixes dispersion-trained and non-dispersion models. "
+            f"feature_cols per model: "
+            f"{[len(m.feature_cols) for m in models]}"
+        )
+    logger.info("ensemble feature-mode: ranks=%s disp=%s", needs_ranks, needs_disp)
 
     _t = time.perf_counter()
     train_df, _, oos_df = build_daily_dataset(
@@ -489,6 +505,7 @@ def run_sweep(
         min_dollar_vol=min_dollar_vol,
         fast_features=False,
         include_cross_sectional_ranks=needs_ranks,
+        include_cross_sectional_dispersion=needs_disp,
     )
     logger.info("dataset built in %.1fs | train=%d oos=%d",
                 time.perf_counter() - _t, len(train_df), len(oos_df))

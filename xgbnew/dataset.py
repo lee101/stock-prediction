@@ -23,6 +23,7 @@ from .features import (
     CHRONOS_FEATURE_COLS,
     DAILY_FEATURE_COLS,
     HOURLY_FEATURE_COLS,
+    add_cross_sectional_dispersion,
     add_cross_sectional_ranks,
     build_features_for_symbol,
     build_features_for_symbol_hourly,
@@ -227,6 +228,7 @@ def build_daily_dataset(
     min_dollar_vol: float = 1e6,
     fast_features: bool = False,
     include_cross_sectional_ranks: bool = False,
+    include_cross_sectional_dispersion: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build train / val / test DataFrames for daily XGBoost model.
 
@@ -252,6 +254,7 @@ def build_daily_dataset(
             test_start, test_end, chronos_cache=chronos_cache,
             min_dollar_vol=min_dollar_vol,
             include_cross_sectional_ranks=include_cross_sectional_ranks,
+            include_cross_sectional_dispersion=include_cross_sectional_dispersion,
         )
 
     train_parts, val_parts, test_parts = [], [], []
@@ -310,6 +313,14 @@ def build_daily_dataset(
         if len(test_df) > 0:
             test_df = add_cross_sectional_ranks(test_df)
 
+    if include_cross_sectional_dispersion:
+        if len(train_df) > 0:
+            train_df = add_cross_sectional_dispersion(train_df)
+        if len(val_df) > 0:
+            val_df = add_cross_sectional_dispersion(val_df)
+        if len(test_df) > 0:
+            test_df = add_cross_sectional_dispersion(test_df)
+
     # Attach Chronos2 features to test set (and optionally val)
     if chronos_cache and len(test_df) > 0:
         test_df = _attach_chronos_features_fast(test_df, chronos_cache)
@@ -333,6 +344,7 @@ def _build_daily_dataset_fast(
     chronos_cache: dict[date, dict[str, dict]] | None = None,
     min_dollar_vol: float = 1e6,
     include_cross_sectional_ranks: bool = False,
+    include_cross_sectional_dispersion: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Polars-native dataset builder. Same splits and columns as the pandas
     path, but features come from ``xgbnew.features_fast.build_daily_features_fast``
@@ -373,6 +385,14 @@ def _build_daily_dataset_fast(
             va = add_cross_sectional_ranks(va)
         if len(te) > 0:
             te = add_cross_sectional_ranks(te)
+
+    if include_cross_sectional_dispersion:
+        if len(tr) > 0:
+            tr = add_cross_sectional_dispersion(tr)
+        if len(va) > 0:
+            va = add_cross_sectional_dispersion(va)
+        if len(te) > 0:
+            te = add_cross_sectional_dispersion(te)
 
     if chronos_cache and len(te) > 0:
         te = _attach_chronos_features_fast(te, chronos_cache)

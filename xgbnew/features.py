@@ -105,6 +105,16 @@ DAILY_RANK_FEATURE_COLS = [
     "rank_rsi_14",
 ]
 
+# Day-level cross-sectional dispersion features (broadcast — same value
+# for every symbol on a given day). Opt-in: only added when the dataset
+# builder is called with include_cross_sectional_dispersion=True.
+# These are leak-free because they are computed from ret_5d, which is
+# already lag-1 (prev_close/close.shift(6)).
+DAILY_DISPERSION_FEATURE_COLS = [
+    "cs_iqr_ret5",
+    "cs_skew_ret5",
+]
+
 CHRONOS_FEATURE_COLS = [
     "chronos_oc_return",
     "chronos_cc_return",
@@ -354,15 +364,63 @@ def add_cross_sectional_ranks(
     return out
 
 
+def add_cross_sectional_dispersion(
+    df: pd.DataFrame,
+    *,
+    fill_value: float = 0.0,
+) -> pd.DataFrame:
+    """Add day-level cross-sectional dispersion features.
+
+    For each date, compute across the universe:
+      ``cs_iqr_ret5  = quantile(0.75) - quantile(0.25)`` of ret_5d
+      ``cs_skew_ret5 = pandas.Series.skew()`` of ret_5d
+    Broadcast both values to every symbol-row of that day so XGBoost sees
+    them as per-row features (same value across symbols on the same date).
+
+    Leak-free because ret_5d is already lag-1 (prev_close / close.shift(6))
+    in ``build_features_for_symbol``.
+
+    NaN days (e.g., <2 symbols have a ret_5d) get ``fill_value`` (default
+    0.0 = neutral).
+
+    Must be called AFTER per-symbol features are concatenated.
+    """
+    if "date" not in df.columns:
+        raise ValueError(
+            "add_cross_sectional_dispersion requires a 'date' column in df"
+        )
+    if "ret_5d" not in df.columns:
+        raise ValueError(
+            "add_cross_sectional_dispersion requires a 'ret_5d' column in df"
+        )
+    out = df.copy()
+    grp = out.groupby("date", sort=False)["ret_5d"]
+    day_q75 = grp.quantile(0.75)
+    day_q25 = grp.quantile(0.25)
+    day_iqr = (day_q75 - day_q25).rename("cs_iqr_ret5")
+    day_skew = grp.agg(lambda s: float(pd.Series(s).skew())).rename("cs_skew_ret5")
+    iqr_map = day_iqr.to_dict()
+    skew_map = day_skew.to_dict()
+    out["cs_iqr_ret5"] = (
+        out["date"].map(iqr_map).fillna(fill_value).astype(np.float32)
+    )
+    out["cs_skew_ret5"] = (
+        out["date"].map(skew_map).fillna(fill_value).astype(np.float32)
+    )
+    return out
+
+
 __all__ = [
     "DAILY_FEATURE_COLS",
     "DAILY_RANK_FEATURE_COLS",
+    "DAILY_DISPERSION_FEATURE_COLS",
     "CHRONOS_FEATURE_COLS",
     "ALL_FEATURE_COLS",
     "HOURLY_FEATURE_COLS",
     "build_features_for_symbol",
     "build_features_for_symbol_hourly",
     "add_cross_sectional_ranks",
+    "add_cross_sectional_dispersion",
     "_rsi_series",
     "_cs_spread_series",
 ]

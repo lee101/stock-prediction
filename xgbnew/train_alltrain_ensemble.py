@@ -38,7 +38,11 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS, DAILY_RANK_FEATURE_COLS
+from xgbnew.features import (
+    DAILY_DISPERSION_FEATURE_COLS,
+    DAILY_FEATURE_COLS,
+    DAILY_RANK_FEATURE_COLS,
+)
 from xgbnew.model import XGBStockModel
 
 
@@ -76,6 +80,11 @@ def parse_args(argv=None):
                         "(rank_ret_1d, rank_ret_5d, rank_vol_20d, "
                         "rank_dolvol_20d_log, rank_rsi_14). Saved into the "
                         "pkl feature_cols so predict-time knows to use them.")
+    p.add_argument("--include-dispersion", action="store_true",
+                   help="Add 2 day-level cross-sectional dispersion features "
+                        "(cs_iqr_ret5, cs_skew_ret5). Broadcast same value to "
+                        "every symbol-row of the same date. Saved into pkl "
+                        "feature_cols so predict-time uses them.")
     p.add_argument("--shapes", default="",
                    help="Architectural-diversity mode. Comma-separated tuples "
                         "'n_est:depth:lr:seed', one model per tuple. Overrides "
@@ -150,6 +159,7 @@ def main(argv=None) -> int:
         min_dollar_vol=args.min_dollar_vol,
         fast_features=False,
         include_cross_sectional_ranks=bool(args.include_ranks),
+        include_cross_sectional_dispersion=bool(args.include_dispersion),
     )
     print(f"[xgb-alltrain-ens] dataset built in {time.perf_counter()-t0:.1f}s | "
           f"rows={len(train_df):,}  train_symbols={train_df['symbol'].nunique()}", flush=True)
@@ -157,8 +167,10 @@ def main(argv=None) -> int:
     feature_cols = list(DAILY_FEATURE_COLS)
     if args.include_ranks:
         feature_cols += list(DAILY_RANK_FEATURE_COLS)
+    if args.include_dispersion:
+        feature_cols += list(DAILY_DISPERSION_FEATURE_COLS)
     print(f"[xgb-alltrain-ens] feature_cols={len(feature_cols)} "
-          f"ranks_on={bool(args.include_ranks)}", flush=True)
+          f"ranks_on={bool(args.include_ranks)} disp_on={bool(args.include_dispersion)}", flush=True)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
