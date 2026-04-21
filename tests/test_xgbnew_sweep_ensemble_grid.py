@@ -531,3 +531,70 @@ def test_sweep_vol_target_changes_results(monkeypatch, tmp_path):
     # Assert the two cells do not produce identical median monthly.
     assert by_vta[0.0].median_monthly_pct != by_vta[0.05].median_monthly_pct
 
+
+# ── Per-pick inv-vol sizing axis ───────────────────────────────────────────
+
+def _install_fakes_with_vol(monkeypatch, sym_vols: dict[str, float]) -> None:
+    """Like _install_fakes but stamps vol_20d per symbol on the panel."""
+    oos = _mk_panel()
+    oos["vol_20d"] = oos["symbol"].map(sym_vols).astype(float)
+    train = oos.copy()
+    monkeypatch.setattr(
+        sweep, "build_daily_dataset",
+        lambda **kw: (train, train.iloc[:0], oos),
+    )
+    monkeypatch.setattr(
+        sweep.XGBStockModel, "load",
+        classmethod(lambda cls, path: _FakeModel(seed=hash(str(path)) & 0xFFFF)),
+    )
+
+
+def test_sweep_inv_vol_axis_matches_product(monkeypatch, tmp_path):
+    """inv_vol_target_grid multiplies cell count linearly."""
+    sym_vols = {f"SYM{k}": 0.10 + 0.05 * k for k in range(6)}
+    _install_fakes_with_vol(monkeypatch, sym_vols)
+    paths = _fake_paths(tmp_path, 2)
+
+    cells = sweep.run_sweep(
+        symbols=list(sym_vols),
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0], min_score_grid=[0.0],
+        hold_through_grid=[False], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        inv_vol_target_grid=[0.0, 0.20, 0.30],
+    )
+    assert len(cells) == 3
+    assert sorted(c.inv_vol_target_ann for c in cells) == [0.0, 0.20, 0.30]
+    # Floor/cap should echo back (defaults).
+    for c in cells:
+        assert c.inv_vol_floor == pytest.approx(0.05)
+        assert c.inv_vol_cap == pytest.approx(3.0)
+
+
+def test_sweep_inv_vol_changes_results(monkeypatch, tmp_path):
+    """inv-vol target=0 vs 0.25 must produce different PnL when vol varies."""
+    # Spread vol widely so scales push and pull across picks.
+    sym_vols = {f"SYM{k}": 0.08 + 0.10 * k for k in range(6)}
+    _install_fakes_with_vol(monkeypatch, sym_vols)
+    paths = _fake_paths(tmp_path, 2)
+
+    cells = sweep.run_sweep(
+        symbols=list(sym_vols),
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[2.0], min_score_grid=[0.0],
+        hold_through_grid=[False], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        inv_vol_target_grid=[0.0, 0.25],
+    )
+    by_ivt = {c.inv_vol_target_ann: c for c in cells}
+    assert set(by_ivt) == {0.0, 0.25}
+    assert by_ivt[0.0].median_monthly_pct != by_ivt[0.25].median_monthly_pct
+

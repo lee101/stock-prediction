@@ -59,6 +59,21 @@ class BacktestConfig:
     regime_gate_window: int = 0         # 0 disables; 20/50/200 = SPY MA lookback
     vol_target_ann: float = 0.0         # 0 disables; else scale daily allocation by
                                         # min(1, vol_target_ann / realised_20d_ann_vol)
+    # Per-PICK (cross-sectional) inverse-vol sizing. The SPY-based
+    # vol_target_ann above responds to market-wide regime; this knob
+    # responds to *this pick's* realised vol. The 2025-09+ tariff crash
+    # is a cross-sectional shock (growth/high-beta names hammered while
+    # SPY index vol stays moderate), so per-pick inv-vol is the lever
+    # that can actually see it. Formula for each picked row:
+    #   eff_lev = leverage * clip(
+    #       inv_vol_target_ann / max(pick_vol_20d, inv_vol_floor),
+    #       1/inv_vol_cap, inv_vol_cap)
+    # 0 disables (pick_scale ≡ 1.0 — identity with pre-inv-vol sim).
+    inv_vol_target_ann: float = 0.0
+    inv_vol_floor: float = 0.05         # lower bound on pick_vol denom, prevents
+                                        # blowup for ultra-low-vol (or missing) names
+    inv_vol_cap: float = 3.0            # cap on the leverage multiplier (up AND down
+                                        # symmetric). 3.0 ⇒ scale ∈ [1/3, 3].
     allocation_mode: str = "equal"      # equal | softmax | score_norm — how we
                                         # weight the top_n picks within a day
     allocation_temp: float = 1.0        # softmax temperature (lower = more concentrated)
@@ -154,6 +169,30 @@ def _day_margin_cost(leverage: float) -> float:
     if leverage <= 1.0:
         return 0.0
     return (leverage - 1.0) * ANNUAL_MARGIN_RATE / TRADING_DAYS_PER_YEAR
+
+
+def _inv_vol_pick_scale(
+    pick_vol_20d: float,
+    *,
+    target_ann: float,
+    floor: float,
+    cap: float,
+) -> float:
+    """Per-pick leverage multiplier from 1/vol targeting. 1.0 when disabled.
+
+    target_ann <= 0 ⇒ returns 1.0 (identity, no scaling).
+    Missing / non-finite / non-positive vol ⇒ returns 1.0 (no surprise scale-up).
+    Otherwise clip(target / max(vol, floor), 1/cap, cap).
+    """
+    if target_ann <= 0.0:
+        return 1.0
+    if not np.isfinite(pick_vol_20d) or pick_vol_20d <= 0.0:
+        return 1.0
+    denom = max(float(pick_vol_20d), float(floor))
+    raw = float(target_ann) / denom
+    lo = 1.0 / float(cap) if cap > 0 else 0.0
+    hi = float(cap) if cap > 0 else raw
+    return float(min(max(raw, lo), hi))
 
 
 # Cap for annualised Sortino so the degenerate "almost no losses" case
@@ -499,18 +538,26 @@ def simulate(
                 spread = 25.0
             symbol = str(row["symbol"])
 
+            pick_scale = _inv_vol_pick_scale(
+                float(row.get("vol_20d", 0.0)),
+                target_ann=config.inv_vol_target_ann,
+                floor=config.inv_vol_floor,
+                cap=config.inv_vol_cap,
+            )
+            eff_lev = config.leverage * pick_scale
+
             if is_continuation:
                 # Position is held across the prior close — no trade fires
                 # today. PnL is close-to-close (captures overnight + intraday).
                 prev_c = prev_close_by_sym[symbol]
                 gross_oc = (c - prev_c) / prev_c
-                gross_leveraged = config.leverage * gross_oc
+                gross_leveraged = eff_lev * gross_oc
                 # Only the intraday margin-hold cost applies (no fees, no
                 # fill buffer since there's no trade).
-                cost_frac = _day_margin_cost(config.leverage)
+                cost_frac = _day_margin_cost(eff_lev)
                 net = gross_leveraged - cost_frac
                 worst_dd, best_runup = _intraday_excursion_pct(
-                    row, prev_c, config.leverage,
+                    row, prev_c, eff_lev,
                 )
                 trades.append(DayTrade(
                     symbol=symbol,
@@ -523,7 +570,7 @@ def simulate(
                     commission_bps=0.0,
                     fee_rate=0.0,
                     fill_buffer_bps=0.0,
-                    leverage=config.leverage,
+                    leverage=eff_lev,
                     gross_return_pct=gross_oc * 100.0,
                     net_return_pct=net * 100.0,
                     intraday_worst_dd_pct=worst_dd,
@@ -539,16 +586,16 @@ def simulate(
 
             gross_oc = (exit_fill - entry_fill) / entry_fill
             round_trip_return = (exit_fill * (1.0 - fee_rate) / (entry_fill * (1.0 + fee_rate))) - 1.0
-            gross_leveraged = config.leverage * round_trip_return
+            gross_leveraged = eff_lev * round_trip_return
 
             cost_frac = (
-                config.leverage * (2.0 * config.commission_bps) / 10_000.0
-                + _day_margin_cost(config.leverage)
+                eff_lev * (2.0 * config.commission_bps) / 10_000.0
+                + _day_margin_cost(eff_lev)
             )
             net = gross_leveraged - cost_frac
 
             worst_dd, best_runup = _intraday_excursion_pct(
-                row, entry_fill, config.leverage,
+                row, entry_fill, eff_lev,
             )
             trades.append(DayTrade(
                 symbol=symbol,
@@ -561,7 +608,7 @@ def simulate(
                 commission_bps=config.commission_bps,
                 fee_rate=fee_rate,
                 fill_buffer_bps=float(config.fill_buffer_bps),
-                leverage=config.leverage,
+                leverage=eff_lev,
                 gross_return_pct=gross_oc * 100.0,
                 net_return_pct=net * 100.0,
                 intraday_worst_dd_pct=worst_dd,
