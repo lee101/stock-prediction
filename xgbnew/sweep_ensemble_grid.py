@@ -50,6 +50,7 @@ from xgbnew.features import (
     DAILY_RANK_FEATURE_COLS,
 )
 from xgbnew.model import XGBStockModel
+from xgbnew.model_registry import load_any_model
 
 logger = logging.getLogger(__name__)
 
@@ -460,11 +461,13 @@ def run_sweep(
         chronos_cache = load_chronos_cache(chronos_cache_path)
 
     # Load models first so we can peek at their feature_cols and decide
-    # whether the dataset needs cross-sectional ranks attached.
-    models: list[XGBStockModel] = []
+    # whether the dataset needs cross-sectional ranks attached. Any family
+    # registered in xgbnew.model_registry (xgb/lgb/cat/mlp/...) is accepted;
+    # legacy pickles without a "family" key still dispatch to XGBStockModel.
+    models = []
     for p in model_paths:
         logger.info("loading %s", p)
-        models.append(XGBStockModel.load(p))
+        models.append(load_any_model(p))
     def _model_has_ranks(m) -> bool:
         fc = getattr(m, "feature_cols", None) or []
         return any(c in fc for c in DAILY_RANK_FEATURE_COLS)
