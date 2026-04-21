@@ -555,41 +555,15 @@ def _score_and_pick(
     return scores_df.head(args.top_n), scores_df
 
 
-def run_session_hold_through(
-    symbols: list[str],
-    data_root: Path,
-    model: XGBStockModel | list[XGBStockModel],
-    client,
+def _emit_session_start(
+    tlog: TradeLogger,
     args: argparse.Namespace,
-) -> None:
-    """Hold-through variant: rotate at NEXT-OPEN instead of selling at close.
-
-    Flow per session (fired each trading morning):
-      1. Gate on Alpaca calendar (/v2/clock).
-      2. Score + pick top-N.
-      3. Wait for open (9:30 ET).
-      4. Query currently-held positions.
-      5. If held_syms == pick_syms AND both non-empty → HOLD (no trades).
-         This is the win case: skip 2×(fee+buffer) and earn overnight drift.
-      6. Otherwise rotate:
-           SELL (old ∖ new) — each goes through guard_sell_against_death_spiral.
-           BUY (new ∖ old) — each records buy price via record_buy_price.
-      7. Skip the 15:50 sell entirely. Positions carry overnight; next session
-         decides whether to hold or rotate.
-
-    No 15:50 sell means a DOWN day passes through without the "sell at close"
-    mitigation — but the backtest validates this is net-positive because on
-    top_n=1 the same pick repeating is common and saves round-trip cost.
-    Regime gate / trading-calendar skip (weekend, holiday) does NOT flatten
-    positions — but that's correct: we want to carry through the gap and
-    continue holding if the signal agrees on the next trading day.
-    """
+    client,
+    *,
+    mode: str,
+) -> float | None:
+    """Emit the session_start event and return equity_pre (or None)."""
     paper = not args.live
-    today_str = date.today().isoformat()
-    print(f"\n[xgb-live/hold-through] Session {today_str}  paper={paper}  "
-          f"dry_run={args.dry_run}", flush=True)
-
-    tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
     equity_pre = None
     if client is not None and not args.dry_run:
         try:
@@ -598,7 +572,7 @@ def run_session_hold_through(
             equity_pre = None
     tlog.log(
         "session_start",
-        mode="hold_through",
+        mode=mode,
         paper=paper,
         dry_run=bool(args.dry_run),
         top_n=int(args.top_n),
@@ -608,26 +582,29 @@ def run_session_hold_through(
         min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
         equity_pre=equity_pre,
     )
+    return equity_pre
 
-    if client is not None and not args.dry_run:
-        is_trading, reason = _is_today_trading_day(client)
-        if not is_trading:
-            print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
-                  f"skipping session.", flush=True)
-            tlog.log("session_skipped", reason=reason)
-            return
 
-    picks, _all_scores = _score_and_pick(symbols, data_root, model, args,
-                                         trade_logger=tlog)
-    if len(picks) == 0:
-        print(f"[xgb-live] No picks today — holding current positions (if any).",
+def _wait_for_market_open() -> None:
+    """Block until MARKET_OPEN ET if the clock says we're before it."""
+    now_et = datetime.now(ET)
+    if now_et.hour < MARKET_OPEN[0] or (now_et.hour == MARKET_OPEN[0] and
+                                         now_et.minute < MARKET_OPEN[1]):
+        print(f"[xgb-live] Waiting for {MARKET_OPEN[0]:02d}:{MARKET_OPEN[1]:02d} ET...",
               flush=True)
-        tlog.log("no_picks")
-        return
+        _wait_until(MARKET_OPEN[0], MARKET_OPEN[1], ET)
 
-    pick_syms = set(picks["symbol"].astype(str))
 
-    print(f"\n[xgb-live/hold-through] Top-{args.top_n} picks for {today_str}:")
+def _announce_picks(
+    picks: pd.DataFrame,
+    today_str: str,
+    top_n: int,
+    tlog: TradeLogger,
+    *,
+    tag: str,
+) -> None:
+    """Print + trade-log the per-rank pick lines (shared by both entry points)."""
+    print(f"\n[{tag}] Top-{top_n} picks for {today_str}:")
     for rank, (_, row) in enumerate(picks.iterrows(), start=1):
         print(f"  {row['symbol']:<8}  score={row['score']:.4f}  "
               f"last_close=${row['last_close']:.2f}  spread={row['spread_bps']:.1f}bps")
@@ -637,74 +614,26 @@ def run_session_hold_through(
                  last_close=float(row["last_close"]),
                  spread_bps=float(row["spread_bps"]))
 
-    if args.dry_run:
-        print("[xgb-live/hold-through] DRY RUN — no orders placed.", flush=True)
-        tlog.log("dry_run_end")
-        return
 
-    now_et = datetime.now(ET)
-    if now_et.hour < MARKET_OPEN[0] or (now_et.hour == MARKET_OPEN[0] and
-                                         now_et.minute < MARKET_OPEN[1]):
-        print(f"[xgb-live] Waiting for {MARKET_OPEN[0]:02d}:{MARKET_OPEN[1]:02d} ET...",
-              flush=True)
-        _wait_until(MARKET_OPEN[0], MARKET_OPEN[1], ET)
+def _execute_buys(
+    client,
+    picks: pd.DataFrame,
+    buy_notional: float,
+    tlog: TradeLogger,
+    *,
+    target_syms: set[str] | None = None,
+) -> None:
+    """Submit BUY orders for each pick (optionally restricted to ``target_syms``).
 
-    position_details = _get_position_details(client)
-    held_syms = {s for s, det in position_details.items() if det["qty"] > 0}
-
-    if held_syms == pick_syms:
-        print(f"[xgb-live/hold-through] HOLD — picks unchanged "
-              f"({sorted(pick_syms)}). Skipping round-trip.", flush=True)
-        tlog.log("hold", held=sorted(pick_syms))
-        _log_session_end(tlog, client, equity_pre)
-        return
-
-    to_sell = held_syms - pick_syms
-    to_buy = pick_syms - held_syms
-    print(f"[xgb-live/hold-through] Rotation: sell={sorted(to_sell)}  "
-          f"buy={sorted(to_buy)}  keep={sorted(held_syms & pick_syms)}", flush=True)
-    tlog.log("rotate", to_sell=sorted(to_sell), to_buy=sorted(to_buy),
-             keep=sorted(held_syms & pick_syms))
-
-    # HARD RULE #3: every sell must pass through guard_sell_against_death_spiral.
-    from src.alpaca_singleton import (
-        guard_sell_against_death_spiral,
-        record_buy_price,
-    )
-
-    # SELL dropped-out names FIRST (frees up buying power before buys).
-    for sym in sorted(to_sell):
-        det = position_details[sym]
-        qty = det["qty"]
-        if qty <= 0:
-            continue
-        current_price = det["current_price"] or det["avg_entry_price"]
-        if current_price <= 0:
-            logger.error("SELL skipped for %s — no usable price for death-spiral "
-                         "guard", sym)
-            continue
-        guard_sell_against_death_spiral(sym, "sell", float(current_price))
-        try:
-            order = _submit_market_order(client, symbol=sym, qty=abs(qty), side="sell")
-            order_id = str(getattr(order, "id", "") or "")
-            print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
-                  f"order_id={order_id or '?'}", flush=True)
-            tlog.log("sell_submitted", symbol=sym, qty=float(qty),
-                     expected_price=float(current_price), order_id=order_id)
-        except Exception as exc:
-            logger.error("SELL failed for %s: %s", sym, exc)
-            tlog.log("sell_failed", symbol=sym, error=str(exc))
-
-    # BUY new picks.
-    account = _get_account(client)
-    portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
-    buy_notional = portfolio_value * args.allocation / args.top_n
-    print(f"[xgb-live/hold-through] BUY notional=${buy_notional:,.0f}/pick "
-          f"(portfolio=${portfolio_value:,.0f})", flush=True)
+    Records buy price for HARD RULE #3 via ``record_buy_price``. Import is
+    done inside the function so tests monkeypatching
+    ``src.alpaca_singleton.record_buy_price`` still intercept the call.
+    """
+    from src.alpaca_singleton import record_buy_price
 
     for _, row in picks.iterrows():
         sym = str(row["symbol"])
-        if sym not in to_buy:
+        if target_syms is not None and sym not in target_syms:
             continue
         price = float(row["last_close"])
         if price <= 0:
@@ -712,7 +641,8 @@ def run_session_hold_through(
             continue
         qty = _target_buy_qty(buy_notional=buy_notional, price=price)
         if qty <= 0:
-            logger.warning("Skipping BUY %s — invalid target qty", sym)
+            logger.warning("Skipping BUY %s — invalid target qty for price=%s "
+                           "notional=%s", sym, price, buy_notional)
             continue
         try:
             order = _submit_market_order(client, symbol=sym, qty=qty, side="buy")
@@ -738,6 +668,130 @@ def run_session_hold_through(
         except Exception as exc:
             logger.error("BUY failed for %s: %s", sym, exc)
             tlog.log("buy_failed", symbol=sym, error=str(exc))
+
+
+def _execute_sells(
+    client,
+    position_details: dict,
+    sell_syms,
+    tlog: TradeLogger,
+) -> None:
+    """Submit SELL orders; every sell passes through the death-spiral guard.
+
+    ``sell_syms`` may be a set, list, or any iterable — iterated in sorted
+    order for deterministic tests.
+    """
+    from src.alpaca_singleton import guard_sell_against_death_spiral
+
+    for sym in sorted(sell_syms):
+        det = position_details.get(sym)
+        if not det:
+            continue
+        qty = det["qty"]
+        if qty <= 0:
+            continue
+        current_price = det.get("current_price", 0) or det.get("avg_entry_price", 0)
+        if current_price is None or current_price <= 0:
+            logger.error("SELL skipped for %s — no usable price for death-spiral "
+                         "guard", sym)
+            continue
+        # Guard raises RuntimeError on death-spiral sells → propagate (crash).
+        guard_sell_against_death_spiral(sym, "sell", float(current_price))
+        try:
+            order = _submit_market_order(client, symbol=sym, qty=abs(qty),
+                                         side="sell")
+            order_id = str(getattr(order, "id", "") or "")
+            print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
+                  f"order_id={order_id or '?'}", flush=True)
+            tlog.log("sell_submitted", symbol=sym, qty=float(qty),
+                     expected_price=float(current_price), order_id=order_id)
+        except Exception as exc:
+            logger.error("SELL failed for %s: %s", sym, exc)
+            tlog.log("sell_failed", symbol=sym, error=str(exc))
+
+
+def run_session_hold_through(
+    symbols: list[str],
+    data_root: Path,
+    model: XGBStockModel | list[XGBStockModel],
+    client,
+    args: argparse.Namespace,
+) -> None:
+    """Hold-through variant: rotate at NEXT-OPEN instead of selling at close.
+
+    Flow per session (fired each trading morning):
+      1. Gate on Alpaca calendar (/v2/clock).
+      2. Score + pick top-N.
+      3. Wait for open (9:30 ET).
+      4. Query currently-held positions.
+      5. If held_syms == pick_syms AND both non-empty → HOLD (no trades).
+         This is the win case: skip 2×(fee+buffer) and earn overnight drift.
+      6. Otherwise rotate:
+           SELL (old ∖ new) — each goes through guard_sell_against_death_spiral.
+           BUY (new ∖ old) — each records buy price via record_buy_price.
+      7. Skip the 15:50 sell entirely. Positions carry overnight; next session
+         decides whether to hold or rotate.
+    """
+    today_str = date.today().isoformat()
+    paper = not args.live
+    print(f"\n[xgb-live/hold-through] Session {today_str}  paper={paper}  "
+          f"dry_run={args.dry_run}", flush=True)
+
+    tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
+    equity_pre = _emit_session_start(tlog, args, client, mode="hold_through")
+
+    if client is not None and not args.dry_run:
+        is_trading, reason = _is_today_trading_day(client)
+        if not is_trading:
+            print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
+                  f"skipping session.", flush=True)
+            tlog.log("session_skipped", reason=reason)
+            return
+
+    picks, _all_scores = _score_and_pick(symbols, data_root, model, args,
+                                         trade_logger=tlog)
+    if len(picks) == 0:
+        print(f"[xgb-live] No picks today — holding current positions (if any).",
+              flush=True)
+        tlog.log("no_picks")
+        return
+
+    _announce_picks(picks, today_str, args.top_n, tlog, tag="xgb-live/hold-through")
+
+    if args.dry_run:
+        print("[xgb-live/hold-through] DRY RUN — no orders placed.", flush=True)
+        tlog.log("dry_run_end")
+        return
+
+    _wait_for_market_open()
+
+    pick_syms = set(picks["symbol"].astype(str))
+    position_details = _get_position_details(client)
+    held_syms = {s for s, det in position_details.items() if det["qty"] > 0}
+
+    if held_syms == pick_syms:
+        print(f"[xgb-live/hold-through] HOLD — picks unchanged "
+              f"({sorted(pick_syms)}). Skipping round-trip.", flush=True)
+        tlog.log("hold", held=sorted(pick_syms))
+        _log_session_end(tlog, client, equity_pre)
+        return
+
+    to_sell = held_syms - pick_syms
+    to_buy = pick_syms - held_syms
+    print(f"[xgb-live/hold-through] Rotation: sell={sorted(to_sell)}  "
+          f"buy={sorted(to_buy)}  keep={sorted(held_syms & pick_syms)}", flush=True)
+    tlog.log("rotate", to_sell=sorted(to_sell), to_buy=sorted(to_buy),
+             keep=sorted(held_syms & pick_syms))
+
+    # SELL dropped-out names FIRST (frees up buying power before buys).
+    _execute_sells(client, position_details, to_sell, tlog)
+
+    account = _get_account(client)
+    portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
+    buy_notional = portfolio_value * args.allocation / args.top_n
+    print(f"[xgb-live/hold-through] BUY notional=${buy_notional:,.0f}/pick "
+          f"(portfolio=${portfolio_value:,.0f})", flush=True)
+    _execute_buys(client, picks, buy_notional, tlog, target_syms=to_buy)
 
     print(f"[xgb-live/hold-through] Rotation complete: "
           f"sold {len(to_sell)}, bought {len(to_buy)}, held across "
@@ -770,39 +824,25 @@ def run_session(
     client,
     args: argparse.Namespace,
 ) -> None:
-    """Execute one full trading session (score → buy → sell)."""
+    """Execute one full open-to-close trading session (score → buy → sell).
+
+    ``--hold-through`` flips the rotation policy so positions are carried
+    overnight when today's pick matches yesterday's — see
+    :func:`run_session_hold_through`.
+    """
     if getattr(args, "hold_through", False):
         return run_session_hold_through(symbols, data_root, model, client, args)
 
-    paper = not args.live
     today_str = date.today().isoformat()
-    print(f"\n[xgb-live] Session {today_str}  paper={paper}  dry_run={args.dry_run}", flush=True)
+    paper = not args.live
+    print(f"\n[xgb-live] Session {today_str}  paper={paper}  "
+          f"dry_run={args.dry_run}", flush=True)
 
     tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
-    equity_pre = None
-    if client is not None and not args.dry_run:
-        try:
-            equity_pre = float(getattr(_get_account(client), "equity", 0.0) or 0.0)
-        except Exception:
-            equity_pre = None
-    tlog.log(
-        "session_start",
-        mode="open_to_close",
-        paper=paper,
-        dry_run=bool(args.dry_run),
-        top_n=int(args.top_n),
-        allocation=float(args.allocation),
-        min_score=float(getattr(args, "min_score", 0.0) or 0.0),
-        min_dollar_vol=float(args.min_dollar_vol),
-        min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
-        equity_pre=equity_pre,
-    )
+    equity_pre = _emit_session_start(tlog, args, client, mode="open_to_close")
 
-    # ── Trading-day gate ──────────────────────────────────────────────────────
-    # Alpaca accepts DAY orders submitted outside RTH and queues them for the
-    # next open — which is a footgun: a Saturday BUY fills at Monday's open
-    # BEFORE the daemon has re-scored with fresh data. Always gate the whole
-    # session on Alpaca's own calendar.
+    # Trading-day gate: Alpaca queues DAY orders placed outside RTH to the
+    # next open — fill would run on stale data. Always gate on /v2/clock.
     if client is not None and not args.dry_run:
         is_trading, reason = _is_today_trading_day(client)
         if not is_trading:
@@ -811,161 +851,111 @@ def run_session(
             tlog.log("session_skipped", reason=reason)
             return
 
-    # ── Score ─────────────────────────────────────────────────────────────────
-    print("[xgb-live] Fetching live bars from Alpaca...", flush=True)
-    # Only need recent data — fetch last 10 bars to extend local CSVs
-    try:
-        live_bars = _get_latest_bars(symbols, n_days=10)
-    except Exception as exc:
-        logger.warning("Live bar fetch failed: %s", exc)
-        live_bars = {}
-
-    print(f"[xgb-live] Scoring {len(symbols)} symbols...", flush=True)
-    scores_df = score_all_symbols(
-        symbols, data_root, model, live_bars,
-        min_dollar_vol=args.min_dollar_vol,
-        min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
-    )
-
-    tlog.log(
-        "scored",
-        n_candidates=int(len(scores_df)),
-        top20=scores_df.head(20).to_dict(orient="records") if len(scores_df) else [],
-    )
-    if len(scores_df) == 0:
+    picks, all_scores = _score_and_pick(symbols, data_root, model, args,
+                                        trade_logger=tlog)
+    if len(all_scores) == 0:
         print("[xgb-live] ERROR: No scoreable symbols today.", file=sys.stderr)
         tlog.log("no_candidates")
         return
+    if len(picks) == 0:
+        min_score = float(getattr(args, "min_score", 0.0) or 0.0)
+        print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
+              f"holding cash for {today_str}.", flush=True)
+        tlog.log("no_picks", reason="min_score")
+        return
 
-    min_score = float(getattr(args, "min_score", 0.0) or 0.0)
-    if min_score > 0.0:
-        filtered = scores_df[scores_df["score"] >= min_score]
-        print(f"[xgb-live] Conviction filter min_score={min_score:.2f}: "
-              f"{len(filtered)}/{len(scores_df)} candidates pass "
-              f"(top score={scores_df['score'].iloc[0]:.4f})", flush=True)
-        tlog.log("filtered", min_score=min_score, n_pass=int(len(filtered)),
-                 n_total=int(len(scores_df)),
-                 top_score=float(scores_df["score"].iloc[0]))
-        if len(filtered) == 0:
-            print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
-                  f"holding cash for {today_str}.", flush=True)
-            tlog.log("no_picks", reason="min_score")
-            return
-        picks = filtered.head(args.top_n)
-    else:
-        picks = scores_df.head(args.top_n)
-
-    print(f"\n[xgb-live] Top-{args.top_n} picks for {today_str}:")
-    for rank, (_, row) in enumerate(picks.iterrows(), start=1):
-        print(f"  {row['symbol']:<8}  score={row['score']:.4f}  "
-              f"last_close=${row['last_close']:.2f}  spread={row['spread_bps']:.1f}bps")
-        tlog.log("pick", rank=rank, symbol=str(row["symbol"]),
-                 score=float(row["score"]),
-                 per_seed_scores=list(row.get("per_seed_scores", []) or []),
-                 last_close=float(row["last_close"]),
-                 spread_bps=float(row["spread_bps"]))
+    _announce_picks(picks, today_str, args.top_n, tlog, tag="xgb-live")
 
     if args.dry_run:
         print("[xgb-live] DRY RUN — no orders placed.", flush=True)
         tlog.log("dry_run_end")
         return
 
-    # ── Wait for market open ──────────────────────────────────────────────────
-    now_et = datetime.now(ET)
-    if now_et.hour < MARKET_OPEN[0] or (now_et.hour == MARKET_OPEN[0] and
-                                         now_et.minute < MARKET_OPEN[1]):
-        print(f"[xgb-live] Waiting for {MARKET_OPEN[0]:02d}:{MARKET_OPEN[1]:02d} ET...", flush=True)
-        _wait_until(MARKET_OPEN[0], MARKET_OPEN[1], ET)
+    _wait_for_market_open()
 
-    # ── Buy ───────────────────────────────────────────────────────────────────
     account = _get_account(client)
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
     buy_notional = portfolio_value * args.allocation / args.top_n
-
     print(f"\n[xgb-live] Placing BUY orders  portfolio=${portfolio_value:,.0f}  "
           f"notional/pick=${buy_notional:,.0f}", flush=True)
+    _execute_buys(client, picks, buy_notional, tlog)
 
-    # HARD RULE #3 (CLAUDE.md): record each buy's actual fill price so future
-    # sells are vetted against the real cost basis by the death-spiral guard.
-    from src.alpaca_singleton import record_buy_price
-
-    for _, row in picks.iterrows():
-        sym = str(row["symbol"])
-        price = float(row["last_close"])
-        if price <= 0:
-            logger.warning("Skipping %s — invalid last_close %s", sym, price)
-            continue
-        qty = _target_buy_qty(buy_notional=buy_notional, price=price)
-        if qty <= 0:
-            logger.warning("Skipping %s — invalid target qty for price=%s notional=%s", sym, price, buy_notional)
-            continue
-        try:
-            order = _submit_market_order(client, symbol=sym, qty=qty, side="buy")
-            order_id = str(getattr(order, "id", "") or "")
-            print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
-                  f"order_id={order_id or '?'}", flush=True)
-            tlog.log("buy_submitted", symbol=sym, qty=float(qty),
-                     expected_price=float(price), order_id=order_id)
-            fill_px = _poll_filled_avg_price(client, order_id) if order_id else None
-            recorded = fill_px if (fill_px and fill_px > 0) else price
-            try:
-                record_buy_price(sym, float(recorded))
-                src = "fill" if fill_px else "last_close"
-                print(f"       recorded buy_price={recorded:.4f} ({src}) for guard",
-                      flush=True)
-            except Exception as rec_exc:
-                logger.warning("record_buy_price failed for %s: %s", sym, rec_exc)
-            tlog.log("buy_filled", symbol=sym,
-                     fill_price=(float(fill_px) if fill_px else None),
-                     fill_source=("fill" if fill_px else "last_close"),
-                     slippage_bps_vs_last_close=slippage_bps(fill_px, price),
-                     last_close=float(price))
-        except Exception as exc:
-            logger.error("BUY failed for %s: %s", sym, exc)
-            tlog.log("buy_failed", symbol=sym, error=str(exc))
-
-    # ── Wait for close ────────────────────────────────────────────────────────
-    print(f"\n[xgb-live] Waiting for {MARKET_CLOSE[0]:02d}:{MARKET_CLOSE[1]:02d} ET to sell...",
-          flush=True)
+    print(f"\n[xgb-live] Waiting for {MARKET_CLOSE[0]:02d}:{MARKET_CLOSE[1]:02d} "
+          f"ET to sell...", flush=True)
     _wait_until(MARKET_CLOSE[0], MARKET_CLOSE[1], ET)
 
-    # ── Sell all positions ────────────────────────────────────────────────────
-    # HARD RULE #3: every sell passes through guard_sell_against_death_spiral
-    # with the current quote; if we're >50 bps below the recorded buy, the
-    # guard raises RuntimeError and crashes the loop (supervisor autorestart).
-    from src.alpaca_singleton import guard_sell_against_death_spiral
-
     position_details = _get_position_details(client)
-    xgb_positions = {sym: det for sym, det in position_details.items()
-                     if sym in picks["symbol"].values}
-
-    print(f"\n[xgb-live] Placing SELL orders for {len(xgb_positions)} positions", flush=True)
-    for sym, det in xgb_positions.items():
-        qty = det["qty"]
-        if qty <= 0:
-            continue
-        current_price = det["current_price"]
-        if current_price <= 0:
-            current_price = det["avg_entry_price"]
-        if current_price <= 0:
-            logger.error("SELL skipped for %s — no current_price or avg_entry_price "
-                         "available; cannot invoke death-spiral guard safely", sym)
-            continue
-        # Guard raises RuntimeError on death-spiral sells → propagate (crash).
-        guard_sell_against_death_spiral(sym, "sell", float(current_price))
-        try:
-            order = _submit_market_order(client, symbol=sym, qty=abs(qty), side="sell")
-            order_id = str(getattr(order, "id", "") or "")
-            print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
-                  f"order_id={order_id or '?'}", flush=True)
-            tlog.log("sell_submitted", symbol=sym, qty=float(qty),
-                     expected_price=float(current_price), order_id=order_id)
-        except Exception as exc:
-            logger.error("SELL failed for %s: %s", sym, exc)
-            tlog.log("sell_failed", symbol=sym, error=str(exc))
+    xgb_sell_syms = {s for s in position_details if s in picks["symbol"].values}
+    print(f"\n[xgb-live] Placing SELL orders for {len(xgb_sell_syms)} positions",
+          flush=True)
+    _execute_sells(client, position_details, xgb_sell_syms, tlog)
 
     print(f"[xgb-live] Session {today_str} complete.", flush=True)
     _log_session_end(tlog, client, equity_pre)
+
+
+def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel] | None:
+    """Load either an ensemble (``--model-paths``) or a single model (``--model-path``).
+
+    Returns ``None`` if any referenced path is missing — the caller converts
+    that to exit code 1.
+    """
+    if args.model_paths.strip():
+        paths = [Path(p.strip()) for p in args.model_paths.split(",") if p.strip()]
+        for mp in paths:
+            if not mp.exists():
+                print(f"ERROR: Ensemble model not found at {mp}", file=sys.stderr)
+                return None
+        print(f"[xgb-live] Loading ensemble of {len(paths)} models", flush=True)
+        for mp in paths:
+            print(f"[xgb-live]   - {mp}", flush=True)
+        return [XGBStockModel.load(mp) for mp in paths]
+    if not args.model_path.exists():
+        print(f"ERROR: Model not found at {args.model_path}", file=sys.stderr)
+        print("Run train_alltrain.py to create it, or set --model-paths for "
+              "an ensemble.", file=sys.stderr)
+        return None
+    print(f"[xgb-live] Loading model from {args.model_path}", flush=True)
+    return XGBStockModel.load(args.model_path)
+
+
+def _next_session_open_et(now_et: datetime) -> datetime:
+    """The 9:20 ET of the next non-weekend day after ``now_et``.
+
+    Note: weekday skip is a coarse approximation — the real trading-day gate
+    (``_is_today_trading_day``) handles holidays when the next session
+    actually fires.
+    """
+    next_day = now_et.date() + timedelta(days=1)
+    while next_day.weekday() >= 5:
+        next_day += timedelta(days=1)
+    return datetime(next_day.year, next_day.month, next_day.day,
+                    9, 20, 0, tzinfo=ET)
+
+
+def _sleep_until_next_session() -> None:
+    now_et = datetime.now(ET)
+    next_open = _next_session_open_et(now_et)
+    wait_secs = (next_open - datetime.now(ET)).total_seconds()
+    if wait_secs > 0:
+        print(f"[xgb-live] Next session at {next_open.isoformat()}  "
+              f"(sleeping {wait_secs/3600:.1f}h)", flush=True)
+        time.sleep(wait_secs)
+
+
+def _make_trade_logger(args: argparse.Namespace, session_date: date) -> TradeLogger:
+    trade_log_dir = args.trade_log_dir
+    log_disabled = bool(args.no_trade_log) or (
+        trade_log_dir is not None and str(trade_log_dir) == ""
+    )
+    tlog = TradeLogger(
+        log_dir=trade_log_dir if trade_log_dir else REPO / "analysis/xgb_live_trade_log",
+        disabled=log_disabled,
+        session_date=session_date,
+    )
+    if not log_disabled:
+        print(f"[xgb-live] trade_log -> {tlog.path}", flush=True)
+    return tlog
 
 
 def main(argv=None) -> int:
@@ -977,7 +967,6 @@ def main(argv=None) -> int:
 
     paper = not args.live
 
-    # ── Singleton guard ────────────────────────────────────────────────────────
     if not paper and not args.dry_run:
         from src.alpaca_singleton import enforce_live_singleton
         _lock = enforce_live_singleton(
@@ -985,71 +974,29 @@ def main(argv=None) -> int:
             account_name="alpaca_live_writer",
         )
 
-    # ── Load model(s) ─────────────────────────────────────────────────────────
-    if args.model_paths.strip():
-        paths = [Path(p.strip()) for p in args.model_paths.split(",") if p.strip()]
-        for mp in paths:
-            if not mp.exists():
-                print(f"ERROR: Ensemble model not found at {mp}", file=sys.stderr)
-                return 1
-        print(f"[xgb-live] Loading ensemble of {len(paths)} models", flush=True)
-        for mp in paths:
-            print(f"[xgb-live]   - {mp}", flush=True)
-        model: XGBStockModel | list[XGBStockModel] = [XGBStockModel.load(mp) for mp in paths]
-    else:
-        if not args.model_path.exists():
-            print(f"ERROR: Model not found at {args.model_path}", file=sys.stderr)
-            print("Run train_alltrain.py to create it, or set --model-paths for an ensemble.",
-                  file=sys.stderr)
-            return 1
-        print(f"[xgb-live] Loading model from {args.model_path}", flush=True)
-        model = XGBStockModel.load(args.model_path)
+    model = _load_models(args)
+    if model is None:
+        return 1
 
-    # ── Load symbols ───────────────────────────────────────────────────────────
     symbols = _load_symbols(args.symbols_file)
     print(f"[xgb-live] {len(symbols)} symbols  paper={paper}  top_n={args.top_n}  "
           f"allocation={args.allocation:.0%}", flush=True)
 
-    # ── Build Alpaca client ────────────────────────────────────────────────────
     if not args.dry_run:
         client = _build_trading_client(paper=paper)
         acct = _get_account(client)
         print(f"[xgb-live] Account equity=${float(getattr(acct, 'equity', 0)):,.0f}  "
-              f"buying_power=${float(getattr(acct, 'buying_power', 0)):,.0f}", flush=True)
+              f"buying_power=${float(getattr(acct, 'buying_power', 0)):,.0f}",
+              flush=True)
     else:
         client = None
 
-    # ── Run session(s) ─────────────────────────────────────────────────────────
-    trade_log_dir = args.trade_log_dir
-    log_disabled = bool(args.no_trade_log) or (
-        trade_log_dir is not None and str(trade_log_dir) == ""
-    )
     while True:
-        args._trade_logger = TradeLogger(
-            log_dir=trade_log_dir if trade_log_dir else REPO / "analysis/xgb_live_trade_log",
-            disabled=log_disabled,
-            session_date=date.today(),
-        )
-        if not log_disabled:
-            print(f"[xgb-live] trade_log -> {args._trade_logger.path}", flush=True)
+        args._trade_logger = _make_trade_logger(args, date.today())
         run_session(symbols, args.data_root, model, client, args)
-
         if not args.loop:
             break
-
-        # Wait until next market morning (~9:20 ET next business day)
-        now_et = datetime.now(ET)
-        next_day = now_et.date() + timedelta(days=1)
-        # Skip weekends
-        while next_day.weekday() >= 5:
-            next_day += timedelta(days=1)
-        next_open = datetime(next_day.year, next_day.month, next_day.day,
-                             9, 20, 0, tzinfo=ET)
-        wait_secs = (next_open - datetime.now(ET)).total_seconds()
-        if wait_secs > 0:
-            print(f"[xgb-live] Next session at {next_open.isoformat()}  "
-                  f"(sleeping {wait_secs/3600:.1f}h)", flush=True)
-            time.sleep(wait_secs)
+        _sleep_until_next_session()
 
     return 0
 
