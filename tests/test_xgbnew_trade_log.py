@@ -82,3 +82,65 @@ def test_append_mode_multiple_sessions(tmp_path: Path) -> None:
     lines = _read_lines(a.path)
     assert [r["event"] for r in lines] == ["a_event", "b_event"]
     assert [r["n"] for r in lines] == [1, 2]
+
+
+def test_nonstring_dict_keys_trigger_coerce_fallback(tmp_path: Path) -> None:
+    """A tuple key raises TypeError in json.dumps before ``default`` fires;
+    the TradeLogger must catch and re-serialise via ``_coerce`` (lines 79-80,
+    102-110 — the coerce path)."""
+    tlog = TradeLogger(log_dir=tmp_path, session_date=date(2026, 4, 20))
+    # tuple key trips json.dumps TypeError, not the default callback
+    tlog.log("weird", by_pair={(1, 2): "ab", (3, 4): "cd"})
+    rec = _read_lines(tlog.path)[0]
+    # _coerce stringified the keys; values preserved
+    assert rec["event"] == "weird"
+    assert rec["by_pair"]["(1, 2)"] == "ab"
+    assert rec["by_pair"]["(3, 4)"] == "cd"
+
+
+def test_coerce_preserves_lists_and_stringifies_uncoercible(tmp_path: Path) -> None:
+    """Force _coerce via non-string keys nested in a list, and include an
+    object that isn't json-native (arbitrary class) to exercise the
+    ``except TypeError: return str(obj)`` leaf of _coerce (line 110)."""
+    class Weird:
+        def __repr__(self) -> str:
+            return "Weird<x>"
+
+    tlog = TradeLogger(log_dir=tmp_path, session_date=date(2026, 4, 20))
+    tlog.log(
+        "weird",
+        payload=[{(1, 2): Weird()}, [1, 2, 3]],
+    )
+    rec = _read_lines(tlog.path)[0]
+    # list preserved, inner dict tuple key stringified, Weird str'd
+    assert rec["payload"][0]["(1, 2)"] == "Weird<x>"
+    assert rec["payload"][1] == [1, 2, 3]
+
+
+def test_multi_element_numpy_array_falls_back_to_str(tmp_path: Path) -> None:
+    """A multi-element numpy array has ``.item`` but calling it raises
+    ValueError — _json_default must catch and fall through to str()
+    (lines 96-98)."""
+    tlog = TradeLogger(log_dir=tmp_path, session_date=date(2026, 4, 20))
+    arr = np.array([1.0, 2.0, 3.0])
+    tlog.log("scored", arr=arr)
+    rec = _read_lines(tlog.path)[0]
+    # str(arr) prints numpy repr — check shape signature is in there
+    assert isinstance(rec["arr"], str)
+    assert "1." in rec["arr"]
+
+
+def test_log_write_failure_is_swallowed(tmp_path: Path) -> None:
+    """HARD rule: trade log must never take down the trader. If the write
+    fails (e.g. disk full, read-only FS), the ``except Exception: pass``
+    branch (lines 86-87) keeps us running."""
+    tlog = TradeLogger(log_dir=tmp_path, session_date=date(2026, 4, 20))
+    # Make the target path a directory — open(…, 'ab') will raise IsADirectoryError
+    assert tlog.path is not None
+    tlog.path.unlink(missing_ok=True)
+    tlog.path.mkdir()
+    try:
+        tlog.log("pick", symbol="AAPL")  # must NOT raise
+    finally:
+        # Cleanup the dir we created so other tests sharing tmp_path don't see it
+        tlog.path.rmdir()
