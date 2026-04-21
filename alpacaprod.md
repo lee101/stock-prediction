@@ -47,7 +47,64 @@ sudo tail -n 40 /var/log/supervisor/xgb-daily-trader-live.log
 
 ---
 
-### 🚩 PROPOSED (needs user approval) — raise `--min-score` 0.85 → 0.87 (2026-04-20 15:00 UTC)
+### 🟥 2026-04-21 13:10 UTC — TRUE-OOS-NO-EDGE FINDING (retracts prior ms=0.87 proposal)
+
+**TL;DR**: every prior "strict-dominance" claim on
+`oos2024_ensemble_gpu` (including the `ms=0.87/0.88` proposals below)
+was measured on the **pre-stale-fix** ensemble whose features were
+frozen at 2026-04-10 because `xgbnew/dataset.py` preferred the stale
+`trainingdata/train/` CSVs over `trainingdata/` (bug fixed in commit
+`debe551d` 2026-04-20). A fresh retrain of the OOS ensembles today
+(`oos2024_ensemble_gpu_fresh`, `oos2025h1_ensemble_gpu_fresh`,
+`oos2025_ensemble_gpu_fresh` — all trained 2026-04-21 07:49–08:XX UTC)
+does not reproduce those claims.
+
+**Fresh-ensemble deploy-gate re-measurement** on
+`oos2024_ensemble_gpu_fresh` (trained 2020-01-01 → 2024-12-31, **fresh
+features**) across 59 windows 2025-01-02 → 2026-04-20 at ms grid
+{0.55..0.80} (see `sweep_20260421_fresh_vs/sweep_20260421_115402.json`):
+
+- **0/108 cells have positive median**.
+- At ms ≥ 0.75 every cell fires **zero** trades (scored blended
+  probability never clears 0.75 in this OOS window).
+- ms 0.55–0.70 cells that fire: median −2 to −14%/mo deploy, p10 −30
+  to −50%, neg_frac 17–75%.
+
+**Retrain-through experiments** (both trained today):
+
+| ensemble | train window | heldout | positive-med cells | best |
+|---|---|---|---:|---|
+| `retrain_through_2026_03_20_ensemble` | 2020-01-01 → 2026-03-20 | 2026-03-21 → 2026-04-20 (8 win) | 3/42 (ms=0.60 only) | lev=2.0 ms=0.60 +23.76%/mo 1/8 neg p10 −20.85 |
+| `retrain_through_2026_02_28_ensemble` | 2020-01-01 → 2026-02-28 | 2026-03-01 → 2026-04-20 (13 win) | 3/42 (ms=0.60 only) | lev=2.0 ms=0.60 **+23.61%/mo 2/13 neg p10 −10.13** |
+
+**None pass the HARD RULE #1 deploy gate** (27%/mo + 0 neg + positive
+p10). The 2026-02-28 retrain's +23.61%/mo deploy at lev=2.0 ms=0.60 is
+the **first positive-median signal on a fresh post-crash ensemble** but
+still has 15% neg_frac and negative p10. Would need ms lowered to 0.60
+(human-only per §6) to exploit.
+
+**Action**:
+
+1. **Hold current deploy** (hold-cash ms=0.85 mode is correct). No swap.
+2. **Retract the ms=0.87 / ms=0.88 strict-dominance claims below** —
+   they're pre-fix artifacts. Documented in
+   `monitoring/memory/project_xgb_true_oos_no_edge_2026_04_21.md` and
+   `project_oos_ensembles_trained_pre_stale_fix.md`.
+3. **For user to decide**: is a +23.61%/mo median signal with 15% neg
+   months acceptable? If so, deploy = retrain weekly, cutoff ≥ 6 weeks
+   back (to keep a real held-out tail during next retrain), set
+   ms=0.60, lev=2.0. If not, stay hold-cash until we find a
+   positive-p10 structural edge (cs-dispersion gate at
+   `cs_iqr_ret5 ≤ 0.042 ∧ cs_skew_ret5 ≥ 1.0` is the current best
+   candidate — see `project_xgb_cs_dispersion_gate_first_oos_edge.md`).
+
+---
+
+### 🟥 RETRACTED 2026-04-21 — raise `--min-score` 0.85 → 0.87 (was posted 2026-04-20 15:00 UTC)
+
+**⚠ The evidence below was measured on the pre-stale-fix
+`oos2024_ensemble_gpu`. Do not deploy.** Kept for audit trail only. See
+the 2026-04-21 13:10 block above for the true-OOS correction.
 
 **Evidence (TRUE-OOS, `oos2024_ensemble_gpu`, 5 seeds, 60 windows
 2025-01-02 → 2026-04-19, fee=0.0000278, fb=5/15bps, binary fills, lag=2,

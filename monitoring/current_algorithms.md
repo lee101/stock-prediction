@@ -5,7 +5,7 @@ live ledger. This file is a short pointer for the hourly monitor so it knows
 which services should exist, where the best config lives, and what the bar
 is to beat. Keep this file in sync with `alpacaprod.md` whenever we deploy.
 
-Last synced: **2026-04-20 13:17 UTC — vol-floor tightened 0.10→0.12 (strict-dom OOS); lev=2.0, ms=0.85, hold-through, 50M/0.12 inference floors**
+Last synced: **2026-04-21 13:10 UTC — deploy gate below corrected: measured on pre-stale-fix `oos2024_ensemble_gpu`. Fresh-ensemble re-measurement (2026-04-21) shows 0/108 positive-median cells at ms=0.85. LIVE is correctly in hold-cash mode — the gate is WAI. See §Deploy gate below + `project_xgb_true_oos_no_edge_2026_04_21.md`.**
 
 ---
 
@@ -105,29 +105,65 @@ The monitor must distinguish:
 
 ### Deploy gate (what must pass before swapping models or knobs)
 
-On 846-symbol OOS grid using `oos2024_ensemble_gpu` (2024-12-31 cutoff; this
-is the TRUE-OOS ensemble, not `alltrain_ensemble_gpu` which is retrained
-through today) across 60 windows 2025-01-02 → 2026-04-19, fb=5bps fee=0.278bps
-binary fills `decision_lag=2`, at `lev=2.0 ms=0.85 ht=1 top_n=1`:
+**⚠ 2026-04-21 CORRECTION**: the numbers below were measured on the
+**pre-stale-fix** `oos2024_ensemble_gpu` ensemble. A fresh retrain
+(`oos2024_ensemble_gpu_fresh/`, trained 2026-04-21 07:49 UTC with the
+loader-priority fix in place) produces a scoring distribution whose max
+blended probability does not clear **0.75** on the true-OOS window
+2025-01 → 2026-04-20 — every ms ≥ 0.75 cell in
+`analysis/xgbnew_daily/sweep_20260421_fresh_vs/sweep_20260421_115402.json`
+fires **zero** trades over 59 windows. Low-ms cells (ms 0.55–0.70) do fire
+but all have negative median + p10 with neg_frac 17–75%. **0/108 cells
+with positive median.** Same null result on `oos2025h1_ensemble_gpu_fresh`
+(192-cell sweep per `project_xgb_true_oos_no_edge_2026_04_21.md`). Same
+result on the `retrain_through_2026_03_20_ensemble` heldout sweep (0/42
+positive at ms ≥ 0.65 over 8 windows 2026-03-21 → 2026-04-20). Every
+prior "+141%/mo" claim was either in-sample (on `alltrain_ensemble_gpu`)
+or pre-stale-fix (on pre-debe551d `oos2024_ensemble_gpu`).
+
+**Interpretation**: the tariff-crash regime (2026-03 onwards) is not
+predictable from 2020–2025H1 features with the current feature set. LIVE
+being in hold-cash mode is the correct behavior. Don't lower the gate to
+force trades — that would be a lossy bet.
+
+**New deploy gate rule (2026-04-21)**: the bar is still "strict-dominance
+on all four PnL metrics + intraday DD not worse by > 1pp", but it is now
+measured on:
+
+1. `oos2024_ensemble_gpu_fresh` (2024-12-31 cutoff, fresh-features retrain)
+   across 59 windows 2025-01-02 → 2026-04-20.
+2. `oos2025h1_ensemble_gpu_fresh` (2025-06-30 cutoff) across ~45 windows
+   2025-07-01 → 2026-04-20.
+3. Any new retrain-through ensemble's held-out window (currently
+   `retrain_through_2026_03_20_ensemble` / `retrain_through_2026_02_28_ensemble`).
+
+**A candidate becomes deploy-worthy only when at least ONE of these three
+fresh true-OOS evaluations shows all of: median ≥ +27%/mo, p10 ≥ 0,
+neg_frac ≤ 20%, worst-DD ≤ current LIVE worst-DD.** The old pre-fix
+"+141%/mo" bar is retired until a positive-edge config is found on the
+fresh ensembles.
+
+Deployed LIVE config (archived pre-fix bar for reference, 60 windows
+2025-01-02 → 2026-04-19 on pre-stale-fix `oos2024_ensemble_gpu`):
 
 | metric | deploy fees | 36× fee stress |
 |---|---:|---:|
-| median %/mo | **+141** | **+108** |
-| p10 | **+96** | **+68** |
-| n_neg / n_windows | **0/60** | **0/60** |
-| worst realized DD | **7.18%** | **8.34%** |
-| worst intraday DD | **12.93%** | **13.12%** |
+| median %/mo (PRE-FIX, REFERENCE ONLY) | +141 | +108 |
+| p10 (PRE-FIX) | +96 | +68 |
+| n_neg / n_windows (PRE-FIX) | 0/60 | 0/60 |
+| worst realized DD (PRE-FIX) | 7.18% | 8.34% |
+| worst intraday DD (PRE-FIX) | 12.93% | 13.12% |
 
-A candidate replaces the current ensemble **only if it meets all five
-simultaneously** (all four PnL metrics + intraday DD not worse by > 1pp).
-Use `xgbnew/sweep_ensemble_grid.py` on the `oos2024_ensemble_gpu` artifact
-directory with `--ensemble-sort-key goodness` or `robG` as secondary.
+Keep using `xgbnew/sweep_ensemble_grid.py` with `--ensemble-sort-key
+goodness` or `robG` as secondary, but always against a `_fresh` or
+`retrain_through_*` ensemble dir.
 
 ⚠ **`alltrain_ensemble_gpu` is NOT OOS for filter validation** — it's
 trained through today. Its "60-window" numbers are fully in-sample on the
 validation window. For any filter-threshold tuning or feature-set change,
-always re-eval on `oos2024_ensemble_gpu`. See
-`feedback_alltrain_is_not_oos.md`.
+always re-eval on a `_fresh` or `retrain_through_*` ensemble. See
+`feedback_alltrain_is_not_oos.md` and
+`project_oos_ensembles_trained_pre_stale_fix.md`.
 
 ### Known data-pipeline hazard (2026-04-20)
 
