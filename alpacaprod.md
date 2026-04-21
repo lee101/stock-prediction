@@ -47,6 +47,31 @@ sudo tail -n 40 /var/log/supervisor/xgb-daily-trader-live.log
 
 ---
 
+### 🟥 2026-04-21 17:15 UTC — SCORE-DISTRIBUTION COLLAPSE: ms=0.85 gate structurally inert on current regime
+
+**Answer to "why is LIVE not firing?"**: The LIVE ensemble never reaches top-1 blended score ≥ 0.85 in the post-crash regime — not on TRUE-OOS, not on IN-SAMPLE tail. Hold-cash is the model doing its job, not a bug.
+
+**Score-distribution diagnostic** (`analysis/xgbnew_daily/score_dist_ensembles_20260421_1714.txt`, source `.tmp_sandbox/score_dist_ensembles.py`):
+
+| Ensemble | Window (TRD days) | Max top-1 | p90 | % ≥0.85 | % ≥0.70 |
+|---|---|---:|---:|---:|---:|
+| **LIVE alltrain (IN-SAMPLE)** | 2026-04-01 → 04-17 (12d) | **0.7708** | 0.768 | **0%** | 100% |
+| retrain_through_2026_04_18 (IN-SAMPLE) | 2026-04-01 → 04-17 (12d) | 0.6544 | 0.651 | 0% | 0% |
+| oos2024_fresh (TRUE-OOS crash) | 2026-03-20 → 04-17 (20d) | 0.6701 | 0.640 | 0% | 0% |
+| oos2024_fresh (TRUE-OOS quiet 2025) | 2025-04-01 → 04-17 (13d) | 0.6878 | 0.654 | 0% | 0% |
+
+**Two confirmations**:
+1. **Deploy-gate re-eval** on `oos2024_ensemble_gpu_fresh` at LIVE config (`lev=2.0 ms=0.85 ht=1 vol=0.12 dv=50M`), 44 sliding windows 2025-01-02 → 2026-04-19: **0 trades fire, 0/44 neg, med +0.00%, p10 +0.00%**. Artifact `analysis/xgbnew_ensemble_sweep/deploy_gate_reeval_20260421_1706/`. The canonical "median +153%/mo p10 +97% 0/60 neg" deploy-gate numbers in `current_algorithms.md` were measured on the **pre-stale-fix** `oos2024_ensemble_gpu` directory whose scores were artificially inflated by stale features.
+2. **Retraining makes it worse, not better**: absorbing 2026-Q1 crash into training drops max top-1 from 0.77 → 0.65. Weekly auto-retrain will progressively degrade gate-firing rate over the coming weeks.
+
+**Implications**:
+- `alpacaprod.md`/`current_algorithms.md` deploy-gate baseline needs re-measurement on fresh ensembles. The 13:10 UTC "hold current deploy" decision still stands, but the justification ("gate fires on ~44% of days in OOS") was based on the old stale-feature measurement.
+- Lowering ms to unstick the gate has **no positive-edge cell** on fresh OOS — 54-cell ms grid {0.50..0.90} in flight at `analysis/xgbnew_ensemble_sweep/oos2024_fresh_msgrid_20260421_1714/` (first 9 cells: all ms ≤ 0.60 produce 23-31/44 neg windows with negative medians; ms ≥ 0.65 approaches 0-trade).
+
+**No deploy action** — confirms "hold ms=0.85 until regime flip or new architecture" (per 13:10 block).
+
+---
+
 ### 🟥 2026-04-21 13:10 UTC — TRUE-OOS-NO-EDGE FINDING (retracts prior ms=0.87 proposal)
 
 **TL;DR**: every prior "strict-dominance" claim on
