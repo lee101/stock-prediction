@@ -47,6 +47,11 @@ class BacktestConfig:
                                         # 20-day realised vol ≥ this (so we
                                         # skip the dead-zone / bot-vol quartile
                                         # that LOBO flagged as a net drag).
+    max_vol_20d: float = 0.0            # 0 disables; else require annualised
+                                        # 20-day realised vol ≤ this (so we
+                                        # skip crash-sensitive high-vol names
+                                        # in stressed regimes). Band-pass with
+                                        # min_vol_20d when both set.
     max_spread_bps: float = 30.0        # skip wide-spread stocks (max volume-based cost)
     chronos_col: str = "chronos_oc_return"
     fee_rate: float | None = None       # per-side fee fraction; defaults by symbol
@@ -383,6 +388,13 @@ def simulate(
     # as a net drag. Inference-only; training universe stays broader.
     if config.min_vol_20d > 0.0 and "vol_20d" in test_df.columns:
         test_df = test_df[test_df["vol_20d"] >= float(config.min_vol_20d)]
+
+    # Realised-vol ceiling — symmetric "mask high-vol names at inference"
+    # filter. High vol_20d is crash-sensitive in stressed regimes; the
+    # symbol can still contribute positively to TRAINING (no feature-
+    # distribution shift at fit time), but is dropped from the PICK pool.
+    if config.max_vol_20d > 0.0 and "vol_20d" in test_df.columns:
+        test_df = test_df[test_df["vol_20d"] <= float(config.max_vol_20d)]
 
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])

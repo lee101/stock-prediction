@@ -95,6 +95,11 @@ class CellResult:
     # Inference-side realised-vol floor on vol_20d (annualised). 0 disables.
     # Swept via --inference-min-vol-grid.
     inference_min_vol_20d: float = 0.0
+    # Inference-side realised-vol CEILING on vol_20d (annualised). 0
+    # disables. Drops crash-sensitive high-vol names from the pick pool
+    # at inference while keeping them in training. Swept via
+    # --inference-max-vol-grid. Band-pass with inference_min_vol_20d.
+    inference_max_vol_20d: float = 0.0
     # Missed-order Monte Carlo params — 0.0 = classic identity sim.
     skip_prob: float = 0.0
     skip_seed: int = 0
@@ -244,6 +249,7 @@ def _run_cell(
     fee_regime: str,
     inference_min_dolvol: float = 5_000_000.0,
     inference_min_vol_20d: float = 0.0,
+    inference_max_vol_20d: float = 0.0,
     skip_prob: float = 0.0,
     skip_seed: int = 0,
     fill_buffer_bps: float | None = None,
@@ -265,6 +271,7 @@ def _run_cell(
         commission_bps=float(fees["commission_bps"]),
         min_dollar_vol=float(inference_min_dolvol),
         min_vol_20d=float(inference_min_vol_20d),
+        max_vol_20d=float(inference_max_vol_20d),
         hold_through=bool(hold_through),
         min_score=float(min_score),
         skip_prob=float(skip_prob),
@@ -336,6 +343,7 @@ def _run_cell(
         ulcer_index=ulcer_med,
         inference_min_dolvol=float(inference_min_dolvol),
         inference_min_vol_20d=float(inference_min_vol_20d),
+        inference_max_vol_20d=float(inference_max_vol_20d),
         skip_prob=float(skip_prob),
         skip_seed=int(skip_seed),
         fill_buffer_bps=fb_resolved,
@@ -363,6 +371,7 @@ def run_sweep(
     min_dollar_vol: float = 5_000_000.0,
     inference_min_dolvol_grid: list[float] | None = None,
     inference_min_vol_grid: list[float] | None = None,
+    inference_max_vol_grid: list[float] | None = None,
     skip_prob_grid: list[float] | None = None,
     skip_seeds: list[int] | None = None,
     fill_buffer_bps_grid: list[float] | None = None,
@@ -427,6 +436,7 @@ def run_sweep(
 
     inf_grid = list(inference_min_dolvol_grid) if inference_min_dolvol_grid else [float(min_dollar_vol)]
     vol_grid = list(inference_min_vol_grid) if inference_min_vol_grid else [0.0]
+    maxvol_grid = list(inference_max_vol_grid) if inference_max_vol_grid else [0.0]
     sp_grid  = [float(x) for x in (skip_prob_grid or [0.0])]
     ss_list  = [int(x) for x in (skip_seeds or [0])]
     # -1.0 sentinel = "use regime default fill_buffer_bps".
@@ -436,8 +446,8 @@ def run_sweep(
     total = (
         len(leverage_grid) * len(min_score_grid)
         * len(hold_through_grid) * len(top_n_grid) * len(fee_regimes)
-        * len(inf_grid) * len(vol_grid) * len(sp_grid) * len(ss_list)
-        * len(fb_grid)
+        * len(inf_grid) * len(vol_grid) * len(maxvol_grid)
+        * len(sp_grid) * len(ss_list) * len(fb_grid)
     )
     i = 0
     for lev in leverage_grid:
@@ -447,33 +457,35 @@ def run_sweep(
                     for reg in fee_regimes:
                         for inf_dv in inf_grid:
                             for inf_vol in vol_grid:
-                                for sp in sp_grid:
-                                    # Only iterate seeds when skipping;
-                                    # at skip=0 the sim is deterministic.
-                                    seed_iter = ss_list if sp > 0 else [0]
-                                    for sseed in seed_iter:
-                                        for fb in fb_grid:
-                                            i += 1
-                                            cell = _run_cell(
-                                                oos_df=oos_df, scores=scores, windows=windows,
-                                                leverage=lev, min_score=ms, hold_through=ht,
-                                                top_n=tn, fee_regime=reg,
-                                                inference_min_dolvol=inf_dv,
-                                                inference_min_vol_20d=inf_vol,
-                                                skip_prob=sp, skip_seed=sseed,
-                                                fill_buffer_bps=fb,
-                                            )
-                                            logger.info(
-                                                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                                "inf_dv=%.0e inf_vol=%.3f skp=%.2f/%d fb=%.1f "
-                                                "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                                i, total, lev, ms, ht, tn, reg,
-                                                inf_dv, inf_vol, sp, sseed,
-                                                cell.fill_buffer_bps,
-                                                cell.median_monthly_pct, cell.p10_monthly_pct,
-                                                cell.n_neg, cell.n_windows,
-                                            )
-                                            cells.append(cell)
+                                for inf_maxvol in maxvol_grid:
+                                    for sp in sp_grid:
+                                        # Only iterate seeds when skipping;
+                                        # at skip=0 the sim is deterministic.
+                                        seed_iter = ss_list if sp > 0 else [0]
+                                        for sseed in seed_iter:
+                                            for fb in fb_grid:
+                                                i += 1
+                                                cell = _run_cell(
+                                                    oos_df=oos_df, scores=scores, windows=windows,
+                                                    leverage=lev, min_score=ms, hold_through=ht,
+                                                    top_n=tn, fee_regime=reg,
+                                                    inference_min_dolvol=inf_dv,
+                                                    inference_min_vol_20d=inf_vol,
+                                                    inference_max_vol_20d=inf_maxvol,
+                                                    skip_prob=sp, skip_seed=sseed,
+                                                    fill_buffer_bps=fb,
+                                                )
+                                                logger.info(
+                                                    "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                                    "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
+                                                    "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
+                                                    i, total, lev, ms, ht, tn, reg,
+                                                    inf_dv, inf_vol, inf_maxvol, sp, sseed,
+                                                    cell.fill_buffer_bps,
+                                                    cell.median_monthly_pct, cell.p10_monthly_pct,
+                                                    cell.n_neg, cell.n_windows,
+                                                )
+                                                cells.append(cell)
     return cells
 
 
@@ -497,6 +509,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "ulcer_index":           c.ulcer_index,
             "inference_min_dolvol":  c.inference_min_dolvol,
             "inference_min_vol_20d": c.inference_min_vol_20d,
+            "inference_max_vol_20d": c.inference_max_vol_20d,
             "skip_prob":             c.skip_prob,
             "skip_seed":             c.skip_seed,
             "fill_buffer_bps":       c.fill_buffer_bps,
@@ -544,6 +557,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "(annualised realised-vol) floors. 0 or empty "
                         "disables. Higher = drop more of the dead-zone / "
                         "bot-vol quartile.")
+    p.add_argument("--inference-max-vol-grid", type=str, default="",
+                   help="Optional comma-separated inference-time vol_20d "
+                        "(annualised realised-vol) CEILINGS. 0 or empty "
+                        "disables. Lower = drop more of the crash-sensitive "
+                        "high-vol tail. Symbols stay in TRAINING — masked "
+                        "only from the inference pick pool. Band-pass with "
+                        "--inference-min-vol-grid.")
     p.add_argument("--skip-prob-grid", type=str, default="",
                    help="Missed-order Monte Carlo — comma-separated skip "
                         "probabilities, e.g. '0.0,0.05,0.10,0.20'. Each "
@@ -617,6 +637,10 @@ def main(argv=None) -> int:
         inference_min_vol_grid=(
             _parse_float_list(args.inference_min_vol_grid)
             if args.inference_min_vol_grid else None
+        ),
+        inference_max_vol_grid=(
+            _parse_float_list(args.inference_max_vol_grid)
+            if args.inference_max_vol_grid else None
         ),
         skip_prob_grid=(
             _parse_float_list(args.skip_prob_grid)
