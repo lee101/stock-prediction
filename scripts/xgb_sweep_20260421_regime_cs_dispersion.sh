@@ -45,6 +45,6 @@ analysis/xgbnew_daily/oos2025h1_ensemble_gpu_fresh/alltrain_seed197.pkl \
   --min-dollar-vol 50000000 \
   --inference-min-vol-grid 0.10 \
   --regime-cs-iqr-max-grid 0.0,0.040,0.042,0.045,0.048,0.050 \
-  --regime-cs-skew-min-grid -1e9,0.0,0.5,1.0 \
+  --regime-cs-skew-min-grid=-1e9,0.0,0.5,1.0 \
   --output-dir "$OUTDIR" \
   --verbose 2>&1 | tee "$OUTDIR/sweep.log"

@@ -1,29 +1,16 @@
 [run]
-source = 
-    src
-    rlinference
-    hfinference
-    hftraining
-    hyperparamopt
-    totoembedding
+source = xgbnew, src
 omit = 
-    tests/*
-    **/test_*.
-    **/*_test.py
-    **/.venv/*
-    **/venv/*
-    **/.tox/*
-    **/site-packages/*
-    **/experiments/*
-    **/reports/*
+    */tests/*
+    */__pycache__/*
+    */.venv/*
+    */analysis/*
+parallel = False
 
 [report]
-exclude_lines = 
+exclude_lines =
     pragma: no cover
-    if __name__ == .__main__.
-    @overload
-    @abstractmethod
-    @abc.abstractmethod
-precision = 1
-skip_empty = True
-
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
