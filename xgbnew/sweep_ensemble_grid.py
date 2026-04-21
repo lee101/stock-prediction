@@ -108,6 +108,11 @@ class CellResult:
     # sentinel so existing eval paths that don't pass ``fill_buffer_bps``
     # still see the historic 5-bps/15-bps regimes exactly.
     fill_buffer_bps: float = -1.0
+    # SPY-based regime knobs (see BacktestConfig.{regime_gate_window,
+    # vol_target_ann}). 0 = disabled for either axis so legacy cells
+    # reproduce bit-for-bit when the grid is not swept.
+    regime_gate_window: int = 0
+    vol_target_ann: float = 0.0
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -253,6 +258,9 @@ def _run_cell(
     skip_prob: float = 0.0,
     skip_seed: int = 0,
     fill_buffer_bps: float | None = None,
+    regime_gate_window: int = 0,
+    vol_target_ann: float = 0.0,
+    spy_close_by_date: pd.Series | None = None,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     # Override fill_buffer if the caller explicitly set it; otherwise
@@ -276,6 +284,8 @@ def _run_cell(
         min_score=float(min_score),
         skip_prob=float(skip_prob),
         skip_seed=int(skip_seed),
+        regime_gate_window=int(regime_gate_window),
+        vol_target_ann=float(vol_target_ann),
     )
 
     dummy = XGBStockModel(device="cpu", n_estimators=1, max_depth=1, learning_rate=0.1)
@@ -295,7 +305,11 @@ def _run_cell(
         if len(w_df) < 5:
             continue
         w_scores = scores.loc[w_df.index]
-        res = simulate(w_df, dummy, cfg, precomputed_scores=w_scores)
+        res = simulate(
+            w_df, dummy, cfg,
+            precomputed_scores=w_scores,
+            spy_close_by_date=spy_close_by_date,
+        )
         n_days = len(res.day_results)
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
         monthlies.append(monthly)
@@ -347,6 +361,8 @@ def _run_cell(
         skip_prob=float(skip_prob),
         skip_seed=int(skip_seed),
         fill_buffer_bps=fb_resolved,
+        regime_gate_window=int(regime_gate_window),
+        vol_target_ann=float(vol_target_ann),
     )
 
 
@@ -375,6 +391,9 @@ def run_sweep(
     skip_prob_grid: list[float] | None = None,
     skip_seeds: list[int] | None = None,
     fill_buffer_bps_grid: list[float] | None = None,
+    regime_gate_window_grid: list[int] | None = None,
+    vol_target_ann_grid: list[float] | None = None,
+    spy_csv_path: Path | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -441,6 +460,30 @@ def run_sweep(
     ss_list  = [int(x) for x in (skip_seeds or [0])]
     # -1.0 sentinel = "use regime default fill_buffer_bps".
     fb_grid  = [float(x) for x in (fill_buffer_bps_grid or [-1.0])]
+    rgw_grid = [int(x) for x in (regime_gate_window_grid or [0])]
+    vta_grid = [float(x) for x in (vol_target_ann_grid or [0.0])]
+
+    # SPY series used by BOTH knobs (regime gate + vol target).
+    spy_close_by_date: pd.Series | None = None
+    needs_spy = any(r > 0 for r in rgw_grid) or any(v > 0 for v in vta_grid)
+    if needs_spy:
+        if spy_csv_path is None or not spy_csv_path.exists():
+            raise FileNotFoundError(
+                f"regime_gate_window or vol_target_ann > 0 requires "
+                f"--spy-csv; got {spy_csv_path!r}"
+            )
+        _spy_df = pd.read_csv(spy_csv_path, usecols=["timestamp", "close"])
+        _spy_df["timestamp"] = pd.to_datetime(_spy_df["timestamp"], utc=True, errors="coerce")
+        _spy_df = _spy_df.dropna(subset=["timestamp", "close"]).drop_duplicates(subset=["timestamp"])
+        _spy_df["date"] = _spy_df["timestamp"].dt.date
+        _spy_df = _spy_df.sort_values("timestamp")
+        spy_close_by_date = (
+            _spy_df.groupby("date")["close"].last().astype(float).sort_index()
+        )
+        logger.info(
+            "loaded SPY closes: %d days (regime_gate_grid=%s, vol_target_ann_grid=%s)",
+            len(spy_close_by_date), rgw_grid, vta_grid,
+        )
 
     cells: list[CellResult] = []
     total = (
@@ -448,6 +491,7 @@ def run_sweep(
         * len(hold_through_grid) * len(top_n_grid) * len(fee_regimes)
         * len(inf_grid) * len(vol_grid) * len(maxvol_grid)
         * len(sp_grid) * len(ss_list) * len(fb_grid)
+        * len(rgw_grid) * len(vta_grid)
     )
     i = 0
     for lev in leverage_grid:
@@ -464,28 +508,35 @@ def run_sweep(
                                         seed_iter = ss_list if sp > 0 else [0]
                                         for sseed in seed_iter:
                                             for fb in fb_grid:
-                                                i += 1
-                                                cell = _run_cell(
-                                                    oos_df=oos_df, scores=scores, windows=windows,
-                                                    leverage=lev, min_score=ms, hold_through=ht,
-                                                    top_n=tn, fee_regime=reg,
-                                                    inference_min_dolvol=inf_dv,
-                                                    inference_min_vol_20d=inf_vol,
-                                                    inference_max_vol_20d=inf_maxvol,
-                                                    skip_prob=sp, skip_seed=sseed,
-                                                    fill_buffer_bps=fb,
-                                                )
-                                                logger.info(
-                                                    "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                                    "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
-                                                    "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                                    i, total, lev, ms, ht, tn, reg,
-                                                    inf_dv, inf_vol, inf_maxvol, sp, sseed,
-                                                    cell.fill_buffer_bps,
-                                                    cell.median_monthly_pct, cell.p10_monthly_pct,
-                                                    cell.n_neg, cell.n_windows,
-                                                )
-                                                cells.append(cell)
+                                                for rgw in rgw_grid:
+                                                    for vta in vta_grid:
+                                                        i += 1
+                                                        cell = _run_cell(
+                                                            oos_df=oos_df, scores=scores, windows=windows,
+                                                            leverage=lev, min_score=ms, hold_through=ht,
+                                                            top_n=tn, fee_regime=reg,
+                                                            inference_min_dolvol=inf_dv,
+                                                            inference_min_vol_20d=inf_vol,
+                                                            inference_max_vol_20d=inf_maxvol,
+                                                            skip_prob=sp, skip_seed=sseed,
+                                                            fill_buffer_bps=fb,
+                                                            regime_gate_window=rgw,
+                                                            vol_target_ann=vta,
+                                                            spy_close_by_date=spy_close_by_date,
+                                                        )
+                                                        logger.info(
+                                                            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                                            "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
+                                                            "rgw=%d vta=%.2f "
+                                                            "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
+                                                            i, total, lev, ms, ht, tn, reg,
+                                                            inf_dv, inf_vol, inf_maxvol, sp, sseed,
+                                                            cell.fill_buffer_bps,
+                                                            rgw, vta,
+                                                            cell.median_monthly_pct, cell.p10_monthly_pct,
+                                                            cell.n_neg, cell.n_windows,
+                                                        )
+                                                        cells.append(cell)
     return cells
 
 
@@ -513,6 +564,8 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "skip_prob":             c.skip_prob,
             "skip_seed":             c.skip_seed,
             "fill_buffer_bps":       c.fill_buffer_bps,
+            "regime_gate_window":    c.regime_gate_window,
+            "vol_target_ann":        c.vol_target_ann,
         }
         for c in cells
     ]
@@ -580,6 +633,21 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "get progressively worse. Empty = single cell at "
                         "the fee regime's default FB (deploy=5, "
                         "stress36x=15).")
+    p.add_argument("--regime-gate-window-grid", type=str, default="",
+                   help="Comma-separated SPY MA windows (e.g. '0,20,50,200'). "
+                        "0 disables the gate; positive values stay-in-cash "
+                        "when SPY closes below its N-day MA. Requires "
+                        "--spy-csv.")
+    p.add_argument("--vol-target-ann-grid", type=str, default="",
+                   help="Comma-separated annualised vol targets (e.g. "
+                        "'0.0,0.15,0.20,0.25'). 0 disables; positive values "
+                        "scale daily allocation by min(1, target/SPY_20d_vol). "
+                        "Requires --spy-csv.")
+    p.add_argument("--spy-csv", type=Path,
+                   default=Path("trainingdata/SPY.csv"),
+                   help="SPY daily OHLCV CSV — used by --regime-gate-window-grid "
+                        "and --vol-target-ann-grid. Ignored when both grids "
+                        "are all-zero.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -651,6 +719,15 @@ def main(argv=None) -> int:
             _parse_float_list(args.fill_buffer_bps_grid)
             if args.fill_buffer_bps_grid else None
         ),
+        regime_gate_window_grid=(
+            _parse_int_list(args.regime_gate_window_grid)
+            if args.regime_gate_window_grid else None
+        ),
+        vol_target_ann_grid=(
+            _parse_float_list(args.vol_target_ann_grid)
+            if args.vol_target_ann_grid else None
+        ),
+        spy_csv_path=args.spy_csv,
     )
 
     rows = _cells_to_rows(cells)

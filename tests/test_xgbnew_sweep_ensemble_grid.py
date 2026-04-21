@@ -447,3 +447,87 @@ def test_tuw_and_ulcer_sweep_end_to_end(monkeypatch, tmp_path):
         assert c.ulcer_index >= 0.0
         # Ulcer ≤ max-DD in %. RMS ≤ max by definition.
         assert c.ulcer_index <= c.worst_dd_pct + 1e-9
+
+
+# ── SPY regime-gate + vol-target grids (task #92) ──────────────────────────
+
+def _write_fake_spy_csv(path: Path, n: int = 120) -> Path:
+    """Synthetic SPY CSV with pd.to_datetime-parsable timestamps."""
+    rng = np.random.default_rng(5)
+    ts = pd.date_range("2024-08-01", periods=n, freq="B", tz="UTC")
+    price = 400.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, n))
+    pd.DataFrame({"timestamp": ts, "close": price}).to_csv(path, index=False)
+    return path
+
+
+def test_sweep_vol_target_axis_matches_product(monkeypatch, tmp_path):
+    """vol_target_ann_grid widens the cell total linearly."""
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    spy = _write_fake_spy_csv(tmp_path / "SPY.csv")
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0], min_score_grid=[0.0],
+        hold_through_grid=[True], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        vol_target_ann_grid=[0.0, 0.15, 0.25],
+        spy_csv_path=spy,
+    )
+    # 1 × 1 × 1 × 1 × 1 × (1 inf_dv × 1 vol × 1 maxvol × 1 sp × 1 ss × 1 fb)
+    # × (1 rgw × 3 vta) = 3.
+    assert len(cells) == 3
+    vtas = sorted(c.vol_target_ann for c in cells)
+    assert vtas == [0.0, 0.15, 0.25]
+
+
+def test_sweep_vol_target_requires_spy_csv(monkeypatch, tmp_path):
+    """Positive vol_target_ann without --spy-csv must fail loud."""
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 1)
+    with pytest.raises(FileNotFoundError, match="spy"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0], min_score_grid=[0.0],
+            hold_through_grid=[True], top_n_grid=[1],
+            fee_regimes=["deploy"],
+            vol_target_ann_grid=[0.15],
+            spy_csv_path=None,
+        )
+
+
+def test_sweep_vol_target_changes_results(monkeypatch, tmp_path):
+    """vta=0 and vta=0.10 (aggressive shrink) must not produce bit-identical PnL."""
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    spy = _write_fake_spy_csv(tmp_path / "SPY.csv", n=200)
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[2.0], min_score_grid=[0.0],
+        hold_through_grid=[False], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        vol_target_ann_grid=[0.0, 0.05],  # 0.05 will scale most days < 1
+        spy_csv_path=spy,
+    )
+    by_vta = {c.vol_target_ann: c for c in cells}
+    assert set(by_vta) == {0.0, 0.05}
+    # 0.05 ann-vol target aggressively shrinks allocation → lower median %.
+    # Assert the two cells do not produce identical median monthly.
+    assert by_vta[0.0].median_monthly_pct != by_vta[0.05].median_monthly_pct
+
