@@ -124,6 +124,13 @@ class CellResult:
     # respectively = disabled (matches BacktestConfig defaults).
     max_ret_20d_rank_pct: float = 1.0
     min_ret_5d_rank_pct:  float = 0.0
+    # Cross-sectional regime-dispersion gate (BacktestConfig.regime_cs_iqr_max
+    # / regime_cs_skew_min). Gates entire DAYS based on cross-sectional
+    # ret_5d dispersion — first lever found to flip sign on the fresh
+    # 2025-07→2026-04 true-OOS. 0.0 = disabled for iqr; -1e9 = disabled
+    # for skew.
+    regime_cs_iqr_max:  float = 0.0
+    regime_cs_skew_min: float = -1e9
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -277,6 +284,8 @@ def _run_cell(
     inv_vol_cap: float = 3.0,
     max_ret_20d_rank_pct: float = 1.0,
     min_ret_5d_rank_pct: float = 0.0,
+    regime_cs_iqr_max: float = 0.0,
+    regime_cs_skew_min: float = -1e9,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     # Override fill_buffer if the caller explicitly set it; otherwise
@@ -307,6 +316,8 @@ def _run_cell(
         inv_vol_cap=float(inv_vol_cap),
         max_ret_20d_rank_pct=float(max_ret_20d_rank_pct),
         min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
+        regime_cs_iqr_max=float(regime_cs_iqr_max),
+        regime_cs_skew_min=float(regime_cs_skew_min),
     )
 
     dummy = XGBStockModel(device="cpu", n_estimators=1, max_depth=1, learning_rate=0.1)
@@ -389,6 +400,8 @@ def _run_cell(
         inv_vol_cap=float(inv_vol_cap),
         max_ret_20d_rank_pct=float(max_ret_20d_rank_pct),
         min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
+        regime_cs_iqr_max=float(regime_cs_iqr_max),
+        regime_cs_skew_min=float(regime_cs_skew_min),
     )
 
 
@@ -426,6 +439,8 @@ def run_sweep(
     invert_scores: bool = False,
     max_ret_20d_rank_pct_grid: list[float] | None = None,
     min_ret_5d_rank_pct_grid: list[float] | None = None,
+    regime_cs_iqr_max_grid: list[float] | None = None,
+    regime_cs_skew_min_grid: list[float] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -503,6 +518,8 @@ def run_sweep(
     ivt_grid = [float(x) for x in (inv_vol_target_grid or [0.0])]
     r20g_grid = [float(x) for x in (max_ret_20d_rank_pct_grid or [1.0])]
     r5g_grid  = [float(x) for x in (min_ret_5d_rank_pct_grid or [0.0])]
+    rgiqr_grid  = [float(x) for x in (regime_cs_iqr_max_grid  or [0.0])]
+    rgskew_grid = [float(x) for x in (regime_cs_skew_min_grid or [-1e9])]
 
     # SPY series used by BOTH knobs (regime gate + vol target).
     spy_close_by_date: pd.Series | None = None
@@ -534,6 +551,7 @@ def run_sweep(
         * len(sp_grid) * len(ss_list) * len(fb_grid)
         * len(rgw_grid) * len(vta_grid) * len(ivt_grid)
         * len(r20g_grid) * len(r5g_grid)
+        * len(rgiqr_grid) * len(rgskew_grid)
     )
     i = 0
     for lev in leverage_grid:
@@ -555,38 +573,44 @@ def run_sweep(
                                                         for ivt in ivt_grid:
                                                             for r20g in r20g_grid:
                                                                 for r5g in r5g_grid:
-                                                                    i += 1
-                                                                    cell = _run_cell(
-                                                                        oos_df=oos_df, scores=scores, windows=windows,
-                                                                        leverage=lev, min_score=ms, hold_through=ht,
-                                                                        top_n=tn, fee_regime=reg,
-                                                                        inference_min_dolvol=inf_dv,
-                                                                        inference_min_vol_20d=inf_vol,
-                                                                        inference_max_vol_20d=inf_maxvol,
-                                                                        skip_prob=sp, skip_seed=sseed,
-                                                                        fill_buffer_bps=fb,
-                                                                        regime_gate_window=rgw,
-                                                                        vol_target_ann=vta,
-                                                                        spy_close_by_date=spy_close_by_date,
-                                                                        inv_vol_target_ann=ivt,
-                                                                        inv_vol_floor=inv_vol_floor,
-                                                                        inv_vol_cap=inv_vol_cap,
-                                                                        max_ret_20d_rank_pct=r20g,
-                                                                        min_ret_5d_rank_pct=r5g,
-                                                                    )
-                                                                    logger.info(
-                                                                        "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                                                        "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
-                                                                        "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
-                                                                        "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                                                        i, total, lev, ms, ht, tn, reg,
-                                                                        inf_dv, inf_vol, inf_maxvol, sp, sseed,
-                                                                        cell.fill_buffer_bps,
-                                                                        rgw, vta, ivt, r20g, r5g,
-                                                                        cell.median_monthly_pct, cell.p10_monthly_pct,
-                                                                        cell.n_neg, cell.n_windows,
-                                                                    )
-                                                                    cells.append(cell)
+                                                                    for rgiqr in rgiqr_grid:
+                                                                        for rgskew in rgskew_grid:
+                                                                            i += 1
+                                                                            cell = _run_cell(
+                                                                                oos_df=oos_df, scores=scores, windows=windows,
+                                                                                leverage=lev, min_score=ms, hold_through=ht,
+                                                                                top_n=tn, fee_regime=reg,
+                                                                                inference_min_dolvol=inf_dv,
+                                                                                inference_min_vol_20d=inf_vol,
+                                                                                inference_max_vol_20d=inf_maxvol,
+                                                                                skip_prob=sp, skip_seed=sseed,
+                                                                                fill_buffer_bps=fb,
+                                                                                regime_gate_window=rgw,
+                                                                                vol_target_ann=vta,
+                                                                                spy_close_by_date=spy_close_by_date,
+                                                                                inv_vol_target_ann=ivt,
+                                                                                inv_vol_floor=inv_vol_floor,
+                                                                                inv_vol_cap=inv_vol_cap,
+                                                                                max_ret_20d_rank_pct=r20g,
+                                                                                min_ret_5d_rank_pct=r5g,
+                                                                                regime_cs_iqr_max=rgiqr,
+                                                                                regime_cs_skew_min=rgskew,
+                                                                            )
+                                                                            logger.info(
+                                                                                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                                                                "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
+                                                                                "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
+                                                                                "rgiqr=%.3f rgskew=%+.2f "
+                                                                                "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
+                                                                                i, total, lev, ms, ht, tn, reg,
+                                                                                inf_dv, inf_vol, inf_maxvol, sp, sseed,
+                                                                                cell.fill_buffer_bps,
+                                                                                rgw, vta, ivt, r20g, r5g,
+                                                                                rgiqr, rgskew,
+                                                                                cell.median_monthly_pct, cell.p10_monthly_pct,
+                                                                                cell.n_neg, cell.n_windows,
+                                                                            )
+                                                                            cells.append(cell)
     return cells
 
 
@@ -621,6 +645,8 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "inv_vol_cap":           c.inv_vol_cap,
             "max_ret_20d_rank_pct":  c.max_ret_20d_rank_pct,
             "min_ret_5d_rank_pct":   c.min_ret_5d_rank_pct,
+            "regime_cs_iqr_max":     c.regime_cs_iqr_max,
+            "regime_cs_skew_min":    c.regime_cs_skew_min,
         }
         for c in cells
     ]
@@ -732,6 +758,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "the bottom-25%% by ret_5d each day. Composes "
                         "sequentially after --max-ret-20d-rank-pct-grid: "
                         "ret_5d ranks recomputed on the already-filtered pool.")
+    p.add_argument("--regime-cs-iqr-max-grid", type=str, default="",
+                   help="Cross-sectional regime-dispersion gate: "
+                        "comma-separated upper bounds on per-day IQR of "
+                        "ret_5d across the universe. 0 disables. Diagnostic "
+                        "found 0.042 as the best absolute threshold on the "
+                        "fresh 2025-07→2026-04 true-OOS (+0.67%%/day mean).")
+    p.add_argument("--regime-cs-skew-min-grid", type=str, default="",
+                   help="Cross-sectional regime-skew gate: comma-separated "
+                        "lower bounds on per-day skew of ret_5d across the "
+                        "universe. Very negative disables (defaults to -1e9). "
+                        "Positive values keep only right-skew days (few "
+                        "winners dominate the panel).")
     p.add_argument("--invert-scores", action="store_true",
                    help="Replace blended scores with 1 - scores so the sim "
                         "picks the bottom-N (originally worst) symbols. "
@@ -837,6 +875,14 @@ def main(argv=None) -> int:
         min_ret_5d_rank_pct_grid=(
             _parse_float_list(args.min_ret_5d_rank_pct_grid)
             if args.min_ret_5d_rank_pct_grid else None
+        ),
+        regime_cs_iqr_max_grid=(
+            _parse_float_list(args.regime_cs_iqr_max_grid)
+            if args.regime_cs_iqr_max_grid else None
+        ),
+        regime_cs_skew_min_grid=(
+            _parse_float_list(args.regime_cs_skew_min_grid)
+            if args.regime_cs_skew_min_grid else None
         ),
     )
 

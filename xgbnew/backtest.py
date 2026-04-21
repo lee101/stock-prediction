@@ -91,6 +91,22 @@ class BacktestConfig:
                                         # blowup for ultra-low-vol (or missing) names
     inv_vol_cap: float = 3.0            # cap on the leverage multiplier (up AND down
                                         # symmetric). 3.0 ⇒ scale ∈ [1/3, 3].
+    # Cross-sectional regime gate. On each day we compute the IQR of
+    # ret_5d ACROSS the full pre-filter universe. Wide dispersion days
+    # (tariff-crash style cross-sectional dislocation) are where the
+    # ensemble's rank-order flips sign on fresh 2025-07→2026-04 true-OOS.
+    # Gating OUT those days (trading only when IQR is below the threshold)
+    # turned top-1/day cumulative from −37% to +43% on the fresh 5-seed
+    # oos2025h1 ensemble. Leak-free — ret_5d is lag-1 (close[t-1]/close[t-6]),
+    # so IQR computed on day T is known at the 9:30 am open.
+    # 0.0 disables (legacy identity). Suggested: 0.042 from diagnostic.
+    regime_cs_iqr_max: float = 0.0
+    # Optional companion gate on cross-sectional skew of ret_5d. Positive
+    # skew (few winners dominate) is the momentum-friendly regime; left-skew
+    # (few catastrophic losers) flips the sign. 0.0 disables so we can
+    # sweep iqr alone, both, or skew alone. NaN days keep the pre-filter
+    # behaviour (no gate).
+    regime_cs_skew_min: float = -1e9    # effectively disabled default
     allocation_mode: str = "equal"      # equal | softmax | score_norm — how we
                                         # weight the top_n picks within a day
     allocation_temp: float = 1.0        # softmax temperature (lower = more concentrated)
@@ -464,6 +480,26 @@ def simulate(
     if ret5_active and "ret_5d" in test_df.columns:
         r5 = test_df.groupby("date")["ret_5d"].rank(pct=True, method="average")
         test_df = test_df[r5 >= float(config.min_ret_5d_rank_pct)]
+
+    # Cross-sectional regime gate — compute per-day stats BEFORE
+    # per-pick filters would bias them (needs the full universe for
+    # a faithful dispersion signal). We compute from the already-
+    # scored ``test_df`` because by this point we've only applied
+    # liquidity / vol / spread filters that a live deployer can also
+    # replicate; the day-level IQR is stable under those masks.
+    iqr_active  = float(config.regime_cs_iqr_max) > 0.0
+    skew_active = float(config.regime_cs_skew_min) > -1e8
+    if (iqr_active or skew_active) and "ret_5d" in test_df.columns:
+        daily = test_df.groupby("date")["ret_5d"]
+        day_iqr  = daily.quantile(0.75) - daily.quantile(0.25)
+        day_skew = daily.agg(lambda s: float(pd.Series(s).skew()))
+        day_keep = pd.Series(True, index=day_iqr.index)
+        if iqr_active:
+            day_keep &= day_iqr <= float(config.regime_cs_iqr_max)
+        if skew_active:
+            day_keep &= day_skew.fillna(0.0) >= float(config.regime_cs_skew_min)
+        keep_dates = set(day_keep[day_keep].index)
+        test_df = test_df[test_df["date"].isin(keep_dates)]
 
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])
