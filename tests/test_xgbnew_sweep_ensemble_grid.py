@@ -638,3 +638,34 @@ def test_sweep_inv_vol_changes_results(monkeypatch, tmp_path):
     assert set(by_ivt) == {0.0, 0.25}
     assert by_ivt[0.0].median_monthly_pct != by_ivt[0.25].median_monthly_pct
 
+
+def test_sweep_momentum_rank_axis_matches_product(monkeypatch, tmp_path):
+    """max_ret_20d_rank_pct_grid × min_ret_5d_rank_pct_grid multiplies
+    cell count cartesian-linearly. Defaults (1.0 / 0.0) echo through.
+    """
+    sym_vols = {f"SYM{k}": 0.10 + 0.05 * k for k in range(6)}
+    _install_fakes_with_vol(monkeypatch, sym_vols)
+    paths = _fake_paths(tmp_path, 1)
+
+    cells = sweep.run_sweep(
+        symbols=list(sym_vols),
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0], min_score_grid=[0.0],
+        hold_through_grid=[False], top_n_grid=[1],
+        fee_regimes=["deploy"],
+        max_ret_20d_rank_pct_grid=[1.0, 0.75, 0.50],
+        min_ret_5d_rank_pct_grid=[0.0, 0.25],
+    )
+    # 3 × 2 = 6 cells.
+    assert len(cells) == 6
+    pairs = {(c.max_ret_20d_rank_pct, c.min_ret_5d_rank_pct) for c in cells}
+    assert pairs == {
+        (1.0, 0.0), (1.0, 0.25),
+        (0.75, 0.0), (0.75, 0.25),
+        (0.50, 0.0), (0.50, 0.25),
+    }
+

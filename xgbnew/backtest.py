@@ -53,6 +53,23 @@ class BacktestConfig:
                                         # in stressed regimes). Band-pass with
                                         # min_vol_20d when both set.
     max_spread_bps: float = 30.0        # skip wide-spread stocks (max volume-based cost)
+    # Cross-sectional (per-day) momentum filters — inference-only masks
+    # based on a pick's rank within the day's pool. Default values
+    # disable both: max_ret_20d_rank_pct=1.0 keeps everything up to the
+    # 100th percentile; min_ret_5d_rank_pct=0.0 keeps everything from
+    # the 0th percentile up. Motivated by project_xgb_oos_regime_inversion
+    # diagnostic — on the 2025-07→2026-04 OOS the top-5 picks in
+    # Q4-by-ret_20d (hot names) underperform by -27bps/day, and picks in
+    # Q1-by-ret_5d (weak recent) underperform by -36bps/day; dropping
+    # the bottom quartile by ret_5d alone flips mean target_oc from
+    # -0.18%/day to +0.12%/day on top-1/day sim. Experimental — carries
+    # overfit risk if the regime flips back.
+    max_ret_20d_rank_pct: float = 1.0   # drop picks with ret_20d at strictly higher
+                                        # per-day percentile than this. 1.0 disables;
+                                        # 0.75 drops the "hot" top-25% on each day.
+    min_ret_5d_rank_pct: float = 0.0    # drop picks with ret_5d at strictly lower
+                                        # per-day percentile than this. 0.0 disables;
+                                        # 0.25 drops the "weak recent" bottom-25%.
     chronos_col: str = "chronos_oc_return"
     fee_rate: float | None = None       # per-side fee fraction; defaults by symbol
     fill_buffer_bps: float = 5.0        # adverse entry/exit fill buffer around bar
@@ -434,6 +451,19 @@ def simulate(
     # distribution shift at fit time), but is dropped from the PICK pool.
     if config.max_vol_20d > 0.0 and "vol_20d" in test_df.columns:
         test_df = test_df[test_df["vol_20d"] <= float(config.max_vol_20d)]
+
+    # Cross-sectional (per-day) momentum rank filters. Compute per-day
+    # percentile ranks and apply both bounds. Cheap: single groupby.rank
+    # call per active filter. Each pick's rank is relative to the same
+    # day's pool AFTER the absolute filters above already ran.
+    ret20_active = float(config.max_ret_20d_rank_pct) < 1.0
+    ret5_active = float(config.min_ret_5d_rank_pct) > 0.0
+    if ret20_active and "ret_20d" in test_df.columns:
+        r20 = test_df.groupby("date")["ret_20d"].rank(pct=True, method="average")
+        test_df = test_df[r20 <= float(config.max_ret_20d_rank_pct)]
+    if ret5_active and "ret_5d" in test_df.columns:
+        r5 = test_df.groupby("date")["ret_5d"].rank(pct=True, method="average")
+        test_df = test_df[r5 >= float(config.min_ret_5d_rank_pct)]
 
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])

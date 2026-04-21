@@ -120,6 +120,10 @@ class CellResult:
     inv_vol_target_ann: float = 0.0
     inv_vol_floor: float = 0.05
     inv_vol_cap: float = 3.0
+    # Cross-sectional momentum rank filters (per-day). 1.0 / 0.0
+    # respectively = disabled (matches BacktestConfig defaults).
+    max_ret_20d_rank_pct: float = 1.0
+    min_ret_5d_rank_pct:  float = 0.0
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -271,6 +275,8 @@ def _run_cell(
     inv_vol_target_ann: float = 0.0,
     inv_vol_floor: float = 0.05,
     inv_vol_cap: float = 3.0,
+    max_ret_20d_rank_pct: float = 1.0,
+    min_ret_5d_rank_pct: float = 0.0,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     # Override fill_buffer if the caller explicitly set it; otherwise
@@ -299,6 +305,8 @@ def _run_cell(
         inv_vol_target_ann=float(inv_vol_target_ann),
         inv_vol_floor=float(inv_vol_floor),
         inv_vol_cap=float(inv_vol_cap),
+        max_ret_20d_rank_pct=float(max_ret_20d_rank_pct),
+        min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
     )
 
     dummy = XGBStockModel(device="cpu", n_estimators=1, max_depth=1, learning_rate=0.1)
@@ -379,6 +387,8 @@ def _run_cell(
         inv_vol_target_ann=float(inv_vol_target_ann),
         inv_vol_floor=float(inv_vol_floor),
         inv_vol_cap=float(inv_vol_cap),
+        max_ret_20d_rank_pct=float(max_ret_20d_rank_pct),
+        min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
     )
 
 
@@ -414,6 +424,8 @@ def run_sweep(
     inv_vol_floor: float = 0.05,
     inv_vol_cap: float = 3.0,
     invert_scores: bool = False,
+    max_ret_20d_rank_pct_grid: list[float] | None = None,
+    min_ret_5d_rank_pct_grid: list[float] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -489,6 +501,8 @@ def run_sweep(
     rgw_grid = [int(x) for x in (regime_gate_window_grid or [0])]
     vta_grid = [float(x) for x in (vol_target_ann_grid or [0.0])]
     ivt_grid = [float(x) for x in (inv_vol_target_grid or [0.0])]
+    r20g_grid = [float(x) for x in (max_ret_20d_rank_pct_grid or [1.0])]
+    r5g_grid  = [float(x) for x in (min_ret_5d_rank_pct_grid or [0.0])]
 
     # SPY series used by BOTH knobs (regime gate + vol target).
     spy_close_by_date: pd.Series | None = None
@@ -519,6 +533,7 @@ def run_sweep(
         * len(inf_grid) * len(vol_grid) * len(maxvol_grid)
         * len(sp_grid) * len(ss_list) * len(fb_grid)
         * len(rgw_grid) * len(vta_grid) * len(ivt_grid)
+        * len(r20g_grid) * len(r5g_grid)
     )
     i = 0
     for lev in leverage_grid:
@@ -538,36 +553,40 @@ def run_sweep(
                                                 for rgw in rgw_grid:
                                                     for vta in vta_grid:
                                                         for ivt in ivt_grid:
-                                                            i += 1
-                                                            cell = _run_cell(
-                                                                oos_df=oos_df, scores=scores, windows=windows,
-                                                                leverage=lev, min_score=ms, hold_through=ht,
-                                                                top_n=tn, fee_regime=reg,
-                                                                inference_min_dolvol=inf_dv,
-                                                                inference_min_vol_20d=inf_vol,
-                                                                inference_max_vol_20d=inf_maxvol,
-                                                                skip_prob=sp, skip_seed=sseed,
-                                                                fill_buffer_bps=fb,
-                                                                regime_gate_window=rgw,
-                                                                vol_target_ann=vta,
-                                                                spy_close_by_date=spy_close_by_date,
-                                                                inv_vol_target_ann=ivt,
-                                                                inv_vol_floor=inv_vol_floor,
-                                                                inv_vol_cap=inv_vol_cap,
-                                                            )
-                                                            logger.info(
-                                                                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                                                "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
-                                                                "rgw=%d vta=%.2f ivt=%.2f "
-                                                                "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                                                i, total, lev, ms, ht, tn, reg,
-                                                                inf_dv, inf_vol, inf_maxvol, sp, sseed,
-                                                                cell.fill_buffer_bps,
-                                                                rgw, vta, ivt,
-                                                                cell.median_monthly_pct, cell.p10_monthly_pct,
-                                                                cell.n_neg, cell.n_windows,
-                                                            )
-                                                            cells.append(cell)
+                                                            for r20g in r20g_grid:
+                                                                for r5g in r5g_grid:
+                                                                    i += 1
+                                                                    cell = _run_cell(
+                                                                        oos_df=oos_df, scores=scores, windows=windows,
+                                                                        leverage=lev, min_score=ms, hold_through=ht,
+                                                                        top_n=tn, fee_regime=reg,
+                                                                        inference_min_dolvol=inf_dv,
+                                                                        inference_min_vol_20d=inf_vol,
+                                                                        inference_max_vol_20d=inf_maxvol,
+                                                                        skip_prob=sp, skip_seed=sseed,
+                                                                        fill_buffer_bps=fb,
+                                                                        regime_gate_window=rgw,
+                                                                        vol_target_ann=vta,
+                                                                        spy_close_by_date=spy_close_by_date,
+                                                                        inv_vol_target_ann=ivt,
+                                                                        inv_vol_floor=inv_vol_floor,
+                                                                        inv_vol_cap=inv_vol_cap,
+                                                                        max_ret_20d_rank_pct=r20g,
+                                                                        min_ret_5d_rank_pct=r5g,
+                                                                    )
+                                                                    logger.info(
+                                                                        "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
+                                                                        "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
+                                                                        "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
+                                                                        "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
+                                                                        i, total, lev, ms, ht, tn, reg,
+                                                                        inf_dv, inf_vol, inf_maxvol, sp, sseed,
+                                                                        cell.fill_buffer_bps,
+                                                                        rgw, vta, ivt, r20g, r5g,
+                                                                        cell.median_monthly_pct, cell.p10_monthly_pct,
+                                                                        cell.n_neg, cell.n_windows,
+                                                                    )
+                                                                    cells.append(cell)
     return cells
 
 
@@ -600,6 +619,8 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "inv_vol_target_ann":    c.inv_vol_target_ann,
             "inv_vol_floor":         c.inv_vol_floor,
             "inv_vol_cap":           c.inv_vol_cap,
+            "max_ret_20d_rank_pct":  c.max_ret_20d_rank_pct,
+            "min_ret_5d_rank_pct":   c.min_ret_5d_rank_pct,
         }
         for c in cells
     ]
@@ -697,6 +718,20 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--inv-vol-cap", type=float, default=3.0,
                    help="Symmetric cap on the inv-vol multiplier. Scale is "
                         "clipped to [1/cap, cap]. Default 3.0 (so 0.333×..3×).")
+    p.add_argument("--max-ret-20d-rank-pct-grid", type=str, default="",
+                   help="Per-day cross-sectional upper rank-pct on ret_20d "
+                        "applied to the pick pool. Comma-separated values in "
+                        "(0,1], e.g. '1.0,0.75,0.50'. 1.0 disables (keeps all). "
+                        "0.75 drops the top-25%% by ret_20d each day. "
+                        "Motivated by regime-inversion diag: hot names crash "
+                        "in tariff regimes.")
+    p.add_argument("--min-ret-5d-rank-pct-grid", type=str, default="",
+                   help="Per-day cross-sectional lower rank-pct on ret_5d "
+                        "applied to the pick pool. Comma-separated values in "
+                        "[0,1), e.g. '0.0,0.25,0.50'. 0.0 disables. 0.25 drops "
+                        "the bottom-25%% by ret_5d each day. Composes "
+                        "sequentially after --max-ret-20d-rank-pct-grid: "
+                        "ret_5d ranks recomputed on the already-filtered pool.")
     p.add_argument("--invert-scores", action="store_true",
                    help="Replace blended scores with 1 - scores so the sim "
                         "picks the bottom-N (originally worst) symbols. "
@@ -795,6 +830,14 @@ def main(argv=None) -> int:
         inv_vol_floor=float(args.inv_vol_floor),
         inv_vol_cap=float(args.inv_vol_cap),
         invert_scores=bool(args.invert_scores),
+        max_ret_20d_rank_pct_grid=(
+            _parse_float_list(args.max_ret_20d_rank_pct_grid)
+            if args.max_ret_20d_rank_pct_grid else None
+        ),
+        min_ret_5d_rank_pct_grid=(
+            _parse_float_list(args.min_ret_5d_rank_pct_grid)
+            if args.min_ret_5d_rank_pct_grid else None
+        ),
     )
 
     rows = _cells_to_rows(cells)
