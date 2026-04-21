@@ -5,7 +5,7 @@ live ledger. This file is a short pointer for the hourly monitor so it knows
 which services should exist, where the best config lives, and what the bar
 is to beat. Keep this file in sync with `alpacaprod.md` whenever we deploy.
 
-Last synced: **2026-04-21 13:10 UTC — deploy gate below corrected: measured on pre-stale-fix `oos2024_ensemble_gpu`. Fresh-ensemble re-measurement (2026-04-21) shows 0/108 positive-median cells at ms=0.85. LIVE is correctly in hold-cash mode — the gate is WAI. See §Deploy gate below + `project_xgb_true_oos_no_edge_2026_04_21.md`.**
+Last synced: **2026-04-21 16:07 UTC — hourly monitor. Added `retrain_through_2026_04_05_ensemble` heldout result (0/168 pos-med cells, 10d window). Cutoff-vs-heldout pattern: 6-week-back (0228) + 4-week-back (0320) each produce 3 pos-med cells that still fail deploy gate; 2-week-back (0405) produces ZERO. Live hold-cash mode remains correct. 2026-04-18 retrain probe launched 16:04 UTC (in-flight). See `project_xgb_retrain_through_0405_zero_edge.md`.**
 
 ---
 

@@ -70,12 +70,15 @@ features**) across 59 windows 2025-01-02 → 2026-04-20 at ms grid
 - ms 0.55–0.70 cells that fire: median −2 to −14%/mo deploy, p10 −30
   to −50%, neg_frac 17–75%.
 
-**Retrain-through experiments** (both trained today):
+**Retrain-through experiments** (all trained 2026-04-21):
 
 | ensemble | train window | heldout | positive-med cells | best |
 |---|---|---|---:|---|
 | `retrain_through_2026_03_20_ensemble` | 2020-01-01 → 2026-03-20 | 2026-03-21 → 2026-04-20 (8 win) | 3/42 (ms=0.60 only) | lev=2.0 ms=0.60 +23.76%/mo 1/8 neg p10 −20.85 |
 | `retrain_through_2026_02_28_ensemble` | 2020-01-01 → 2026-02-28 | 2026-03-01 → 2026-04-20 (13 win) | 3/42 (ms=0.60 only) | lev=2.0 ms=0.60 **+23.61%/mo 2/13 neg p10 −10.13** |
+| `retrain_through_2026_04_05_ensemble` (new 2026-04-21 14:15 UTC) | 2020-01-01 → 2026-04-05 | 2026-04-06 → 2026-04-17 (4 win) | **0/168** | no cell beats +0.00% — only 48/168 fire trades, best p10 −30.90 1/4 neg |
+
+**Cutoff-vs-heldout pattern**: 6 weeks back of heldout (0228) produces 3 pos-med cells; 4 weeks (0320) also 3; 2 weeks (0405) produces zero. The latest retrain absorbs the crash into training and refuses to fire picks. See `project_xgb_retrain_through_0405_zero_edge.md`. A 2026-04-18 retrain is probing-in-flight at 16:07 UTC (even tighter heldout ~2d — true probe only).
 
 **None pass the HARD RULE #1 deploy gate** (27%/mo + 0 neg + positive
 p10). The 2026-02-28 retrain's +23.61%/mo deploy at lev=2.0 ms=0.60 is
