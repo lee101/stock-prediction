@@ -350,12 +350,17 @@ static int close_position(TradingEnv* env, int t) {
         return 0;
     }
 
+    /* Exit cost mirrors the Python eval sim: effective_fee = fee_rate + slippage_bps/1e4.
+       Applied as an adverse haircut on the realised close price — buys back higher,
+       sells lower. With fill_slippage_bps=0 this is exactly the legacy fee-only path. */
+    float slippage = env->fill_slippage_bps / 10000.0f;
+    float effective_fee = env->fee_rate + slippage;
     if (is_short) {
         /* Buy back borrowed shares. Note: cash includes the short-sale proceeds from open_short(). */
-        float cost = ag->position_qty * cur_price * (1.0f + env->fee_rate);
+        float cost = ag->position_qty * cur_price * (1.0f + effective_fee);
         ag->cash -= cost;
     } else {
-        float proceeds = ag->position_qty * cur_price * (1.0f - env->fee_rate);
+        float proceeds = ag->position_qty * cur_price * (1.0f - effective_fee);
         ag->cash += proceeds;
     }
 

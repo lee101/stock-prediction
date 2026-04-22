@@ -17,8 +17,17 @@ import numpy as np
 import pytest
 
 
-def _write_mktd_v1_binary(path: Path, *, close_prices: list[float]) -> None:
-    """Write a minimal MKTD v1 binary: 1 symbol, flat OHLC per step."""
+def _write_mktd_v1_binary(
+    path: Path,
+    *,
+    close_prices: list[float],
+    range_bps: float = 0.0,
+) -> None:
+    """Write a minimal MKTD v1 binary: 1 symbol.
+
+    range_bps lets tests widen high/low around close so entry-side slippage
+    can still fit inside the bar (resolve_limit_fill_price otherwise rejects).
+    """
     num_timesteps = len(close_prices)
     if num_timesteps < 2:
         raise ValueError("need >= 2 timesteps")
@@ -36,17 +45,87 @@ def _write_mktd_v1_binary(path: Path, *, close_prices: list[float]) -> None:
     features = np.zeros((num_timesteps, 1, 16), dtype=np.float32)
     closes = np.asarray(close_prices, dtype=np.float32).reshape(num_timesteps, 1)
     prices = np.zeros((num_timesteps, 1, 5), dtype=np.float32)
-    prices[:, :, 0] = closes  # open
-    prices[:, :, 1] = closes  # high
-    prices[:, :, 2] = closes  # low
-    prices[:, :, 3] = closes  # close
-    prices[:, :, 4] = 1.0     # volume
+    spread = closes * (range_bps / 10000.0)
+    prices[:, :, 0] = closes           # open
+    prices[:, :, 1] = closes + spread  # high
+    prices[:, :, 2] = closes - spread  # low
+    prices[:, :, 3] = closes           # close
+    prices[:, :, 4] = 1.0              # volume
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         f.write(header)
         f.write(sym_table)
         f.write(features.tobytes(order="C"))
         f.write(prices.tobytes(order="C"))
+
+
+def _run_close_slippage_probe(data_path: Path, *, fill_slippage_bps: float) -> dict:
+    """Open + close at flat closes, wide bars. Measure round-trip slippage.
+
+    Entry fill and close payoff both use fill_slippage_bps (prod-parity):
+    fill_price = target*(1+slip); proceeds = qty*close*(1-slip-fee).
+    Flat closes + fee=0 → total_return = (1-slip)/(1+slip) - 1 ≈ -2*slip.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import json, warnings
+import numpy as np
+import pufferlib_market.binding as binding
+
+warnings.simplefilter('ignore')
+binding.shared(data_path={json.dumps(str(data_path))})
+
+obs_buf = np.zeros((1, 22), dtype=np.float32)
+act_buf = np.zeros((1,), dtype=np.int32)
+rew_buf = np.zeros((1,), dtype=np.float32)
+term_buf = np.zeros((1,), dtype=np.uint8)
+trunc_buf = np.zeros((1,), dtype=np.uint8)
+vec_handle = binding.vec_init(
+    obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
+    1, 123,
+    max_steps=3,
+    fee_rate=0.0,
+    max_leverage=1.0,
+    periods_per_year=252.0,
+    fill_slippage_bps=float({fill_slippage_bps}),
+)
+binding.vec_reset(vec_handle, 123)
+# open, hold, close — flat prices
+act_buf[:] = np.asarray([1], dtype=np.int32); binding.vec_step(vec_handle)
+act_buf[:] = np.asarray([1], dtype=np.int32); binding.vec_step(vec_handle)
+act_buf[:] = np.asarray([0], dtype=np.int32); binding.vec_step(vec_handle)
+log_info = binding.vec_log(vec_handle)
+binding.vec_close(vec_handle)
+print(json.dumps({{k: float(v) for k, v in log_info.items()}}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(repo_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout.strip())
+
+
+def test_c_env_close_applies_slippage(tmp_path: Path) -> None:
+    """Wide flat bars, fee=0, slippage=10bps → round-trip ≈ -0.2% (2x one-sided).
+
+    Before this fix the close path applied only fee_rate and missed slippage,
+    producing a one-sided hit of ≈ -0.1% — so a regression there would show
+    up as -0.1% here, not -0.2%.
+    """
+    data = tmp_path / "flat.bin"
+    _write_mktd_v1_binary(data, close_prices=[100.0, 100.0, 100.0], range_bps=50.0)
+
+    with_slip = _run_close_slippage_probe(data, fill_slippage_bps=10.0)
+    no_slip = _run_close_slippage_probe(data, fill_slippage_bps=0.0)
+
+    # slip=0, fee=0, flat closes → no P&L.
+    assert no_slip["total_return"] == pytest.approx(0.0, abs=1e-6)
+    # (1 - 0.001) / (1 + 0.001) - 1 = -0.001998...; -0.001 would mean the close
+    # path is still on the legacy fee-only branch.
+    assert with_slip["total_return"] == pytest.approx(-0.001998, rel=5e-3)
 
 
 def _run_episode(data_path: Path, *, guard_tolerance_bps: float, closes: list[float]) -> dict:
