@@ -128,6 +128,70 @@ def test_c_env_close_applies_slippage(tmp_path: Path) -> None:
     assert with_slip["total_return"] == pytest.approx(-0.001998, rel=5e-3)
 
 
+def _run_short_close_slippage_probe(data_path: Path, *, fill_slippage_bps: float) -> dict:
+    """Open short + close at flat closes, wide bars. Mirror of long probe.
+
+    Short round-trip at slip s: proceeds_open = qty * tp * (1-s), cover_cost =
+    qty * tp * (1+s+fee) on re-entry → total_return ≈ -2s at fee=0. Same
+    magnitude as the long round-trip — validates the is_short branch of
+    close_position now also applies effective_fee.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import json, warnings
+import numpy as np
+import pufferlib_market.binding as binding
+
+warnings.simplefilter('ignore')
+binding.shared(data_path={json.dumps(str(data_path))})
+
+obs_buf = np.zeros((1, 22), dtype=np.float32)
+act_buf = np.zeros((1,), dtype=np.int32)
+rew_buf = np.zeros((1,), dtype=np.float32)
+term_buf = np.zeros((1,), dtype=np.uint8)
+trunc_buf = np.zeros((1,), dtype=np.uint8)
+vec_handle = binding.vec_init(
+    obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
+    1, 123,
+    max_steps=3,
+    fee_rate=0.0,
+    max_leverage=1.0,
+    periods_per_year=252.0,
+    fill_slippage_bps=float({fill_slippage_bps}),
+)
+binding.vec_reset(vec_handle, 123)
+# action 2 = short sym 0 (1 + S*bins_block for S=1, bins=1)
+act_buf[:] = np.asarray([2], dtype=np.int32); binding.vec_step(vec_handle)
+act_buf[:] = np.asarray([2], dtype=np.int32); binding.vec_step(vec_handle)
+act_buf[:] = np.asarray([0], dtype=np.int32); binding.vec_step(vec_handle)
+log_info = binding.vec_log(vec_handle)
+binding.vec_close(vec_handle)
+print(json.dumps({{k: float(v) for k, v in log_info.items()}}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(repo_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout.strip())
+
+
+def test_c_env_short_close_applies_slippage(tmp_path: Path) -> None:
+    """Short round-trip, fee=0, slip=10bps → same ≈ -0.2% as longs."""
+    data = tmp_path / "flat.bin"
+    _write_mktd_v1_binary(data, close_prices=[100.0, 100.0, 100.0], range_bps=50.0)
+
+    with_slip = _run_short_close_slippage_probe(data, fill_slippage_bps=10.0)
+    no_slip = _run_short_close_slippage_probe(data, fill_slippage_bps=0.0)
+
+    assert no_slip["total_return"] == pytest.approx(0.0, abs=1e-6)
+    # Symmetric with longs at flat prices: open-side slippage on the proceeds
+    # + close-side effective_fee on the cover ≈ -2*slip round-trip.
+    assert with_slip["total_return"] == pytest.approx(-0.002, abs=2e-4)
+
+
 def _run_episode(data_path: Path, *, guard_tolerance_bps: float, closes: list[float]) -> dict:
     """Run a 3-step episode: long at step 0, sell at step 1, hold at step 2.
 
