@@ -53,6 +53,10 @@ class CatBoostStockModel(BaseBinaryDailyModel):
         if device and device.startswith("cuda"):
             params["task_type"] = "GPU"
             params["devices"] = device.split(":", 1)[1] if ":" in device else "0"
+            # CatBoost GPU rejects `rsm` (= colsample_bylevel) in Logloss mode
+            # with "rsm on GPU is supported for pairwise modes only". Drop it
+            # so the Bernoulli-subsample regularisation still applies rowwise.
+            params.pop("colsample_bylevel", None)
         self.clf = CatBoostClassifier(**params)
 
     def fit(self, train_df: pd.DataFrame,

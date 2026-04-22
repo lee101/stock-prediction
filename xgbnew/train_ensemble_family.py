@@ -55,7 +55,7 @@ def _load_symbols(path: Path) -> list[str]:
     return [s for s in syms if not (s in seen or seen.add(s))]
 
 
-FAMILY_CHOICES = ("xgb", "lgb", "cat", "mlp", "mlp_muon")
+FAMILY_CHOICES = ("xgb", "lgb", "cat", "mlp", "mlp_muon", "xgb_rank")
 
 
 def _build_model(family: str, seed: int, device: str, args) -> object:
@@ -67,6 +67,18 @@ def _build_model(family: str, seed: int, device: str, args) -> object:
             max_depth=int(args.max_depth),
             learning_rate=float(args.learning_rate),
             random_state=int(seed),
+        )
+    if family == "xgb_rank":
+        from xgbnew.model_xgb_ranker import XGBRankerStockModel
+        return XGBRankerStockModel(
+            device=device,
+            n_estimators=int(args.n_estimators),
+            max_depth=int(args.max_depth),
+            learning_rate=float(args.learning_rate),
+            random_state=int(seed),
+            n_deciles=int(args.ranker_deciles),
+            sample_weight_mode=str(args.ranker_sample_weight),
+            sample_weight_clip=float(args.ranker_sample_weight_clip),
         )
     if family == "lgb":
         from xgbnew.model_lgb import LGBMStockModel
@@ -167,6 +179,16 @@ def parse_args(argv=None):
                    help="Muon optimizer LR for 2D hidden weights (default 0.02)")
     p.add_argument("--muon-momentum", type=float, default=0.95,
                    help="Muon momentum (default 0.95)")
+
+    # Ranker-specific
+    p.add_argument("--ranker-deciles", type=int, default=10,
+                   help="N deciles for per-day rank label (family=xgb_rank).")
+    p.add_argument("--ranker-sample-weight", default="none",
+                   choices=["none", "abs_target", "abs_target_sqrt"],
+                   help="Per-row training weight: abs_target weights rows by "
+                        "|target_oc| (clipped). abs_target_sqrt damps the tail.")
+    p.add_argument("--ranker-sample-weight-clip", type=float, default=0.05,
+                   help="Upper clip for |target_oc| weight (default 0.05 = 5%% move).")
 
     # Feature flags (same as train_alltrain_ensemble.py)
     p.add_argument("--include-ranks", action="store_true")

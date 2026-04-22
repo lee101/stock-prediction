@@ -58,6 +58,9 @@ def load_any_model(path: Path | str):
     if family == "mlp_muon":
         from xgbnew.model_mlp_muon import MuonMLPStockModel
         return MuonMLPStockModel.load(path)
+    if family == "xgb_rank":
+        from xgbnew.model_xgb_ranker import XGBRankerStockModel
+        return XGBRankerStockModel.load(path)
     raise ValueError(f"Unknown model family {family!r} in {path}")
 
 

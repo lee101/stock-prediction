@@ -46,13 +46,18 @@ class LGBMStockModel(BaseBinaryDailyModel):
         max_depth=-1,
         learning_rate=0.03,
         subsample=0.8,
+        subsample_freq=1,      # Needed for subsample to actually apply
         colsample_bytree=0.7,
         min_child_samples=20,
         reg_alpha=0.1,
         reg_lambda=1.0,
         objective="binary",
         random_state=42,
-        n_jobs=-1,
+        # Cap thread count: n_jobs=-1 on 72-core hosts can paradoxically
+        # choke throughput (contention on small per-node work). 16 is a
+        # comfortable parallel level for 1M-row histogram training.
+        n_jobs=16,
+        force_col_wise=True,   # avoid the cost-test decision stall
         verbosity=-1,
     )
 
