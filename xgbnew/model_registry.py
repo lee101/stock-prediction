@@ -55,6 +55,9 @@ def load_any_model(path: Path | str):
     if family == "mlp":
         from xgbnew.model_mlp import MLPStockModel
         return MLPStockModel.load(path)
+    if family == "mlp_muon":
+        from xgbnew.model_mlp_muon import MuonMLPStockModel
+        return MuonMLPStockModel.load(path)
     raise ValueError(f"Unknown model family {family!r} in {path}")
 
 

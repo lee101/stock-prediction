@@ -55,7 +55,7 @@ def _load_symbols(path: Path) -> list[str]:
     return [s for s in syms if not (s in seen or seen.add(s))]
 
 
-FAMILY_CHOICES = ("xgb", "lgb", "cat", "mlp")
+FAMILY_CHOICES = ("xgb", "lgb", "cat", "mlp", "mlp_muon")
 
 
 def _build_model(family: str, seed: int, device: str, args) -> object:
@@ -101,6 +101,22 @@ def _build_model(family: str, seed: int, device: str, args) -> object:
             weight_decay=float(args.mlp_weight_decay),
             random_state=int(seed),
         )
+    if family == "mlp_muon":
+        from xgbnew.model_mlp_muon import MuonMLPStockModel
+        return MuonMLPStockModel(
+            device=device,
+            hidden_dim=int(args.muon_hidden),
+            n_blocks=int(args.muon_blocks),
+            dropout=float(args.mlp_dropout),
+            muon_lr=float(args.muon_lr),
+            muon_momentum=float(args.muon_momentum),
+            adam_lr=float(args.mlp_lr),
+            adam_weight_decay=float(args.mlp_weight_decay),
+            batch_size=int(args.mlp_batch),
+            epochs=int(args.mlp_epochs),
+            early_stop_patience=int(args.mlp_patience),
+            random_state=int(seed),
+        )
     raise ValueError(f"Unknown family: {family}")
 
 
@@ -142,6 +158,15 @@ def parse_args(argv=None):
     p.add_argument("--mlp-epochs", type=int, default=30)
     p.add_argument("--mlp-patience", type=int, default=5)
     p.add_argument("--mlp-weight-decay", type=float, default=1e-5)
+    # Muon-MLP hyperparams (family=mlp_muon)
+    p.add_argument("--muon-hidden", type=int, default=128,
+                   help="Hidden dim for residual blocks (default 128)")
+    p.add_argument("--muon-blocks", type=int, default=3,
+                   help="Number of residual blocks (default 3)")
+    p.add_argument("--muon-lr", type=float, default=0.02,
+                   help="Muon optimizer LR for 2D hidden weights (default 0.02)")
+    p.add_argument("--muon-momentum", type=float, default=0.95,
+                   help="Muon momentum (default 0.95)")
 
     # Feature flags (same as train_alltrain_ensemble.py)
     p.add_argument("--include-ranks", action="store_true")
