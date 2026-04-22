@@ -315,17 +315,40 @@ static int should_drawdown_profit_early_exit(
 /*  Trade execution                                                    */
 /* ------------------------------------------------------------------ */
 
-static void close_position(TradingEnv* env, int t) {
+/* Death-spiral guard: mirrors alpaca_singleton.guard_sell_against_death_spiral.
+ * Returns 1 if the sell should be refused (long-only, time-aware tolerance). */
+static inline int death_spiral_refused(const TradingEnv* env, float sell_price,
+                                        float entry_price, int hold_hours, int is_short) {
+    if (env->death_spiral_tolerance_bps <= 0.0f) return 0;
+    if (is_short) return 0;
+    if (entry_price <= 0.0f || sell_price <= 0.0f) return 0;
+    int threshold = env->death_spiral_stale_after_bars;
+    if (threshold < 0) threshold = 0;
+    float tol = (hold_hours >= threshold)
+        ? env->death_spiral_overnight_tolerance_bps
+        : env->death_spiral_tolerance_bps;
+    if (tol <= 0.0f) return 0;
+    float floor_price = entry_price * (1.0f - tol / 10000.0f);
+    return sell_price < floor_price;
+}
+
+static int close_position(TradingEnv* env, int t) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
     const int S = md->num_symbols;
 
-    if (ag->position_sym < 0) return;
+    if (ag->position_sym < 0) return 0;
 
     int sym = ag->position_sym % S;
     /* Use OPEN price for closing — order placed at start of bar */
     float cur_price = get_price(md, t, sym, P_OPEN);
     int is_short = (ag->position_sym >= S);
+
+    /* prod-parity guard: refuse mid-drawdown long sells (matches production daemon). */
+    if (death_spiral_refused(env, cur_price, ag->entry_price, ag->hold_hours, is_short)) {
+        ag->hold_hours++;
+        return 0;
+    }
 
     if (is_short) {
         /* Buy back borrowed shares. Note: cash includes the short-sale proceeds from open_short(). */
@@ -349,6 +372,7 @@ static void close_position(TradingEnv* env, int t) {
     ag->position_qty = 0.0f;
     ag->entry_price = 0.0f;
     ag->hold_hours = 0;
+    return 1;
 }
 
 static int resolve_limit_fill_price(const TradingEnv* env, const MarketData* md, int t, int sym, float target_price, int is_buy, float* fill_price) {
@@ -527,8 +551,9 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
         ag->hold_hours >= env->max_hold_hours)) {
         int cs = ag->position_sym % S;
         if (is_tradable(md, t, cs)) {
-            close_position(env, t);
-            trade_events += 1;
+            if (close_position(env, t)) {
+                trade_events += 1;
+            }
         }
         /* If not tradable, will close next tradable step */
     }
@@ -562,8 +587,9 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
         /* close any open position */
         if (ag->position_sym >= 0) {
             if (cur_tradable) {
-                close_position(env, t);
-                trade_events += 1;
+                if (close_position(env, t)) {
+                    trade_events += 1;
+                }
             } else {
                 /* can't close when market closed: treat as hold */
                 ag->hold_hours++;
@@ -595,27 +621,34 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
                 /* can't close current position right now */
                 ag->hold_hours++;
             } else {
+                int close_ok = 1;
                 if (ag->position_sym >= 0) {
-                    close_position(env, t);
-                    trade_events += 1;
-                }
-                /* fill_probability gate: simulate unfilled orders due to low liquidity */
-                int fill_ok = 1;
-                if (env->fill_probability < 1.0f) {
-                    float roll = fast_rand_float();
-                    fill_ok = (roll <= env->fill_probability);
-                }
-                if (fill_ok) {
-                    if (is_short_target) {
-                        open_short(env, t, target_sym, target_alloc, level_bps);
-                    } else {
-                        open_long(env, t, target_sym, target_alloc, level_bps);
-                    }
-                    if (ag->position_sym == target_pos_id) {
+                    close_ok = close_position(env, t);
+                    if (close_ok) {
                         trade_events += 1;
                     }
+                    /* If refused, close_position already incremented hold_hours.
+                       Skip new open — position is still held. */
                 }
-                /* else: order not filled, agent stays flat this step */
+                if (close_ok) {
+                    /* fill_probability gate: simulate unfilled orders due to low liquidity */
+                    int fill_ok = 1;
+                    if (env->fill_probability < 1.0f) {
+                        float roll = fast_rand_float();
+                        fill_ok = (roll <= env->fill_probability);
+                    }
+                    if (fill_ok) {
+                        if (is_short_target) {
+                            open_short(env, t, target_sym, target_alloc, level_bps);
+                        } else {
+                            open_long(env, t, target_sym, target_alloc, level_bps);
+                        }
+                        if (ag->position_sym == target_pos_id) {
+                            trade_events += 1;
+                        }
+                    }
+                    /* else: order not filled, agent stays flat this step */
+                }
             }
         }
     }

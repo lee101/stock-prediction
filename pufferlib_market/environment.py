@@ -46,6 +46,9 @@ class TradingEnvConfig:
         drawdown_profit_early_exit_verbose: bool = False,
         drawdown_profit_early_exit_min_steps: int = 20,
         drawdown_profit_early_exit_progress_fraction: float = 0.5,
+        death_spiral_tolerance_bps: float = 0.0,
+        death_spiral_overnight_tolerance_bps: float = 500.0,
+        death_spiral_stale_after_bars: int = 8,
     ):
         self.data_path = str(Path(data_path).resolve())
         self.max_steps = max_steps
@@ -78,6 +81,9 @@ class TradingEnvConfig:
             0.0,
             min(1.0, float(drawdown_profit_early_exit_progress_fraction)),
         )
+        self.death_spiral_tolerance_bps = float(death_spiral_tolerance_bps)
+        self.death_spiral_overnight_tolerance_bps = float(death_spiral_overnight_tolerance_bps)
+        self.death_spiral_stale_after_bars = max(0, int(death_spiral_stale_after_bars))
 
 
 def _load_binding():
@@ -148,6 +154,9 @@ class TradingEnv(GymnasiumPufferEnv if GymnasiumPufferEnv is not None else objec
             drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,
             drawdown_profit_early_exit_min_steps=config.drawdown_profit_early_exit_min_steps,
             drawdown_profit_early_exit_progress_fraction=config.drawdown_profit_early_exit_progress_fraction,
+            death_spiral_tolerance_bps=config.death_spiral_tolerance_bps,
+            death_spiral_overnight_tolerance_bps=config.death_spiral_overnight_tolerance_bps,
+            death_spiral_stale_after_bars=config.death_spiral_stale_after_bars,
         )
 
     @staticmethod

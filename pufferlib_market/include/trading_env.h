@@ -127,6 +127,14 @@ typedef struct {
     float          fill_probability;  /* probability an order fills [0,1]; 1.0 = always fills (default 1.0) */
     int            decision_lag;      /* >=1: obs=t-lag, exec=t. Default 2 (production-safe). Pass 1 explicitly for legacy lookahead-tolerant research paths only. */
 
+    /* --- prod-parity death-spiral guard (mirrors alpaca_singleton.guard_sell_against_death_spiral) ---
+       Refuses long sells at price below entry_price * (1 - tol_bps/10000). Time-aware:
+       intraday tol if hold_hours < stale_after_bars, overnight tol otherwise.
+       tolerance_bps <= 0 disables the guard (default, off). Shorts never refused. */
+    float          death_spiral_tolerance_bps;           /* intraday tolerance bps; <=0 disables (default 0 = off) */
+    float          death_spiral_overnight_tolerance_bps; /* wider overnight tolerance bps (default 500) */
+    int            death_spiral_stale_after_bars;        /* >=0; bars-held threshold to switch to overnight tol (default 8) */
+
     /* --- deterministic offset for eval (set to -1 for random) --- */
     int            forced_offset;    /* if >= 0, use this exact data_offset instead of random */
 

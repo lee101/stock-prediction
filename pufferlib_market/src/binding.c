@@ -130,6 +130,17 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     if (env->fill_probability < 0.0f) env->fill_probability = 0.0f;
     if (env->fill_probability > 1.0f) env->fill_probability = 1.0f;
 
+    /* Prod-parity death-spiral guard. tolerance_bps <= 0 disables (default off). */
+    val = kwargs ? PyDict_GetItemString(kwargs, "death_spiral_tolerance_bps") : NULL;
+    env->death_spiral_tolerance_bps = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "death_spiral_overnight_tolerance_bps") : NULL;
+    env->death_spiral_overnight_tolerance_bps = val ? (float)PyFloat_AsDouble(val) : 500.0f;
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "death_spiral_stale_after_bars") : NULL;
+    env->death_spiral_stale_after_bars = val ? (int)PyLong_AsLong(val) : 8;
+    if (env->death_spiral_stale_after_bars < 0) env->death_spiral_stale_after_bars = 0;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "decision_lag") : NULL;
     /* Default 2 mirrors production. Pass decision_lag=1 explicitly for legacy
      * lookahead-tolerant research paths; warn loudly when that happens so a
