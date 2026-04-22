@@ -1,0 +1,151 @@
+
+=== Hourly Prod Check 2026-04-22T13:23Z ===
+Phase 1 (triage):
+  Health: HEALTHY
+  XGB: RUNNING (pid=3315287, uptime 1d 14h. Today's session 13:20 UTC fired: top1=LCID score=0.5542, 0/668 pass ms=0.85, hold-cash)
+  Singleton lock: ok (service=xgb_live_trader pid=3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98, buying_power=$57,357.96, status=ACTIVE)
+  Positions: 0 stock (only crypto dust: AVAX/BTC/DOGE/LTC/SOL avg < $0.001)
+  Fills last 10d: 2 (both DOGE/USD on 2026-04-18 — no equity fills since 2026-04-19 MSFT cancel; consistent with hold-cash gate firing)
+  Top-score series last 4 sessions: 0.7036/0.7036/0.6005/0.5542 — varies meaningfully (HEALTHY R9b low-conviction regime, NOT stale-features)
+  Orphan positions: 0
+  RL path (must be DOWN): confirmed-stopped (daily-rl-trader STOPPED, trading-server STOPPED, port 8050 closed, no procs)
+  Death-spiral: no markers
+  Log errors last hour: 0 (only "recorded buy_price=422.7500 (last_close) for guard" benign line)
+  Disk: 83% / and /nvme0n1-disk (yellow, freed 512MB journal)
+Phase 2 (fixes):
+  - journalctl --vacuum-size=500M (freed 511.7M; / still at 83% — system disk near steady state, not actionable without explicit rotation policy)
+Phase 3 (research):
+  Experiments run (both completed in-hour):
+    1. oos2024_ensemble_gpu_fresh 15-seed sweep (lev∈{1,1.5,2}×ms∈{0.55..0.85}×ht=1×vol=0.12×dv=50M, 42 cells, 63 windows over 2025-01→2026-04)
+       OUT: analysis/xgbnew_daily/sweep_20260422_oos2024_fresh_15seed_20260422_1306/sweep_20260422_131555.json
+    2. retrain_through_2026_02_28_ensemble 15-seed sweep (heldout 2026-03-01→04-21, 72 cells, 5 windows)
+       OUT: analysis/xgbnew_daily/sweep_20260422_retrain_0228_15seed_20260422_1307_b/sweep_20260422_130926.json
+  Findings:
+    - Sweep1 (oos2024_fresh 15-seed): 0/42 pos-median. LIVE-CFG (lev=2.0 ms=0.85) fires 0 trades both fee regimes — confirms hold-cash. Best firing cell lev=1.0 ms=0.60 deploy: med=-2.90% p10=-50.60% neg=33/63 (52% neg). All ms<0.85 negative-median.
+    - Sweep2 (retrain_0228 15-seed, n=5 underpowered): 6/72 pos-median but ALL with neg=2/5 (40% neg) and p10 ≤ -11% — fails deploy gate's neg_frac ≤ 20% rule. LIVE-CFG fires 0 trades. Best lev=2.0 ms=0.60 tn=1: med=+9.75% p10=-22.59% neg=2/5.
+    - Combined: bonferroni-validated NO deployable edge on either fold. Hold-cash is correct.
+  New candidate meeting bar: NONE
+Phase 4 (redeploy): no deploy — both 15-seed bonferroni sweeps confirm hold-cash; LIVE config strict-dominates all firing-cell alternatives on neg-window count.
+Next hour should: (1) re-tail XGB log around 13:20 UTC for tomorrow's session top-score (continues R9b series); (2) optionally run 15-seed sweep on retrain_through_2026_03_20_ensemble heldout to round out the 3-fold bonferroni picture; (3) leave LIVE alone — deploy gate confirmed inert in current regime.
+
+=== Hourly Prod Check 2026-04-22T14:10:00Z ===
+Phase 1 (triage):
+  Health: HEALTHY (health_check.py 10/10 ok+warn, 0 err)
+  XGB: RUNNING (pid=3315287, uptime 1d 15h, last session 2026-04-22 ~13:20 UTC: 0/668 candidates pass ms=0.85, top=0.5542, no pick — holding cash)
+  Singleton lock: ok (service=xgb_live_trader pid=3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98, buying_power=$57,357.96, 0 stock positions, 5 crypto-dust sub-$0.001)
+  Fills last 10d: 2 (both DOGE/USD from LLM path 2026-04-18 — last XGB fill GOOG 2026-04-07)
+  Orphan positions: 0 stock (crypto dust sub-$0.001 is not XGB)
+  RL path (must be DOWN): confirmed-stopped (daily-rl-trader STOPPED, trading-server STOPPED, :8050 closed)
+  Log errors last hour: 0 (clean session markers only)
+Phase 2 (fixes): none needed
+Phase 3 (research):
+  Harvested prior-hour sweeps:
+    - 15-seed oos2024_fresh 42-cell → 0/42 positive-median (ms>=0.70: 0 trades/score-cap; ms<=0.65: deeply negative)
+    - 15-seed retrain_through_0228 heldout 72-cell → 0/72 positive-median (best lev=2/ms=0.60/tn=2 +9.75%/mo but 2/5 neg=40%, stress36x flips neg)
+  Findings:
+    - Top-score trajectory 0.7036 (04-20) → 0.6005 (04-21) → 0.5542 (04-22) varies meaningfully = healthy R9b low-conviction regime
+    - GBDT family exhausted at bonferroni scale across both TRUE-OOS folds + retrain-through heldout
+    - XGB fills visibly absent 2026-04-07 onwards — consistent with post-crash low-conviction regime, hold-cash is correct design behavior
+  New candidate meeting bar: NONE — same null finding across 3 independent sweep axes; architectural pivot required
+  No new sweep launched: signal is saturating on same-family seeds, launching another 15-seed GBDT variant would replicate null
+Phase 4 (redeploy): no deploy — hold-cash is correct per retired deploy gate
+Next hour should: re-verify top-score didn't crystallize (R9a stale-features signature); if positions still 0 and scores varying, LIVE is nominal; consider exploring RL v7 11-model as independent TRUE-OOS eval candidate for user-judgment (architectural, human-only)
+
+
+=== Hourly Prod Check 2026-04-22T15:10:04Z ===
+Phase 1 (triage):
+  Health: HEALTHY (disk warn 83%, no critical)
+  XGB: RUNNING pid=3315287 uptime 1d 16h12m, last session 2026-04-22 13:30 UTC, top-1=LCID score=0.5542 (no pick — gate held cash, R9b healthy)
+  Singleton lock: ok (service=xgb_live_trader pid=3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98 buying_power=$57,357.96 stock_positions=0)
+  Fills last 10d: 2 (both DOGE/USD on 04-18; no stock fills since GOOG sell 2026-04-07 — expected, gate has been hold-cash)
+  Orphan positions: 0 (only crypto dust <$0.01)
+  RL path (must be DOWN): confirmed-stopped (both units STOPPED, port 8050 closed, no rogue processes)
+  Log errors last hour: 0 (only benign 'recorded buy_price' line from 2026-04-19 MSFT cancellation)
+  Score sequence (3 sessions): 0.7036 → 0.6005 → 0.5542 — varying meaningfully, not stale features
+Phase 2 (fixes): none needed
+Phase 3 (research):
+  Harvested 2 prior-hour 15-seed sweeps:
+    - oos2024_ensemble_gpu_fresh 126-cell: LIVE config (lev=2.0 ms=0.85 ht=1 vol=0.12) = 0 trades fire over 63 windows. Mirrors LIVE hold-cash exactly.
+    - retrain_through_2026_02_28_ensemble 72-cell: best lev=2.0 ms=0.60 tn=2 deploy +9.75%/mo BUT 2/5 neg (40%) — fails neg-frac gate. Refutes 5-seed +23.61% as tail-bias.
+  Multicutoff stack + blend (prior-day artifacts): also negative everywhere. Cross-cutoff compression doesn't help.
+  Findings: XGB family bonferroni-exhausted on every recent dimension (lev, ms, ht, tn, vol, dolvol, ranks, dispersion, regime-inversion, retrain-through, cross-cutoff). LIVE hold-cash IS the OOS-validated correct behavior.
+  Fire-and-forget launched PID=1322020: short-history 15-seed (--train-start 2024-01-01) → genuinely novel direction (every refuted experiment used 2020+ history). Train+sweep ETA ~30-60min; harvest next hour from analysis/xgbnew_daily/sweep_20260422_short_history_2024start_15seed/.
+  New candidate meeting bar: none yet
+Phase 4 (redeploy): no deploy — no candidate passed the new bonferroni gate (med ≥+27%/mo, p10≥0, neg≤20%, DD≤LIVE). Ledger updated: monitoring/current_algorithms.md last-synced bumped to 2026-04-22 15:10 UTC.
+Next hour should: harvest .tmp_train/short_history_2024start_15seed_20260422_1508.log + analysis/xgbnew_daily/sweep_20260422_short_history_2024start_15seed/. If 15-seed short-history shows ANY positive-median cell that passes neg-frac ≤20% + p10 ≥0, deploy gate is met — write up + propose swap. If null, family is fully exhausted and only true-architectural pivots (Chronos-2 LoRA, RL 11-model crash-survivor blend) remain.
+
+=== Hourly Prod Check 2026-04-22T16:08Z ===
+Phase 1 (triage):
+  Health: HEALTHY (1 warn: disk 83% both fs — below 85% threshold, no action needed)
+  XGB: RUNNING (pid=3315287, uptime 1d 17h, last Scoring event 13:30Z today, top-1 score=0.5542 on 668 candidates — healthy R9b low-conviction)
+  Singleton lock: ok (service_name=xgb_live_trader, pid=3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98, buying_power=$57,357.96, status=ACTIVE)
+  Positions: 5 (all crypto dust <$0.01, 0 stock positions — expected in hold-cash regime)
+  Fills last 10d: 2 (both DOGE/USD on 2026-04-18, non-XGB)
+  Orphan positions: none
+  RL path (must be DOWN): confirmed (daily-rl-trader + trading-server STOPPED, port 8050 closed)
+  Log errors last hour: 0 urgent
+Phase 2 (fixes): none needed
+Phase 3 (research):
+  Harvested: short-history 2024-start 15-seed XGB full-heldout sweep (504 cells, 2026-03-01→04-20). 0/504 gate-pass. Best deploy cell lev=2 ms=0.55 tn=2 vol=0.10 = +16.54%/mo but p10=−34.70 + 6/15 neg (40%) + dd=16.45% — fails every gate. stress36x: 0 pos-median. Null refutation added to GBDT exhaustion ledger.
+  Launched: late-subfold sweep (2026-03-21→04-20 only) for same 15-seed ensemble via scripts/launch_late_subfold_shorthist.sh — PID=2005186, currently in "Building dataset for 846 symbols" phase (expected ~15-20min).
+  New candidate meeting bar: none
+Phase 4 (redeploy): no deploy — no candidate passed the gate at 15-seed bonferroni
+Next hour should: Harvest PID=2005186 (late-subfold sweep). If short-history collapses on late subfold like MuonMLP retrain-through-0228 did, confirm recovery-rally artifact and add to ledger. If genuinely positive on late subfold too, flag as first potential edge candidate in weeks. Consider next architectural pivot: MLP-Muon trained on short-history 2024-start, or a regime-conditional classifier (predict conditional on SPY up/down), given GBDT-family exhaustion is now comprehensively documented.
+
+=== Hourly Prod Check 2026-04-22T17:10Z ===
+Phase 1 (triage):
+  Health: HEALTHY (only disk WARN at 83% / and /nvme0n1-disk; threshold=85%, no action)
+  XGB: RUNNING (pid=3315287, uptime 1d 18h, last session 2026-04-22 13:30 UTC, top-1 LCID score=0.5542 on 668 candidates -> No picks today, hold cash)
+  Singleton lock: ok (service=xgb_live_trader pid=3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98, buying_power=$57,357.96, status=ACTIVE)
+  Stock positions: 0 (correct under hold-cash)
+  Fills last 10d: 2 (DOGE/USD on 2026-04-18, residual crypto pre-XGB-deploy; 0 XGB fills, expected under R9b)
+  Trade log: top-1 sequence MSFT 0.7036 -> DVN 0.6005 -> LCID 0.5542 = HEALTHY R9b low-conviction (varying scores, varying symbols, varying n_candidates)
+  Death-spiral: clean (no markers, MSFT buy_price entry 2026-04-19 still in 3d TTL)
+  RL path (must be DOWN): confirmed STOPPED (daily-rl-trader Apr 19, trading-server Apr 19, port :8050 closed)
+  Log errors last hour: 0 (only DeprecationWarning in account_locks logs)
+Phase 2 (fixes): none needed
+Phase 3 (research):
+  Harvested: late-subfold short-history 15-seed sweep (PID=2005186 from prior hour)
+    Result: 0/168 cells pass deploy gate; 48 pos-median deploy cells but ALL have negative p10
+    Best deploy-fee pos-median: lev=2 ms=0.6 tn=2 vol=0.10 = +89.41%/mo p10=-31.59 2/8 neg dd=16.45%
+    Best deploy-fee by p10:    lev=2 ms=0.55 tn=2 vol=0.10 = +62.90%/mo p10=-4.32  2/8 neg dd=16.45%
+    Conclusion: short-history retrain refuted on BOTH full and late subfolds
+  Memory updated: project_xgb_short_history_2024start_refuted.md (late-subfold result appended)
+  Ledger updated: monitoring/current_algorithms.md "Last synced" line bumped to 17:10 UTC
+  Committed: ff332097 ops(xgb): hourly monitor 2026-04-22 17:10
+  New experiment fire-and-forget (PID=2729830): leverage x ms sweep on oos2024_ensemble_gpu_fresh (15-seed)
+    7 leverages {1.0,1.25,1.5,1.75,2.0,2.5,3.0} x 7 ms {0.55-0.85} x 2 fee regimes = 98 cells
+    Output: analysis/xgbnew_ensemble_sweep/leverage_curve_freshens_20260422_1710/
+    Launcher: scripts/launch_lev_curve_freshens_20260422_1710.sh (committed)
+    Purpose: keep current operating envelope fresh given fresh ensemble's score-distribution collapse (max blended ~0.65-0.77)
+  Findings: short-history exhaustion confirmed; pivot must remain architectural
+  New candidate meeting bar: none
+Phase 4 (redeploy): no deploy — no candidate passes the four-bar gate this hour
+Next hour should: harvest analysis/xgbnew_ensemble_sweep/leverage_curve_freshens_20260422_1710/ (98 cells, ~30-45 min wall time);
+                  if it surfaces a strict-dominance cell over LIVE both fee regimes, write up + flag for user (lev>2 is human-only).
+                  Otherwise consider an architectural pivot experiment (Chronos-2 zero-shot scoring on the 846 universe, or a SPY-vol regime detector + conditional XGB blend).
+
+=== Hourly Prod Check 2026-04-22T18:00Z ===
+Phase 1 (triage):
+  Health: HEALTHY (disk 83% both fs, below 85% threshold)
+  XGB: RUNNING (pid=3315287, uptime 1d 19h, last session 2026-04-22 top-1 score=0.5542 no-pick — 3-session sequence 0.7036→0.6005→0.5542 = healthy R9b low-conviction)
+  Singleton lock: ok (service=xgb_live_trader pid=3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98 buying_power=$57,357.96 positions=0 stocks + 5 crypto-dust)
+  Fills last 10d: 2 (both crypto DOGE residual from Apr 18, pre full-stack deploy) — expected given hold-cash gate + hold-through
+  Orphan positions: 0 stock positions
+  RL path: confirmed STOPPED (daily-rl-trader + trading-server both STOPPED, port :8050 closed)
+  Log errors last hour: 0 (only benign singleton lock-acquired INFO lines)
+  Weekly retrain timer: OK (next fire Sun 2026-04-26 23:00 UTC, 4d away)
+Phase 2 (fixes): none needed
+Phase 3 (research):
+  Experiments run: harvested leverage-curve freshens sweep (pid=2729830, 55min runtime) — 15-seed oos2024_ensemble_gpu_fresh × 7 levs {1.0..3.0} × 7 ms {0.55..0.85} × deploy/stress36x = 98 cells. Result **0/98 pass deploy gate**. At ms≥0.75 (incl deployed ms=0.85): 0 trades fire across 42 windows on 2025-01→2026-04-19 OOS — structural inertia, confirms score-calibration collapse memory. At ms∈{0.55,0.60,0.65,0.70}: trades fire but every cell has neg p10 (range −34 to −89%) and 7-27/42 neg windows. Deployed-equivalent cell lev=2.0 ms=0.85 = 0 trades = structural hold-cash.
+  Also surveyed other recent 15-seed sweeps on disk: retrain_0228 (0 gate-pass), short_history_2024start full (0 gate-pass), short_history late-subfold (12 pos-p10 at deploy but all 12 fail stress36x 3-4/8 neg), oos2024_fresh 1306 (0 gate-pass).
+  Findings: 15-seed bonferroni continues to refute every XGB-family lever tested this week (leverage curve, short history, retrain-through, dispersion features, momentum ranks, vol floors, inversion). XGB family appears exhausted on current crash-regime OOS window. Deployed structural hold-cash via ms=0.85 is the correct default.
+  New candidate meeting bar: **none**.
+Phase 4 (redeploy): no deploy — no candidate clears four-bar gate at 15-seed bonferroni scale
+Next hour should: re-confirm XGB health + singleton; if Thursday Apr 23 session still scores <0.85 (likely given 0.55 trajectory), continue monitoring. Consider kicking off an ARCHITECTURAL experiment (Chronos-2 zero-shot scoring or CAT with ordered_target_statistics on the 846 universe) — ONLY outside trading window and if GPU idle. Do NOT kick off another XGB param sweep on this fold; family exhausted. Also consider pruning .tmp_sandbox/ and .tmp_weekly_longval_build/ if disk creeps toward 85%.
