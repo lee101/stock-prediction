@@ -192,7 +192,13 @@ def test_c_env_short_close_applies_slippage(tmp_path: Path) -> None:
     assert with_slip["total_return"] == pytest.approx(-0.002, abs=2e-4)
 
 
-def _run_episode(data_path: Path, *, guard_tolerance_bps: float, closes: list[float]) -> dict:
+def _run_episode(
+    data_path: Path,
+    *,
+    guard_tolerance_bps: float,
+    closes: list[float],
+    stale_after_bars: int = 8,
+) -> dict:
     """Run a 3-step episode: long at step 0, sell at step 1, hold at step 2.
 
     Returns binding log dict (total_return, num_trades, ...).
@@ -219,7 +225,7 @@ vec_handle = binding.vec_init(
     periods_per_year=252.0,
     death_spiral_tolerance_bps=float({guard_tolerance_bps}),
     death_spiral_overnight_tolerance_bps=500.0,
-    death_spiral_stale_after_bars=8,
+    death_spiral_stale_after_bars={stale_after_bars},
 )
 binding.vec_reset(vec_handle, 123)
 # Step 0: go long
@@ -275,6 +281,83 @@ def test_c_env_guard_on_refuses_crash_sell_mark_to_market(tmp_path: Path) -> Non
     assert result["total_return"] == pytest.approx(-0.01, rel=1e-3)
 
 
+def _run_max_hold_episode(
+    data_path: Path,
+    *,
+    max_hold_hours: int,
+    guard_tolerance_bps: float,
+    stale_after_bars: int,
+    max_steps: int,
+) -> dict:
+    """Hold long through the whole episode — exercises max_hold force-close."""
+    repo_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import json, warnings
+import numpy as np
+import pufferlib_market.binding as binding
+
+warnings.simplefilter('ignore')
+binding.shared(data_path={json.dumps(str(data_path))})
+
+obs_buf = np.zeros((1, 22), dtype=np.float32)
+act_buf = np.zeros((1,), dtype=np.int32)
+rew_buf = np.zeros((1,), dtype=np.float32)
+term_buf = np.zeros((1,), dtype=np.uint8)
+trunc_buf = np.zeros((1,), dtype=np.uint8)
+vec_handle = binding.vec_init(
+    obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
+    1, 123,
+    max_steps={max_steps},
+    fee_rate=0.0,
+    max_leverage=1.0,
+    periods_per_year=252.0,
+    max_hold_hours={max_hold_hours},
+    death_spiral_tolerance_bps=float({guard_tolerance_bps}),
+    death_spiral_overnight_tolerance_bps=500.0,
+    death_spiral_stale_after_bars={stale_after_bars},
+)
+binding.vec_reset(vec_handle, 123)
+for _ in range({max_steps}):
+    act_buf[:] = np.asarray([1], dtype=np.int32)
+    binding.vec_step(vec_handle)
+log_info = binding.vec_log(vec_handle)
+binding.vec_close(vec_handle)
+print(json.dumps({{k: float(v) for k, v in log_info.items()}}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(repo_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout.strip())
+
+
+def test_c_env_max_hold_force_close_refused_by_guard(tmp_path: Path) -> None:
+    """max_hold force-close + death-spiral refusal: position persists to terminal.
+
+    With max_hold=1 and guard intraday tolerance 50bps, the force-close attempts
+    firing at every bar after hold_hours hits 1 all get refused (price 1% below
+    entry). stale_after_bars=8 means the refusal stays tight for the whole 4-bar
+    episode, so no close event ever succeeds. Terminal equity is MTM at last
+    close (-1%), not cash (which would report 0% since no trade settled).
+    """
+    data = tmp_path / "crash.bin"
+    _write_mktd_v1_binary(data, close_prices=[100.0, 99.0, 99.0, 99.0])
+
+    result = _run_max_hold_episode(
+        data,
+        max_hold_hours=1,
+        guard_tolerance_bps=50.0,
+        stale_after_bars=8,
+        max_steps=4,
+    )
+
+    assert result["num_trades"] == pytest.approx(0.0)
+    assert result["total_return"] == pytest.approx(-0.01, rel=2e-3)
+
+
 def test_c_env_guard_on_allows_small_drop_within_tolerance(tmp_path: Path) -> None:
     """0.3% drop with 50bps tol: floor=99.5, sell at 99.7 > 99.5 → allowed."""
     data = tmp_path / "small.bin"
@@ -286,3 +369,28 @@ def test_c_env_guard_on_allows_small_drop_within_tolerance(tmp_path: Path) -> No
     # Within tolerance: sell closed, 1 trade, realized 0.3% loss
     assert result["num_trades"] == pytest.approx(1.0)
     assert result["total_return"] == pytest.approx(-0.003, rel=1e-3)
+
+
+def test_c_env_guard_stale_widens_tolerance(tmp_path: Path) -> None:
+    """stale_after_bars=0 → wider overnight tolerance applies from bar 0.
+
+    A 1% drop is refused by the tight 50bps intraday tolerance but well within
+    the 500bps overnight tolerance. Setting stale_after_bars=0 forces the
+    overnight branch immediately, so the sell lands on the first attempt
+    instead of being refused. Contrast with
+    test_c_env_guard_on_refuses_crash_sell_mark_to_market which uses the
+    default stale=8 and asserts 0 closed trades on the same prices.
+    """
+    data = tmp_path / "crash.bin"
+    closes = [100.0, 99.0, 99.0]
+    _write_mktd_v1_binary(data, close_prices=closes)
+
+    result = _run_episode(
+        data,
+        guard_tolerance_bps=50.0,
+        closes=closes,
+        stale_after_bars=0,
+    )
+
+    assert result["num_trades"] == pytest.approx(1.0)
+    assert result["total_return"] == pytest.approx(-0.01, rel=1e-3)
