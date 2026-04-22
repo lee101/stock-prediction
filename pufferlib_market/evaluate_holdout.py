@@ -467,6 +467,24 @@ def main() -> None:
         default=0,
         help="Inference-time consensus gate: require at least this many ensemble members to argmax the same action. 0 disables. Single-model evals ignore this.",
     )
+    parser.add_argument(
+        "--death-spiral-tolerance-bps",
+        type=float,
+        default=None,
+        help="Prod-parity sim guard: refuse long sells more than this many bps below entry while the position is fresh (hold_steps < stale-after-bars). None (default) disables. Pass 50 to mirror prod alpaca_singleton.guard_sell_against_death_spiral.",
+    )
+    parser.add_argument(
+        "--death-spiral-overnight-tolerance-bps",
+        type=float,
+        default=500.0,
+        help="Wide tolerance used once position age exceeds --death-spiral-stale-after-bars. Mirrors prod overnight regime.",
+    )
+    parser.add_argument(
+        "--death-spiral-stale-after-bars",
+        type=int,
+        default=8,
+        help="Bars of hold age past which the overnight tolerance takes over. Default 8 matches 8h prod default on hourly bars.",
+    )
     args = parser.parse_args()
 
     steps = int(args.eval_hours)
@@ -655,6 +673,12 @@ def main() -> None:
             action_level_bins=int(level_bins),
             action_max_offset_bps=float(max_offset_bps),
             enable_drawdown_profit_early_exit=not args.no_early_stop,
+            death_spiral_tolerance_bps=(
+                None if args.death_spiral_tolerance_bps is None
+                else float(args.death_spiral_tolerance_bps)
+            ),
+            death_spiral_overnight_tolerance_bps=float(args.death_spiral_overnight_tolerance_bps),
+            death_spiral_stale_after_bars=int(args.death_spiral_stale_after_bars),
         )
         annualized_return = annualize_total_return(
             float(result.total_return),

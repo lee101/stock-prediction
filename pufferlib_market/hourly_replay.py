@@ -252,6 +252,37 @@ def _close_position(cash: float, pos: Position, price: float, fee_rate: float) -
     return float(cash), bool(win)
 
 
+def _death_spiral_refused(
+    *,
+    sell_price: float,
+    entry_price: float,
+    hold_steps: int,
+    tolerance_bps: float | None,
+    overnight_tolerance_bps: float,
+    stale_after_bars: int,
+) -> bool:
+    """Mirror of ``src/alpaca_singleton.guard_sell_against_death_spiral``.
+
+    Sim-side copy: if ``tolerance_bps`` is None the guard is disabled (default).
+    Otherwise regime is picked by position age expressed in bars:
+    ``hold_steps >= stale_after_bars`` → overnight tolerance (wide), else the
+    tight intraday tolerance. Shorts are never refused (guard is long-only, as
+    in prod — the ``buys`` memory only tracks longs).
+    """
+    if tolerance_bps is None:
+        return False
+    if entry_price <= 0 or sell_price <= 0:
+        return False
+    threshold = int(max(0, stale_after_bars))
+    tol = (
+        float(overnight_tolerance_bps)
+        if int(hold_steps) >= threshold
+        else float(tolerance_bps)
+    )
+    floor = float(entry_price) * (1.0 - tol / 10_000.0)
+    return float(sell_price) < floor
+
+
 def _normalize_fill_buffer_bps(fill_buffer_bps: float) -> float:
     value = float(fill_buffer_bps or 0.0)
     if not np.isfinite(value) or value < 0.0:
@@ -573,6 +604,9 @@ def simulate_daily_policy(
     drawdown_profit_early_exit_progress_fraction: float = 0.5,
     early_exit_max_drawdown: float | None = None,
     early_exit_min_sortino: float | None = None,
+    death_spiral_tolerance_bps: float | None = None,
+    death_spiral_overnight_tolerance_bps: float = 500.0,
+    death_spiral_stale_after_bars: int = 8,
 ) -> DailySimResult:
     """Pure-python simulation matching the C env's daily step semantics.
 
@@ -591,6 +625,19 @@ def simulate_daily_policy(
         min_notional_usd: Skip opening a position if the dollar value of the
             position would be below this threshold (e.g. 12.0 for $12 minimum).
             0 = disabled. Matches production min notional check.
+        death_spiral_tolerance_bps: Intraday (fresh-buy) refusal threshold in
+            bps below entry price. ``None`` (default) disables the guard for
+            backward-compatibility; production deploys should pass 50.0 to
+            mirror ``alpaca_singleton.guard_sell_against_death_spiral``.
+            On refusal the sell is skipped (position persists; ``hold_steps``
+            increments), replicating prod behavior where the daemon crashes
+            and the position stays on the books until a human intervenes.
+        death_spiral_overnight_tolerance_bps: Tolerance applied once the
+            position age exceeds ``death_spiral_stale_after_bars`` (default
+            500 bps, mirrors prod overnight).
+        death_spiral_stale_after_bars: Bars of hold age past which the
+            overnight (wide) tolerance takes over. Default 8 matches 8h on
+            hourly bars; pass 0 to force overnight semantics only.
     """
     S = data.num_symbols
     T = data.num_timesteps
@@ -683,7 +730,15 @@ def simulate_daily_policy(
         # Execute action (same logic as c_step)
         if action == 0:
             if pos is not None:
-                if cur_tradable:
+                refused = _death_spiral_refused(
+                    sell_price=price_cur,
+                    entry_price=pos.entry_price,
+                    hold_steps=hold_steps,
+                    tolerance_bps=death_spiral_tolerance_bps,
+                    overnight_tolerance_bps=death_spiral_overnight_tolerance_bps,
+                    stale_after_bars=death_spiral_stale_after_bars,
+                ) if not pos.is_short else False
+                if cur_tradable and not refused:
                     cash, win = _close_position(cash, pos, price_cur, effective_fee)
                     num_trades += 1
                     winning_trades += int(win)
@@ -716,6 +771,16 @@ def simulate_daily_policy(
                     if pos is not None:
                         hold_steps += 1
                 elif pos is not None and not cur_tradable:
+                    hold_steps += 1
+                elif pos is not None and not pos.is_short and _death_spiral_refused(
+                    sell_price=price_cur,
+                    entry_price=pos.entry_price,
+                    hold_steps=hold_steps,
+                    tolerance_bps=death_spiral_tolerance_bps,
+                    overnight_tolerance_bps=death_spiral_overnight_tolerance_bps,
+                    stale_after_bars=death_spiral_stale_after_bars,
+                ):
+                    # Prod guard would refuse the exit sell; switch cannot happen.
                     hold_steps += 1
                 else:
                     if pos is not None:
@@ -793,23 +858,46 @@ def simulate_daily_policy(
                 and pos_peak_price > 0.0
                 and price_new < pos_peak_price * (1.0 - _trailing_stop)
             ):
-                cash, win = _close_position(cash, pos, price_new, effective_fee)
-                num_trades += 1
-                winning_trades += int(win)
-                pos = None
-                pos_peak_price = 0.0
-                hold_steps = 0
-                equity_after = float(cash)
+                if _death_spiral_refused(
+                    sell_price=price_new,
+                    entry_price=pos.entry_price,
+                    hold_steps=hold_steps,
+                    tolerance_bps=death_spiral_tolerance_bps,
+                    overnight_tolerance_bps=death_spiral_overnight_tolerance_bps,
+                    stale_after_bars=death_spiral_stale_after_bars,
+                ):
+                    # Prod guard refuses — trailing stop cannot fire either.
+                    pass
+                else:
+                    cash, win = _close_position(cash, pos, price_new, effective_fee)
+                    num_trades += 1
+                    winning_trades += int(win)
+                    pos = None
+                    pos_peak_price = 0.0
+                    hold_steps = 0
+                    equity_after = float(cash)
 
             # --- Max hold: force exit after max_hold_bars bars ---
             elif _max_hold > 0 and pos is not None and hold_steps >= _max_hold:
-                cash, win = _close_position(cash, pos, price_new, effective_fee)
-                num_trades += 1
-                winning_trades += int(win)
-                pos = None
-                pos_peak_price = 0.0
-                hold_steps = 0
-                equity_after = float(cash)
+                refused_max_hold = (
+                    not pos.is_short
+                    and _death_spiral_refused(
+                        sell_price=price_new,
+                        entry_price=pos.entry_price,
+                        hold_steps=hold_steps,
+                        tolerance_bps=death_spiral_tolerance_bps,
+                        overnight_tolerance_bps=death_spiral_overnight_tolerance_bps,
+                        stale_after_bars=death_spiral_stale_after_bars,
+                    )
+                )
+                if not refused_max_hold:
+                    cash, win = _close_position(cash, pos, price_new, effective_fee)
+                    num_trades += 1
+                    winning_trades += int(win)
+                    pos = None
+                    pos_peak_price = 0.0
+                    hold_steps = 0
+                    equity_after = float(cash)
 
             # Update peak price for next bar
             elif pos is not None and not pos.is_short and price_new > pos_peak_price:
@@ -870,13 +958,26 @@ def simulate_daily_policy(
             # Close at t_new for final accounting (matches C env behavior).
             if pos is not None:
                 price_end = float(data.prices[t_new, pos.sym, P_CLOSE])
-                cash, win = _close_position(cash, pos, price_end, effective_fee)
-                num_trades += 1
-                winning_trades += int(win)
-                pos = None
-                pos_peak_price = 0.0
-
-            final_equity = float(cash)
+                if not pos.is_short and _death_spiral_refused(
+                    sell_price=price_end,
+                    entry_price=pos.entry_price,
+                    hold_steps=hold_steps,
+                    tolerance_bps=death_spiral_tolerance_bps,
+                    overnight_tolerance_bps=death_spiral_overnight_tolerance_bps,
+                    stale_after_bars=death_spiral_stale_after_bars,
+                ):
+                    # Refused final close: position survives on the books.
+                    # For reporting, mark-to-market the unrealized equity.
+                    final_equity = _compute_equity(cash, pos, price_end)
+                else:
+                    cash, win = _close_position(cash, pos, price_end, effective_fee)
+                    num_trades += 1
+                    winning_trades += int(win)
+                    pos = None
+                    pos_peak_price = 0.0
+                    final_equity = float(cash)
+            else:
+                final_equity = float(cash)
             total_return = (final_equity - initial_equity) / initial_equity if initial_equity != 0.0 else 0.0
 
             sortino = 0.0
