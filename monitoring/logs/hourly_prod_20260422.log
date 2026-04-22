@@ -149,3 +149,31 @@ Phase 3 (research):
   New candidate meeting bar: **none**.
 Phase 4 (redeploy): no deploy — no candidate clears four-bar gate at 15-seed bonferroni scale
 Next hour should: re-confirm XGB health + singleton; if Thursday Apr 23 session still scores <0.85 (likely given 0.55 trajectory), continue monitoring. Consider kicking off an ARCHITECTURAL experiment (Chronos-2 zero-shot scoring or CAT with ordered_target_statistics on the 846 universe) — ONLY outside trading window and if GPU idle. Do NOT kick off another XGB param sweep on this fold; family exhausted. Also consider pruning .tmp_sandbox/ and .tmp_weekly_longval_build/ if disk creeps toward 85%.
+
+=== Hourly Prod Check 2026-04-22T19:00Z ===
+Phase 1 (triage):
+  Health: HEALTHY (disk 83% warn both fs, below 85% threshold)
+  XGB: RUNNING (pid=3315287, uptime 1d 20h, same pid as prior hour)
+  Singleton lock: ok (service=xgb_live_trader, pid matches supervisor)
+  Alpaca: ok (equity=$28,678.98, buying_power=$57,357.96, flat vs prior hour)
+  Positions: 0 stock (expected hold-cash under ms=0.85 gate) + crypto dust only
+  Fills last 10d: 2 (both DOGE/USD crypto dust from 2026-04-18; no stock fills, correct hold-cash)
+  Today's session: top-1 LCID score=0.5542 / 668 candidates — gate held cash (0 picks)
+  Score sequence 0.7036 (weekend × 4) → 0.6005 (Mon 04-21) → 0.5542 (Tue 04-22) on distinct syms = R9b healthy low-conviction regime (varying per-session)
+  Trade log 2026-04-22.jsonl: scored=1 filt=1 picks=0 top=LCID 0.5542
+  Death-spiral: no markers dir (clean)
+  RL path: STOPPED (daily-rl-trader + trading-server both confirmed down, :8050 closed)
+  Error log last hour: 0 actionable (only benign singleton-claim-acquired lines)
+  Weekly retrain timer: next fire Sun 2026-04-26 23:00 UTC (4d)
+Phase 2 (fixes): none needed.
+Phase 3 (research):
+  Harvested: no new in-flight experiments (prior hour 18:00 UTC already harvested the 98-cell leverage curve 15-seed freshens sweep).
+  Re-verified deployed cell in sweep_20260422_180152.json:
+    lev=2.0 ms=0.85 ht=1 vol=0.12 dv=50M
+    deploy fees:   med=0.00%/mo p10=0.00% neg=0/42 ddW=0.00% (0 trades fire)
+    stress36x:     med=0.00%/mo p10=0.00% neg=0/42 ddW=0.00% (0 trades fire)
+    Interpretation: blended score on oos2024_ensemble_gpu_fresh never clears 0.85 on the crash regime OOS tail → gate is structurally inert → hold-cash is correct model behavior.
+  Aggregate across 98 cells (49 deploy × 2 fee regimes): 0/98 pass 0-neg + p10>0 + med>=27%/mo gate.
+  No launch this hour: trading window 13:30-20:00 UTC still active; heavy training contraindicated.
+Phase 4 (redeploy): no deploy — no candidate clears gate. Deployed config remains live.
+Next hour should: re-confirm health (should be unchanged). If budget allows after 20:00 UTC close, queue a read-only cross-fold eval of the deploy cell on oos2025h1_ensemble_gpu_fresh as a second sanity check (estimated ~50 min, 98 cells, detach per fire-and-forget rules). Heavier architectural experiments (Chronos-2 head, PPO regime detector) require user decision — XGB family confirmed exhausted.
