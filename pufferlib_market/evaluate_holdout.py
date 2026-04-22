@@ -455,6 +455,18 @@ def main() -> None:
                         help="Additional checkpoint paths for softmax-avg ensemble")
     parser.add_argument("--start-indices", nargs="*", type=int, default=None,
                         help="Evaluate only these specific window start indices (overrides --n-windows and --exhaustive)")
+    parser.add_argument(
+        "--min-top-prob",
+        type=float,
+        default=0.0,
+        help="Inference-time conviction gate: if softmax-avg top prob < this, force no-op (action=0). 0.0 disables.",
+    )
+    parser.add_argument(
+        "--min-member-agreement",
+        type=int,
+        default=0,
+        help="Inference-time consensus gate: require at least this many ensemble members to argmax the same action. 0 disables. Single-model evals ignore this.",
+    )
     args = parser.parse_args()
 
     steps = int(args.eval_hours)
@@ -502,8 +514,12 @@ def main() -> None:
 
     pending_actions: collections.deque[int] = collections.deque(maxlen=max(1, decision_lag + 1))
 
+    min_top_prob = float(args.min_top_prob)
+    min_member_agreement = int(args.min_member_agreement)
+
     def _policy_fn(obs: np.ndarray) -> int:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
+        member_argmaxes: list[int] = []
         with torch.no_grad():
             if n_ensemble == 1:
                 logits, _ = policy(obs_t)
@@ -514,6 +530,8 @@ def main() -> None:
                     lg, _ = p(obs_t)
                     pr = torch.softmax(lg, dim=-1)
                     probs_sum = pr if probs_sum is None else probs_sum + pr
+                    if min_member_agreement > 0:
+                        member_argmaxes.append(int(torch.argmax(lg, dim=-1).item()))
                 logits = torch.log(probs_sum / n_ensemble + 1e-8)
         if tradable_mask is not None:
             logits = _mask_disallowed_symbols(
@@ -539,6 +557,24 @@ def main() -> None:
             action_now = int(torch.argmax(logits, dim=-1).item())
         else:
             action_now = int(Categorical(logits=logits).sample().item())
+
+        # Inference-time conviction gates (apply after masks, before decision_lag).
+        if min_top_prob > 0.0 or min_member_agreement > 0:
+            with torch.no_grad():
+                avg_probs = torch.softmax(logits, dim=-1)
+                top_prob = float(avg_probs.max().item())
+            gated = False
+            if min_top_prob > 0.0 and top_prob < min_top_prob:
+                gated = True
+            if min_member_agreement > 0 and member_argmaxes:
+                counts: dict[int, int] = {}
+                for a in member_argmaxes:
+                    counts[a] = counts.get(a, 0) + 1
+                max_agreement = max(counts.values()) if counts else 0
+                if max_agreement < min_member_agreement:
+                    gated = True
+            if gated:
+                action_now = 0  # hold / no-op
 
         if decision_lag <= 0:
             return action_now
