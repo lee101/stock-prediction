@@ -775,11 +775,20 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
                 early_exit_total_return * 100.0f
             );
         }
-        /* close position for final accounting */
+        /* close position for final accounting. If the death-spiral guard
+           refuses the close (price below entry tolerance), fall back to
+           mark-to-market so we don't report a spurious -100% loss. */
+        float final_equity;
         if (ag->position_sym >= 0) {
-            close_position(env, t_new);
+            int closed = close_position(env, t_new);
+            if (closed) {
+                final_equity = ag->cash;
+            } else {
+                final_equity = compute_equity(env, t_new);
+            }
+        } else {
+            final_equity = ag->cash;
         }
-        float final_equity = ag->cash;
         float total_return = (final_equity - ag->initial_equity) / ag->initial_equity;
         float max_dd = ag->max_drawdown;
 
