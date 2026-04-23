@@ -408,3 +408,87 @@ def test_backtest_runs_end_to_end():
     # weights_history one column per asset + _cash
     assert "_cash" in result.weights_history.columns
     assert result.weights_history.shape[0] == result.summary["rebalances"]
+
+
+def test_rolling_drawdown_stats_in_summary():
+    """Rolling 5/21/63d drawdown + frac-exceeding-threshold in summary."""
+    from cvar_portfolio.backtest import _goodness_score, _rolling_drawdown_stats
+
+    # Fabricate a sharp 30% drop then recovery.
+    idx = pd.date_range("2023-01-01", periods=80, freq="B", tz="UTC")
+    rets = pd.Series(0.0, index=idx)
+    rets.iloc[30:35] = np.log(0.93)  # 5 consecutive −7% days = -30%+ drawdown
+    rets.iloc[50:60] = np.log(1.02)  # recovery
+
+    stats = _rolling_drawdown_stats(rets)
+    # Worst 5d window should show drop; 21d should be deeper.
+    assert stats["worst_5d_drawdown_pct"] < -20.0
+    assert stats["worst_21d_drawdown_pct"] < -20.0
+    assert stats["frac_21d_dd_gt_25pct"] > 0.0
+
+    # Goodness score should be strongly negative vs a gentle series.
+    summary_bad = {"median_monthly_return_pct": 5.0, **stats}
+    summary_good = {
+        "median_monthly_return_pct": 5.0,
+        "worst_5d_drawdown_pct": -3.0,
+        "worst_21d_drawdown_pct": -8.0,
+        "worst_63d_drawdown_pct": -12.0,
+        "frac_21d_dd_gt_25pct": 0.0,
+    }
+    assert _goodness_score(summary_good) > _goodness_score(summary_bad)
+    # Low-DD portfolio should score near its monthly return.
+    assert abs(_goodness_score(summary_good) - 5.0) < 0.5
+
+
+def test_goodness_score_rewards_monthly_return():
+    """Higher monthly return with identical DD → higher goodness."""
+    from cvar_portfolio.backtest import _goodness_score
+
+    base = {"median_monthly_return_pct": 10.0, "worst_5d_drawdown_pct": -5.0,
+            "worst_21d_drawdown_pct": -12.0, "worst_63d_drawdown_pct": -18.0,
+            "frac_21d_dd_gt_25pct": 0.0}
+    higher = {**base, "median_monthly_return_pct": 25.0}
+    assert _goodness_score(higher) > _goodness_score(base) + 10.0
+
+
+def test_goodness_score_penalizes_21d_frac_breach():
+    """Repeated 25%+ monthly drawdowns punished harder than a single deep one."""
+    from cvar_portfolio.backtest import _goodness_score
+
+    occasional = {"median_monthly_return_pct": 20.0, "worst_5d_drawdown_pct": -10.0,
+                  "worst_21d_drawdown_pct": -35.0, "worst_63d_drawdown_pct": -35.0,
+                  "frac_21d_dd_gt_25pct": 0.02}
+    chronic = {**occasional, "frac_21d_dd_gt_25pct": 0.25}
+    assert _goodness_score(occasional) > _goodness_score(chronic) + 10.0
+
+
+@requires_cufolio
+def test_per_asset_stop_loss_caps_drawdown():
+    """A very tight per-asset stop-loss should trim worst_21d_drawdown_pct
+    vs a no-stop run on the same panel."""
+    prices = _make_toy_prices(seed=11)
+    kwargs = dict(fit_window=100, hold_days=20, num_scen=300, fit_type="gaussian",
+                  w_max=0.5, L_tar=1.0, cardinality=None, api="cvxpy",
+                  fee_bps=10, slip_bps=5, rng_seed=3)
+    no_stop = run_backtest(prices, **kwargs)
+    tight = run_backtest(prices, per_asset_stop_loss_pct=5.0, **kwargs)
+    # worst rolling 21d DD should be same or shallower under the stop.
+    assert tight.summary["worst_21d_drawdown_pct"] >= no_stop.summary["worst_21d_drawdown_pct"] - 1e-6
+    assert "per_asset_stop_loss_pct" in tight.summary
+    assert tight.summary["per_asset_stop_loss_pct"] == 5.0
+
+
+@requires_cufolio
+def test_portfolio_stop_loss_halts_holding():
+    """A portfolio-wide stop-loss liquidates everything and leaves zero
+    returns for the rest of the window."""
+    prices = _make_toy_prices(seed=19)
+    kwargs = dict(fit_window=100, hold_days=20, num_scen=300, fit_type="gaussian",
+                  w_max=0.5, L_tar=1.0, cardinality=None, api="cvxpy",
+                  fee_bps=10, slip_bps=5, rng_seed=5)
+    # Tight port-wide stop; very likely to trip on random panel.
+    res = run_backtest(prices, portfolio_stop_loss_pct=2.0, **kwargs)
+    assert res.summary["portfolio_stop_loss_pct"] == 2.0
+    # Summary must still be well-formed.
+    assert "goodness_score" in res.summary
+    assert np.isfinite(res.summary["goodness_score"])

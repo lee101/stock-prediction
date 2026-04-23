@@ -44,6 +44,75 @@ def _max_drawdown(cum_log_ret: np.ndarray) -> float:
     return float(dd.min())
 
 
+def _rolling_drawdown_stats(port_rets: pd.Series) -> dict:
+    """Worst trough-from-rolling-peak drawdown over rolling windows.
+
+    For each window length k, slide a k-day window across the portfolio
+    log-return series and compute the min-over-that-window of
+    (equity_j / max_equity_in_window − 1) × 100. Report the deepest such
+    dip + the fraction of windows where it exceeded common thresholds
+    (10/25/40%).
+
+    Windows: 5d ~ 1 week, 21d ~ 1 month, 63d ~ 1 quarter.
+    """
+    if len(port_rets) == 0:
+        return {
+            "worst_5d_drawdown_pct": 0.0, "worst_21d_drawdown_pct": 0.0,
+            "worst_63d_drawdown_pct": 0.0,
+            "frac_5d_dd_gt_10pct": 0.0, "frac_21d_dd_gt_25pct": 0.0,
+            "frac_63d_dd_gt_40pct": 0.0,
+        }
+    equity = np.exp(port_rets.cumsum().values)
+    out = {}
+    for win_days, label, thresh in [(5, "5d", 10.0), (21, "21d", 25.0), (63, "63d", 40.0)]:
+        if len(equity) < win_days:
+            out[f"worst_{label}_drawdown_pct"] = 0.0
+            out[f"frac_{label}_dd_gt_{int(thresh)}pct"] = 0.0
+            continue
+        # Rolling max of equity within each trailing win_days-sized window.
+        roll_peak = pd.Series(equity).rolling(win_days, min_periods=1).max().values
+        dd = (equity - roll_peak) / roll_peak * 100.0  # vector, units = %
+        # Worst per-window min: slide a window of size win_days, min of dd.
+        dd_series = pd.Series(dd)
+        window_min = dd_series.rolling(win_days, min_periods=1).min().values
+        out[f"worst_{label}_drawdown_pct"] = float(np.min(window_min))
+        out[f"frac_{label}_dd_gt_{int(thresh)}pct"] = float((window_min < -thresh).mean())
+    return out
+
+
+def _goodness_score(summary: dict) -> float:
+    """Composite user-defined goodness: reward monthly return, heavily
+    penalize rolling drawdowns that breach comfort thresholds.
+
+    Target (per user standing request 2026-04-23): sustain 25–30%/mo
+    gains while keeping rolling drawdowns under 20–25%.
+
+        goodness =   median_monthly_return_pct
+                   − 2.0 × max(0, |worst_21d_dd| − 25)
+                   − 1.5 × max(0, |worst_5d_dd| − 10)
+                   − 0.5 × max(0, |worst_63d_dd| − 40)
+                   − 5.0 × frac_21d_dd_gt_25pct × 100
+
+    Penalties kick in only when the drawdown exceeds the comfort band,
+    and they scale linearly with how deep the breach is. A portfolio
+    with +28%/mo median and only shallow rolling DDs will score near
+    its median_monthly; one with +28%/mo but repeated 40%+ rolling DDs
+    will score strongly negative.
+    """
+    med = float(summary.get("median_monthly_return_pct", 0.0))
+    w5 = abs(float(summary.get("worst_5d_drawdown_pct", 0.0)))
+    w21 = abs(float(summary.get("worst_21d_drawdown_pct", 0.0)))
+    w63 = abs(float(summary.get("worst_63d_drawdown_pct", 0.0)))
+    frac21 = float(summary.get("frac_21d_dd_gt_25pct", 0.0))
+    penalty = (
+        2.0 * max(0.0, w21 - 25.0)
+        + 1.5 * max(0.0, w5 - 10.0)
+        + 0.5 * max(0.0, w63 - 40.0)
+        + 5.0 * (frac21 * 100.0)
+    )
+    return float(med - penalty)
+
+
 def _monthly_stats(port_rets: pd.Series) -> dict:
     if len(port_rets) == 0:
         return {
@@ -94,6 +163,12 @@ def run_backtest(
     universe_fn: Optional[Callable[[pd.Timestamp, list[str]], list[str]]] = None,
     fee_bps: float = 0.0,
     slip_bps: float = 0.0,
+    # Adaptive horizon: let the optimizer rebalance at max_hold_days but
+    # exit early on per-asset stop-loss. min_hold_days is the minimum
+    # gap between forced rebalances.
+    min_hold_days: Optional[int] = None,
+    per_asset_stop_loss_pct: float = 0.0,
+    portfolio_stop_loss_pct: float = 0.0,
     kelly_lr: float = 0.01,
     kelly_steps: int = 1500,
     kelly_l2_reg: float = 0.0,
@@ -229,13 +304,59 @@ def run_backtest(
         turnovers.append(turnover)
         fee_costs.append(fee_cost)
 
-        # realise return over the next `hold_days` using the full panel
+        # Realise return over the next `hold_days` using the full panel.
+        # Support adaptive early-exit on per-asset / portfolio stop-loss:
+        # we track an active weight vector `active_w` that starts at
+        # `w_full` and zeroes assets whose cumulative log-return since
+        # entry breaches `per_asset_stop_loss_pct`. If the portfolio's
+        # cum log-return since rebalance breaches `portfolio_stop_loss_pct`
+        # we liquidate everything for the remainder of the window.
         end_i = min(i + hold_days, len(dates))
+        active_w = w_full.copy()
+        asset_cum_ret = np.zeros(n_tickers, dtype=float)
+        port_cum_ret_since_rebal = 0.0
+        per_asset_sl = float(per_asset_stop_loss_pct) / 100.0 if per_asset_stop_loss_pct > 0 else 0.0
+        port_sl = float(portfolio_stop_loss_pct) / 100.0 if portfolio_stop_loss_pct > 0 else 0.0
+        stopped_out_turnover = 0.0
+        min_hold = int(min_hold_days) if min_hold_days is not None else 0
         for j in range(i, end_i):
-            port_rets.iloc[j - fit_window] = float(np.dot(w_full, log_ret.iloc[j].values))
+            day_day_ret = log_ret.iloc[j].values
+            port_day_ret = float(np.dot(active_w, day_day_ret))
+            port_rets.iloc[j - fit_window] = port_day_ret
+            # Update per-asset and portfolio running cum log-returns only
+            # for still-active assets. Stopped-out assets stay frozen.
+            active_mask = active_w > 0.0
+            asset_cum_ret[active_mask] += day_day_ret[active_mask]
+            port_cum_ret_since_rebal += port_day_ret
+            days_held = j - i + 1
+            if days_held >= max(1, min_hold):
+                if per_asset_sl > 0.0:
+                    sl_hit = active_mask & (asset_cum_ret < -per_asset_sl)
+                    if sl_hit.any():
+                        # Liquidate the tripped assets: pay fee on their weight
+                        # and zero active_w entries.
+                        stop_turn = float(np.abs(active_w[sl_hit]).sum())
+                        stopped_out_turnover += stop_turn
+                        fee_hit = stop_turn * cost_per_turnover
+                        port_rets.iloc[j - fit_window] -= fee_hit
+                        active_w[sl_hit] = 0.0
+                if port_sl > 0.0 and port_cum_ret_since_rebal < -port_sl:
+                    # Full liquidation: liquidate everything still active.
+                    stop_turn = float(np.abs(active_w).sum())
+                    if stop_turn > 0:
+                        stopped_out_turnover += stop_turn
+                        fee_hit = stop_turn * cost_per_turnover
+                        port_rets.iloc[j - fit_window] -= fee_hit
+                        active_w = np.zeros_like(active_w)
         if fee_cost > 0:
             port_rets.iloc[i - fit_window] -= fee_cost
-        prev_w = w_full
+        # Carry through stop-outs to the next rebalance's turnover calc:
+        # next rebalance compares new w vs `active_w` (post-stops), not
+        # the original w_full, so we don't double-count the liquidation.
+        prev_w = active_w
+        if stopped_out_turnover > 0:
+            turnovers[-1] += stopped_out_turnover
+            fee_costs[-1] += stopped_out_turnover * cost_per_turnover
         if verbose:
             top5 = np.sort(w_full)[::-1][:5]
             print(
@@ -265,8 +386,15 @@ def run_backtest(
         "kelly_turnover_penalty": float(kelly_turnover_penalty) if api == "pytorch_kelly" else None,
         "kelly_warm_start": bool(kelly_warm_start) if api == "pytorch_kelly" else None,
         "kelly_device": str(kelly_device) if (api == "pytorch_kelly" and kelly_device is not None) else None,
+        "per_asset_stop_loss_pct": float(per_asset_stop_loss_pct),
+        "portfolio_stop_loss_pct": float(portfolio_stop_loss_pct),
+        "min_hold_days": int(min_hold_days) if min_hold_days is not None else None,
+        "hold_days": int(hold_days),
     }
     summary.update(monthly)
+    roll_dd = _rolling_drawdown_stats(port_rets)
+    summary.update(roll_dd)
+    summary["goodness_score"] = _goodness_score(summary)
     return BacktestResult(
         dates=port_rets.index,
         portfolio_returns=port_rets,
