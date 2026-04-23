@@ -47,36 +47,46 @@ sudo tail -n 40 /var/log/supervisor/xgb-daily-trader-live.log
 
 ---
 
-### 🟢 2026-04-22 23:37 UTC — crypto-weekend-live DEPLOYED (additive to stock bot)
+### 🟢 2026-04-23 00:34 UTC — crypto-weekend EMBEDDED into xgb-daily-trader-live (one leader, one lock)
 
-**Unit**: `crypto-weekend-live` (supervisor, autostart=true, autorestart=true)
-**Launch**: `deployments/crypto-weekend-live/launch.sh`
-**Log**: `/var/log/supervisor/crypto-weekend-live.log` + `analysis/crypto_weekend_live/YYYY-MM-DD.jsonl`
-**Lock**: `strategy_state/account_locks/alpaca_crypto_writer.lock` (distinct from the stock bot's `alpaca_live_writer.lock` — the two daemons share one Alpaca account but NOT one singleton lock, so they coexist safely).
+**Motivation**: operator required a single program talking to Alpaca ("so we don't accidentally create multiple programs trading same pair"). The earlier 2026-04-22 deploy had a distinct `crypto-weekend-live` supervisor unit with its own `alpaca_crypto_writer` account lock; that unit has been **stopped, conf removed, and archived** to `old_prod/2026-04-22-crypto-weekend-live-standalone-superseded/`.
 
-**NOT in `LIVE_WRITER_UNITS` registry**: deliberate — the registry is for units contending the same `alpaca_live_writer` lock. Adding this unit would cause `scripts/deploy_live_trader.sh` to stop the crypto bot on every stock-bot redeploy, which is wrong.
+**Unit**: `xgb-daily-trader-live` (unchanged) — the crypto ticks now run inside its inter-session sleep loop, so there is only one supervisor unit and one `alpaca_live_writer.lock` holder.
 
-**Strategy** (`crypto_weekend/backtest.py`):
-- BTC/ETH/SOL equal-weight, total gross ≤ 0.5 × equity (cash-aware: caps at `min(cash, equity × 0.5)` so an already-levered stock bot never triggers over-lever crypto).
+**Launch flags added to `deployments/xgb-daily-trader-live/launch.sh`**:
+```
+  --crypto-weekend
+  --crypto-poll-seconds 300
+  --crypto-max-gross 0.5
+```
+
+**Logs**:
+- Stock: `/var/log/supervisor/xgb-daily-trader-live.log` + `analysis/xgb_live_trade_log/YYYY-MM-DD.jsonl` (unchanged).
+- Crypto: `analysis/crypto_weekend_live/YYYY-MM-DD.jsonl` (poll / buy_plan / buy_submitted / sell_submitted).
+
+**Integration** (`xgbnew/live_trader.py::_sleep_until_next_session`): when `--crypto-weekend` is set, the inter-session sleep loop polls `crypto_weekend.session.run_crypto_tick(client, max_gross=0.5)` every 300s using the same `TradingClient` that owns the singleton lock. Weekday ticks short-circuit to no-op; the window gates inside `session.py` gate Sat-buy (00:30-23:00 UTC) and Mon-exit (00:10-12:30 UTC). `_LAST_ACTION_DATE` ensures one buy and one sell per UTC date.
+
+**Strategy** (`crypto_weekend/backtest.py`, unchanged):
+- BTC/ETH/SOL equal-weight, total gross ≤ 0.5 × equity (cash-aware: caps at `min(max_gross × equity, cash - $50)` so the 2×-levered stock bot never triggers over-lever crypto).
 - Signal: `fri_close > SMA20 × 1.05 AND vol_20d ≤ 0.03`
-- Buy Saturday 00:30-23:00 UTC on the Friday daily bar (weekends with 0 passes → hold cash).
-- Exit Monday 00:10-12:30 UTC via `close_position_violently` (well before US stock open 13:30).
+- Enter Fri close, exit Sun close (via Mon-early sell window; well before US stock open 13:30).
 
 **OOS (198 weekends, 2022-07 → 2026-04, 10 bps fee, binary fill)**:
 - mean +0.21%/week (~+0.9%/mo), median 0, p10 0, worst week −2.91%, max DD 7.44%, neg-weekend rate 8.6%. Trades only 39/198 weekends (20%). Fee-robust to 50 bps; breaks at 100 bps.
-- Known weakness: thin trade sample (39 OOS trades), below +27%/mo HARD RULE #1 bar; deployed as a cautious additive sleeve not a standalone edge.
+- Below +27%/mo HARD RULE #1 bar; deployed as a cautious additive sleeve not a standalone edge.
 
-**Kill-switch criteria** (flip `autostart=false` + `supervisorctl stop crypto-weekend-live`):
+**Kill-switch criteria** (remove `--crypto-weekend` from launch.sh and redeploy):
 1. Live median weekly PnL < 0 after first 10 trades.
-2. Realized max DD > 10% at any point (OOS worst was 7.4%).
+2. Realized max DD > 10% at any point.
 3. Any fill > $100 over the reference price.
 
 **Guards / invariants**:
-- Dust filter: positions with |market_value| < $5 treated as empty (prevents historical 1-satoshi dust from blocking new buys / triggering spurious sells).
-- `close_position_violently` bypasses HARD RULE #3's death-spiral guard — correct, because guard is tuned to stock intraday/overnight moves. Crypto can legitimately move >5% over a weekend.
-- Window gating hard-codes UTC weekdays — tested in `tests/test_crypto_weekend_live_trader.py` (23/23 green).
+- Dust filter: positions with |market_value| < $5 treated as empty.
+- Crypto close bypasses HARD RULE #3's death-spiral guard (stock-specific; crypto can legitimately gap >5% weekend).
+- Same-process failure domain: if a crypto tick raises, the stock session schedule MUST continue — exception is caught + logged with prefix `[xgb-live] crypto tick error:`.
+- Window gating tested in `tests/test_crypto_weekend_session.py` (20/20 green) + `tests/test_crypto_weekend_live_trader.py` (23/23 green) + 3 other live_trader test files touching the sleep loop (all green, 93 tests total).
 
-**First real-world action**: Saturday 2026-04-25. Buy-trigger will evaluate signals + size off `min(cash, equity × 0.5)`.
+**First real-world action**: Saturday 2026-04-25 — watch for `buy_submitted` in `analysis/crypto_weekend_live/2026-04-25.jsonl`.
 
 ---
 

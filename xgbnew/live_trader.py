@@ -490,8 +490,34 @@ def parse_args(argv=None):
                         "Set to '' to disable.")
     p.add_argument("--no-trade-log", action="store_true",
                    help="Disable the trade log entirely.")
+    p.add_argument("--no-picks-fallback", type=str, default="",
+                   help="Symbol to buy on days where no candidate clears "
+                        "--min-score. Typical: 'SPY' (broad market) or 'QQQ' "
+                        "(higher drift). Empty = hold cash (legacy). The "
+                        "fallback trade is sized at --allocation * "
+                        "--no-picks-fallback-alloc (so the caller can run a "
+                        "small defensive position on low-conviction days). "
+                        "Skipped automatically on hold-through continuation "
+                        "days — only fires on clean no-pick days.")
+    p.add_argument("--no-picks-fallback-alloc", type=float, default=0.5,
+                   help="Fraction of --allocation to use for the no-picks "
+                        "fallback order. 0.5 = half the deployed leverage. "
+                        "Ignored when --no-picks-fallback is empty.")
     p.add_argument("--loop",         action="store_true",
                    help="Keep running (wait for next market open after each session)")
+    # Embedded crypto weekend trader (single-leader-process architecture —
+    # shares the `alpaca_live_writer` fcntl lock with stock trading so only
+    # ONE program ever talks to Alpaca).
+    p.add_argument("--crypto-weekend", action="store_true",
+                   help="Enable the embedded crypto weekend trader. Polls every "
+                        "--crypto-poll-seconds during inter-session sleep. "
+                        "Buys BTC/ETH/SOL passing trend filter on Saturday, "
+                        "exits Monday AM before US stock open.")
+    p.add_argument("--crypto-poll-seconds", type=int, default=300,
+                   help="Poll cadence for the embedded crypto trader (default 300s).")
+    p.add_argument("--crypto-max-gross", type=float, default=0.5,
+                   help="Crypto total gross exposure as fraction of equity "
+                        "(actual cap is min(cash - $50, equity * this)).")
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args(argv)
 
@@ -857,12 +883,43 @@ def run_session(
         print("[xgb-live] ERROR: No scoreable symbols today.", file=sys.stderr)
         tlog.log("no_candidates")
         return
+    # Fallback sizing — only used when we fall through to no_picks.
+    fb_sym = str(getattr(args, "no_picks_fallback", "") or "").strip().upper()
+    fb_alloc_frac = float(getattr(args, "no_picks_fallback_alloc", 0.0) or 0.0)
+    used_fallback = False
     if len(picks) == 0:
         min_score = float(getattr(args, "min_score", 0.0) or 0.0)
-        print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
-              f"holding cash for {today_str}.", flush=True)
-        tlog.log("no_picks", reason="min_score")
-        return
+        if fb_sym and fb_alloc_frac > 0.0:
+            # Look up the fallback symbol's pre-filter score row (it may
+            # have been filtered by min_score; that's fine — the fallback
+            # ignores min_score on no-pick days by design).
+            fb_row = all_scores[all_scores["symbol"].astype(str).str.upper() == fb_sym]
+            if len(fb_row) > 0:
+                picks = fb_row.head(1).reset_index(drop=True).copy()
+                used_fallback = True
+                print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
+                      f"falling back to {fb_sym} @ {fb_alloc_frac:.0%} of "
+                      f"--allocation.", flush=True)
+                tlog.log(
+                    "no_picks_fallback",
+                    reason="min_score",
+                    fallback_symbol=fb_sym,
+                    fallback_alloc_frac=fb_alloc_frac,
+                )
+            else:
+                print(f"[xgb-live] NO pick meets min_score={min_score:.2f} AND "
+                      f"fallback {fb_sym} missing from scored universe — "
+                      f"holding cash for {today_str}.", flush=True)
+                tlog.log(
+                    "no_picks", reason="min_score_fallback_missing",
+                    fallback_symbol=fb_sym,
+                )
+                return
+        else:
+            print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
+                  f"holding cash for {today_str}.", flush=True)
+            tlog.log("no_picks", reason="min_score")
+            return
 
     _announce_picks(picks, today_str, args.top_n, tlog, tag="xgb-live")
 
@@ -875,9 +932,11 @@ def run_session(
 
     account = _get_account(client)
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
-    buy_notional = portfolio_value * args.allocation / args.top_n
+    # Fallback path scales allocation by fb_alloc_frac.
+    alloc = float(args.allocation) * (fb_alloc_frac if used_fallback else 1.0)
+    buy_notional = portfolio_value * alloc / args.top_n
     print(f"\n[xgb-live] Placing BUY orders  portfolio=${portfolio_value:,.0f}  "
-          f"notional/pick=${buy_notional:,.0f}", flush=True)
+          f"alloc={alloc:.2%}  notional/pick=${buy_notional:,.0f}", flush=True)
     _execute_buys(client, picks, buy_notional, tlog)
 
     print(f"\n[xgb-live] Waiting for {MARKET_CLOSE[0]:02d}:{MARKET_CLOSE[1]:02d} "
@@ -933,14 +992,47 @@ def _next_session_open_et(now_et: datetime) -> datetime:
                     9, 20, 0, tzinfo=ET)
 
 
-def _sleep_until_next_session() -> None:
+def _sleep_until_next_session(client=None, args=None) -> None:
+    """Sleep until the next stock-session open (ET 9:20), optionally
+    servicing the embedded crypto weekend trader on each poll.
+
+    When `args.crypto_weekend` is True and we have a real `client`, this
+    loops every `args.crypto_poll_seconds` instead of one big sleep; each
+    poll calls `crypto_weekend.session.run_crypto_tick(client, ...)` so
+    Saturday buys / Monday sells fire at the right UTC window.
+
+    Stock trading remains untouched: the next session still fires at the
+    same moment, and all Alpaca calls go through the single `client`
+    which holds the one `alpaca_live_writer` singleton lock.
+    """
     now_et = datetime.now(ET)
     next_open = _next_session_open_et(now_et)
-    wait_secs = (next_open - datetime.now(ET)).total_seconds()
-    if wait_secs > 0:
-        print(f"[xgb-live] Next session at {next_open.isoformat()}  "
-              f"(sleeping {wait_secs/3600:.1f}h)", flush=True)
-        time.sleep(wait_secs)
+    crypto_on = bool(args and getattr(args, "crypto_weekend", False) and client is not None)
+
+    if not crypto_on:
+        wait_secs = (next_open - datetime.now(ET)).total_seconds()
+        if wait_secs > 0:
+            print(f"[xgb-live] Next session at {next_open.isoformat()}  "
+                  f"(sleeping {wait_secs/3600:.1f}h)", flush=True)
+            time.sleep(wait_secs)
+        return
+
+    from crypto_weekend import session as cws
+    poll = max(30, int(getattr(args, "crypto_poll_seconds", 300)))
+    max_gross = float(getattr(args, "crypto_max_gross", 0.5))
+    dry_run = bool(getattr(args, "dry_run", False))
+    print(f"[xgb-live] Next session at {next_open.isoformat()}  "
+          f"(crypto-aware poll every {poll}s, max_gross={max_gross:.2f})",
+          flush=True)
+    while True:
+        remaining = (next_open - datetime.now(ET)).total_seconds()
+        if remaining <= 0:
+            return
+        try:
+            cws.run_crypto_tick(client, max_gross=max_gross, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001 — must not abort the sleep loop
+            print(f"[xgb-live] crypto tick error: {exc}", flush=True)
+        time.sleep(min(remaining, poll))
 
 
 def _make_trade_logger(args: argparse.Namespace, session_date: date) -> TradeLogger:
@@ -996,7 +1088,7 @@ def main(argv=None) -> int:
         run_session(symbols, args.data_root, model, client, args)
         if not args.loop:
             break
-        _sleep_until_next_session()
+        _sleep_until_next_session(client=client, args=args)
 
     return 0
 

@@ -63,6 +63,9 @@ exec python -u -m xgbnew.live_trader \
   --min-dollar-vol 50000000 \
   --min-vol-20d 0.12 \
   --trade-log-dir analysis/xgb_live_trade_log \
+  --crypto-weekend \
+  --crypto-poll-seconds 300 \
+  --crypto-max-gross 0.5 \
   --live \
   --loop \
   --verbose
