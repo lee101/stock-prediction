@@ -2,6 +2,9 @@
 .claude/worktrees/
 supervisor/
 
+# Upstream vendor clones (not committed to this repo)
+dgx-spark-playbooks/
+
 # Profiling outputs
 profiles/
 

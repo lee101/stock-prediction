@@ -80,8 +80,13 @@ if "cachetools" not in sys.modules:
         def __init__(self, maxsize, ttl):
             super().__init__()
 
+    class LRUCache(dict):
+        def __init__(self, maxsize=128, *args, **kwargs):
+            super().__init__()
+
     cachetools_mod.cached = cached
     cachetools_mod.TTLCache = TTLCache
+    cachetools_mod.LRUCache = LRUCache
     sys.modules["cachetools"] = cachetools_mod
 
 try:
