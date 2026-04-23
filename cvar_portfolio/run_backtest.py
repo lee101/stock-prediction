@@ -27,7 +27,6 @@ import pandas as pd
 
 from cvar_portfolio.backtest import run_backtest
 from cvar_portfolio.data import load_price_panel, read_symbol_list
-from cvar_portfolio.xgb_alpha import build_xgb_alpha
 
 
 def main() -> None:
@@ -69,6 +68,16 @@ def main() -> None:
     ap.add_argument("--xgb-mode", default="center", choices=["center", "demean", "rank"])
     ap.add_argument("--xgb-panel-cache", type=Path, default=None,
                     help="Parquet cache path for panel scores (skip expensive rebuild).")
+    ap.add_argument("--xgb-top-k", type=int, default=0,
+                    help="If >0, restrict LP universe at each rebalance to the "
+                         "top-K XGB-scored symbols. Separate from --xgb-k/mode: "
+                         "pre-filter vs mu-tilt can be combined or used alone.")
+    ap.add_argument("--xgb-min-score", type=float, default=0.0,
+                    help="Drop symbols with ensemble_score < this threshold from "
+                         "the pre-filtered top-K set (e.g. 0.50 = only long-side).")
+    ap.add_argument("--no-alpha-mu", action="store_true",
+                    help="Use XGB only as universe pre-filter (top-K), skip "
+                         "mean_override injection. Pair with --xgb-top-k.")
 
     args = ap.parse_args()
 
@@ -88,24 +97,43 @@ def main() -> None:
         raise SystemExit("No symbols passed liquidity/history filter.")
 
     alpha_fn = None
+    universe_fn = None
     if args.xgb_ensemble_dir is not None:
         from datetime import date as _date
-        panel_tickers = prices.columns.tolist()
-        alpha_fn = build_xgb_alpha(
-            symbols=panel_tickers,
-            data_root=args.data_root,
-            oos_start=_date.fromisoformat(args.start),
-            oos_end=_date.fromisoformat(args.end) if args.end else prices.index[-1].date(),
-            ensemble_dir=args.xgb_ensemble_dir,
-            train_start=_date.fromisoformat(args.xgb_train_start),
-            train_end=_date.fromisoformat(args.xgb_train_end),
-            min_dollar_vol=args.min_avg_dol_vol,
-            k=args.xgb_k,
-            mode=args.xgb_mode,
-            cache_path=args.xgb_panel_cache,
+        from cvar_portfolio.xgb_alpha import (
+            build_xgb_panel_scores, make_alpha_fn, make_universe_fn,
         )
-        print(f"[run_backtest] Alpha-aware mode: XGB ensemble {args.xgb_ensemble_dir} "
-              f"k={args.xgb_k} mode={args.xgb_mode}")
+        panel_tickers = prices.columns.tolist()
+
+        cache_path = args.xgb_panel_cache
+        if cache_path is not None and cache_path.exists():
+            print(f"[run_backtest] Loading cached XGB panel scores → {cache_path}")
+            panel_scores = pd.read_parquet(cache_path)
+        else:
+            panel_scores = build_xgb_panel_scores(
+                symbols=panel_tickers,
+                data_root=args.data_root,
+                oos_start=_date.fromisoformat(args.start),
+                oos_end=_date.fromisoformat(args.end) if args.end else prices.index[-1].date(),
+                ensemble_dir=args.xgb_ensemble_dir,
+                train_start=_date.fromisoformat(args.xgb_train_start),
+                train_end=_date.fromisoformat(args.xgb_train_end),
+                min_dollar_vol=args.min_avg_dol_vol,
+                fast_features=True,
+            )
+            if cache_path is not None:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                panel_scores.to_parquet(cache_path)
+
+        if not args.no_alpha_mu:
+            alpha_fn = make_alpha_fn(panel_scores, k=args.xgb_k, mode=args.xgb_mode)
+            print(f"[run_backtest] mu-tilt mode: k={args.xgb_k} mode={args.xgb_mode}")
+        if args.xgb_top_k and args.xgb_top_k > 0:
+            universe_fn = make_universe_fn(
+                panel_scores, top_k=args.xgb_top_k, min_score=args.xgb_min_score,
+            )
+            print(f"[run_backtest] universe pre-filter: top_k={args.xgb_top_k} "
+                  f"min_score={args.xgb_min_score}")
 
     result = run_backtest(
         prices,
@@ -125,6 +153,7 @@ def main() -> None:
         cardinality=args.cardinality,
         api=args.api,
         alpha_fn=alpha_fn,
+        universe_fn=universe_fn,
         rng_seed=args.rng_seed,
         verbose=args.verbose,
     )

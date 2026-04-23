@@ -172,6 +172,45 @@ def make_alpha_fn(
     return alpha_fn
 
 
+def make_universe_fn(
+    panel_scores: pd.DataFrame,
+    *,
+    top_k: int = 20,
+    min_score: float = 0.0,
+) -> Callable[[pd.Timestamp, list[str]], list[str]]:
+    """Return ``universe_fn(asof, tickers) -> list[str]`` that restricts the LP
+    to XGB's top-K picks at each rebalance.
+
+    Selection rule: per-day, rank tickers by ensemble_score descending, keep
+    the top ``top_k`` where score ≥ ``min_score``. Tickers not scored that day
+    are excluded. Falls back to look-back up to 5 business days if the exact
+    rebalance date has no scores (weekend / holiday drift).
+    """
+    ps = panel_scores.copy()
+    ps["date"] = pd.to_datetime(ps["date"]).dt.tz_localize(None).dt.normalize()
+    by_date = dict(tuple(ps.groupby("date")))
+
+    def universe_fn(asof, tickers: list[str]) -> list[str]:
+        day = _normalize_asof(asof)
+        lookup_day = None
+        for lag in range(6):
+            cand = day - pd.Timedelta(days=lag)
+            if cand in by_date:
+                lookup_day = cand
+                break
+        if lookup_day is None:
+            return []
+        d = by_date[lookup_day].set_index("symbol")["ensemble_score"]
+        d = d[d.index.isin(tickers)]
+        if min_score > 0:
+            d = d[d >= float(min_score)]
+        if d.empty:
+            return []
+        return d.sort_values(ascending=False).head(int(top_k)).index.tolist()
+
+    return universe_fn
+
+
 def build_xgb_alpha(
     *,
     symbols: list[str],
@@ -214,5 +253,6 @@ __all__ = [
     "load_xgb_ensemble",
     "build_xgb_panel_scores",
     "make_alpha_fn",
+    "make_universe_fn",
     "build_xgb_alpha",
 ]

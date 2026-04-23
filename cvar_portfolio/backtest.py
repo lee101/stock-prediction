@@ -63,6 +63,7 @@ def run_backtest(
     c_max: float = 1.0,
     api: str = "cvxpy",
     alpha_fn: Optional[Callable[[pd.Timestamp, list[str]], np.ndarray]] = None,
+    universe_fn: Optional[Callable[[pd.Timestamp, list[str]], list[str]]] = None,
     rng_seed: int = 0,
     verbose: bool = False,
 ) -> BacktestResult:
@@ -73,6 +74,10 @@ def run_backtest(
     prices : wide close-price DataFrame (dates x tickers), sorted asc.
     alpha_fn : optional callable(date, tickers) -> np.ndarray expected log-return
         per asset for the upcoming hold period. Use this to inject XGB/RL scores.
+    universe_fn : optional callable(date, tickers) -> list[str] restricting the
+        LP's asset set at each rebalance. Tickers not in the returned subset
+        get zero weight. Use this to feed the LP a short-list of XGB/RL top-K
+        picks while still letting the LP size risk.
     """
     log_ret = (np.log(prices) - np.log(prices.shift(1))).fillna(0.0)
     dates = log_ret.index
@@ -85,15 +90,37 @@ def run_backtest(
     solve_times = []
     prev_w = None
 
+    n_tickers = len(tickers)
+    ticker_to_idx = {t: j for j, t in enumerate(tickers)}
     for k, i in enumerate(rebalance_idx):
         window = log_ret.iloc[i - fit_window : i]
         asof = dates[i]
+
+        if universe_fn is not None:
+            selected = [t for t in universe_fn(asof, tickers) if t in ticker_to_idx]
+            if len(selected) < 2:
+                # Nothing to solve — hold all cash this window
+                w_full = np.zeros(n_tickers, dtype=float)
+                weights_history.append({"date": asof, **{t: 0.0 for t in tickers}, "_cash": 1.0})
+                solve_times.append(0.0)
+                end_i = min(i + hold_days, len(dates))
+                for j in range(i, end_i):
+                    port_rets.iloc[j - fit_window] = 0.0
+                prev_w = w_full
+                if verbose:
+                    print(f"[{asof.date()}] no selected syms → hold cash")
+                continue
+            window_sub = window[selected]
+        else:
+            selected = tickers
+            window_sub = window
+
         mean_override = None
         if alpha_fn is not None:
-            mean_override = alpha_fn(asof, tickers)
+            mean_override = alpha_fn(asof, selected)
 
         res: OptimResult = solve_cvar_portfolio(
-            window,
+            window_sub,
             mean_override=mean_override,
             num_scen=num_scen,
             fit_type=fit_type,
@@ -110,19 +137,22 @@ def run_backtest(
             api=api,
             rng_seed=rng_seed + k,
         )
-        w = res.weights
-        weights_history.append({"date": asof, **{t: float(w[j]) for j, t in enumerate(tickers)}, "_cash": res.cash})
+        # Expand selected-sym weights back onto the full ticker vector
+        w_full = np.zeros(n_tickers, dtype=float)
+        for j_sel, t in enumerate(selected):
+            w_full[ticker_to_idx[t]] = float(res.weights[j_sel])
+        weights_history.append({"date": asof, **{t: float(w_full[j]) for j, t in enumerate(tickers)}, "_cash": res.cash})
         solve_times.append(res.solve_time)
 
-        # realise return over the next `hold_days`
+        # realise return over the next `hold_days` using the full panel
         end_i = min(i + hold_days, len(dates))
         for j in range(i, end_i):
-            port_rets.iloc[j - fit_window] = float(np.dot(w, log_ret.iloc[j].values))
-        prev_w = w
+            port_rets.iloc[j - fit_window] = float(np.dot(w_full, log_ret.iloc[j].values))
+        prev_w = w_full
         if verbose:
-            top5 = np.sort(w)[::-1][:5]
+            top5 = np.sort(w_full)[::-1][:5]
             print(
-                f"[{asof.date()}] nnz={int((w>1e-6).sum())} top5_w={np.round(top5,3).tolist()} cash={res.cash:.3f} solve={res.solve_time:.2f}s exp_ret={res.expected_return:.5f} cvar={res.cvar:.4f}"
+                f"[{asof.date()}] nnz={int((w_full>1e-6).sum())}/{len(selected)} top5_w={np.round(top5,3).tolist()} cash={res.cash:.3f} solve={res.solve_time:.2f}s exp_ret={res.expected_return:.5f} cvar={res.cvar:.4f}"
             )
 
     cum = port_rets.cumsum()
