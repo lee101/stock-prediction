@@ -138,6 +138,10 @@ def main():
     ]
 
     cells = []
+    best_goodness = -1e18
+    best_trades: list = []
+    best_equity: pd.Series | None = None
+    best_key: dict | None = None
     for hmask, lev, slots, mp, mer in itertools.product(
         hmask_list, lev_list, slots_list, mp_list, mer_list,
     ):
@@ -160,6 +164,17 @@ def main():
             "min_prob": mp, "min_exp_ret": mer,
             **{k: v for k, v in s.items()},
         })
+        # Goodness = med_monthly - 0.5*max_dd - 100*neg_frac (same spirit as xgbnew)
+        neg = s.get("neg_window_frac") or 0.0
+        goodness = s["median_monthly_pnl_pct"] - 0.5 * s["max_dd_pct"] - 100.0 * neg
+        if goodness > best_goodness and s["n_trades"] >= 5:
+            best_goodness = goodness
+            best_trades = list(res.trades)
+            best_equity = res.equity_by_date
+            best_key = {
+                "horizons": list(hmask), "lev": lev, "slots": slots,
+                "min_prob": mp, "min_exp_ret": mer,
+            }
         logger.info(
             "h=%s lev=%.2f slots=%d mp=%.2f mer=%.4f: n=%d med=%.2f%%/mo p10=%.2f dd=%.1f neg=%.0f%% avg_hold=%.1f",
             hmask, lev, slots, mp, mer,
@@ -178,9 +193,29 @@ def main():
         "test_rows":           int(len(test_df)),
         "seeds":               list(seeds),
         "n_cells":             len(cells),
+        "best_cell":           best_key,
+        "best_goodness":       best_goodness,
         "cells":               cells,
     }, indent=2, default=str))
     logger.info("Wrote %s (%d cells)", args.out, len(cells))
+    if best_trades and best_equity is not None and best_key is not None:
+        trades_out = args.out.with_suffix(".best_trades.jsonl")
+        with trades_out.open("w") as f:
+            f.write(json.dumps({"_best_cell": best_key, "_best_goodness": best_goodness}) + "\n")
+            for t in best_trades:
+                f.write(json.dumps({
+                    "entry_date": str(t.entry_date),
+                    "exit_date":  str(t.exit_date),
+                    "symbol":     t.symbol,
+                    "horizon":    t.horizon,
+                    "prob":       t.prob,
+                    "expected_ret": t.expected_ret,
+                    "gross_ret":  t.gross_ret,
+                    "net_ret":    t.net_ret,
+                    "hold_days":  t.hold_days,
+                }) + "\n")
+        logger.info("Wrote best-cell trades to %s (%d trades)",
+                    trades_out, len(best_trades))
 
 
 if __name__ == "__main__":
