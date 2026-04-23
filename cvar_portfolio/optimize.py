@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import cvxpy as cp
 import numpy as np
 import pandas as pd
-from cufolio.cvar_data import CvarData
-from cufolio.cvar_optimizer import CVaR
-from cufolio.cvar_parameters import CvarParameters
+
+if TYPE_CHECKING:
+    from cufolio.cvar_data import CvarData
+else:
+    CvarData = Any
 
 
 @dataclass
@@ -31,8 +33,30 @@ class OptimResult:
     solver: str
 
 
-def _build_scenarios(returns: pd.DataFrame, num_scen: int, fit_type: str, kde_device: str, bandwidth: float, rng: np.random.Generator) -> CvarData:
+def _require_cufolio() -> tuple[type[Any], type[Any], type[Any]]:
+    try:
+        from cufolio.cvar_data import CvarData as _CvarData
+        from cufolio.cvar_optimizer import CVaR as _CVaR
+        from cufolio.cvar_parameters import CvarParameters as _CvarParameters
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "cufolio is required for Mean-CVaR LP solves. "
+            "Install the NVIDIA cufolio package to use "
+            "solve_cvar_portfolio(api='cvxpy'|'cuopt_python')."
+        ) from exc
+    return _CvarData, _CVaR, _CvarParameters
+
+
+def _build_scenarios(
+    returns: pd.DataFrame,
+    num_scen: int,
+    fit_type: str,
+    kde_device: str,
+    bandwidth: float,
+    rng: np.random.Generator,
+) -> CvarData:
     """Return CvarData populated with scenario matrix R of shape (n_assets, num_scen)."""
+    cvar_data_cls, _, _ = _require_cufolio()
     mean = returns.mean(axis=0).values  # daily log-return mean per asset
     if fit_type == "gaussian":
         cov = np.cov(returns.values.T)
@@ -56,7 +80,7 @@ def _build_scenarios(returns: pd.DataFrame, num_scen: int, fit_type: str, kde_de
         raise ValueError(f"Unknown fit_type: {fit_type}")
     R = samples.T  # (n_assets, num_scen)
     p = np.ones(num_scen) / num_scen
-    return CvarData(mean=mean, R=R, p=p)
+    return cvar_data_cls(mean=mean, R=R, p=p)
 
 
 def solve_cvar_portfolio(
@@ -92,6 +116,7 @@ def solve_cvar_portfolio(
     """
     if returns.isna().any().any():
         returns = returns.fillna(0.0)
+    cvar_data_cls, cvar_cls, cvar_params_cls = _require_cufolio()
     rng = np.random.default_rng(rng_seed)
     n = returns.shape[1]
     tickers = returns.columns.tolist()
@@ -100,7 +125,7 @@ def solve_cvar_portfolio(
         mo = np.asarray(mean_override, dtype=float)
         if mo.shape != (n,):
             raise ValueError(f"mean_override shape {mo.shape} != ({n},)")
-        cvar_data = CvarData(mean=mo, R=cvar_data.R, p=cvar_data.p)
+        cvar_data = cvar_data_cls(mean=mo, R=cvar_data.R, p=cvar_data.p)
 
     returns_dict = {
         "tickers": tickers,
@@ -108,7 +133,7 @@ def solve_cvar_portfolio(
         "covariance": np.cov(returns.values.T),
         "cvar_data": cvar_data,
     }
-    params = CvarParameters(
+    params = cvar_params_cls(
         w_min=float(w_min),
         w_max=float(w_max),
         c_min=float(c_min),
@@ -127,7 +152,7 @@ def solve_cvar_portfolio(
         raise ValueError(f"Unknown api: {api}")
 
     t0 = time.time()
-    opt = CVaR(returns_dict, params, api_settings=api_settings)
+    opt = cvar_cls(returns_dict, params, api_settings=api_settings)
     if api == "cvxpy":
         solve_kwargs = {"solver": cp.CLARABEL}
     else:

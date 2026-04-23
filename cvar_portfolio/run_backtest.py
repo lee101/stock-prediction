@@ -52,7 +52,14 @@ def main() -> None:
     ap.add_argument("--c-max", type=float, default=1.0)
     ap.add_argument("--l-tar", type=float, default=1.0)
     ap.add_argument("--cardinality", type=int, default=None)
-    ap.add_argument("--api", default="cvxpy", choices=["cvxpy", "cuopt_python"])
+    ap.add_argument("--api", default="cvxpy", choices=["cvxpy", "cuopt_python", "pytorch_kelly"])
+    ap.add_argument("--kelly-lr", type=float, default=0.01)
+    ap.add_argument("--kelly-steps", type=int, default=1500)
+    ap.add_argument("--kelly-l2-reg", type=float, default=0.0)
+    ap.add_argument("--kelly-turnover-penalty", type=float, default=0.0)
+    ap.add_argument("--kelly-warm-start", action="store_true")
+    ap.add_argument("--kelly-device", default=None,
+                    help="Torch device for api=pytorch_kelly, e.g. cuda or cpu.")
     ap.add_argument("--rng-seed", type=int, default=0)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--verbose", action="store_true")
@@ -154,6 +161,12 @@ def main() -> None:
         api=args.api,
         alpha_fn=alpha_fn,
         universe_fn=universe_fn,
+        kelly_lr=args.kelly_lr,
+        kelly_steps=args.kelly_steps,
+        kelly_l2_reg=args.kelly_l2_reg,
+        kelly_turnover_penalty=args.kelly_turnover_penalty,
+        kelly_warm_start=args.kelly_warm_start,
+        kelly_device=args.kelly_device,
         rng_seed=args.rng_seed,
         verbose=args.verbose,
     )
