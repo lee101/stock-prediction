@@ -38,6 +38,7 @@ class TradingEnvConfig:
         trade_penalty: float = 0.0,
         smoothness_penalty: float = 0.0,
         fill_slippage_bps: float = 0.0,
+        fill_buffer_bps: float = 0.0,
         fill_probability: float = 1.0,
         decision_lag: int = 2,
         max_hold_hours: int = 0,
@@ -70,6 +71,7 @@ class TradingEnvConfig:
         self.trade_penalty = trade_penalty
         self.smoothness_penalty = smoothness_penalty
         self.fill_slippage_bps = fill_slippage_bps
+        self.fill_buffer_bps = max(0.0, float(fill_buffer_bps))
         self.fill_probability = max(0.0, min(1.0, float(fill_probability)))
         self.decision_lag = max(1, int(decision_lag))
         self.max_hold_hours = max(0, int(max_hold_hours))
@@ -147,6 +149,7 @@ class TradingEnv(GymnasiumPufferEnv if GymnasiumPufferEnv is not None else objec
             trade_penalty=config.trade_penalty,
             smoothness_penalty=config.smoothness_penalty,
             fill_slippage_bps=config.fill_slippage_bps,
+            fill_buffer_bps=config.fill_buffer_bps,
             fill_probability=config.fill_probability,
             decision_lag=config.decision_lag,
             max_hold_hours=config.max_hold_hours,

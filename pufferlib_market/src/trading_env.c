@@ -388,8 +388,17 @@ static int resolve_limit_fill_price(const TradingEnv* env, const MarketData* md,
         low = high;
         high = tmp;
     }
-    if (target_price < low || target_price > high) {
-        return 0;
+    /* Pessimistic acceptance (Python _resolve_limit_fill_price parity):
+       market must overshoot the target by fill_buffer_bps before we accept the fill.
+       buffer=0 degrades to classical "target-touches-bar" semantics. */
+    float buffer = env->fill_buffer_bps / 10000.0f;
+    if (is_buy) {
+        float trigger = target_price * (1.0f - buffer);
+        if (trigger < 0.0f) trigger = 0.0f;
+        if (low > trigger) return 0;
+    } else {
+        float trigger = target_price * (1.0f + buffer);
+        if (high < trigger) return 0;
     }
     /* Apply adverse slippage: buys fill higher, sells fill lower */
     float slippage = env->fill_slippage_bps / 10000.0f;

@@ -124,6 +124,7 @@ typedef struct {
     float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
     float          smoothness_penalty;/* penalty for return volatility (ret - prev_ret)^2 (default 0) */
     float          fill_slippage_bps; /* adverse fill slippage in basis points (default 0, realistic: 5-12) */
+    float          fill_buffer_bps;   /* limit-order acceptance pessimism; market must go past target by this many bps before we accept fill. Mirrors Python eval _resolve_limit_fill_price. Default 0. */
     float          fill_probability;  /* probability an order fills [0,1]; 1.0 = always fills (default 1.0) */
     int            decision_lag;      /* >=1: obs=t-lag, exec=t. Default 2 (production-safe). Pass 1 explicitly for legacy lookahead-tolerant research paths only. */
 
