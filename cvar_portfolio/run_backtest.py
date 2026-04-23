@@ -27,6 +27,7 @@ import pandas as pd
 
 from cvar_portfolio.backtest import run_backtest
 from cvar_portfolio.data import load_price_panel, read_symbol_list
+from cvar_portfolio.xgb_alpha import build_xgb_alpha
 
 
 def main() -> None:
@@ -56,6 +57,19 @@ def main() -> None:
     ap.add_argument("--rng-seed", type=int, default=0)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--verbose", action="store_true")
+
+    # Alpha-aware injection: pipe XGB ensemble scores into `mean_override`.
+    ap.add_argument("--xgb-ensemble-dir", type=Path, default=None,
+                    help="If set, score every OOS day/symbol with this ensemble "
+                         "and pass μ = k·(p − base) to the LP as mean_override.")
+    ap.add_argument("--xgb-train-start", default="2020-01-01")
+    ap.add_argument("--xgb-train-end", default="2025-06-30")
+    ap.add_argument("--xgb-k", type=float, default=0.01,
+                    help="Scale factor mapping ensemble-score to daily log return.")
+    ap.add_argument("--xgb-mode", default="center", choices=["center", "demean", "rank"])
+    ap.add_argument("--xgb-panel-cache", type=Path, default=None,
+                    help="Parquet cache path for panel scores (skip expensive rebuild).")
+
     args = ap.parse_args()
 
     syms = read_symbol_list(args.symbols)
@@ -72,6 +86,26 @@ def main() -> None:
     print(f"Loaded panel: {prices.shape[0]} days × {prices.shape[1]} tickers  [{prices.index[0].date()}..{prices.index[-1].date()}]")
     if prices.shape[1] == 0:
         raise SystemExit("No symbols passed liquidity/history filter.")
+
+    alpha_fn = None
+    if args.xgb_ensemble_dir is not None:
+        from datetime import date as _date
+        panel_tickers = prices.columns.tolist()
+        alpha_fn = build_xgb_alpha(
+            symbols=panel_tickers,
+            data_root=args.data_root,
+            oos_start=_date.fromisoformat(args.start),
+            oos_end=_date.fromisoformat(args.end) if args.end else prices.index[-1].date(),
+            ensemble_dir=args.xgb_ensemble_dir,
+            train_start=_date.fromisoformat(args.xgb_train_start),
+            train_end=_date.fromisoformat(args.xgb_train_end),
+            min_dollar_vol=args.min_avg_dol_vol,
+            k=args.xgb_k,
+            mode=args.xgb_mode,
+            cache_path=args.xgb_panel_cache,
+        )
+        print(f"[run_backtest] Alpha-aware mode: XGB ensemble {args.xgb_ensemble_dir} "
+              f"k={args.xgb_k} mode={args.xgb_mode}")
 
     result = run_backtest(
         prices,
@@ -90,6 +124,7 @@ def main() -> None:
         L_tar=args.l_tar,
         cardinality=args.cardinality,
         api=args.api,
+        alpha_fn=alpha_fn,
         rng_seed=args.rng_seed,
         verbose=args.verbose,
     )
