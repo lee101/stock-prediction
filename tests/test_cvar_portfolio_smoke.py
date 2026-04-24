@@ -492,3 +492,32 @@ def test_portfolio_stop_loss_halts_holding():
     # Summary must still be well-formed.
     assert "goodness_score" in res.summary
     assert np.isfinite(res.summary["goodness_score"])
+
+
+@requires_cufolio
+def test_per_asset_trailing_stop_caps_drawdown():
+    """A tight per-asset trailing stop protects profits: worst 21d rolling
+    DD on the stopped run should be shallower-or-equal than a no-stop run
+    on the same panel, and the parameter must round-trip into summary."""
+    prices = _make_toy_prices(seed=23)
+    kwargs = dict(fit_window=100, hold_days=20, num_scen=300, fit_type="gaussian",
+                  w_max=0.5, L_tar=1.0, cardinality=None, api="cvxpy",
+                  fee_bps=10, slip_bps=5, rng_seed=7)
+    no_stop = run_backtest(prices, **kwargs)
+    tight = run_backtest(prices, per_asset_trailing_stop_pct=5.0, **kwargs)
+    assert tight.summary["worst_21d_drawdown_pct"] >= no_stop.summary["worst_21d_drawdown_pct"] - 1e-6
+    assert tight.summary["per_asset_trailing_stop_pct"] == 5.0
+    assert tight.summary["portfolio_trailing_stop_pct"] == 0.0
+
+
+@requires_cufolio
+def test_portfolio_trailing_stop_roundtrips_into_summary():
+    """Portfolio-wide trailing stop must be reported in summary and yield
+    a finite goodness score."""
+    prices = _make_toy_prices(seed=29)
+    kwargs = dict(fit_window=100, hold_days=20, num_scen=300, fit_type="gaussian",
+                  w_max=0.5, L_tar=1.0, cardinality=None, api="cvxpy",
+                  fee_bps=10, slip_bps=5, rng_seed=9)
+    res = run_backtest(prices, portfolio_trailing_stop_pct=3.0, **kwargs)
+    assert res.summary["portfolio_trailing_stop_pct"] == 3.0
+    assert np.isfinite(res.summary["goodness_score"])

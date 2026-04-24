@@ -169,6 +169,12 @@ def run_backtest(
     min_hold_days: Optional[int] = None,
     per_asset_stop_loss_pct: float = 0.0,
     portfolio_stop_loss_pct: float = 0.0,
+    # Trailing stop-loss: measure drop from the per-asset running peak
+    # since entry (not from entry itself). This is what real traders
+    # use because it protects profits without giving up on slow
+    # drawdowns. Same numeric scale: N% → exits on drop ≥ N% from peak.
+    per_asset_trailing_stop_pct: float = 0.0,
+    portfolio_trailing_stop_pct: float = 0.0,
     kelly_lr: float = 0.01,
     kelly_steps: int = 1500,
     kelly_l2_reg: float = 0.0,
@@ -314,9 +320,13 @@ def run_backtest(
         end_i = min(i + hold_days, len(dates))
         active_w = w_full.copy()
         asset_cum_ret = np.zeros(n_tickers, dtype=float)
+        asset_peak_ret = np.zeros(n_tickers, dtype=float)  # per-asset running max cum_ret
         port_cum_ret_since_rebal = 0.0
+        port_peak_cum_ret = 0.0
         per_asset_sl = float(per_asset_stop_loss_pct) / 100.0 if per_asset_stop_loss_pct > 0 else 0.0
         port_sl = float(portfolio_stop_loss_pct) / 100.0 if portfolio_stop_loss_pct > 0 else 0.0
+        per_asset_ts = float(per_asset_trailing_stop_pct) / 100.0 if per_asset_trailing_stop_pct > 0 else 0.0
+        port_ts = float(portfolio_trailing_stop_pct) / 100.0 if portfolio_trailing_stop_pct > 0 else 0.0
         stopped_out_turnover = 0.0
         min_hold = int(min_hold_days) if min_hold_days is not None else 0
         for j in range(i, end_i):
@@ -327,7 +337,9 @@ def run_backtest(
             # for still-active assets. Stopped-out assets stay frozen.
             active_mask = active_w > 0.0
             asset_cum_ret[active_mask] += day_day_ret[active_mask]
+            asset_peak_ret = np.maximum(asset_peak_ret, asset_cum_ret)
             port_cum_ret_since_rebal += port_day_ret
+            port_peak_cum_ret = max(port_peak_cum_ret, port_cum_ret_since_rebal)
             days_held = j - i + 1
             if days_held >= max(1, min_hold):
                 if per_asset_sl > 0.0:
@@ -340,8 +352,29 @@ def run_backtest(
                         fee_hit = stop_turn * cost_per_turnover
                         port_rets.iloc[j - fit_window] -= fee_hit
                         active_w[sl_hit] = 0.0
+                        asset_cum_ret[sl_hit] = 0.0
+                        asset_peak_ret[sl_hit] = 0.0
+                if per_asset_ts > 0.0:
+                    # Trailing: drop from per-asset peak ≥ per_asset_ts.
+                    active_mask = active_w > 0.0
+                    ts_hit = active_mask & ((asset_peak_ret - asset_cum_ret) > per_asset_ts)
+                    if ts_hit.any():
+                        stop_turn = float(np.abs(active_w[ts_hit]).sum())
+                        stopped_out_turnover += stop_turn
+                        fee_hit = stop_turn * cost_per_turnover
+                        port_rets.iloc[j - fit_window] -= fee_hit
+                        active_w[ts_hit] = 0.0
+                        asset_cum_ret[ts_hit] = 0.0
+                        asset_peak_ret[ts_hit] = 0.0
                 if port_sl > 0.0 and port_cum_ret_since_rebal < -port_sl:
                     # Full liquidation: liquidate everything still active.
+                    stop_turn = float(np.abs(active_w).sum())
+                    if stop_turn > 0:
+                        stopped_out_turnover += stop_turn
+                        fee_hit = stop_turn * cost_per_turnover
+                        port_rets.iloc[j - fit_window] -= fee_hit
+                        active_w = np.zeros_like(active_w)
+                if port_ts > 0.0 and (port_peak_cum_ret - port_cum_ret_since_rebal) > port_ts:
                     stop_turn = float(np.abs(active_w).sum())
                     if stop_turn > 0:
                         stopped_out_turnover += stop_turn
@@ -388,6 +421,8 @@ def run_backtest(
         "kelly_device": str(kelly_device) if (api == "pytorch_kelly" and kelly_device is not None) else None,
         "per_asset_stop_loss_pct": float(per_asset_stop_loss_pct),
         "portfolio_stop_loss_pct": float(portfolio_stop_loss_pct),
+        "per_asset_trailing_stop_pct": float(per_asset_trailing_stop_pct),
+        "portfolio_trailing_stop_pct": float(portfolio_trailing_stop_pct),
         "min_hold_days": int(min_hold_days) if min_hold_days is not None else None,
         "hold_days": int(hold_days),
     }
