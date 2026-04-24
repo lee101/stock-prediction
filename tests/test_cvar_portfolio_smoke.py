@@ -521,3 +521,43 @@ def test_portfolio_trailing_stop_roundtrips_into_summary():
     res = run_backtest(prices, portfolio_trailing_stop_pct=3.0, **kwargs)
     assert res.summary["portfolio_trailing_stop_pct"] == 3.0
     assert np.isfinite(res.summary["goodness_score"])
+
+
+def test_momentum_topk_picks_top_drifters():
+    """`make_momentum_topk` should return the K highest past-return tickers
+    and never leak forward information (pos strictly < asof)."""
+    from cvar_portfolio.sweep_wide_momentum import make_momentum_topk
+    rng = np.random.default_rng(0)
+    dates = pd.date_range("2025-01-01", periods=60, freq="B")
+    tickers = [f"T{i:02d}" for i in range(12)]
+    drift = np.array([0.015] * 6 + [-0.015] * 6)
+    rets = rng.normal(0, 0.005, (60, 12)) + drift[None]
+    prices = pd.DataFrame(np.exp(np.cumsum(rets, axis=0)) * 100,
+                          index=dates, columns=tickers)
+    uf = make_momentum_topk(prices, top_k=4, lookback=20)
+    picks = uf(dates[-1], tickers)
+    assert len(picks) == 4
+    # Top 4 drifters should all be from first 6 up-drift tickers
+    assert set(picks).issubset({f"T{i:02d}" for i in range(6)})
+    # Early dates with insufficient history should return empty
+    assert uf(dates[5], tickers) == []
+
+
+def test_momentum_topk_no_lookahead():
+    """`make_momentum_topk` must use strictly past data — scheduling a
+    future-only shock must not affect the pick at an earlier date."""
+    from cvar_portfolio.sweep_wide_momentum import make_momentum_topk
+    rng = np.random.default_rng(1)
+    dates = pd.date_range("2025-01-01", periods=80, freq="B")
+    tickers = [f"T{i:02d}" for i in range(8)]
+    base = rng.normal(0, 0.005, (80, 8))
+    prices_a = pd.DataFrame(np.exp(np.cumsum(base, axis=0)) * 100,
+                            index=dates, columns=tickers)
+    shocked = base.copy()
+    shocked[60:, 0] += 0.10
+    prices_b = pd.DataFrame(np.exp(np.cumsum(shocked, axis=0)) * 100,
+                            index=dates, columns=tickers)
+    uf_a = make_momentum_topk(prices_a, top_k=3, lookback=20)
+    uf_b = make_momentum_topk(prices_b, top_k=3, lookback=20)
+    # Picks at date 55 (before the shock at 60) must be identical
+    assert uf_a(dates[55], tickers) == uf_b(dates[55], tickers)
