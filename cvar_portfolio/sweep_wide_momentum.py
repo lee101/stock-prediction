@@ -28,7 +28,42 @@ import numpy as np
 import pandas as pd
 
 from cvar_portfolio.backtest import run_backtest
-from cvar_portfolio.data import load_price_panel, read_symbol_list
+from cvar_portfolio.data import _load_close, _filter_by_dollar_vol, read_symbol_list
+
+
+def load_active_panel(
+    symbols: list[str],
+    data_root: Path,
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    min_avg_dollar_vol: float,
+    end_tolerance_days: int = 5,
+) -> pd.DataFrame:
+    """Load a dense price panel containing only symbols whose last date is
+    within `end_tolerance_days` of `end`. Prevents `df.dropna(rows)` from
+    truncating the panel to the earliest-delisted ticker's last date.
+    """
+    end_ts = pd.Timestamp(end, tz="UTC")
+    start_ts = pd.Timestamp(start, tz="UTC")
+    frames: list[pd.Series] = []
+    for sym in symbols:
+        s = _load_close(sym, data_root)
+        if s is None or len(s) < 252:
+            continue
+        last = s.index[-1]
+        if (end_ts - last).days > end_tolerance_days:
+            continue
+        frames.append(s)
+    if not frames:
+        raise RuntimeError("No active symbols matched the end-date tolerance.")
+    df = pd.concat(frames, axis=1).sort_index().loc[start_ts:end_ts]
+    df = df.ffill(limit=3).dropna(axis=1, thresh=int(0.9 * len(df)))
+    df = df.dropna()
+    if min_avg_dollar_vol:
+        keep = _filter_by_dollar_vol(df.columns.tolist(), data_root, df.index[-1], min_avg_dollar_vol)
+        df = df[keep]
+    return df
 
 
 def make_momentum_topk(
@@ -163,8 +198,9 @@ def main() -> None:
     if args.max_symbols:
         syms = syms[: args.max_symbols]
     print(f"Loading {len(syms)} symbols from {args.data_root}…")
-    prices = load_price_panel(
-        syms, args.data_root, start=args.start, end=args.end,
+    prices = load_active_panel(
+        syms, args.data_root,
+        start=args.start, end=args.end,
         min_avg_dollar_vol=args.min_avg_dol_vol,
     )
     print(f"Panel: {prices.shape[0]} days × {prices.shape[1]} tickers  "
