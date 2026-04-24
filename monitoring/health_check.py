@@ -291,10 +291,40 @@ def check_cancel_multi_orders() -> CheckResult:
     return CheckResult("cancel-multi-orders", "warn", f"service not active: {out}")
 
 
+def _load_secretbashrc_env() -> None:
+    """Source ~/.secretbashrc via bash and copy emitted env vars into os.environ.
+
+    env_real.py falls back to literal placeholder strings when ALP_KEY_ID_PROD /
+    ALP_SECRET_KEY_PROD aren't set. When this script is invoked from cron or a
+    shell that didn't source ~/.secretbashrc (which is where the real keys live
+    on this box per deployments/xgb-daily-trader-live/launch.sh), those placeholders
+    otherwise produce a false 401 "API key EXPIRED" alert. Load the file here.
+    """
+    rc = os.path.expanduser("~/.secretbashrc")
+    if not os.path.isfile(rc):
+        return
+    try:
+        out = subprocess.run(
+            ["bash", "-c", f'set -a; source "{rc}" >/dev/null 2>&1; env'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0:
+            return
+        for line in out.stdout.splitlines():
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.startswith("ALP_") or k.startswith("APCA_"):
+                os.environ.setdefault(k, v)
+    except Exception:
+        pass
+
+
 def check_alpaca_api() -> CheckResult:
     """Quick API key validity check via positions endpoint."""
     try:
         sys.path.insert(0, str(REPO_ROOT))
+        _load_secretbashrc_env()
         # Try importing env_real to get credentials
         import importlib.util
         spec = importlib.util.spec_from_file_location("env_real", REPO_ROOT / "env_real.py")
@@ -307,6 +337,11 @@ def check_alpaca_api() -> CheckResult:
         secret = getattr(env_mod, "ALP_SECRET_KEY_PROD", None)
         if not key_id or not secret:
             return CheckResult("alpaca-api", "fail", "ALP_KEY_ID_PROD or ALP_SECRET_KEY_PROD not set")
+        if key_id.startswith("alpaca-") or secret.startswith("alpaca-"):
+            return CheckResult(
+                "alpaca-api", "warn",
+                "env_real using placeholder keys — source ~/.secretbashrc before calling, or export ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD",
+            )
 
         import urllib.request
         import urllib.error
