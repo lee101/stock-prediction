@@ -512,6 +512,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
         "  --allocation 2.5 \\\n"
         "  --allocation-mode softmax \\\n"
         "  --allocation-temp 0.25 \\\n"
+        "  --score-uncertainty-penalty 0.40 \\\n"
         "  --min-score 0.62 \\\n"
         "  --hold-through \\\n"
         "  --min-dollar-vol 50000000 \\\n"
@@ -541,6 +542,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
     assert live_config["conviction_alloc_high"] == 0.72
     assert live_config["allocation_mode"] == "softmax"
     assert live_config["allocation_temp"] == 0.25
+    assert live_config["score_uncertainty_penalty"] == 0.40
 
     path = _write_sweep(tmp_path, cells=[
         {
@@ -559,6 +561,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "no_picks_fallback_symbol": "",
             "no_picks_fallback_alloc_scale": 0.0,
             "allocation_mode": "equal",
+            "score_uncertainty_penalty": 0.0,
             "median_monthly_pct": 80.0,
             "p10_monthly_pct": 20.0,
             "worst_dd_pct": 5.0,
@@ -581,6 +584,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "no_picks_fallback_symbol": "",
             "no_picks_fallback_alloc_scale": 0.0,
             "allocation_mode": "equal",
+            "score_uncertainty_penalty": 0.0,
             "median_monthly_pct": 70.0,
             "p10_monthly_pct": 20.0,
             "worst_dd_pct": 5.0,
@@ -607,6 +611,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "conviction_alloc_high": 0.72,
             "allocation_mode": "softmax",
             "allocation_temp": 0.25,
+            "score_uncertainty_penalty": 0.0,
             "median_monthly_pct": 50.0,
             "p10_monthly_pct": 12.0,
             "worst_dd_pct": 6.0,
@@ -633,6 +638,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "conviction_alloc_high": 0.85,
             "allocation_mode": "equal",
             "allocation_temp": 1.0,
+            "score_uncertainty_penalty": 0.0,
             "median_monthly_pct": 65.0,
             "p10_monthly_pct": 15.0,
             "worst_dd_pct": 6.0,
@@ -659,6 +665,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "conviction_alloc_high": 0.85,
             "allocation_mode": "softmax",
             "allocation_temp": 0.25,
+            "score_uncertainty_penalty": 0.0,
             "median_monthly_pct": 55.0,
             "p10_monthly_pct": 12.0,
             "worst_dd_pct": 6.0,
@@ -685,6 +692,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "conviction_alloc_high": 0.72,
             "allocation_mode": "softmax",
             "allocation_temp": 0.25,
+            "score_uncertainty_penalty": 0.40,
             "median_monthly_pct": 40.0,
             "p10_monthly_pct": 10.0,
             "worst_dd_pct": 6.0,
@@ -709,6 +717,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
     assert result.best_cell["no_picks_fallback_symbol"] == "SPY"
     assert result.best_cell["conviction_scaled_alloc"] is True
     assert result.best_cell["allocation_mode"] == "softmax"
+    assert result.best_cell["score_uncertainty_penalty"] == 0.40
     assert result.best_cell["median_monthly_pct"] == 40.0
 
 
@@ -1193,6 +1202,26 @@ def test_launch_script_parse_rejects_malformed_numeric_flags(tmp_path: Path) -> 
         assert "--top-n must be an integer" in str(exc)
     else:
         raise AssertionError("expected malformed launch numeric flag to fail")
+
+
+def test_launch_script_parse_rejects_negative_uncertainty_penalty(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --symbols-file symbols.txt \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        "  --score-uncertainty-penalty -0.1 \\\n"
+        "  --live\n"
+    )
+
+    try:
+        mod.extract_live_config_from_launch(launch)
+    except ValueError as exc:
+        assert "--score-uncertainty-penalty must be >= 0" in str(exc)
+    else:
+        raise AssertionError("expected negative uncertainty penalty to fail")
 
 
 def test_main_returns_usage_error_for_bad_launch_numeric_flag(

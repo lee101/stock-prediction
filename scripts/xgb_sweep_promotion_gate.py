@@ -70,6 +70,7 @@ LIVE_CONFIG_DEFAULTS: dict[str, Any] = {
     "conviction_alloc_high": 0.85,
     "allocation_mode": "equal",
     "allocation_temp": 1.0,
+    "score_uncertainty_penalty": 0.0,
 }
 
 
@@ -161,6 +162,13 @@ def _flag_float(tokens: list[str], flag: str, default: float) -> float:
         raise ValueError(f"{flag} must be a finite float, got {value!r}") from None
     if not math.isfinite(parsed):
         raise ValueError(f"{flag} must be a finite float, got {value!r}")
+    return parsed
+
+
+def _flag_nonnegative_float(tokens: list[str], flag: str, default: float) -> float:
+    parsed = _flag_float(tokens, flag, default)
+    if parsed < 0.0:
+        raise ValueError(f"{flag} must be >= 0, got {parsed!r}")
     return parsed
 
 
@@ -347,6 +355,11 @@ def extract_live_config_from_launch(path: Path) -> dict[str, Any]:
         ),
         "allocation_temp": _flag_float(
             tokens, "--allocation-temp", float(LIVE_CONFIG_DEFAULTS["allocation_temp"])
+        ),
+        "score_uncertainty_penalty": _flag_nonnegative_float(
+            tokens,
+            "--score-uncertainty-penalty",
+            float(LIVE_CONFIG_DEFAULTS["score_uncertainty_penalty"]),
         ),
     }
 
