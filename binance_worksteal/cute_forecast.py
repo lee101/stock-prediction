@@ -51,12 +51,33 @@ def _pad_to_horizon(arr: np.ndarray, horizon: int) -> np.ndarray:
 
 def _extract_quantiles(q_tensor: torch.Tensor, horizon: int) -> Dict[str, np.ndarray]:
     """Extract p10/p50/p90 from (1, H, 3) tensor, padded to horizon."""
-    q = q_tensor.squeeze(0).numpy()
+    q = q_tensor.detach().cpu().squeeze(0).numpy()
     return {
         "p10": _pad_to_horizon(q[:, 0], horizon),
         "p50": _pad_to_horizon(q[:, 1], horizon),
         "p90": _pad_to_horizon(q[:, 2], horizon),
     }
+
+
+def _extract_variate_quantiles(
+    q_tensor: torch.Tensor,
+    *,
+    horizon: int,
+    variate_idx: int,
+) -> Dict[str, np.ndarray]:
+    """Extract one variate from a multivariate CuteChronos output.
+
+    CuteChronos returns a tensor shaped ``(n_variates, H, Q)`` for list items
+    that were passed as ``(n_variates, T)`` contexts. This helper keeps the
+    single-series ``_extract_quantiles`` contract while allowing batched OHLC
+    forecasts to share group attention inside one model call.
+    """
+    q = q_tensor.detach().cpu()
+    if q.ndim != 3:
+        raise ValueError(f"expected multivariate quantile tensor (V,H,Q), got {tuple(q.shape)}")
+    if variate_idx < 0 or variate_idx >= q.shape[0]:
+        raise IndexError(f"variate_idx={variate_idx} out of range for V={q.shape[0]}")
+    return _extract_quantiles(q[variate_idx : variate_idx + 1], horizon)
 
 
 def _naive_fallback(last_val: float, horizon: int) -> Dict[str, np.ndarray]:
@@ -151,6 +172,11 @@ def _prepare_ohlc_contexts(bars_df: pd.DataFrame, max_len: int = 512) -> Dict[st
     return result
 
 
+def _stack_ohlc_context(contexts: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Stack close/high/low into a multivariate ``(3, T)`` context."""
+    return torch.stack([contexts["close"], contexts["high"], contexts["low"]], dim=0)
+
+
 def forecast_symbol(
     symbol: str,
     bars_df: pd.DataFrame,
@@ -200,8 +226,16 @@ def forecast_batch(
     use_cute: bool = True,
     batch_size: int = 8,
     context_length: int = 512,
+    multivariate_ohlc: bool = False,
 ) -> Dict[str, Dict[str, Dict[str, np.ndarray]]]:
-    """Batch forecast multiple symbols. Returns {symbol: forecast_dict}."""
+    """Batch forecast multiple symbols. Returns {symbol: forecast_dict}.
+
+    When ``multivariate_ohlc`` is true, each symbol is passed as one
+    close/high/low multivariate task. That cuts three model calls per batch
+    down to one and lets group attention use OHLC relationships. The legacy
+    univariate-per-column path remains the default for exact backwards
+    compatibility.
+    """
     pipe = get_pipeline(model_path, device, use_cute)
     results: Dict[str, Dict[str, Dict[str, np.ndarray]]] = {}
     pred_len = min(horizon, getattr(pipe, "model_prediction_length", 64))
@@ -217,6 +251,33 @@ def forecast_batch(
         sym_order.append(sym)
 
     if not sym_order:
+        return results
+
+    if multivariate_ohlc:
+        all_contexts = [_stack_ohlc_context(prepared[sym]) for sym in sym_order]
+        for batch_start in range(0, len(all_contexts), batch_size):
+            batch_ctx = all_contexts[batch_start:batch_start + batch_size]
+            batch_syms = sym_order[batch_start:batch_start + batch_size]
+            try:
+                quantiles, _ = pipe.predict_quantiles(
+                    batch_ctx,
+                    prediction_length=pred_len,
+                    quantile_levels=[0.1, 0.5, 0.9],
+                )
+                for i, sym in enumerate(batch_syms):
+                    q = quantiles[i]
+                    results[sym] = {
+                        "close": _extract_variate_quantiles(q, horizon=horizon, variate_idx=0),
+                        "high": _extract_variate_quantiles(q, horizon=horizon, variate_idx=1),
+                        "low": _extract_variate_quantiles(q, horizon=horizon, variate_idx=2),
+                    }
+            except Exception as e:
+                logger.warning("multivariate batch forecast failed at batch %d: %s", batch_start, e)
+                for sym in batch_syms:
+                    results[sym] = {
+                        col: _naive_fallback(float(prepared[sym][col][-1]), horizon)
+                        for col in ("close", "high", "low")
+                    }
         return results
 
     for col in ("close", "high", "low"):

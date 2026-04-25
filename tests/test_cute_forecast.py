@@ -15,15 +15,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from binance_worksteal.cute_forecast import (
     _check_cute_available,
     _extract_quantiles,
+    _extract_variate_quantiles,
     _find_lora_path,
     _naive_fallback,
     _pad_to_horizon,
     _prepare_ohlc_contexts,
+    _stack_ohlc_context,
     forecast_batch,
     forecast_symbol,
     get_pipeline,
     _pipeline_cache,
-    LORA_MAP,
     LORA_ROOT,
 )
 
@@ -147,6 +148,31 @@ class FakePipeline:
         return quantiles, means
 
 
+class FakeMultivariatePipeline(FakePipeline):
+    """Mock pipeline for list[(3,T)] multivariate symbol contexts."""
+
+    def __init__(self) -> None:
+        self.calls: list[object] = []
+
+    def predict_quantiles(self, context, prediction_length=None, quantile_levels=None):
+        self.calls.append(context)
+        pred_len = prediction_length or 24
+        n_q = len(quantile_levels) if quantile_levels else 3
+        quantiles = []
+        means = []
+        for i, item in enumerate(context):
+            n_variates = int(item.shape[0])
+            q = torch.zeros(n_variates, pred_len, n_q)
+            for variate_idx in range(n_variates):
+                base = 1000.0 * (i + 1) + 100.0 * variate_idx
+                q[variate_idx, :, 0] = base * 0.98
+                q[variate_idx, :, 1] = base
+                q[variate_idx, :, 2] = base * 1.02
+            quantiles.append(q)
+            means.append(q[..., 1])
+        return quantiles, means
+
+
 class TestForecastSymbol:
     @patch("binance_worksteal.cute_forecast.get_pipeline")
     def test_output_structure(self, mock_get):
@@ -225,6 +251,60 @@ class TestForecastBatch:
         results = forecast_batch(["BTCUSDT"], bars, horizon=24)
         assert "BTCUSDT" in results
         assert results["BTCUSDT"]["close"]["p50"].shape == (24,)
+
+    def test_stack_ohlc_context(self):
+        ctx = _prepare_ohlc_contexts(_make_bars(50), max_len=16)
+        stacked = _stack_ohlc_context(ctx)
+        assert stacked.shape == (3, 16)
+        assert torch.equal(stacked[0], ctx["close"])
+        assert torch.equal(stacked[1], ctx["high"])
+        assert torch.equal(stacked[2], ctx["low"])
+
+    def test_extract_variate_quantiles(self):
+        q = torch.zeros(3, 4, 3)
+        q[1, :, 0] = 10.0
+        q[1, :, 1] = 20.0
+        q[1, :, 2] = 30.0
+        out = _extract_variate_quantiles(q, horizon=6, variate_idx=1)
+        np.testing.assert_array_equal(out["p10"], np.array([10.0, 10.0, 10.0, 10.0, 10.0, 10.0]))
+        np.testing.assert_array_equal(out["p50"], np.array([20.0, 20.0, 20.0, 20.0, 20.0, 20.0]))
+
+    @patch("binance_worksteal.cute_forecast.get_pipeline")
+    def test_batch_multivariate_ohlc_uses_one_call_per_symbol_batch(self, mock_get):
+        pipe = FakeMultivariatePipeline()
+        mock_get.return_value = pipe
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        bars = {s: _make_bars(100, base_price=50000 - i * 10000) for i, s in enumerate(symbols)}
+
+        results = forecast_batch(
+            symbols,
+            bars,
+            horizon=24,
+            batch_size=2,
+            multivariate_ohlc=True,
+        )
+
+        assert set(results.keys()) == set(symbols)
+        assert len(pipe.calls) == 2
+        first_batch = pipe.calls[0]
+        assert len(first_batch) == 2
+        assert first_batch[0].shape[0] == 3
+        assert results["BTCUSDT"]["close"]["p50"][0] == pytest.approx(1000.0)
+        assert results["BTCUSDT"]["high"]["p50"][0] == pytest.approx(1100.0)
+        assert results["BTCUSDT"]["low"]["p50"][0] == pytest.approx(1200.0)
+
+    @patch("binance_worksteal.cute_forecast.get_pipeline")
+    def test_batch_multivariate_error_fallback(self, mock_get):
+        pipe = MagicMock()
+        pipe.model_prediction_length = 64
+        pipe.predict_quantiles.side_effect = RuntimeError("kaboom")
+        mock_get.return_value = pipe
+        bars = {"BTCUSDT": _make_bars(100)}
+        results = forecast_batch(["BTCUSDT"], bars, horizon=24, multivariate_ohlc=True)
+        assert "BTCUSDT" in results
+        assert results["BTCUSDT"]["close"]["p50"].shape == (24,)
+        assert results["BTCUSDT"]["high"]["p50"].shape == (24,)
+        assert results["BTCUSDT"]["low"]["p50"].shape == (24,)
 
 
 class TestGetPipeline:

@@ -82,6 +82,7 @@ def run_batch(
     use_cute: bool = True,
     context_length: int = 512,
     device: str = "cuda",
+    multivariate_ohlc: bool = False,
 ):
     bars_dict: dict[str, pd.DataFrame] = {}
     skipped = []
@@ -100,8 +101,8 @@ def run_batch(
         logger.error("No valid symbols to forecast")
         return
 
-    logger.info("Forecasting %d symbols, horizon=%d, batch=%d, cute=%s",
-                len(valid_symbols), horizon, batch_size, use_cute)
+    logger.info("Forecasting %d symbols, horizon=%d, batch=%d, cute=%s, multivariate_ohlc=%s",
+                len(valid_symbols), horizon, batch_size, use_cute, multivariate_ohlc)
 
     t0 = time.time()
 
@@ -112,6 +113,7 @@ def run_batch(
         valid_symbols, bars_dict,
         horizon=horizon, device=device, use_cute=use_cute,
         batch_size=batch_size, context_length=context_length,
+        multivariate_ohlc=multivariate_ohlc,
     )
 
     elapsed = time.time() - t0
@@ -150,6 +152,15 @@ def main():
     parser.add_argument("--no-cute", dest="use_cute", action="store_false")
     parser.add_argument("--context-length", type=int, default=512)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--multivariate-ohlc",
+        action="store_true",
+        help=(
+            "Forecast close/high/low as one grouped Chronos2 task per symbol. "
+            "This uses CuteChronos multivariate support to reduce model calls "
+            "and can improve OHLC consistency."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -170,6 +181,7 @@ def main():
         use_cute=args.use_cute,
         context_length=args.context_length,
         device=args.device,
+        multivariate_ohlc=args.multivariate_ohlc,
     )
 
 
