@@ -119,6 +119,16 @@ def test_validate_model_paths_rejects_duplicate_paths(tmp_path) -> None:
         mod.validate_model_paths((path, path), min_pkl_bytes=1)
 
 
+def test_validate_model_paths_rejects_normalized_duplicate_paths(tmp_path, monkeypatch) -> None:
+    mod = _load_module()
+    path = tmp_path / "alltrain_seed0.pkl"
+    _write_fake_model(path)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="model path list contains duplicates"):
+        mod.validate_model_paths((Path("alltrain_seed0.pkl"), path), min_pkl_bytes=1)
+
+
 def test_validate_model_paths_rejects_duplicate_seed_filenames(tmp_path) -> None:
     mod = _load_module()
     left = tmp_path / "left"
