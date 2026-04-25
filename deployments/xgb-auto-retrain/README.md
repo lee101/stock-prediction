@@ -15,7 +15,9 @@ upside insurance.
 - `scripts/xgb_weekly_retrain.sh` — the worker: trains a new
   5-seed ensemble to a staging dir, verifies 5×pkl + manifest, atomically
   rotates the live dir (snapshot → `_prev_<ts>/`), prunes backups older
-  than 28 days, and restarts `xgb-daily-trader-live` via supervisorctl.
+  than 28 days, and redeploys `xgb-daily-trader-live` via
+  `scripts/deploy_live_trader.sh` so the normal preflight and singleton
+  lock verification gates are enforced.
 - `xgb-auto-retrain.service` — oneshot systemd unit that runs the script.
 - `xgb-auto-retrain.timer` — weekly timer (Sun 23:00 UTC).
 
@@ -33,7 +35,7 @@ sudo systemctl list-timers xgb-auto-retrain.timer
 ## Manual ops
 
 ```bash
-# Dry-run (train to staging + verify, no rotate, no supervisor restart):
+# Dry-run (train to staging + verify, no rotate, no live redeploy):
 DRY_RUN=1 ./scripts/xgb_weekly_retrain.sh
 
 # Force a real retrain now:
@@ -48,7 +50,7 @@ LIVE=analysis/xgbnew_daily/alltrain_ensemble_gpu
 ls -dt "${LIVE}"_prev_* | head -n1          # find most recent backup
 mv "${LIVE}" "${LIVE}_bad_$(date -u +%s)"   # park the bad one
 mv <the backup>  "${LIVE}"                  # restore
-sudo supervisorctl restart xgb-daily-trader-live
+scripts/deploy_live_trader.sh --allow-unmodeled-live-sidecars xgb-daily-trader-live
 ```
 
 ## Prerequisites

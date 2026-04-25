@@ -2,7 +2,8 @@
 # Safely redeploy the single live-writer Alpaca bot.
 #
 # Usage:
-#   scripts/deploy_live_trader.sh <unit_name>
+#   scripts/deploy_live_trader.sh [--allow-dirty] [--allow-unmodeled-live-sidecars] \
+#     [--allow-invalid-xgb-ensemble] <unit_name>
 #
 # Valid <unit_name>:
 #   xgb-daily-trader-live    (current champion — 5-seed XGB daily)
@@ -23,13 +24,14 @@
 # What the script does
 # --------------------
 # 1. Validates the requested unit is in the LIVE_WRITER_UNITS registry.
-# 2. Stops every OTHER registered live-writer supervisor unit that is
+# 2. Runs scripts/alpaca_deploy_preflight.py for the requested unit.
+# 3. Stops every OTHER registered live-writer supervisor unit that is
 #    currently RUNNING (so the lock is free).
-# 3. Waits for the lock file to disappear or lose its holder, then
+# 4. Waits for the lock file to disappear or lose its holder, then
 #    starts the requested unit.
-# 4. Polls /health (trading-server) AND the lock file and confirms the
+# 5. Polls /health (trading-server) AND the lock file and confirms the
 #    holder PID matches the newly started process (or its child).
-# 5. Appends a line to deployments/live_trader_history.log with
+# 6. Appends a line to deployments/live_trader_history.log with
 #    TIMESTAMP, operator, chosen unit, pid — an audit trail of who
 #    was live at any given moment.
 #
@@ -39,12 +41,16 @@
 #   3  stop failed for a conflicting unit
 #   4  start failed for the requested unit
 #   5  lock-holder mismatch (started but something else owns the lock)
+#   6  preflight failed
 
 set -euo pipefail
 
-REPO="/nvme0n1-disk/code/stock-prediction"
-LOCK_PATH="${REPO}/strategy_state/account_locks/alpaca_live_writer.lock"
-HISTORY_LOG="${REPO}/deployments/live_trader_history.log"
+REPO="${REPO:-/nvme0n1-disk/code/stock-prediction}"
+LOCK_PATH="${LOCK_PATH:-${REPO}/strategy_state/account_locks/alpaca_live_writer.lock}"
+HISTORY_LOG="${HISTORY_LOG:-${REPO}/deployments/live_trader_history.log}"
+PREFLIGHT="${PREFLIGHT:-${REPO}/scripts/alpaca_deploy_preflight.py}"
+PREFLIGHT_REPORT_DIR="${PREFLIGHT_REPORT_DIR:-${REPO}/deployments/preflight_reports}"
+PREFLIGHT_REPORT_PATH=""
 
 # Registry of live-capable units. If a new bot is introduced that
 # imports alpaca_wrapper in LIVE mode, it MUST be added here.
@@ -55,6 +61,15 @@ LIVE_WRITER_UNITS=(
 )
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+_append_history() {
+  local status="$1"
+  local supervisor_pid="${2:-}"
+  local lock_pid="${3:-}"
+  mkdir -p "$(dirname "$HISTORY_LOG")"
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  operator=${USER:-$(id -un)}  unit=$TARGET  status=$status  supervisor_pid=${supervisor_pid:-none}  lock_pid=${lock_pid:-none}  preflight_report=${PREFLIGHT_REPORT_PATH:-none}" \
+    >> "$HISTORY_LOG"
+}
 
 _unit_in_registry() {
   local target="$1"
@@ -111,7 +126,8 @@ _wait_until() {
 
 _usage() {
   cat >&2 <<USAGE
-Usage: $0 <unit_name>
+Usage: $0 [--allow-dirty] [--allow-unmodeled-live-sidecars] \
+  [--allow-invalid-xgb-ensemble] <unit_name>
 
 Valid units (one MUST win the Alpaca live-writer lock at a time):
 USAGE
@@ -119,14 +135,69 @@ USAGE
     printf '  %s\n' "$unit" >&2
   done
   echo "  none                     (stop all live writers)" >&2
+  cat >&2 <<USAGE
+
+Options:
+  --allow-dirty                    Pass through to alpaca_deploy_preflight.py.
+  --allow-unmodeled-live-sidecars  Required for launch scripts that intentionally
+                                   enable live sidecars not represented in the
+                                   XGB sweep/evaluation artifact.
+  --allow-invalid-xgb-ensemble     Break-glass only: allow restart even if the
+                                   current XGB ensemble fails model-load
+                                   validation.
+USAGE
 }
 
-if [ "${1:-}" = "" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+ALLOW_DIRTY=0
+ALLOW_UNMODELED_LIVE_SIDECARS=0
+ALLOW_INVALID_XGB_ENSEMBLE=0
+
+while [ "${1:-}" != "" ]; do
+  case "$1" in
+    -h|--help)
+      _usage
+      exit 2
+      ;;
+    --allow-dirty)
+      ALLOW_DIRTY=1
+      shift
+      ;;
+    --allow-unmodeled-live-sidecars)
+      ALLOW_UNMODELED_LIVE_SIDECARS=1
+      shift
+      ;;
+    --allow-invalid-xgb-ensemble)
+      ALLOW_INVALID_XGB_ENSEMBLE=1
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      log "FAIL: unknown option '$1'"
+      _usage
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [ "${1:-}" = "" ]; then
   _usage
   exit 2
 fi
 
 TARGET="$1"
+shift
+
+if [ "${1:-}" != "" ]; then
+  log "FAIL: unexpected extra argument '$1'"
+  _usage
+  exit 2
+fi
 
 if [ "$TARGET" != "none" ] && ! _unit_in_registry "$TARGET"; then
   log "FAIL: '$TARGET' is not in LIVE_WRITER_UNITS registry"
@@ -137,6 +208,38 @@ fi
 # ---------------------------------------------------------------- pre-flight
 log "deploy_live_trader: requested=$TARGET operator=${USER:-$(id -un)}"
 log "registry: ${LIVE_WRITER_UNITS[*]}"
+
+if [ "$TARGET" != "none" ]; then
+  mkdir -p "$PREFLIGHT_REPORT_DIR"
+  safe_target="${TARGET//[^A-Za-z0-9_.-]/_}"
+  PREFLIGHT_REPORT_PATH="${PREFLIGHT_REPORT_DIR}/$(date -u +%Y%m%dT%H%M%SZ)_${safe_target}_$$.json"
+
+  preflight_args=(python3 "$PREFLIGHT" --service "$TARGET" --fail-on-unsafe --json)
+  if [ "$ALLOW_DIRTY" = "1" ]; then
+    preflight_args+=(--allow-dirty)
+  fi
+  if [ "$ALLOW_UNMODELED_LIVE_SIDECARS" = "1" ]; then
+    preflight_args+=(--allow-unmodeled-live-sidecars)
+  fi
+  if [ "$ALLOW_INVALID_XGB_ENSEMBLE" = "1" ]; then
+    preflight_args+=(--allow-invalid-xgb-ensemble)
+  fi
+
+  log "running preflight: ${preflight_args[*]}"
+  if ! "${preflight_args[@]}" > "$PREFLIGHT_REPORT_PATH" 2> "${PREFLIGHT_REPORT_PATH}.stderr"; then
+    [ -s "$PREFLIGHT_REPORT_PATH" ] && sed 's/^/  preflight> /' "$PREFLIGHT_REPORT_PATH"
+    [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] && sed 's/^/  preflight> /' "${PREFLIGHT_REPORT_PATH}.stderr"
+    [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] || rm -f "${PREFLIGHT_REPORT_PATH}.stderr"
+    log "preflight report: $PREFLIGHT_REPORT_PATH"
+    log "FAIL: alpaca deploy preflight rejected $TARGET"
+    _append_history "preflight_failed" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
+    exit 6
+  fi
+  sed 's/^/  preflight> /' "$PREFLIGHT_REPORT_PATH"
+  [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] && sed 's/^/  preflight> /' "${PREFLIGHT_REPORT_PATH}.stderr"
+  [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] || rm -f "${PREFLIGHT_REPORT_PATH}.stderr"
+  log "preflight report: $PREFLIGHT_REPORT_PATH"
+fi
 
 # Current state
 for unit in "${LIVE_WRITER_UNITS[@]}"; do
@@ -157,6 +260,7 @@ for unit in "${LIVE_WRITER_UNITS[@]}"; do
     log "STOP $unit (state=$state)"
     if ! sudo -n supervisorctl stop "$unit" 2>&1 | sed 's/^/  supervisorctl> /'; then
       log "FAIL: could not stop $unit"
+      _append_history "stop_failed:$unit" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
       exit 3
     fi
   fi
@@ -182,8 +286,7 @@ fi
 # ---------------------------------------------------------------- none-path
 if [ "$TARGET" = "none" ]; then
   log "TARGET=none — all live writers stopped."
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  operator=${USER:-$(id -un)}  unit=none  pid=-  lock=$(_lock_pid)" \
-    >> "$HISTORY_LOG"
+  _append_history "stopped_all" "-" "$(_lock_pid)"
   exit 0
 fi
 
@@ -193,12 +296,14 @@ if [ "$state" = "RUNNING" ]; then
   log "$TARGET already RUNNING (pid=$(_unit_pid "$TARGET")) — restart to pick up new config"
   if ! sudo -n supervisorctl restart "$TARGET" 2>&1 | sed 's/^/  supervisorctl> /'; then
     log "FAIL: could not restart $TARGET"
+    _append_history "restart_failed" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
     exit 4
   fi
 else
   log "START $TARGET (prev state=$state)"
   if ! sudo -n supervisorctl start "$TARGET" 2>&1 | sed 's/^/  supervisorctl> /'; then
     log "FAIL: could not start $TARGET"
+    _append_history "start_failed" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
     exit 4
   fi
 fi
@@ -221,6 +326,7 @@ if ! _wait_until 30 bash -c '
 '; then
   log "FAIL: $TARGET did not claim the Alpaca live-writer lock within 30s"
   log "      lock_holder_now=$(_lock_pid)  supervisor_pid=$(_unit_pid "$TARGET")"
+  _append_history "lock_mismatch" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
   exit 5
 fi
 
@@ -233,8 +339,6 @@ for unit in "${LIVE_WRITER_UNITS[@]}"; do
   log "  $unit state=$(_unit_state "$unit")"
 done
 
-mkdir -p "$(dirname "$HISTORY_LOG")"
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  operator=${USER:-$(id -un)}  unit=$TARGET  supervisor_pid=$final_pid  lock_pid=$final_lock_pid" \
-  >> "$HISTORY_LOG"
+_append_history "ok" "$final_pid" "$final_lock_pid"
 
 exit 0

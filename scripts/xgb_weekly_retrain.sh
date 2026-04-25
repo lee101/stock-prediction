@@ -1,8 +1,8 @@
 #!/bin/bash
 # XGB weekly auto-retrain — re-fits the live 5-seed ensemble with
 # train_end = today, health-checks the artifacts, snapshots the current
-# live ensemble, atomically rotates the new one in, and restarts the
-# xgb-daily-trader-live supervisor process.
+# live ensemble, atomically rotates the new one in, and redeploys
+# xgb-daily-trader-live through the guarded live-writer deploy script.
 #
 # Motivation: project_xgb_recency_monotonic.md — recency is asymmetric-
 # upside insurance. During regime shifts a 1-year-stale ensemble loses
@@ -15,12 +15,12 @@
 #   - Previous live dir is moved to ${LIVE_DIR}_prev_${TIMESTAMP}/ so
 #     a rollback is `mv _prev_... alltrain_ensemble_gpu`.
 #   - Backups older than 28 days are deleted.
-#   - If the supervisor restart fails the script exits non-zero and
+#   - If guarded redeploy fails the script exits non-zero and
 #     the rollback path is still trivially available.
 #
 # Flags:
 #   DRY_RUN=1   — train to staging + verify artifacts, but DO NOT rotate
-#                 the live dir and DO NOT restart the supervisor. Leaves
+#                 the live dir and DO NOT redeploy the live trader. Leaves
 #                 the staging dir in place for inspection.
 
 set -euo pipefail
@@ -108,9 +108,14 @@ print(f"[xgb-weekly-retrain] OK manifest trained_at={m.get('trained_at')} "
       f"n_symbols={m.get('n_symbols_with_data')}")
 PY
 
+python scripts/validate_xgb_ensemble.py "${STAGE_DIR}" \
+  --seeds 0,7,42,73,197 \
+  --min-pkl-bytes "${MIN_PKL_BYTES}" \
+  2>&1 | tee -a "${LOG_FILE}"
+
 # ---------------------------------------------------------------- rotate
 if [ "${DRY_RUN}" = "1" ]; then
-  echo "[xgb-weekly-retrain] DRY_RUN=1 — skipping rotate + supervisor restart" \
+  echo "[xgb-weekly-retrain] DRY_RUN=1 — skipping rotate + live redeploy" \
       | tee -a "${LOG_FILE}"
   echo "[xgb-weekly-retrain] staging artifacts kept at ${STAGE_DIR}" \
       | tee -a "${LOG_FILE}"
@@ -118,6 +123,13 @@ if [ "${DRY_RUN}" = "1" ]; then
       | tee -a "${LOG_FILE}"
   exit 0
 fi
+
+echo "[xgb-weekly-retrain] preflight before live-dir rotation" | tee -a "${LOG_FILE}"
+python scripts/alpaca_deploy_preflight.py \
+  --service xgb-daily-trader-live \
+  --fail-on-unsafe \
+  --allow-unmodeled-live-sidecars \
+  2>&1 | tee -a "${LOG_FILE}"
 
 # Atomic directory swap. `mv` is atomic on ext4 same-fs.
 if [ -d "${LIVE_DIR}" ]; then
@@ -127,26 +139,78 @@ if [ -d "${LIVE_DIR}" ]; then
 fi
 mv "${STAGE_DIR}" "${LIVE_DIR}"
 echo "[xgb-weekly-retrain] rotated staging -> live" | tee -a "${LOG_FILE}"
+python scripts/normalize_xgb_ensemble_manifest.py "${LIVE_DIR}" 2>&1 | tee -a "${LOG_FILE}"
+
+rollback_live_dir_after_failed_redeploy() {
+  local rc="$1"
+  local failed_dir="${LIVE_DIR}_failed_redeploy_${TIMESTAMP}"
+  local recovery_rc=0
+  echo "[xgb-weekly-retrain] FAIL guarded redeploy rc=${rc}; rolling back live dir" \
+      | tee -a "${LOG_FILE}"
+  if [ -d "${LIVE_DIR}" ]; then
+    mv "${LIVE_DIR}" "${failed_dir}"
+    echo "[xgb-weekly-retrain] parked failed candidate at ${failed_dir}" \
+        | tee -a "${LOG_FILE}"
+  fi
+  if [ -d "${BACKUP_DIR}" ]; then
+    mv "${BACKUP_DIR}" "${LIVE_DIR}"
+    echo "[xgb-weekly-retrain] restored previous live dir from ${BACKUP_DIR}" \
+        | tee -a "${LOG_FILE}"
+    python scripts/normalize_xgb_ensemble_manifest.py "${LIVE_DIR}" 2>&1 | tee -a "${LOG_FILE}"
+    if [ -x "${REPO}/scripts/deploy_live_trader.sh" ]; then
+      echo "[xgb-weekly-retrain] attempting recovery redeploy of restored previous live dir" \
+          | tee -a "${LOG_FILE}"
+      set +e
+      "${REPO}/scripts/deploy_live_trader.sh" \
+        --allow-unmodeled-live-sidecars \
+        xgb-daily-trader-live \
+        2>&1 | tee -a "${LOG_FILE}"
+      recovery_rc=${PIPESTATUS[0]}
+      set -e
+      if [ "${recovery_rc}" -ne 0 ]; then
+        echo "[xgb-weekly-retrain] WARN recovery redeploy failed rc=${recovery_rc}" \
+            | tee -a "${LOG_FILE}"
+      else
+        echo "[xgb-weekly-retrain] OK recovery redeploy restored previous live artifacts" \
+            | tee -a "${LOG_FILE}"
+      fi
+    fi
+  else
+    echo "[xgb-weekly-retrain] WARN no previous live backup existed to restore" \
+        | tee -a "${LOG_FILE}"
+  fi
+  exit "${rc}"
+}
+
+# ---------------------------------------------------------------- redeploy
+# Use the same guarded deploy path as humans: preflight, stop conflicting
+# live writers, restart the target, and verify the Alpaca singleton lock.
+if [ -x "${REPO}/scripts/deploy_live_trader.sh" ]; then
+  echo "[xgb-weekly-retrain] redeploying xgb-daily-trader-live via deploy_live_trader.sh" \
+      | tee -a "${LOG_FILE}"
+  set +e
+  "${REPO}/scripts/deploy_live_trader.sh" \
+    --allow-unmodeled-live-sidecars \
+    xgb-daily-trader-live \
+    2>&1 | tee -a "${LOG_FILE}"
+  deploy_rc=${PIPESTATUS[0]}
+  set -e
+  if [ "${deploy_rc}" -ne 0 ]; then
+    rollback_live_dir_after_failed_redeploy "${deploy_rc}"
+  fi
+else
+  echo "[xgb-weekly-retrain] FAIL deploy_live_trader.sh missing; live NOT redeployed" \
+      | tee -a "${LOG_FILE}"
+  rollback_live_dir_after_failed_redeploy 5
+fi
 
 # ----------------------------------------------------------------- prune
-# Keep last 28 days of backups; delete older.
+# Keep last 28 days of backups; delete older, but only after the guarded
+# redeploy succeeds so rollback material is preserved on failures.
 find "${REPO}/analysis/xgbnew_daily" -maxdepth 1 -type d \
      -name "alltrain_ensemble_gpu_prev_*" -mtime +28 \
      -exec echo "[xgb-weekly-retrain] pruning {}" \; \
      -exec rm -rf {} + 2>&1 | tee -a "${LOG_FILE}" || true
-
-# ---------------------------------------------------------------- restart
-# sudo supervisorctl is the production control plane. The live process
-# holds the Alpaca singleton lock so it must exit cleanly; autorestart in
-# supervisor.conf brings it back immediately.
-if command -v supervisorctl >/dev/null 2>&1; then
-  echo "[xgb-weekly-retrain] restarting xgb-daily-trader-live" \
-      | tee -a "${LOG_FILE}"
-  sudo -n supervisorctl restart xgb-daily-trader-live 2>&1 | tee -a "${LOG_FILE}"
-else
-  echo "[xgb-weekly-retrain] WARN supervisorctl missing; live NOT restarted" \
-      | tee -a "${LOG_FILE}"
-fi
 
 # --------------------------------------------- in-sample upper-bound report
 # Honest-naming: this generates a ``full_fit_insample_overfit_YYYYMMDD/
