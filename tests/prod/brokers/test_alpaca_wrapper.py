@@ -76,6 +76,7 @@ alpaca_trading.GetOrdersRequest = MagicMock()
 alpaca_trading.Order = MagicMock()
 alpaca_trading.client.TradingClient = MagicMock()
 alpaca_trading.enums.OrderSide = MagicMock()
+alpaca_trading.enums.TimeInForce = MagicMock()
 alpaca_trading.requests.MarketOrderRequest = MagicMock()
 
 sys.modules["alpaca"] = alpaca
@@ -153,7 +154,7 @@ def test_open_order_at_price_or_all_adjusts_on_insufficient_balance():
     with patch("alpaca_wrapper.get_orders", return_value=[]), \
          patch("alpaca_wrapper.has_current_open_position", return_value=False), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
-         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw) as req, \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
 
         submit.side_effect = [
@@ -408,7 +409,7 @@ def test_limit_order_qty_bumped_to_min_notional():
     """Limit orders should raise tiny qty to meet $1 notional."""
     with patch("alpaca_wrapper.get_orders", return_value=[]), \
          patch("alpaca_wrapper.has_current_open_position", return_value=False), \
-         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw) as req, \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="ok") as submit:
 
         result = open_order_at_price("AAPL", 1, "buy", 0.2)

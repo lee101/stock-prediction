@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew import live_trader  # noqa: E402
+from xgbnew import live_trader
 
 
 def _mk_args(**over):
@@ -56,6 +56,7 @@ def _mk_pos(symbol, qty, price):
 def _install_picks(monkeypatch, picks_df: pd.DataFrame):
     """Stub the score/fetch chain so _score_and_pick returns picks_df."""
     monkeypatch.setattr(live_trader, "_get_latest_bars", lambda *a, **k: {})
+    monkeypatch.setattr(live_trader, "_latest_stock_bid_ask", lambda *a, **k: (0.0, 0.0))
     monkeypatch.setattr(
         live_trader,
         "score_all_symbols",
@@ -93,7 +94,34 @@ def test_hold_when_picks_match_held(monkeypatch):
     monkeypatch.setattr(live_trader, "_wait_until", lambda *a, **k: None)
 
     submit = MagicMock()
-    monkeypatch.setattr(live_trader, "_submit_market_order", submit)
+    monkeypatch.setattr(live_trader, "_submit_limit_order", submit)
+
+    live_trader.run_session_hold_through(
+        symbols=["AAA"],
+        data_root=Path("/tmp"),
+        model=MagicMock(),
+        client=client,
+        args=_mk_args(top_n=1),
+    )
+
+    submit.assert_not_called()
+
+
+def test_crypto_positions_are_not_rotated_by_stock_hold_through(monkeypatch):
+    """Embedded crypto sleeve positions must not enter XGB stock rotation."""
+    picks = pd.DataFrame([{"symbol": "AAA", "score": 0.8,
+                          "last_close": 100.0, "spread_bps": 3.0}])
+    _install_picks(monkeypatch, picks)
+
+    client = MagicMock()
+    client.get_clock.return_value = _clock_open()
+    client.get_all_positions.return_value = [
+        _mk_pos("AAA", 10, 101.0),
+        _mk_pos("BTC/USD", 0.1, 90_000.0),
+    ]
+    monkeypatch.setattr(live_trader, "_wait_until", lambda *a, **k: None)
+    submit = MagicMock()
+    monkeypatch.setattr(live_trader, "_submit_limit_order", submit)
 
     live_trader.run_session_hold_through(
         symbols=["AAA"],
@@ -125,11 +153,11 @@ def test_rotation_sells_dropped_and_buys_new(monkeypatch):
 
     submitted = []
 
-    def _submit(client_arg, *, symbol, qty, side):
-        submitted.append((symbol, qty, side))
+    def _submit(client_arg, *, symbol, qty, side, limit_price):
+        submitted.append((symbol, qty, side, limit_price))
         return SimpleNamespace(id=f"id-{symbol}-{side}", filled_avg_price=None)
 
-    monkeypatch.setattr(live_trader, "_submit_market_order", _submit)
+    monkeypatch.setattr(live_trader, "_submit_limit_order", _submit)
     monkeypatch.setattr(live_trader, "_poll_filled_avg_price",
                         lambda c, oid, timeout_s=30.0: None)
 
@@ -156,7 +184,7 @@ def test_rotation_sells_dropped_and_buys_new(monkeypatch):
         args=_mk_args(top_n=1),
     )
 
-    sides = {(s, sd) for s, _, sd in submitted}
+    sides = {(s, sd) for s, _, sd, _ in submitted}
     assert ("AAA", "sell") in sides, f"expected AAA sell, got {submitted}"
     assert ("BBB", "buy") in sides, f"expected BBB buy, got {submitted}"
 
@@ -194,11 +222,11 @@ def test_partial_overlap_keeps_intersect_sells_dropout_buys_new(monkeypatch):
 
     submitted = []
 
-    def _submit(client_arg, *, symbol, qty, side):
-        submitted.append((symbol, qty, side))
+    def _submit(client_arg, *, symbol, qty, side, limit_price):
+        submitted.append((symbol, qty, side, limit_price))
         return SimpleNamespace(id=f"id-{symbol}-{side}", filled_avg_price=None)
 
-    monkeypatch.setattr(live_trader, "_submit_market_order", _submit)
+    monkeypatch.setattr(live_trader, "_submit_limit_order", _submit)
     monkeypatch.setattr(live_trader, "_poll_filled_avg_price",
                         lambda c, oid, timeout_s=30.0: None)
 
@@ -215,15 +243,15 @@ def test_partial_overlap_keeps_intersect_sells_dropout_buys_new(monkeypatch):
         args=_mk_args(top_n=2),
     )
 
-    syms_traded = {s for s, _, _ in submitted}
+    syms_traded = {s for s, _, _, _ in submitted}
     assert syms_traded == {"AAA", "CCC"}, (
         f"expected only AAA sell + CCC buy (BBB carried), got {submitted}"
     )
-    sides = {(s, sd) for s, _, sd in submitted}
+    sides = {(s, sd) for s, _, sd, _ in submitted}
     assert ("AAA", "sell") in sides
     assert ("CCC", "buy") in sides
     # BBB should NOT be traded on either side.
-    assert not any(s == "BBB" for s, _, _ in submitted)
+    assert not any(s == "BBB" for s, _, _, _ in submitted)
 
 
 def test_fresh_entry_from_flat_buys_but_no_sell(monkeypatch):
@@ -244,9 +272,9 @@ def test_fresh_entry_from_flat_buys_but_no_sell(monkeypatch):
 
     submitted = []
     monkeypatch.setattr(
-        live_trader, "_submit_market_order",
-        lambda c, *, symbol, qty, side: (
-            submitted.append((symbol, qty, side))
+        live_trader, "_submit_limit_order",
+        lambda c, *, symbol, qty, side, limit_price: (
+            submitted.append((symbol, qty, side, limit_price))
             or SimpleNamespace(id="id", filled_avg_price=None)
         ),
     )
@@ -266,7 +294,7 @@ def test_fresh_entry_from_flat_buys_but_no_sell(monkeypatch):
         args=_mk_args(top_n=1),
     )
 
-    assert submitted == [("AAA", pytest.approx(100.0), "buy")], submitted
+    assert submitted == [("AAA", pytest.approx(100.0), "buy", pytest.approx(100.0))], submitted
 
 
 def test_gate_skips_non_trading_day(monkeypatch):
@@ -315,7 +343,7 @@ def test_dry_run_scores_but_submits_nothing(monkeypatch):
     _install_picks(monkeypatch, picks)
 
     submit = MagicMock()
-    monkeypatch.setattr(live_trader, "_submit_market_order", submit)
+    monkeypatch.setattr(live_trader, "_submit_limit_order", submit)
 
     client = MagicMock()
     # Gate is skipped on dry_run path.

@@ -8,12 +8,10 @@ Verify that the refactored buy/sell paths:
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -21,7 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.live_trader import (  # noqa: E402
+from xgbnew.live_trader import (
     _get_position_details,
     _is_today_trading_day,
     _poll_filled_avg_price,
@@ -183,6 +181,116 @@ def test_min_score_flag_defaults_to_zero_and_parses():
         "--min-score", "0.55",
     ])
     assert a.min_score == pytest.approx(0.55)
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "message"),
+    [
+        (["--top-n", "0"], "--top-n must be >= 1"),
+        (["--allocation", "nan"], "--allocation must be finite"),
+        (["--allocation", "0"], "--allocation must be > 0"),
+        (["--allocation-temp", "0"], "--allocation-temp must be > 0"),
+        (["--min-score", "1.5"], "--min-score must be between 0 and 1"),
+        (["--commission-bps", "-1"], "--commission-bps must be >= 0"),
+        (["--min-dollar-vol", "-1"], "--min-dollar-vol must be >= 0"),
+        (["--max-ret-20d-rank-pct", "1.5"], "--max-ret-20d-rank-pct must be between 0 and 1"),
+        (["--no-picks-fallback-alloc", "-0.1"], "--no-picks-fallback-alloc must be >= 0"),
+        (["--crypto-poll-seconds", "0"], "--crypto-poll-seconds must be >= 1"),
+        (["--crypto-max-gross", "-0.1"], "--crypto-max-gross must be >= 0"),
+        (["--eod-max-gross-leverage", "0"], "--eod-max-gross-leverage must be > 0"),
+        (["--eod-deleverage-window-minutes", "0"], "--eod-deleverage-window-minutes must be >= 1"),
+        (["--eod-force-market-minutes", "-1"], "--eod-force-market-minutes must be >= 0"),
+        (
+            ["--conviction-alloc-low", "0.9", "--conviction-alloc-high", "0.8"],
+            "--conviction-alloc-high must be > --conviction-alloc-low",
+        ),
+    ],
+)
+def test_live_trader_parse_args_rejects_invalid_portfolio_domains(
+    extra_args,
+    message,
+    capsys,
+):
+    from xgbnew.live_trader import parse_args
+
+    with pytest.raises(SystemExit) as excinfo:
+        parse_args([
+            "--symbols-file", "x",
+            "--model-paths", "a.pkl",
+            *extra_args,
+        ])
+
+    assert excinfo.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_cross_sectional_regime_gate_flags_default_disabled_and_parse():
+    from xgbnew.live_trader import parse_args
+
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+    ])
+    assert a.regime_cs_iqr_max == pytest.approx(0.0)
+    assert a.regime_cs_skew_min == pytest.approx(-1e9)
+
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+        "--regime-cs-iqr-max", "0.042",
+        "--regime-cs-skew-min", "1.0",
+    ])
+    assert a.regime_cs_iqr_max == pytest.approx(0.042)
+    assert a.regime_cs_skew_min == pytest.approx(1.0)
+
+
+def test_embedded_eod_deleverage_flags_default_disabled_and_parse():
+    from xgbnew.live_trader import parse_args
+
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+    ])
+    assert a.eod_deleverage is False
+    assert a.eod_max_gross_leverage == pytest.approx(2.0)
+    assert a.eod_deleverage_window_minutes == 60
+    assert a.eod_force_market_minutes == 5
+
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+        "--eod-deleverage",
+        "--eod-max-gross-leverage", "1.95",
+        "--eod-deleverage-window-minutes", "45",
+        "--eod-force-market-minutes", "7",
+    ])
+    assert a.eod_deleverage is True
+    assert a.eod_max_gross_leverage == pytest.approx(1.95)
+    assert a.eod_deleverage_window_minutes == 45
+    assert a.eod_force_market_minutes == 7
+
+
+def test_embedded_crypto_flags_default_disabled_and_parse():
+    from xgbnew.live_trader import parse_args
+
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+    ])
+    assert a.crypto_weekend is False
+    assert a.crypto_poll_seconds == 300
+    assert a.crypto_max_gross == pytest.approx(0.5)
+
+    a = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+        "--crypto-weekend",
+        "--crypto-poll-seconds", "120",
+        "--crypto-max-gross", "0.25",
+    ])
+    assert a.crypto_weekend is True
+    assert a.crypto_poll_seconds == 120
+    assert a.crypto_max_gross == pytest.approx(0.25)
 
 
 def test_min_score_filter_applied_to_picks(tmp_path, monkeypatch):

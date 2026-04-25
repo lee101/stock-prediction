@@ -188,7 +188,6 @@ class TestScoreAllSymbols:
 
     def test_empty_returns_empty(self, tmp_path):
         from xgbnew.model import XGBStockModel
-        import pickle
         # Minimal model stub
         model = XGBStockModel.__new__(XGBStockModel)
         model._fitted = False
@@ -224,6 +223,215 @@ class TestScoreAllSymbols:
         )
 
         assert scores.empty
+
+    def test_scores_symbols_in_one_batch_per_model(self, monkeypatch, tmp_path):
+        syms = ["AAA", "BBB", "CCC"]
+        ts = pd.date_range("2026-04-01", periods=80, freq="B", tz="UTC")
+        raw = pd.DataFrame({
+            "timestamp": ts,
+            "open": np.linspace(90.0, 100.0, len(ts)),
+            "high": np.linspace(91.0, 101.0, len(ts)),
+            "low": np.linspace(89.0, 99.0, len(ts)),
+            "close": np.linspace(90.5, 100.5, len(ts)),
+            "volume": np.full(len(ts), 2e7),
+        })
+
+        monkeypatch.setattr(live_trader, "_load_symbol_csv", lambda sym, root: raw.copy())
+
+        def fake_features(_df, *, symbol):
+            base = {col: 0.1 for col in live_trader.DAILY_FEATURE_COLS}
+            base.update({
+                "actual_close": {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0}[symbol],
+                "spread_bps": 5.0,
+                "dolvol_20d_log": np.log1p(1e9),
+                "ret_5d": {"AAA": 0.01, "BBB": 0.02, "CCC": 0.03}[symbol],
+            })
+            return pd.DataFrame([base])
+
+        monkeypatch.setattr(live_trader, "build_features_for_symbol", fake_features)
+
+        class _BatchModel:
+            def __init__(self, offset):
+                self.offset = offset
+                self.call_lengths = []
+
+            def predict_scores(self, frame):
+                self.call_lengths.append(len(frame))
+                return pd.Series(np.linspace(0.1, 0.3, len(frame)) + self.offset)
+
+        m1 = _BatchModel(0.0)
+        m2 = _BatchModel(0.2)
+
+        scores = live_trader.score_all_symbols(
+            syms,
+            tmp_path,
+            [m1, m2],  # type: ignore[arg-type]
+            min_dollar_vol=1e3,
+            now=datetime(2026, 4, 23, 13, 25, tzinfo=timezone.utc),
+        )
+
+        assert m1.call_lengths == [3]
+        assert m2.call_lengths == [3]
+        assert list(scores["symbol"]) == ["CCC", "BBB", "AAA"]
+        assert scores.iloc[0]["per_seed_scores"] == pytest.approx([0.3, 0.5])
+
+    def test_score_all_symbols_adds_model_required_panel_features(self, monkeypatch, tmp_path):
+        syms = ["AAA", "BBB", "CCC"]
+        ts = pd.date_range("2026-04-01", periods=80, freq="B", tz="UTC")
+        raw = pd.DataFrame({
+            "timestamp": ts,
+            "open": np.linspace(90.0, 100.0, len(ts)),
+            "high": np.linspace(91.0, 101.0, len(ts)),
+            "low": np.linspace(89.0, 99.0, len(ts)),
+            "close": np.linspace(90.5, 100.5, len(ts)),
+            "volume": np.full(len(ts), 2e7),
+        })
+        monkeypatch.setattr(live_trader, "_load_symbol_csv", lambda sym, root: raw.copy())
+
+        def fake_features(_df, *, symbol):
+            base = {col: 0.1 for col in live_trader.DAILY_FEATURE_COLS}
+            base.update({
+                "date": datetime(2026, 4, 23).date(),
+                "actual_close": {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0}[symbol],
+                "spread_bps": 5.0,
+                "dolvol_20d_log": np.log1p(1e9),
+                "ret_1d": {"AAA": 0.01, "BBB": 0.02, "CCC": 0.03}[symbol],
+                "ret_5d": {"AAA": 0.01, "BBB": 0.02, "CCC": 0.03}[symbol],
+                "vol_20d": {"AAA": 0.20, "BBB": 0.40, "CCC": 0.60}[symbol],
+                "rsi_14": {"AAA": 40.0, "BBB": 50.0, "CCC": 60.0}[symbol],
+            })
+            return pd.DataFrame([base])
+
+        monkeypatch.setattr(live_trader, "build_features_for_symbol", fake_features)
+
+        class _PanelFeatureModel:
+            feature_cols = (
+                list(live_trader.DAILY_FEATURE_COLS)
+                + list(live_trader.DAILY_RANK_FEATURE_COLS)
+                + list(live_trader.DAILY_DISPERSION_FEATURE_COLS)
+            )
+
+            def predict_scores(self, frame):
+                missing = [col for col in self.feature_cols if col not in frame.columns]
+                assert missing == []
+                assert frame["rank_ret_5d"].tolist() == pytest.approx([1 / 3, 2 / 3, 1.0])
+                assert "cs_iqr_ret5" in frame.columns
+                assert "cs_skew_ret5" in frame.columns
+                return pd.Series(frame["rank_ret_5d"].to_numpy(), index=frame.index)
+
+        scores = live_trader.score_all_symbols(
+            syms,
+            tmp_path,
+            _PanelFeatureModel(),  # type: ignore[arg-type]
+            min_dollar_vol=1e3,
+            now=datetime(2026, 4, 23, 13, 25, tzinfo=timezone.utc),
+        )
+
+        assert list(scores["symbol"]) == ["CCC", "BBB", "AAA"]
+        assert scores.iloc[0]["score"] == pytest.approx(1.0)
+
+    def test_score_all_symbols_panel_features_precede_inference_filters(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        syms = ["AAA", "BBB", "CCC"]
+        ts = pd.date_range("2026-04-01", periods=80, freq="B", tz="UTC")
+        raw = pd.DataFrame({
+            "timestamp": ts,
+            "open": np.linspace(90.0, 100.0, len(ts)),
+            "high": np.linspace(91.0, 101.0, len(ts)),
+            "low": np.linspace(89.0, 99.0, len(ts)),
+            "close": np.linspace(90.5, 100.5, len(ts)),
+            "volume": np.full(len(ts), 2e7),
+        })
+        monkeypatch.setattr(live_trader, "_load_symbol_csv", lambda sym, root: raw.copy())
+
+        def fake_features(_df, *, symbol):
+            base = {col: 0.1 for col in live_trader.DAILY_FEATURE_COLS}
+            base.update({
+                "date": datetime(2026, 4, 23).date(),
+                "symbol": symbol,
+                "actual_close": {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0}[symbol],
+                "spread_bps": 5.0,
+                "dolvol_20d_log": np.log1p({"AAA": 1e6, "BBB": 1e9, "CCC": 1e9}[symbol]),
+                "ret_1d": {"AAA": 0.01, "BBB": 0.02, "CCC": 0.03}[symbol],
+                "ret_5d": {"AAA": 0.01, "BBB": 0.02, "CCC": 0.03}[symbol],
+                "vol_20d": 0.30,
+                "rsi_14": 50.0,
+            })
+            return pd.DataFrame([base])
+
+        monkeypatch.setattr(live_trader, "build_features_for_symbol", fake_features)
+
+        class _RankModel:
+            feature_cols = list(live_trader.DAILY_FEATURE_COLS) + ["rank_ret_5d"]
+
+            def predict_scores(self, frame):
+                assert list(frame["symbol"]) == ["BBB", "CCC"]
+                # AAA is filtered out by min_dollar_vol after feature assembly,
+                # but it must still affect the rank feature to match sweeps.
+                assert frame["rank_ret_5d"].tolist() == pytest.approx([2 / 3, 1.0])
+                return pd.Series(frame["rank_ret_5d"].to_numpy(), index=frame.index)
+
+        scores = live_trader.score_all_symbols(
+            syms,
+            tmp_path,
+            _RankModel(),  # type: ignore[arg-type]
+            min_dollar_vol=5e7,
+            now=datetime(2026, 4, 23, 13, 25, tzinfo=timezone.utc),
+        )
+
+        assert list(scores["symbol"]) == ["CCC", "BBB"]
+        assert scores.iloc[0]["score"] == pytest.approx(1.0)
+
+    def test_score_all_symbols_applies_live_risk_rank_filters(self, monkeypatch, tmp_path):
+        syms = ["AAA", "BBB", "CCC"]
+        ts = pd.date_range("2026-04-01", periods=80, freq="B", tz="UTC")
+        raw = pd.DataFrame({
+            "timestamp": ts,
+            "open": np.linspace(90.0, 100.0, len(ts)),
+            "high": np.linspace(91.0, 101.0, len(ts)),
+            "low": np.linspace(89.0, 99.0, len(ts)),
+            "close": np.linspace(90.5, 100.5, len(ts)),
+            "volume": np.full(len(ts), 2e7),
+        })
+        monkeypatch.setattr(live_trader, "_load_symbol_csv", lambda sym, root: raw.copy())
+
+        def fake_features(_df, *, symbol):
+            base = {col: 0.1 for col in live_trader.DAILY_FEATURE_COLS}
+            base.update({
+                "actual_close": {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0}[symbol],
+                "spread_bps": 5.0,
+                "dolvol_20d_log": np.log1p(1e9),
+                "ret_5d": {"AAA": 0.01, "BBB": 0.03, "CCC": 0.02}[symbol],
+                "ret_20d": {"AAA": 0.30, "BBB": 0.10, "CCC": 0.20}[symbol],
+                "vol_20d": {"AAA": 0.20, "BBB": 0.40, "CCC": 0.70}[symbol],
+            })
+            return pd.DataFrame([base])
+
+        monkeypatch.setattr(live_trader, "build_features_for_symbol", fake_features)
+
+        class _Model:
+            def predict_scores(self, frame):
+                assert len(frame) == 1
+                return pd.Series([0.8], index=frame.index)
+
+        scores = live_trader.score_all_symbols(
+            syms,
+            tmp_path,
+            _Model(),  # type: ignore[arg-type]
+            min_dollar_vol=1e3,
+            min_vol_20d=0.10,
+            max_vol_20d=0.55,
+            max_ret_20d_rank_pct=0.80,
+            min_ret_5d_rank_pct=0.50,
+            now=datetime(2026, 4, 23, 13, 25, tzinfo=timezone.utc),
+        )
+
+        assert list(scores["symbol"]) == ["BBB"]
+        assert scores.iloc[0]["ret_20d"] == pytest.approx(0.10)
+        assert scores.iloc[0]["vol_20d"] == pytest.approx(0.40)
 
 
 class TestLiveTraderSizing:

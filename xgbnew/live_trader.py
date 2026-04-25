@@ -6,8 +6,8 @@ Strategy: each trading morning, score all stocks → buy top-N at open → sell 
 Session flow
 ------------
 1. Pre-open  (~9:25 ET): load yesterday's OHLCV, compute features, score 846 stocks
-2. At open   (9:30 ET): place market BUY orders for top-N candidates
-3. Near close (15:50 ET): place market SELL orders for all held positions
+2. At open   (9:30 ET): place priced BUY limits for top-N candidates
+3. Near close (15:50 ET): place priced SELL limits for all held positions
 4. Post-close: log results
 
 Safety
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
+import math
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -47,10 +47,18 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.dataset import build_daily_dataset, _load_symbol_csv
-from xgbnew.features import DAILY_FEATURE_COLS, build_features_for_symbol
+from xgbnew.dataset import _load_symbol_csv
+from xgbnew.features import (
+    DAILY_DISPERSION_FEATURE_COLS,
+    DAILY_FEATURE_COLS,
+    DAILY_RANK_FEATURE_COLS,
+    LIVE_SUPPORTED_FEATURE_COLS,
+    add_cross_sectional_dispersion,
+    add_cross_sectional_ranks,
+    build_features_for_symbol,
+)
+from xgbnew.backtest import _allocation_weights
 from xgbnew.model import XGBStockModel
-from xgbnew.backtest import BacktestConfig
 from xgbnew.trade_log import TradeLogger, slippage_bps
 
 logger = logging.getLogger(__name__)
@@ -61,6 +69,7 @@ MARKET_CLOSE = (15, 50)  # sell by 15:50 (10 min before 4pm close)
 DEFAULT_MODEL_PATH = REPO / "analysis/xgbnew_daily/live_model.pkl"
 DEFAULT_LIVE_BAR_BATCH_SIZE = 200
 MIN_FRACTIONAL_QTY = 0.0001
+CRYPTO_SYMBOL_COMPACT = {"BTCUSD", "ETHUSD", "SOLUSD", "DOGEUSD", "LTCUSD", "AVAXUSD"}
 
 
 # ── Alpaca client ─────────────────────────────────────────────────────────────
@@ -97,6 +106,15 @@ def _to_alpaca_symbol(sym: str) -> str:
     return sym.replace("-", ".") if "-" in sym else sym
 
 
+def _normalize_alpaca_symbol(sym: str) -> str:
+    return str(sym or "").upper().replace("/", "")
+
+
+def _is_crypto_position_symbol(sym: str) -> bool:
+    compact = _normalize_alpaca_symbol(sym)
+    return compact in CRYPTO_SYMBOL_COMPACT
+
+
 def _submit_market_order(client, *, symbol: str, qty: float, side: str):
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
@@ -109,6 +127,80 @@ def _submit_market_order(client, *, symbol: str, qty: float, side: str):
         time_in_force=TimeInForce.DAY,
     )
     return client.submit_order(req)
+
+
+def _submit_limit_order(client, *, symbol: str, qty: float, side: str, limit_price: float):
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+
+    side_val = OrderSide.BUY if side == "buy" else OrderSide.SELL
+    req = LimitOrderRequest(
+        symbol=_to_alpaca_symbol(symbol),
+        qty=round(float(qty), 4),
+        side=side_val,
+        time_in_force=TimeInForce.DAY,
+        limit_price=round(float(limit_price), 2),
+    )
+    return client.submit_order(req)
+
+
+def _latest_stock_bid_ask(symbol: str) -> tuple[float, float]:
+    """Best-effort latest stock quote for explicit-price order placement."""
+    try:
+        import alpaca_wrapper as aw
+
+        quote = aw.latest_data(_to_alpaca_symbol(symbol))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Quote lookup failed for %s: %s", symbol, exc)
+        return 0.0, 0.0
+
+    try:
+        bid_price = float(getattr(quote, "bid_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        bid_price = 0.0
+    try:
+        ask_price = float(getattr(quote, "ask_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        ask_price = 0.0
+    return bid_price, ask_price
+
+
+def _stock_limit_price_near_market(
+    symbol: str,
+    *,
+    side: str,
+    reference_price: float,
+    aggressiveness_bps: float,
+) -> float:
+    """Return an explicit stock limit price bounded near the touch.
+
+    Buys use the current ask plus a small bounded buffer so the order is
+    marketable but never unbounded like a true market order. Sells use the bid
+    minus the same style of bounded buffer.
+    """
+    try:
+        reference_price = float(reference_price or 0.0)
+    except (TypeError, ValueError):
+        reference_price = 0.0
+    bps = max(float(aggressiveness_bps or 0.0), 0.0) / 10_000.0
+    bid_price, ask_price = _latest_stock_bid_ask(symbol)
+    side_norm = str(side or "").strip().lower()
+
+    if side_norm == "buy":
+        if ask_price > 0:
+            return ask_price * (1.0 + bps)
+        if bid_price > 0:
+            return bid_price * (1.0 + bps)
+        return reference_price
+
+    if side_norm == "sell":
+        if bid_price > 0:
+            return max(bid_price * (1.0 - bps), 0.01)
+        if ask_price > 0:
+            return max(ask_price * (1.0 - bps), 0.01)
+        return reference_price
+
+    return reference_price
 
 
 def _poll_filled_avg_price(client, order_id: str, *, timeout_s: float = 30.0) -> float | None:
@@ -192,6 +284,8 @@ def _get_position_details(client) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for p in positions:
         sym = str(p.symbol)
+        if _is_crypto_position_symbol(sym):
+            continue
         try:
             cur = float(getattr(p, "current_price", 0.0) or 0.0)
         except (TypeError, ValueError):
@@ -210,6 +304,10 @@ def _get_position_details(client) -> dict[str, dict]:
 
 def _previous_trading_day(day: date) -> date:
     return (pd.Timestamp(day) - BDay(1)).date()
+
+
+def _session_date_et(now: datetime | None = None) -> date:
+    return (now or datetime.now(timezone.utc)).astimezone(ET).date()
 
 
 def _expected_latest_daily_bar_date(now: datetime | None = None) -> date:
@@ -345,6 +443,9 @@ def score_all_symbols(
     live_bars: dict[str, pd.DataFrame] | None = None,
     min_dollar_vol: float = 5e6,
     min_vol_20d: float = 0.0,
+    max_vol_20d: float = 0.0,
+    max_ret_20d_rank_pct: float = 1.0,
+    min_ret_5d_rank_pct: float = 0.0,
     now: datetime | None = None,
 ) -> pd.DataFrame:
     """Score all symbols for today's open-to-close trade.
@@ -363,7 +464,7 @@ def score_all_symbols(
     if not models:
         raise ValueError("score_all_symbols: no models provided")
 
-    rows = []
+    feature_rows = []
 
     for sym in symbols:
         local_df = _load_symbol_csv(sym, data_root)
@@ -381,46 +482,187 @@ def score_all_symbols(
         if len(last) == 0:
             continue
         last_row = last.iloc[[-1]].copy()
-
-        # Liquidity check
-        dolvol = float(last_row["dolvol_20d_log"].iloc[0])
-        if dolvol < np.log1p(min_dollar_vol):
-            continue
-
-        spread = float(last_row.get("spread_bps", pd.Series([25.0])).iloc[0])
-        if spread > 30.0:  # skip illiquid
-            continue
-
-        # Realised-vol floor — matches BacktestConfig.min_vol_20d.
-        # Drops dead-zone names LOBO flagged; strict-dominance at vol=0.10.
-        if min_vol_20d > 0.0 and "vol_20d" in last_row.columns:
-            v20 = float(last_row["vol_20d"].iloc[0])
-            if not np.isfinite(v20) or v20 < min_vol_20d:
-                continue
+        if "symbol" not in last_row.columns:
+            last_row["symbol"] = sym
 
         # Add Chronos2 zeros
         for col in ["chronos_oc_return", "chronos_cc_return",
                     "chronos_pred_range", "chronos_available"]:
             if col not in last_row.columns:
                 last_row[col] = 0.0
+        feature_rows.append(last_row)
 
-        seed_scores = [float(m.predict_scores(last_row).iloc[0]) for m in models]
-        score = float(np.mean(seed_scores)) if len(seed_scores) > 1 else seed_scores[0]
-        last_close = float(last_row["actual_close"].iloc[0])
-        rows.append({
-            "symbol": sym,
-            "score": score,
-            "per_seed_scores": seed_scores,
-            "spread_bps": spread,
-            "last_close": last_close,
-            "dolvol_20d_log": dolvol,
-        })
-
-    if not rows:
+    if not feature_rows:
         return pd.DataFrame()
+
+    # Build model-required panel features before applying inference-only
+    # filters. This matches sweeps: models score the full feature panel, then
+    # BacktestConfig filters the pick pool.
+    score_frame = pd.concat(feature_rows, ignore_index=True)
+    score_frame = _attach_live_model_required_features(score_frame, models)
+
+    meta_rows = []
+    keep_abs: list[bool] = []
+    for _, row in score_frame.iterrows():
+        dolvol = float(row["dolvol_20d_log"])
+        spread = (
+            float(row["spread_bps"])
+            if "spread_bps" in row.index and pd.notna(row["spread_bps"])
+            else 25.0
+        )
+        keep = dolvol >= np.log1p(min_dollar_vol) and spread <= 30.0
+        # Realised-vol floor/ceiling — matches BacktestConfig inference filters.
+        if keep and min_vol_20d > 0.0 and "vol_20d" in row.index:
+            v20 = float(row["vol_20d"])
+            keep = bool(np.isfinite(v20) and v20 >= min_vol_20d)
+        if keep and max_vol_20d > 0.0 and "vol_20d" in row.index:
+            v20 = float(row["vol_20d"])
+            keep = bool(np.isfinite(v20) and v20 <= max_vol_20d)
+        keep_abs.append(bool(keep))
+        if not keep:
+            continue
+        meta = {
+            "symbol": str(row["symbol"]),
+            "spread_bps": spread,
+            "last_close": float(row["actual_close"]),
+            "dolvol_20d_log": dolvol,
+            "ret_5d": float(row["ret_5d"]),
+        }
+        if "ret_20d" in row.index:
+            meta["ret_20d"] = float(row["ret_20d"])
+        if "vol_20d" in row.index:
+            meta["vol_20d"] = float(row["vol_20d"])
+        meta_rows.append(meta)
+
+    if not meta_rows:
+        return pd.DataFrame()
+    score_frame = score_frame.loc[keep_abs].reset_index(drop=True)
+
+    meta_df = pd.DataFrame(meta_rows)
+    keep = pd.Series(True, index=meta_df.index)
+    if float(max_ret_20d_rank_pct) < 1.0 and "ret_20d" in meta_df.columns:
+        r20 = pd.to_numeric(meta_df["ret_20d"], errors="coerce").rank(
+            pct=True, method="average"
+        )
+        keep &= r20 <= float(max_ret_20d_rank_pct)
+    if float(min_ret_5d_rank_pct) > 0.0 and "ret_5d" in meta_df.columns:
+        r5 = pd.to_numeric(meta_df["ret_5d"], errors="coerce").rank(
+            pct=True, method="average"
+        )
+        keep &= r5 >= float(min_ret_5d_rank_pct)
+    if not bool(keep.any()):
+        return pd.DataFrame()
+    if not bool(keep.all()):
+        keep_mask = keep.to_numpy(dtype=bool)
+        meta_rows = [
+            row for row, keep_row in zip(meta_rows, keep_mask.tolist(), strict=False)
+            if keep_row
+        ]
+        score_frame = score_frame.loc[keep_mask].reset_index(drop=True)
+
+    per_model_scores = [
+        pd.Series(m.predict_scores(score_frame), dtype="float64").to_numpy()
+        for m in models
+    ]
+    score_matrix = np.vstack(per_model_scores)
+    blended = np.mean(score_matrix, axis=0)
+
+    rows = []
+    for idx, meta in enumerate(meta_rows):
+        row = dict(meta)
+        row["score"] = float(blended[idx])
+        row["per_seed_scores"] = [float(score_matrix[j, idx]) for j in range(score_matrix.shape[0])]
+        rows.append(row)
 
     df_scores = pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
     return df_scores
+
+
+def _attach_live_model_required_features(
+    score_frame: pd.DataFrame,
+    models: list[XGBStockModel],
+) -> pd.DataFrame:
+    """Attach optional panel features needed by rank/dispersion-trained models."""
+    required_cols = {
+        col
+        for model in models
+        for col in (getattr(model, "feature_cols", None) or [])
+        if isinstance(col, str) and col
+    }
+    if not required_cols:
+        return score_frame
+    if required_cols.intersection(DAILY_RANK_FEATURE_COLS):
+        score_frame = add_cross_sectional_ranks(score_frame)
+    if required_cols.intersection(DAILY_DISPERSION_FEATURE_COLS):
+        score_frame = add_cross_sectional_dispersion(score_frame)
+    missing = sorted(col for col in required_cols if col not in score_frame.columns)
+    if missing:
+        raise ValueError(
+            "score_all_symbols: live feature frame missing model feature columns: "
+            f"{missing}"
+        )
+    return score_frame
+
+
+def _apply_cross_sectional_regime_gate(
+    scores_df: pd.DataFrame,
+    *,
+    regime_cs_iqr_max: float = 0.0,
+    regime_cs_skew_min: float = -1e9,
+    trade_logger: TradeLogger | None = None,
+) -> pd.DataFrame:
+    """Apply simulator-matched day-level ret_5d IQR/skew gates.
+
+    The backtest computes these stats after liquidity/spread/vol filters and
+    before min_score/top_n. ``score_all_symbols`` returns that same post-filter
+    live universe, so the gate here intentionally sits before conviction
+    filtering.
+    """
+    iqr_active = float(regime_cs_iqr_max) > 0.0
+    skew_active = float(regime_cs_skew_min) > -1e8
+    if not (iqr_active or skew_active) or len(scores_df) == 0:
+        return scores_df
+    if "ret_5d" not in scores_df.columns:
+        logger.warning("Cross-sectional regime gate requested but ret_5d is missing")
+        return scores_df
+
+    ret5 = pd.to_numeric(scores_df["ret_5d"], errors="coerce").dropna()
+    if len(ret5) == 0:
+        cs_iqr = 0.0
+        cs_skew = 0.0
+    else:
+        cs_iqr = float(ret5.quantile(0.75) - ret5.quantile(0.25))
+        cs_skew = float(ret5.skew())
+        if not np.isfinite(cs_skew):
+            cs_skew = 0.0
+
+    keep = True
+    if iqr_active:
+        keep = keep and cs_iqr <= float(regime_cs_iqr_max)
+    if skew_active:
+        keep = keep and cs_skew >= float(regime_cs_skew_min)
+
+    if trade_logger is not None:
+        trade_logger.log(
+            "regime_cs_gate",
+            cs_iqr_ret5=cs_iqr,
+            cs_skew_ret5=cs_skew,
+            regime_cs_iqr_max=float(regime_cs_iqr_max),
+            regime_cs_skew_min=float(regime_cs_skew_min),
+            kept=bool(keep),
+            n_total=int(len(scores_df)),
+        )
+
+    if keep:
+        return scores_df
+
+    print(
+        "[xgb-live] Cross-sectional regime gate closed: "
+        f"cs_iqr_ret5={cs_iqr:.4f} max={float(regime_cs_iqr_max):.4f}, "
+        f"cs_skew_ret5={cs_skew:.4f} min={float(regime_cs_skew_min):.4f}",
+        flush=True,
+    )
+    return scores_df.iloc[0:0].copy()
 
 
 # ── Main trading loop ─────────────────────────────────────────────────────────
@@ -447,6 +689,56 @@ def _target_buy_qty(*, buy_notional: float, price: float) -> float:
     return max(qty, MIN_FRACTIONAL_QTY)
 
 
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> argparse.Namespace:
+    def finite(name: str) -> float:
+        value = float(getattr(args, name))
+        if not math.isfinite(value):
+            parser.error(f"--{name.replace('_', '-')} must be finite")
+        return value
+
+    if int(args.top_n) < 1:
+        parser.error("--top-n must be >= 1")
+    if int(args.min_picks) < 0:
+        parser.error("--min-picks must be >= 0")
+    if finite("allocation") <= 0.0:
+        parser.error("--allocation must be > 0")
+    if finite("allocation_temp") <= 0.0:
+        parser.error("--allocation-temp must be > 0")
+    min_score = finite("min_score")
+    if not 0.0 <= min_score <= 1.0:
+        parser.error("--min-score must be between 0 and 1")
+    for name in (
+        "commission_bps",
+        "min_dollar_vol",
+        "min_vol_20d",
+        "max_vol_20d",
+        "regime_cs_iqr_max",
+        "crypto_max_gross",
+    ):
+        if finite(name) < 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    for name in ("max_ret_20d_rank_pct", "min_ret_5d_rank_pct"):
+        value = finite(name)
+        if not 0.0 <= value <= 1.0:
+            parser.error(f"--{name.replace('_', '-')} must be between 0 and 1")
+    finite("regime_cs_skew_min")
+    if finite("no_picks_fallback_alloc") < 0.0:
+        parser.error("--no-picks-fallback-alloc must be >= 0")
+    lo = finite("conviction_alloc_low")
+    hi = finite("conviction_alloc_high")
+    if hi <= lo:
+        parser.error("--conviction-alloc-high must be > --conviction-alloc-low")
+    if int(args.crypto_poll_seconds) < 1:
+        parser.error("--crypto-poll-seconds must be >= 1")
+    if finite("eod_max_gross_leverage") <= 0.0:
+        parser.error("--eod-max-gross-leverage must be > 0")
+    if int(args.eod_deleverage_window_minutes) < 1:
+        parser.error("--eod-deleverage-window-minutes must be >= 1")
+    if int(args.eod_force_market_minutes) < 0:
+        parser.error("--eod-force-market-minutes must be >= 0")
+    return args
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -460,8 +752,21 @@ def parse_args(argv=None):
                         "Takes precedence over --model-path when set.")
     p.add_argument("--top-n",        type=int,   default=2,
                    help="Number of stocks to buy per day")
+    p.add_argument("--min-picks",    type=int,   default=0,
+                   help="Aggressive packing floor. When >0, fill at least "
+                        "this many slots from the best-ranked candidates even "
+                        "if their score is below --min-score. Bounded by "
+                        "--top-n. 0 (default) preserves confidence-gated "
+                        "behavior.")
     p.add_argument("--allocation",   type=float, default=0.25,
                    help="Fraction of portfolio to deploy (0.25 = 25%% per pick, shared)")
+    p.add_argument("--allocation-mode", type=str, default="equal",
+                   choices=("equal", "score_norm", "softmax"),
+                   help="How to split --allocation across selected picks. "
+                        "Matches BacktestConfig.allocation_mode.")
+    p.add_argument("--allocation-temp", type=float, default=1.0,
+                   help="Softmax temperature when --allocation-mode=softmax. "
+                        "Ignored by equal and score_norm.")
     p.add_argument("--min-score",    type=float, default=0.0,
                    help="Skip pick if blended predict_proba < min_score. "
                         "0.0 (default) = no filter. 0.55-0.70 gates on conviction. "
@@ -472,6 +777,22 @@ def parse_args(argv=None):
                    help="Realised 20d annualised vol floor (e.g. 0.10). 0 "
                         "disables. Drops dead-zone symbols that LOBO flagged; "
                         "strict-dominance at 0.10 (deploy + stress36x).")
+    p.add_argument("--max-vol-20d", type=float, default=0.0,
+                   help="Realised 20d annualised vol cap. 0 disables. "
+                        "Matches BacktestConfig.max_vol_20d.")
+    p.add_argument("--max-ret-20d-rank-pct", type=float, default=1.0,
+                   help="Drop names whose ret_20d percentile rank is above "
+                        "this threshold. 1.0 disables.")
+    p.add_argument("--min-ret-5d-rank-pct", type=float, default=0.0,
+                   help="Drop names whose ret_5d percentile rank is below "
+                        "this threshold. 0.0 disables.")
+    p.add_argument("--regime-cs-iqr-max", type=float, default=0.0,
+                   help="Cross-sectional ret_5d IQR day gate. 0 disables. "
+                        "Matches BacktestConfig.regime_cs_iqr_max.")
+    p.add_argument("--regime-cs-skew-min", type=float, default=-1e9,
+                   help="Cross-sectional ret_5d skew day gate. Values above "
+                        "-1e8 enable the gate. Matches "
+                        "BacktestConfig.regime_cs_skew_min.")
     p.add_argument("--hold-through", action="store_true",
                    help="If tomorrow's picks match today's held positions, skip the "
                         "sell-at-close + buy-at-open round-trip. Rotation now happens "
@@ -503,6 +824,15 @@ def parse_args(argv=None):
                    help="Fraction of --allocation to use for the no-picks "
                         "fallback order. 0.5 = half the deployed leverage. "
                         "Ignored when --no-picks-fallback is empty.")
+    p.add_argument("--conviction-scaled-alloc", action="store_true",
+                   help="Scale total stock exposure by top score using the "
+                        "same ramp as BacktestConfig.conviction_scaled_alloc.")
+    p.add_argument("--conviction-alloc-low", type=float, default=0.55,
+                   help="Top-score ramp value that maps to 0%% exposure when "
+                        "--conviction-scaled-alloc is enabled.")
+    p.add_argument("--conviction-alloc-high", type=float, default=0.85,
+                   help="Top-score ramp value that maps to 100%% exposure when "
+                        "--conviction-scaled-alloc is enabled.")
     p.add_argument("--loop",         action="store_true",
                    help="Keep running (wait for next market open after each session)")
     # Embedded crypto weekend trader (single-leader-process architecture —
@@ -518,8 +848,20 @@ def parse_args(argv=None):
     p.add_argument("--crypto-max-gross", type=float, default=0.5,
                    help="Crypto total gross exposure as fraction of equity "
                         "(actual cap is min(cash - $50, equity * this)).")
+    p.add_argument("--eod-deleverage", action="store_true",
+                   help="Run the embedded end-of-day equity deleverage tick "
+                        "inside this single Alpaca writer process.")
+    p.add_argument("--eod-max-gross-leverage", type=float, default=2.0,
+                   help="Target max gross equity leverage before close "
+                        "(default 2.0x). Crypto positions are ignored.")
+    p.add_argument("--eod-deleverage-window-minutes", type=int, default=60,
+                   help="Start deleveraging this many minutes before the "
+                        "Alpaca stock market close.")
+    p.add_argument("--eod-force-market-minutes", type=int, default=5,
+                   help="Within this many minutes of close, use more aggressive "
+                        "near-market limit prices instead of resting passively.")
     p.add_argument("--verbose", "-v", action="store_true")
-    return p.parse_args(argv)
+    return _validate_args(p, p.parse_args(argv))
 
 
 def _load_symbols(path: Path) -> list[str]:
@@ -548,6 +890,9 @@ def _score_and_pick(
         symbols, data_root, model, live_bars,
         min_dollar_vol=args.min_dollar_vol,
         min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
+        max_vol_20d=float(getattr(args, "max_vol_20d", 0.0) or 0.0),
+        max_ret_20d_rank_pct=float(getattr(args, "max_ret_20d_rank_pct", 1.0)),
+        min_ret_5d_rank_pct=float(getattr(args, "min_ret_5d_rank_pct", 0.0) or 0.0),
     )
 
     if trade_logger is not None:
@@ -561,17 +906,40 @@ def _score_and_pick(
     if len(scores_df) == 0:
         return scores_df, scores_df
 
+    scores_df = _apply_cross_sectional_regime_gate(
+        scores_df,
+        regime_cs_iqr_max=float(getattr(args, "regime_cs_iqr_max", 0.0) or 0.0),
+        regime_cs_skew_min=float(getattr(args, "regime_cs_skew_min", -1e9)),
+        trade_logger=trade_logger,
+    )
+    if len(scores_df) == 0:
+        return scores_df, scores_df
+
     min_score = float(getattr(args, "min_score", 0.0) or 0.0)
     if min_score > 0.0:
         filtered = scores_df[scores_df["score"] >= min_score]
+        min_pick_floor = min(
+            max(int(getattr(args, "min_picks", 0) or 0), 0),
+            int(args.top_n),
+        )
+        forced_low_conf = 0
+        if len(filtered) < min_pick_floor:
+            need = min_pick_floor - len(filtered)
+            supplement = scores_df.loc[~scores_df.index.isin(filtered.index)].head(need)
+            forced_low_conf = int(len(supplement))
+            if forced_low_conf:
+                filtered = pd.concat([filtered, supplement], ignore_index=False)
         print(f"[xgb-live] Conviction filter min_score={min_score:.2f}: "
               f"{len(filtered)}/{len(scores_df)} candidates pass "
-              f"(top score={scores_df['score'].iloc[0]:.4f})", flush=True)
+              f"(top score={scores_df['score'].iloc[0]:.4f}, "
+              f"forced_low_conf={forced_low_conf})", flush=True)
         if trade_logger is not None:
             trade_logger.log(
                 "filtered",
                 min_score=min_score,
+                min_picks=min_pick_floor,
                 n_pass=int(len(filtered)),
+                n_forced_low_confidence=forced_low_conf,
                 n_total=int(len(scores_df)),
                 top_score=float(scores_df["score"].iloc[0]),
             )
@@ -602,10 +970,25 @@ def _emit_session_start(
         paper=paper,
         dry_run=bool(args.dry_run),
         top_n=int(args.top_n),
+        min_picks=int(getattr(args, "min_picks", 0) or 0),
         allocation=float(args.allocation),
+        allocation_mode=str(getattr(args, "allocation_mode", "equal") or "equal"),
+        allocation_temp=float(getattr(args, "allocation_temp", 1.0) or 1.0),
+        conviction_scaled_alloc=bool(getattr(args, "conviction_scaled_alloc", False)),
+        conviction_alloc_low=float(
+            0.55 if getattr(args, "conviction_alloc_low", None) is None
+            else getattr(args, "conviction_alloc_low")
+        ),
+        conviction_alloc_high=float(
+            0.85 if getattr(args, "conviction_alloc_high", None) is None
+            else getattr(args, "conviction_alloc_high")
+        ),
         min_score=float(getattr(args, "min_score", 0.0) or 0.0),
         min_dollar_vol=float(args.min_dollar_vol),
         min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
+        max_vol_20d=float(getattr(args, "max_vol_20d", 0.0) or 0.0),
+        max_ret_20d_rank_pct=float(getattr(args, "max_ret_20d_rank_pct", 1.0)),
+        min_ret_5d_rank_pct=float(getattr(args, "min_ret_5d_rank_pct", 0.0) or 0.0),
         equity_pre=equity_pre,
     )
     return equity_pre
@@ -641,12 +1024,77 @@ def _announce_picks(
                  spread_bps=float(row["spread_bps"]))
 
 
+def _conviction_allocation_scale(
+    picks: pd.DataFrame,
+    all_scores: pd.DataFrame,
+    args: argparse.Namespace,
+    *,
+    trade_logger: TradeLogger | None = None,
+) -> tuple[pd.DataFrame, float]:
+    """Apply simulator-matched top-score allocation scaling."""
+    if not bool(getattr(args, "conviction_scaled_alloc", False)):
+        return picks, 1.0
+
+    if len(picks) > 0:
+        top_score = float(pd.to_numeric(picks["score"], errors="coerce").iloc[0])
+    elif len(all_scores) > 0 and "score" in all_scores.columns:
+        top_score = float(pd.to_numeric(all_scores["score"], errors="coerce").max())
+    else:
+        top_score = 0.0
+    if not np.isfinite(top_score):
+        top_score = 0.0
+
+    lo_raw = getattr(args, "conviction_alloc_low", None)
+    hi_raw = getattr(args, "conviction_alloc_high", None)
+    lo = float(0.55 if lo_raw is None else lo_raw)
+    hi = float(0.85 if hi_raw is None else hi_raw)
+    span = max(hi - lo, 1e-9)
+    scale = float(np.clip((top_score - lo) / span, 0.0, 1.0))
+
+    if trade_logger is not None:
+        trade_logger.log(
+            "conviction_scaled_alloc",
+            top_score=top_score,
+            scale=scale,
+            conviction_alloc_low=lo,
+            conviction_alloc_high=hi,
+            n_picks_before=int(len(picks)),
+        )
+    if scale <= 0.0 and len(picks) > 0:
+        return picks.iloc[0:0].copy(), scale
+    return picks, scale
+
+
+def _buy_notional_by_symbol(
+    picks: pd.DataFrame,
+    *,
+    total_notional: float,
+    allocation_mode: str = "equal",
+    allocation_temp: float = 1.0,
+) -> dict[str, float]:
+    """Allocate total BUY notional across picks using simulator weights."""
+    if len(picks) == 0 or not np.isfinite(total_notional) or total_notional <= 0:
+        return {}
+    scores = pd.to_numeric(picks["score"], errors="coerce").fillna(0.0).to_numpy()
+    weights = _allocation_weights(
+        scores,
+        mode=str(allocation_mode or "equal"),
+        temperature=float(allocation_temp or 1.0),
+    )
+    out: dict[str, float] = {}
+    for weight, (_, row) in zip(weights, picks.iterrows(), strict=False):
+        sym = str(row["symbol"])
+        out[sym] = out.get(sym, 0.0) + float(total_notional) * float(weight)
+    return out
+
+
 def _execute_buys(
     client,
     picks: pd.DataFrame,
-    buy_notional: float,
+    buy_notional: float | None,
     tlog: TradeLogger,
     *,
+    notional_by_symbol: dict[str, float] | None = None,
     target_syms: set[str] | None = None,
 ) -> None:
     """Submit BUY orders for each pick (optionally restricted to ``target_syms``).
@@ -661,22 +1109,48 @@ def _execute_buys(
         sym = str(row["symbol"])
         if target_syms is not None and sym not in target_syms:
             continue
+        row_notional = (
+            float(notional_by_symbol.get(sym, 0.0))
+            if notional_by_symbol is not None
+            else float(buy_notional or 0.0)
+        )
         price = float(row["last_close"])
         if price <= 0:
             logger.warning("Skipping BUY %s — invalid last_close %s", sym, price)
             continue
-        qty = _target_buy_qty(buy_notional=buy_notional, price=price)
+        qty = _target_buy_qty(buy_notional=row_notional, price=price)
         if qty <= 0:
             logger.warning("Skipping BUY %s — invalid target qty for price=%s "
-                           "notional=%s", sym, price, buy_notional)
+                           "notional=%s", sym, price, row_notional)
+            continue
+        limit_price = _stock_limit_price_near_market(
+            sym,
+            side="buy",
+            reference_price=price,
+            aggressiveness_bps=15.0,
+        )
+        if limit_price <= 0:
+            logger.warning("Skipping BUY %s — invalid limit price %s", sym, limit_price)
             continue
         try:
-            order = _submit_market_order(client, symbol=sym, qty=qty, side="buy")
+            order = _submit_limit_order(
+                client,
+                symbol=sym,
+                qty=qty,
+                side="buy",
+                limit_price=limit_price,
+            )
             order_id = str(getattr(order, "id", "") or "")
-            print(f"  BUY  {sym:<8}  qty={qty:.2f}  ~${qty*price:,.0f}  "
-                  f"order_id={order_id or '?'}", flush=True)
+            print(
+                f"  BUY  {sym:<8}  qty={qty:.2f}  limit=${limit_price:.2f}  "
+                f"~${qty*price:,.0f}  order_id={order_id or '?'}",
+                flush=True,
+            )
             tlog.log("buy_submitted", symbol=sym, qty=float(qty),
-                     expected_price=float(price), order_id=order_id)
+                     target_notional=float(row_notional),
+                     expected_price=float(limit_price),
+                     reference_price=float(price),
+                     order_id=order_id)
             fill_px = _poll_filled_avg_price(client, order_id) if order_id else None
             recorded = fill_px if (fill_px and fill_px > 0) else price
             try:
@@ -723,17 +1197,220 @@ def _execute_sells(
             continue
         # Guard raises RuntimeError on death-spiral sells → propagate (crash).
         guard_sell_against_death_spiral(sym, "sell", float(current_price))
+        limit_price = _stock_limit_price_near_market(
+            sym,
+            side="sell",
+            reference_price=float(current_price),
+            aggressiveness_bps=15.0,
+        )
+        if limit_price <= 0:
+            logger.error("SELL skipped for %s — invalid limit price %s", sym, limit_price)
+            continue
         try:
-            order = _submit_market_order(client, symbol=sym, qty=abs(qty),
-                                         side="sell")
+            order = _submit_limit_order(
+                client,
+                symbol=sym,
+                qty=abs(qty),
+                side="sell",
+                limit_price=limit_price,
+            )
             order_id = str(getattr(order, "id", "") or "")
-            print(f"  SELL {sym:<8}  qty={qty:.2f}  px={current_price:.2f}  "
-                  f"order_id={order_id or '?'}", flush=True)
+            print(
+                f"  SELL {sym:<8}  qty={qty:.2f}  limit=${limit_price:.2f}  "
+                f"px={current_price:.2f}  order_id={order_id or '?'}",
+                flush=True,
+            )
             tlog.log("sell_submitted", symbol=sym, qty=float(qty),
-                     expected_price=float(current_price), order_id=order_id)
+                     expected_price=float(limit_price),
+                     reference_price=float(current_price),
+                     order_id=order_id)
         except Exception as exc:
             logger.error("SELL failed for %s: %s", sym, exc)
             tlog.log("sell_failed", symbol=sym, error=str(exc))
+
+
+def _position_market_value(position) -> float:
+    try:
+        return abs(float(getattr(position, "market_value", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _position_qty(position) -> float:
+    try:
+        return abs(float(getattr(position, "qty", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _position_current_price(position) -> float:
+    for attr in ("current_price", "market_price", "avg_entry_price"):
+        try:
+            value = float(getattr(position, attr, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    qty = _position_qty(position)
+    if qty > 0:
+        return _position_market_value(position) / qty
+    return 0.0
+
+
+def _position_close_side(position) -> str:
+    side = str(getattr(position, "side", "long") or "long").lower()
+    return "buy" if "short" in side else "sell"
+
+
+def _equity_positions_for_deleverage(client) -> list:
+    positions = []
+    for pos in client.get_all_positions():
+        sym = str(getattr(pos, "symbol", "") or "")
+        if not sym or _is_crypto_position_symbol(sym):
+            continue
+        if _position_qty(pos) <= 0 or _position_market_value(pos) <= 0:
+            continue
+        positions.append(pos)
+    return positions
+
+
+def _minutes_to_market_close(client) -> float | None:
+    try:
+        clock = client.get_clock()
+    except Exception as exc:
+        logger.warning("EOD deleverage clock query failed: %s", exc)
+        return None
+    if not bool(getattr(clock, "is_open", False)):
+        return None
+    next_close = getattr(clock, "next_close", None)
+    if next_close is None:
+        return None
+    if getattr(next_close, "tzinfo", None) is None:
+        next_close = next_close.replace(tzinfo=timezone.utc)
+    else:
+        next_close = next_close.astimezone(timezone.utc)
+    return max((next_close - datetime.now(timezone.utc)).total_seconds() / 60.0, 0.0)
+
+
+def _eod_deleverage_tick(client, args, *, now: datetime | None = None) -> dict:
+    """Reduce equity gross exposure toward the configured EOD leverage cap.
+
+    This runs inside the xgb live process, using the same TradingClient that
+    owns the Alpaca singleton lock. It only sells/buys-to-cover excess equity
+    exposure; crypto positions are skipped so the weekend sleeve is not
+    accidentally flattened.
+    """
+    if not bool(getattr(args, "eod_deleverage", False)) or client is None:
+        return {"action": "disabled"}
+
+    mtc = _minutes_to_market_close(client)
+    window = float(getattr(args, "eod_deleverage_window_minutes", 60.0) or 60.0)
+    if mtc is None:
+        return {"action": "closed"}
+    if mtc > window:
+        return {"action": "outside_window", "minutes_to_close": mtc}
+
+    try:
+        account = client.get_account()
+        equity = float(getattr(account, "equity", 0.0) or 0.0)
+    except Exception as exc:
+        logger.warning("EOD deleverage account query failed: %s", exc)
+        return {"action": "account_error", "error": str(exc)}
+    if equity <= 0:
+        return {"action": "bad_equity", "equity": equity}
+
+    try:
+        positions = _equity_positions_for_deleverage(client)
+    except Exception as exc:
+        logger.warning("EOD deleverage position query failed: %s", exc)
+        return {"action": "positions_error", "error": str(exc)}
+
+    exposure = sum(_position_market_value(p) for p in positions)
+    target_lev = float(getattr(args, "eod_max_gross_leverage", 2.0) or 2.0)
+    target_exposure = max(0.0, equity * target_lev)
+    if exposure <= target_exposure:
+        return {
+            "action": "already_ok",
+            "minutes_to_close": mtc,
+            "equity": equity,
+            "exposure": exposure,
+            "leverage": exposure / equity,
+            "target_leverage": target_lev,
+        }
+
+    excess = exposure - target_exposure
+    force_minutes = float(getattr(args, "eod_force_market_minutes", 5.0) or 5.0)
+    force_window = mtc <= force_minutes
+    span = max(window - force_minutes, 1.0)
+    progress = 1.0 if force_window else min(max((window - mtc) / span, 0.0), 1.0)
+    progressive_excess = excess if force_window else max(excess * progress, min(excess, 500.0))
+
+    remaining = progressive_excess
+    submitted = 0
+    errors: list[str] = []
+    ordered = sorted(positions, key=_position_market_value, reverse=True)
+    for pos in ordered:
+        if remaining <= 25.0:
+            break
+        sym = str(getattr(pos, "symbol", "") or "")
+        qty_total = _position_qty(pos)
+        px = _position_current_price(pos)
+        if not sym or qty_total <= 0 or px <= 0:
+            continue
+        value = _position_market_value(pos)
+        reduce_value = min(value, remaining)
+        qty = math.floor((reduce_value / px) * 10_000) / 10_000
+        qty = min(qty, qty_total)
+        if qty <= 0:
+            continue
+        side = _position_close_side(pos)
+        try:
+            aggressive_bps = 25.0 if force_window else (5.0 + 20.0 * progress)
+            limit_price = _stock_limit_price_near_market(
+                sym,
+                side=side,
+                reference_price=px,
+                aggressiveness_bps=aggressive_bps,
+            )
+            order = _submit_limit_order(
+                client, symbol=sym, qty=qty, side=side, limit_price=limit_price
+            )
+            submitted += 1
+            remaining -= qty * px
+            print(
+                "[xgb-live/eod] deleverage "
+                f"{side.upper()} {sym} qty={qty:.4f} px={px:.2f} "
+                f"limit=${limit_price:.2f} mode=limit "
+                f"order_id={getattr(order, 'id', '?')}",
+                flush=True,
+            )
+        except Exception as exc:
+            msg = f"{sym}: {exc}"
+            logger.error("EOD deleverage order failed: %s", msg)
+            errors.append(msg)
+
+    status = {
+        "action": "submitted" if submitted else "no_actionable_orders",
+        "submitted": submitted,
+        "errors": errors,
+        "minutes_to_close": mtc,
+        "equity": equity,
+        "exposure": exposure,
+        "leverage": exposure / equity,
+        "target_leverage": target_lev,
+        "target_exposure": target_exposure,
+        "requested_reduction": progressive_excess,
+        "use_market": False,
+        "force_window": force_window,
+    }
+    print(f"[xgb-live/eod] {json_dumps_compact(status)}", flush=True)
+    return status
+
+
+def json_dumps_compact(obj: object) -> str:
+    import json
+
+    return json.dumps(obj, separators=(",", ":"), default=str)
 
 
 def run_session_hold_through(
@@ -758,7 +1435,7 @@ def run_session_hold_through(
       7. Skip the 15:50 sell entirely. Positions carry overnight; next session
          decides whether to hold or rotate.
     """
-    today_str = date.today().isoformat()
+    today_str = _session_date_et().isoformat()
     paper = not args.live
     print(f"\n[xgb-live/hold-through] Session {today_str}  paper={paper}  "
           f"dry_run={args.dry_run}", flush=True)
@@ -776,6 +1453,9 @@ def run_session_hold_through(
 
     picks, _all_scores = _score_and_pick(symbols, data_root, model, args,
                                          trade_logger=tlog)
+    picks, conviction_scale = _conviction_allocation_scale(
+        picks, _all_scores, args, trade_logger=tlog
+    )
     if len(picks) == 0:
         print(f"[xgb-live] No picks today — holding current positions (if any).",
               flush=True)
@@ -814,10 +1494,24 @@ def run_session_hold_through(
 
     account = _get_account(client)
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
-    buy_notional = portfolio_value * args.allocation / args.top_n
-    print(f"[xgb-live/hold-through] BUY notional=${buy_notional:,.0f}/pick "
+    total_notional = portfolio_value * float(args.allocation) * conviction_scale
+    notionals = _buy_notional_by_symbol(
+        picks,
+        total_notional=total_notional,
+        allocation_mode=getattr(args, "allocation_mode", "equal"),
+        allocation_temp=getattr(args, "allocation_temp", 1.0),
+    )
+    print(f"[xgb-live/hold-through] BUY total=${total_notional:,.0f} "
+          f"mode={getattr(args, 'allocation_mode', 'equal')} "
           f"(portfolio=${portfolio_value:,.0f})", flush=True)
-    _execute_buys(client, picks, buy_notional, tlog, target_syms=to_buy)
+    _execute_buys(
+        client,
+        picks,
+        None,
+        tlog,
+        notional_by_symbol=notionals,
+        target_syms=to_buy,
+    )
 
     print(f"[xgb-live/hold-through] Rotation complete: "
           f"sold {len(to_sell)}, bought {len(to_buy)}, held across "
@@ -859,7 +1553,7 @@ def run_session(
     if getattr(args, "hold_through", False):
         return run_session_hold_through(symbols, data_root, model, client, args)
 
-    today_str = date.today().isoformat()
+    today_str = _session_date_et().isoformat()
     paper = not args.live
     print(f"\n[xgb-live] Session {today_str}  paper={paper}  "
           f"dry_run={args.dry_run}", flush=True)
@@ -883,6 +1577,9 @@ def run_session(
         print("[xgb-live] ERROR: No scoreable symbols today.", file=sys.stderr)
         tlog.log("no_candidates")
         return
+    picks, conviction_scale = _conviction_allocation_scale(
+        picks, all_scores, args, trade_logger=tlog
+    )
     # Fallback sizing — only used when we fall through to no_picks.
     fb_sym = str(getattr(args, "no_picks_fallback", "") or "").strip().upper()
     fb_alloc_frac = float(getattr(args, "no_picks_fallback_alloc", 0.0) or 0.0)
@@ -934,10 +1631,17 @@ def run_session(
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
     # Fallback path scales allocation by fb_alloc_frac.
     alloc = float(args.allocation) * (fb_alloc_frac if used_fallback else 1.0)
-    buy_notional = portfolio_value * alloc / args.top_n
+    total_notional = portfolio_value * alloc * (1.0 if used_fallback else conviction_scale)
+    notionals = _buy_notional_by_symbol(
+        picks,
+        total_notional=total_notional,
+        allocation_mode=getattr(args, "allocation_mode", "equal"),
+        allocation_temp=getattr(args, "allocation_temp", 1.0),
+    )
     print(f"\n[xgb-live] Placing BUY orders  portfolio=${portfolio_value:,.0f}  "
-          f"alloc={alloc:.2%}  notional/pick=${buy_notional:,.0f}", flush=True)
-    _execute_buys(client, picks, buy_notional, tlog)
+          f"alloc={alloc:.2%}  total=${total_notional:,.0f}  "
+          f"mode={getattr(args, 'allocation_mode', 'equal')}", flush=True)
+    _execute_buys(client, picks, None, tlog, notional_by_symbol=notionals)
 
     print(f"\n[xgb-live] Waiting for {MARKET_CLOSE[0]:02d}:{MARKET_CLOSE[1]:02d} "
           f"ET to sell...", flush=True)
@@ -961,6 +1665,13 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
     """
     if args.model_paths.strip():
         paths = [Path(p.strip()) for p in args.model_paths.split(",") if p.strip()]
+        if not paths:
+            print("ERROR: --model-paths did not contain any model paths", file=sys.stderr)
+            return None
+        normalized_paths = [path.expanduser().resolve(strict=False) for path in paths]
+        if len(set(normalized_paths)) != len(normalized_paths):
+            print("ERROR: --model-paths contains duplicate model paths", file=sys.stderr)
+            return None
         for mp in paths:
             if not mp.exists():
                 print(f"ERROR: Ensemble model not found at {mp}", file=sys.stderr)
@@ -968,14 +1679,75 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
         print(f"[xgb-live] Loading ensemble of {len(paths)} models", flush=True)
         for mp in paths:
             print(f"[xgb-live]   - {mp}", flush=True)
-        return [XGBStockModel.load(mp) for mp in paths]
+        try:
+            models = [XGBStockModel.load(mp) for mp in paths]
+        except Exception as exc:
+            print(f"ERROR: Failed to load ensemble model: {exc}", file=sys.stderr)
+            return None
+        if not _validate_ensemble_feature_contract(models, paths):
+            return None
+        return models
     if not args.model_path.exists():
         print(f"ERROR: Model not found at {args.model_path}", file=sys.stderr)
         print("Run train_alltrain.py to create it, or set --model-paths for "
               "an ensemble.", file=sys.stderr)
         return None
     print(f"[xgb-live] Loading model from {args.model_path}", flush=True)
-    return XGBStockModel.load(args.model_path)
+    try:
+        model = XGBStockModel.load(args.model_path)
+    except Exception as exc:
+        print(f"ERROR: Failed to load model: {exc}", file=sys.stderr)
+        return None
+    if _validated_model_features(model, args.model_path) is None:
+        return None
+    return model
+
+
+def _validated_model_features(model: XGBStockModel, path: Path) -> tuple[str, ...] | None:
+    raw_features = getattr(model, "feature_cols", None)
+    if (
+        not isinstance(raw_features, (list, tuple))
+        or not raw_features
+        or not all(isinstance(col, str) and col for col in raw_features)
+    ):
+        print(f"ERROR: Model has invalid feature_cols: {path}", file=sys.stderr)
+        return None
+    features = tuple(raw_features)
+    unsupported = sorted(set(features) - LIVE_SUPPORTED_FEATURE_COLS)
+    if unsupported:
+        print(
+            "ERROR: Model feature_cols contain unsupported live features: "
+            f"{path}: {unsupported}",
+            file=sys.stderr,
+        )
+        return None
+    return features
+
+
+def _validate_ensemble_feature_contract(
+    models: list[XGBStockModel],
+    paths: list[Path],
+) -> bool:
+    """Fail closed if ensemble members were trained on different features."""
+    first_features: tuple[str, ...] | None = None
+    first_path: Path | None = None
+    for model, path in zip(models, paths, strict=True):
+        features = _validated_model_features(model, path)
+        if features is None:
+            return False
+        if first_features is None:
+            first_features = features
+            first_path = path
+            continue
+        if features != first_features:
+            print(
+                "ERROR: Ensemble feature_cols mismatch: "
+                f"{path} has {len(features)} features but {first_path} has "
+                f"{len(first_features)}",
+                file=sys.stderr,
+            )
+            return False
+    return True
 
 
 def _next_session_open_et(now_et: datetime) -> datetime:
@@ -1008,8 +1780,9 @@ def _sleep_until_next_session(client=None, args=None) -> None:
     now_et = datetime.now(ET)
     next_open = _next_session_open_et(now_et)
     crypto_on = bool(args and getattr(args, "crypto_weekend", False) and client is not None)
+    eod_on = bool(args and getattr(args, "eod_deleverage", False) and client is not None)
 
-    if not crypto_on:
+    if not crypto_on and not eod_on:
         wait_secs = (next_open - datetime.now(ET)).total_seconds()
         if wait_secs > 0:
             print(f"[xgb-live] Next session at {next_open.isoformat()}  "
@@ -1017,21 +1790,30 @@ def _sleep_until_next_session(client=None, args=None) -> None:
             time.sleep(wait_secs)
         return
 
-    from crypto_weekend import session as cws
+    cws = None
+    if crypto_on:
+        from crypto_weekend import session as cws
     poll = max(30, int(getattr(args, "crypto_poll_seconds", 300)))
     max_gross = float(getattr(args, "crypto_max_gross", 0.5))
     dry_run = bool(getattr(args, "dry_run", False))
     print(f"[xgb-live] Next session at {next_open.isoformat()}  "
-          f"(crypto-aware poll every {poll}s, max_gross={max_gross:.2f})",
+          f"(service poll every {poll}s, crypto={crypto_on}, "
+          f"eod_deleverage={eod_on}, crypto_max_gross={max_gross:.2f})",
           flush=True)
     while True:
         remaining = (next_open - datetime.now(ET)).total_seconds()
         if remaining <= 0:
             return
-        try:
-            cws.run_crypto_tick(client, max_gross=max_gross, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001 — must not abort the sleep loop
-            print(f"[xgb-live] crypto tick error: {exc}", flush=True)
+        if crypto_on and cws is not None:
+            try:
+                cws.run_crypto_tick(client, max_gross=max_gross, dry_run=dry_run)
+            except Exception as exc:
+                print(f"[xgb-live] crypto tick error: {exc}", flush=True)
+        if eod_on:
+            try:
+                _eod_deleverage_tick(client, args)
+            except Exception as exc:
+                print(f"[xgb-live] eod deleverage tick error: {exc}", flush=True)
         time.sleep(min(remaining, poll))
 
 
@@ -1084,7 +1866,7 @@ def main(argv=None) -> int:
         client = None
 
     while True:
-        args._trade_logger = _make_trade_logger(args, date.today())
+        args._trade_logger = _make_trade_logger(args, _session_date_et())
         run_session(symbols, args.data_root, model, client, args)
         if not args.loop:
             break
