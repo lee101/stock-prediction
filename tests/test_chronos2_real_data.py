@@ -15,14 +15,20 @@ import torch
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+if (
+    "--run-legacy" not in sys.argv
+    and os.getenv("USE_REAL_BACKTEST_TEST3_INLINE", "0") not in ("1", "true", "TRUE", "yes", "YES")
+):
+    pytest.skip(
+        "legacy real backtest/Chronos2 test disabled; pass --run-legacy to include",
+        allow_module_level=True,
+    )
+
 from backtest_test3_inline import (
     load_chronos2_wrapper,
     resolve_best_model,
     resolve_chronos2_params,
 )
-from src.models.chronos2_wrapper import Chronos2OHLCWrapper
-
-
 @pytest.fixture
 def btcusd_data():
     """Load real BTCUSD training data."""

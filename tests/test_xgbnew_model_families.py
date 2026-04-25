@@ -41,6 +41,7 @@ def _holdout_split(df: pd.DataFrame):
 # ── LightGBM ────────────────────────────────────────────────────────────────
 
 def test_lgb_fit_predict_shape_and_range():
+    pytest.importorskip("lightgbm")
     from xgbnew.model_lgb import LGBMStockModel
     df = _toy_frame()
     tr, va = _holdout_split(df)
@@ -55,6 +56,7 @@ def test_lgb_fit_predict_shape_and_range():
 
 
 def test_lgb_save_load_roundtrip(tmp_path: Path):
+    pytest.importorskip("lightgbm")
     from xgbnew.model_lgb import LGBMStockModel
     from xgbnew.model_registry import load_any_model
     df = _toy_frame()
@@ -79,6 +81,7 @@ def test_lgb_save_load_roundtrip(tmp_path: Path):
 # ── CatBoost ────────────────────────────────────────────────────────────────
 
 def test_cat_fit_predict_shape_and_range():
+    pytest.importorskip("catboost")
     from xgbnew.model_cat import CatBoostStockModel
     df = _toy_frame()
     tr, va = _holdout_split(df)
@@ -92,6 +95,7 @@ def test_cat_fit_predict_shape_and_range():
 
 
 def test_cat_save_load_roundtrip(tmp_path: Path):
+    pytest.importorskip("catboost")
     from xgbnew.model_cat import CatBoostStockModel
     from xgbnew.model_registry import load_any_model
     df = _toy_frame()
@@ -153,13 +157,15 @@ def test_mlp_save_load_roundtrip(tmp_path: Path):
 # ── Registry dispatch across families ───────────────────────────────────────
 
 def test_registry_dispatch_distinguishes_families(tmp_path: Path):
+    pytest.importorskip("lightgbm")
+    pytest.importorskip("catboost")
     from xgbnew.model_lgb import LGBMStockModel
     from xgbnew.model_cat import CatBoostStockModel
     from xgbnew.model_mlp import MLPStockModel
     from xgbnew.model_registry import load_any_model
 
     df = _toy_frame(n_rows=600)
-    tr, va = _holdout_split(df)
+    tr, _va = _holdout_split(df)
     paths: dict[str, Path] = {}
 
     paths["lgb"] = tmp_path / "lgb.pkl"
@@ -183,7 +189,7 @@ def test_registry_falls_back_to_xgb_for_legacy_pickle(tmp_path: Path):
     from xgbnew.model_registry import load_any_model
 
     df = _toy_frame(n_rows=400)
-    tr, va = _holdout_split(df)
+    tr, _va = _holdout_split(df)
     m = XGBStockModel(n_estimators=30, max_depth=3, learning_rate=0.1)
     m.fit(tr, FEATURES, verbose=False)
     p = tmp_path / "legacy_xgb.pkl"
@@ -200,6 +206,8 @@ def test_registry_falls_back_to_xgb_for_legacy_pickle(tmp_path: Path):
 
 def test_mismatched_family_load_raises(tmp_path: Path):
     """LGBMStockModel.load(cat_pickle) should refuse."""
+    pytest.importorskip("lightgbm")
+    pytest.importorskip("catboost")
     from xgbnew.model_cat import CatBoostStockModel
     from xgbnew.model_lgb import LGBMStockModel
 

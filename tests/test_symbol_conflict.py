@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from src.daily_stock_defaults import DEFAULT_SYMBOLS
 
 from unified_orchestrator.symbol_lock import (
     assert_no_overlaps,
@@ -205,11 +206,10 @@ def test_production_config_orchestrator_is_crypto_only() -> None:
     assert stocks == []
 
 
-def test_production_config_daily_rl_owns_stocks12_live_universe() -> None:
+def test_production_config_daily_rl_owns_live_universe() -> None:
     prod_config = Path(__file__).resolve().parent.parent / "unified_orchestrator" / "service_config.json"
     _, daily_stocks = load_service_symbols("daily-rl-trader", prod_config)
-    assert set(daily_stocks) == {"AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA",
-                                 "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"}
+    assert tuple(daily_stocks) == DEFAULT_SYMBOLS
 
 
 def test_production_config_meta_excludes_daily_rl_stocks() -> None:
@@ -223,7 +223,12 @@ def test_production_config_meta_excludes_daily_rl_stocks() -> None:
 
 def test_retired_meta_trader_is_not_configured_to_autostart_without_owned_symbols() -> None:
     prod_config = Path(__file__).resolve().parent.parent / "unified_orchestrator" / "service_config.json"
-    supervisor_conf = Path(__file__).resolve().parent.parent / "deployments" / "unified-stock-trader" / "supervisor.conf"
+    supervisor_conf = (
+        Path(__file__).resolve().parent.parent
+        / "deployments"
+        / "unified-stock-trader"
+        / "supervisor.conf"
+    )
     _, meta_stocks = load_service_symbols("trade-unified-hourly-meta", prod_config)
     config_text = supervisor_conf.read_text(encoding="utf-8")
 

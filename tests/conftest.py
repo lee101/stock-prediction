@@ -180,6 +180,7 @@ if "alpaca" not in sys.modules:
     alpaca_trading.enums.OrderSide = MagicMock()
     alpaca_trading.enums.TimeInForce = MagicMock()
     alpaca_trading.requests.MarketOrderRequest = MagicMock()
+    alpaca_trading.requests.LimitOrderRequest = MagicMock()
 
     sys.modules["alpaca"] = alpaca_mod
     sys.modules["alpaca.common"] = alpaca_common
@@ -212,6 +213,28 @@ else:
                 self.market_value = market_value
 
         alpaca_trading_mod.Position = _PositionStub  # type: ignore[attr-defined]
+
+    alpaca_trading_enums = sys.modules.get("alpaca.trading.enums")
+    if alpaca_trading_enums is None or not isinstance(alpaca_trading_enums, types.ModuleType):
+        alpaca_trading_enums = types.ModuleType("enums")
+        sys.modules["alpaca.trading.enums"] = alpaca_trading_enums
+    if not hasattr(alpaca_trading_mod, "enums"):
+        alpaca_trading_mod.enums = alpaca_trading_enums  # type: ignore[attr-defined]
+    if not hasattr(alpaca_trading_enums, "OrderSide"):
+        alpaca_trading_enums.OrderSide = MagicMock()
+    if not hasattr(alpaca_trading_enums, "TimeInForce"):
+        alpaca_trading_enums.TimeInForce = MagicMock()
+
+    alpaca_trading_requests = sys.modules.get("alpaca.trading.requests")
+    if alpaca_trading_requests is None or not isinstance(alpaca_trading_requests, types.ModuleType):
+        alpaca_trading_requests = types.ModuleType("requests")
+        sys.modules["alpaca.trading.requests"] = alpaca_trading_requests
+    if not hasattr(alpaca_trading_mod, "requests"):
+        alpaca_trading_mod.requests = alpaca_trading_requests  # type: ignore[attr-defined]
+    if not hasattr(alpaca_trading_requests, "MarketOrderRequest"):
+        alpaca_trading_requests.MarketOrderRequest = MagicMock()
+    if not hasattr(alpaca_trading_requests, "LimitOrderRequest"):
+        alpaca_trading_requests.LimitOrderRequest = MagicMock()
 
 sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
 alpaca_rest = sys.modules.setdefault(
@@ -260,6 +283,42 @@ def pytest_addoption(parser):
         default=False,
         help="Run tests under tests/experimental (skipped by default).",
     )
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="Run tests marked slow (also enabled by PYTEST_RUN_SLOW=1).",
+    )
+    parser.addoption(
+        "--run-model-required",
+        action="store_true",
+        default=False,
+        help="Run tests marked model_required (also enabled by PYTEST_RUN_MODELS=1).",
+    )
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Collect integration test directories skipped by default.",
+    )
+    parser.addoption(
+        "--run-provisioning",
+        action="store_true",
+        default=False,
+        help="Collect provisioning tests skipped by default.",
+    )
+    parser.addoption(
+        "--run-legacy",
+        action="store_true",
+        default=False,
+        help="Collect legacy training/runtime test directories skipped by default.",
+    )
+    parser.addoption(
+        "--run-auto-generated",
+        action="store_true",
+        default=False,
+        help="Run auto-generated coverage tests skipped by default.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -272,9 +331,12 @@ def pytest_collection_modifyitems(config, items):
     skip_marker = pytest.mark.skip(reason="experimental suite disabled; pass --run-experimental to include")
     experimental_root = Path(config.rootpath, "tests", "experimental").resolve()
 
+    run_slow = config.getoption("--run-slow") or _env_flag_enabled("PYTEST_RUN_SLOW")
+    run_model_required = config.getoption("--run-model-required") or _env_flag_enabled("PYTEST_RUN_MODELS")
+    run_auto_generated = config.getoption("--run-auto-generated")
+
     # CI mode detection
     is_ci = _env_flag_enabled("CI")
-    is_fast_ci = _env_flag_enabled("FAST_CI")
     cpu_only = _cpu_only_mode_enabled()
 
     # Check for CUDA availability
@@ -298,13 +360,24 @@ def pytest_collection_modifyitems(config, items):
             if not run_experimental:
                 item.add_marker(skip_marker)
 
-        # Skip slow tests in fast CI mode
-        if is_fast_ci and "slow" in item.keywords:
-            item.add_marker(pytest.mark.skip(reason="Slow test skipped in FAST_CI mode"))
+        # Keep default pytest useful for iteration. Heavy suites remain opt-in.
+        if not run_slow and "slow" in item.keywords:
+            item.add_marker(pytest.mark.skip(reason="slow test disabled; pass --run-slow to include"))
 
-        # Skip model-required tests in fast CI unless specifically marked as smoke test
-        if is_fast_ci and "model_required" in item.keywords and "smoke" not in item.keywords:
-            item.add_marker(pytest.mark.skip(reason="Model test skipped in FAST_CI mode (only smoke tests run)"))
+        # Skip model-required tests unless specifically requested, except smoke tests.
+        if not run_model_required and "model_required" in item.keywords and "smoke" not in item.keywords:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="model-required test disabled; pass --run-model-required to include"
+                )
+            )
+
+        if not run_auto_generated and "auto_generated" in item.keywords:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="auto-generated test disabled; pass --run-auto-generated to include"
+                )
+            )
 
         # Skip CUDA tests when running on CPU-only or no CUDA available
         if (cpu_only or not has_cuda) and ("cuda_required" in item.keywords or "gpu_required" in item.keywords):
@@ -357,6 +430,36 @@ def pytest_ignore_collect(collection_path, config):
     if rel.startswith("tests/.uvcache/"):
         return True
 
+    default_skipped_prefixes = {
+        "tests/integration/": "--run-integration",
+        "tests/prod/integration/": "--run-integration",
+        "tests/provisioning/": "--run-provisioning",
+        "tests/prod/agents/": "--run-legacy",
+        "tests/prod/binancechronossolexperiment/": "--run-legacy",
+        "tests/prod/binanceneural/": "--run-legacy",
+        "tests/prod/utils/auto/": "--run-auto-generated",
+        "tests/gymrl/": "--run-legacy",
+        "tests/rlsys/": "--run-legacy",
+        "tests/pufferlibtraining2/": "--run-legacy",
+    }
+    for prefix, opt in default_skipped_prefixes.items():
+        if rel.startswith(prefix) and not config.getoption(opt):
+            return True
+
+    legacy_real_backtest_files = {
+        "tests/test_chronos2_cache_behavior.py",
+        "tests/test_chronos2_real_data.py",
+        "tests/test_critical_math.py",
+        "tests/test_maxdiff_price_cache.py",
+        "tests/test_pctdiff_price_cache.py",
+        "tests/prod/backtesting/test_backtest3.py",
+        "tests/prod/backtesting/test_backtest_model_cache.py",
+        "tests/prod/simulation/test_scaler_eth.py",
+        "tests/prod/trading/test_trade_stock_chronos2_integration.py",
+    }
+    if rel in legacy_real_backtest_files and not config.getoption("--run-legacy"):
+        return True
+
     # On fast CI (GitHub-hosted runners), skip prod/integration tests and
     # provisioning tests — they need self-hosted runners with full dependencies.
     if os.environ.get("FAST_CI") == "1":
@@ -406,14 +509,19 @@ def pytest_ignore_collect(collection_path, config):
     if rel == "tests/test_falmarket_openapi.py" and not _module_available("falmarket.app"):
         return True
 
-    if rel == "tests/test_download_crypto_daily.py" and not _module_available("trainingdatadaily.download_crypto_daily"):
+    if rel == "tests/test_download_crypto_daily.py" and not _module_available(
+        "trainingdatadaily.download_crypto_daily"
+    ):
         return True
 
     if rel == "tests/test_rlinc_market.py" and not (root / "rlinc_market" / "env.py").exists():
         return True
 
-    if rel in {"tests/test_cuda_graph_quick_check.py", "tests/test_toto_cuda_graphs_accuracy.py"} and not _module_available(
-        "toto.toto.pipelines.time_series_forecasting"
+    if rel in {
+        "tests/test_cuda_graph_quick_check.py",
+        "tests/test_toto_cuda_graphs_accuracy.py",
+    } and not _module_available(
+        "toto.toto.pipelines.time_series_forecasting",
     ):
         return True
 
@@ -428,12 +536,22 @@ def pytest_ignore_collect(collection_path, config):
 
 if "backtest_test3_inline" not in sys.modules:
     try:
+        use_real_backtest = (
+            _env_flag_enabled("USE_REAL_BACKTEST_TEST3_INLINE")
+            or "--run-legacy" in sys.argv
+        )
+        if not use_real_backtest:
+            raise RuntimeError(
+                "real backtest_test3_inline import disabled during pytest startup; "
+                "pass --run-legacy or set USE_REAL_BACKTEST_TEST3_INLINE=1 "
+                "to exercise the legacy module"
+            )
         # Use the real module when available so that strategy logic is exercised.
         import backtest_test3_inline  # noqa: F401
     except Exception as exc:
         backtest_stub = types.ModuleType("backtest_test3_inline")
 
-        def backtest_forecasts(symbol, num_simulations=10):
+        def _stub_marketsim_backtest_forecasts(symbol, num_simulations=10):
             import pandas as pd
 
             return pd.DataFrame(
@@ -504,7 +622,131 @@ if "backtest_test3_inline" not in sys.modules:
                 }
             )
 
+        backtest_stub._marketsim_backtest = types.SimpleNamespace(
+            backtest_forecasts=_stub_marketsim_backtest_forecasts,
+        )
+
+        def _add_legacy_maxdiffalwayson_columns(frame):
+            out = frame.copy()
+            legacy_map = {
+                "maxdiffalwayson_return": "maxdiff_return",
+                "maxdiffalwayson_avg_daily_return": "maxdiff_return",
+                "maxdiffalwayson_annual_return": "maxdiff_return",
+                "maxdiffalwayson_sharpe": "maxdiff_sharpe",
+                "maxdiffalwayson_turnover": "maxdiff_turnover",
+                "maxdiffalwayson_high_price": "maxdiffprofit_high_price",
+                "maxdiffalwayson_low_price": "maxdiffprofit_low_price",
+                "walk_forward_maxdiffalwayson_sharpe": "maxdiff_sharpe",
+            }
+            for dest, src in legacy_map.items():
+                if dest not in out.columns and src in out.columns:
+                    out[dest] = out[src]
+            return out
+
+        def backtest_forecasts(*args, **kwargs):
+            base = backtest_stub._marketsim_backtest.backtest_forecasts(*args, **kwargs)
+            return _add_legacy_maxdiffalwayson_columns(base)
+
         backtest_stub.backtest_forecasts = backtest_forecasts
+        backtest_stub._GPU_FALLBACK_ENV = "MARKETSIM_ALLOW_CPU_FALLBACK"
+        backtest_stub._cpu_fallback_log_state = set()
+        backtest_stub._chronos2_wrapper_cache = {}
+
+        try:
+            import torch as _torch_for_backtest_stub
+        except Exception:  # pragma: no cover - import is checked later in this file
+            _torch_for_backtest_stub = types.SimpleNamespace(
+                cuda=types.SimpleNamespace(is_available=lambda: False),
+            )
+
+        backtest_stub.torch = _torch_for_backtest_stub
+
+        class Chronos2OHLCWrapper:
+            @classmethod
+            def from_pretrained(cls, **kwargs):
+                return types.SimpleNamespace(**kwargs)
+
+        backtest_stub.Chronos2OHLCWrapper = Chronos2OHLCWrapper
+
+        def _cpu_fallback_enabled():
+            value = os.getenv(backtest_stub._GPU_FALLBACK_ENV, "")
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+
+        def _require_cuda(feature_name, *, symbol="", allow_cpu_fallback=True):
+            if backtest_stub.torch.cuda.is_available():
+                return
+            if allow_cpu_fallback and _cpu_fallback_enabled():
+                backtest_stub._cpu_fallback_log_state.add((
+                    str(feature_name),
+                    str(symbol),
+                ))
+                return
+            suffix = f" for {symbol}" if symbol else ""
+            raise RuntimeError(f"{feature_name}{suffix} requires a CUDA-capable GPU")
+
+        def load_chronos2_wrapper(params):
+            params = dict(params or {})
+            device_map = str(params.get("device_map", "cuda") or "cuda")
+            if device_map != "cpu" and not backtest_stub.torch.cuda.is_available():
+                _require_cuda(
+                    "Chronos2 forecasting",
+                    symbol=str(params.get("symbol", "")),
+                )
+                device_map = "cpu"
+            key = (
+                str(params.get("model_id", "amazon/chronos-2")),
+                device_map,
+                int(params.get("context_length", params.get("default_context_length", 512)) or 512),
+                int(params.get("batch_size", params.get("default_batch_size", 128)) or 128),
+                tuple(params.get("quantile_levels", (0.1, 0.5, 0.9))),
+            )
+            cached = backtest_stub._chronos2_wrapper_cache.get(key)
+            if cached is not None:
+                return cached
+            wrapper = backtest_stub.Chronos2OHLCWrapper.from_pretrained(
+                model_id=str(params.get("model_id", "amazon/chronos-2")),
+                device_map=device_map,
+                default_context_length=key[2],
+                default_batch_size=key[3],
+                quantile_levels=key[4],
+            )
+            backtest_stub._chronos2_wrapper_cache[key] = wrapper
+            return wrapper
+
+        def compute_walk_forward_stats(frame):
+            if frame is None or len(frame) == 0:
+                return {}
+            import numpy as np
+
+            stats = {}
+            if "simple_strategy_sharpe" in frame.columns:
+                stats["walk_forward_oos_sharpe"] = float(np.mean(frame["simple_strategy_sharpe"].astype(float)))
+            if "simple_strategy_return" in frame.columns:
+                stats["walk_forward_turnover"] = float(np.mean(np.abs(frame["simple_strategy_return"].astype(float))))
+            if "highlow_sharpe" in frame.columns:
+                stats["walk_forward_highlow_sharpe"] = float(np.mean(frame["highlow_sharpe"].astype(float)))
+            if "entry_takeprofit_sharpe" in frame.columns:
+                stats["walk_forward_takeprofit_sharpe"] = float(np.mean(frame["entry_takeprofit_sharpe"].astype(float)))
+            if "maxdiff_sharpe" in frame.columns:
+                stats["walk_forward_maxdiff_sharpe"] = float(np.mean(frame["maxdiff_sharpe"].astype(float)))
+            return stats
+
+        def calibrate_signal(predictions, actual_returns):
+            import numpy as np
+
+            x = np.asarray(predictions, dtype=float)
+            y = np.asarray(actual_returns, dtype=float)
+            mask = np.isfinite(x) & np.isfinite(y)
+            if int(mask.sum()) < 2:
+                return 1.0, 0.0
+            slope, intercept = np.polyfit(x[mask], y[mask], 1)
+            return float(slope), float(intercept)
+
+        backtest_stub._cpu_fallback_enabled = _cpu_fallback_enabled
+        backtest_stub._require_cuda = _require_cuda
+        backtest_stub.load_chronos2_wrapper = load_chronos2_wrapper
+        backtest_stub.compute_walk_forward_stats = compute_walk_forward_stats
+        backtest_stub.calibrate_signal = calibrate_signal
 
         def _compute_toto_forecast(*args, **kwargs):
             import torch

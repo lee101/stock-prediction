@@ -27,7 +27,8 @@ def _make_preds(
     actual = prev * (1 + upward_bias + noise_arr)
     q10  = q50 * 0.995
     q90  = q50 * 1.005
-    syms = [f"SYM{i % 5}" for i in range(N)]
+    block = max(1, int(np.ceil(N / 5)))
+    syms = [f"SYM{min(i // block, 4)}" for i in range(N)]
     return q10, q50, q90, actual, prev, syms
 
 

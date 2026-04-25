@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import types
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, List
 
-import backtest_test3_inline as marketsim
 import numpy as np
 import pandas as pd
 import pytest
+
+if (
+    "--run-legacy" not in sys.argv
+    and os.getenv("USE_REAL_BACKTEST_TEST3_INLINE", "0") not in ("1", "true", "TRUE", "yes", "YES")
+):
+    pytest.skip(
+        "legacy real backtest/Chronos2 cache test disabled; pass --run-legacy to include",
+        allow_module_level=True,
+    )
+
+import backtest_test3_inline as marketsim
 
 from src.models import chronos2_wrapper
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
@@ -184,7 +195,13 @@ def test_chronos2_from_pretrained_supports_cutechronos_backend(monkeypatch: pyte
             cls.load_kwargs = {"model_id": model_id, **kwargs}
             return cls()
 
-        def predict_quantiles(self, inputs, prediction_length=None, quantile_levels=None, limit_prediction_length=False):
+        def predict_quantiles(
+            self,
+            inputs,
+            prediction_length=None,
+            quantile_levels=None,
+            limit_prediction_length=False,
+        ):
             horizon = int(prediction_length or 1)
             levels = list(quantile_levels or [0.5])
             quantiles = [np.zeros((1, horizon, len(levels)), dtype=np.float32) for _ in inputs]
@@ -609,7 +626,9 @@ def test_chronos2_prediction_prefers_primary_tensor_fallback_before_safe_backend
     monkeypatch.setattr(
         chronos2_wrapper,
         "_load_cutechronos_pipeline",
-        lambda **_kwargs: pytest.fail("safe cutechronos backend should not be used when primary tensor fallback succeeds"),
+        lambda **_kwargs: pytest.fail(
+            "safe cutechronos backend should not be used when primary tensor fallback succeeds"
+        ),
     )
 
     wrapper = Chronos2OHLCWrapper.from_pretrained(

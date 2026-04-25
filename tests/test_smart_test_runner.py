@@ -233,7 +233,11 @@ def test_run_tests_dry_run_previews_real_lane_command(
     output = capsys.readouterr().out
     assert ok is True
     assert "DRY RUN: Would execute:" in output
-    assert f"{sys.executable} -m pytest tests/test_smart_test_runner.py --ignore=tests/experimental --maxfail=20" in output
+    expected_cmd = (
+        f"{sys.executable} -m pytest tests/test_smart_test_runner.py "
+        "--ignore=tests/experimental --maxfail=20"
+    )
+    assert expected_cmd in output
     assert " -v" not in output
     assert f"Nested basetemp: {tmp_path / 'smart-test-runner' / 'remaining-<random>' / 'basetemp'}" in output
 
@@ -871,7 +875,10 @@ def test_main_fails_cleanly_when_competing_repo_pytest_processes_are_active(
         runner_impl,
         "_assert_no_competing_repo_pytest_processes",
         lambda: (_ for _ in ()).throw(
-            RuntimeError("Detected competing repo-local pytest processes.\n  - 1234 /repo/.venv/bin/python -m pytest -q")
+            RuntimeError(
+                "Detected competing repo-local pytest processes.\n"
+                "  - 1234 /repo/.venv/bin/python -m pytest -q"
+            )
         ),
     )
     monkeypatch.setattr(sys, "argv", ["smart_test_runner.py", "--summary-json", str(summary_path)])

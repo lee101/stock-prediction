@@ -36,6 +36,12 @@ def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         "device": "cpu",
         "out": None,
         "extra_checkpoints": None,
+        "start_indices": None,
+        "min_top_prob": 0.0,
+        "min_member_agreement": 0,
+        "death_spiral_tolerance_bps": None,
+        "death_spiral_overnight_tolerance_bps": 500.0,
+        "death_spiral_stale_after_bars": 8,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -408,7 +414,11 @@ def test_main_sampled_mode_does_not_materialize_candidate_array(tmp_path: Path) 
         patch.object(eval_mod, "load_checkpoint_payload", return_value=source_policy.state_dict()),
         patch.object(eval_mod, "read_mktd", return_value=_make_data(40)),
         patch.object(eval_mod.np.random, "default_rng", return_value=FakeRng()),
-        patch.object(eval_mod.np, "arange", side_effect=AssertionError("sampled mode should not build candidate arrays")),
+        patch.object(
+            eval_mod.np,
+            "arange",
+            side_effect=AssertionError("sampled mode should not build candidate arrays"),
+        ),
         patch.object(eval_mod, "simulate_daily_policy", return_value=fake_result) as simulate_mock,
     ):
         eval_mod.main()

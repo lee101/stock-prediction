@@ -17,11 +17,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytest.importorskip("polars")
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.dataset import build_daily_dataset  # noqa: E402
+from xgbnew.dataset import build_daily_dataset
 
 
 def _write_synth_csv(path: Path, n: int = 400, seed: int = 0) -> None:

@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -105,6 +106,7 @@ def test_missing_symbol_returns_none(tmp_path: Path) -> None:
 
 def test_polars_path_prefers_root(tmp_path: Path) -> None:
     """Fast-features path must walk the same preference list."""
+    pytest.importorskip("polars")
     from xgbnew.features_fast import _read_ohlcv_polars
 
     sym = "FAKE"
@@ -120,6 +122,7 @@ def test_polars_path_prefers_root(tmp_path: Path) -> None:
 
 def test_polars_explicit_subdir_is_honoured(tmp_path: Path) -> None:
     """When a subdir is explicitly named, we do NOT fall through."""
+    pytest.importorskip("polars")
     from xgbnew.features_fast import _read_ohlcv_polars
 
     sym = "FAKE"

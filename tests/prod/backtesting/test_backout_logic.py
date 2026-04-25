@@ -9,11 +9,13 @@ import pytest
 _ORIGINAL_LOCAL_MODULES = {
     name: sys.modules.get(name)
     for name in (
+        "alpaca_wrapper",
         "data_curate_daily",
         "env_real",
         "jsonshelve",
         "src.fixtures",
         "src.logging_utils",
+        "src.symbol_utils",
         "src.stock_utils",
         "src.trading_obj_utils",
     )
@@ -65,9 +67,11 @@ class DummyTradingClient:
         return order_data
 alpaca_trading.client.TradingClient = DummyTradingClient
 alpaca_trading.enums.OrderSide = types.SimpleNamespace(BUY='buy', SELL='sell')
+alpaca_trading.enums.TimeInForce = types.SimpleNamespace(DAY='day', GTC='gtc')
 alpaca_trading.requests.MarketOrderRequest = object
 sys.modules["alpaca.trading.client"].TradingClient = DummyTradingClient
 sys.modules["alpaca.trading.enums"].OrderSide = types.SimpleNamespace(BUY='buy', SELL='sell')
+sys.modules["alpaca.trading.enums"].TimeInForce = types.SimpleNamespace(DAY='day', GTC='gtc')
 sys.modules["alpaca.trading.requests"].MarketOrderRequest = object
 try:
     import typer as _typer_real  # noqa: F401 (ensure real typer is in sys.modules)
@@ -234,7 +238,11 @@ def test_backout_near_market_switches_to_market(monkeypatch):
         called['called'] = True
         return True
 
-    monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'close_position_near_market', lambda *a, **k: pytest.fail('limit order used'))
+    monkeypatch.setattr(
+        alpaca_cli.alpaca_wrapper,
+        'close_position_near_market',
+        lambda *a, **k: pytest.fail('limit order used'),
+    )
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'close_position_violently', fake_market)
 
     # Sequence: first call returns position, second returns empty list to exit loop
