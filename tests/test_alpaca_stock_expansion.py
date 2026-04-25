@@ -81,6 +81,11 @@ def test_stock_expansion_candidate_normalized_accepts_aliases() -> None:
     assert candidate.side == "both"
 
 
+def test_default_stock_expansion_candidates_include_photonics_theme() -> None:
+    symbols = {candidate.symbol for candidate in default_stock_expansion_candidates()}
+    assert {"LITE", "COHR", "MRVL", "MTSI", "AAOI", "IPGP", "FN", "MKSI", "CIEN"} <= symbols
+
+
 def test_manifest_side_defaults_respects_top_level_policy() -> None:
     defaults = manifest_side_defaults(
         {
@@ -225,7 +230,11 @@ def test_candidate_hourly_tuning_command_contains_quick_tuning_flags() -> None:
 def test_candidate_training_plan_prefers_hourly_tune_without_config(tmp_path) -> None:
     _write_hourly_csv(tmp_path / "stocks" / "AAA.csv", [100.0 + i for i in range(96)])
     _write_hourly_csv(tmp_path / "stocks" / "BBB.csv", [101.0 + i * 1.01 for i in range(96)])
-    _write_hourly_csv(tmp_path / "stocks" / "ZZZ.csv", [50.0 + i * 0.1 for i in range(32)], start="2025-12-01T00:00:00Z")
+    _write_hourly_csv(
+        tmp_path / "stocks" / "ZZZ.csv",
+        [50.0 + i * 0.1 for i in range(32)],
+        start="2025-12-01T00:00:00Z",
+    )
 
     cohorts = build_hourly_return_correlation_cohorts(
         ["AAA", "BBB", "ZZZ"],

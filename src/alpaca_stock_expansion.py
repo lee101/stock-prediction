@@ -40,27 +40,181 @@ class StockExpansionCandidate:
 
 
 DEFAULT_STOCK_EXPANSION_CANDIDATES: tuple[StockExpansionCandidate, ...] = (
-    StockExpansionCandidate("PLTR", sector="technology_services", thesis="AI software leader already showing some short-side edge.", priority=10),
-    StockExpansionCandidate("NFLX", sector="technology_services", thesis="Large-cap software/media name with useful liquidity and prior seeded-short edge.", priority=9),
-    StockExpansionCandidate("AVGO", sector="electronic_technology", thesis="Semiconductor/platform exposure beyond NVDA/AMD.", priority=8),
-    StockExpansionCandidate("MU", sector="electronic_technology", thesis="Memory-cycle semiconductor exposure with high realized volatility.", priority=8),
-    StockExpansionCandidate("OKLO", sector="utilities", thesis="Nuclear-power growth exposure with policy/news regime distinct from software and semis.", priority=8),
-    StockExpansionCandidate("ORCL", sector="technology_services", thesis="Enterprise software/cloud exposure outside mega-cap internet.", priority=8),
-    StockExpansionCandidate("CSCO", sector="electronic_technology", thesis="Networking infrastructure anchor with different trend regime.", priority=7),
-    StockExpansionCandidate("LRCX", sector="producer_manufacturing", thesis="Semicap equipment exposure complementary to NVDA/AMD.", priority=7),
-    StockExpansionCandidate("AMAT", sector="producer_manufacturing", thesis="Semicap equipment with large-cap liquidity.", priority=7),
-    StockExpansionCandidate("IBM", sector="technology_services", thesis="Older enterprise tech factor with AI narrative but different price structure.", priority=7),
+    StockExpansionCandidate(
+        "PLTR",
+        sector="technology_services",
+        thesis="AI software leader already showing some short-side edge.",
+        priority=10,
+    ),
+    StockExpansionCandidate(
+        "NFLX",
+        sector="technology_services",
+        thesis="Large-cap software/media name with useful liquidity and prior seeded-short edge.",
+        priority=9,
+    ),
+    StockExpansionCandidate(
+        "AVGO",
+        sector="electronic_technology",
+        thesis="Semiconductor/platform exposure beyond NVDA/AMD.",
+        priority=8,
+    ),
+    StockExpansionCandidate(
+        "MU",
+        sector="electronic_technology",
+        thesis="Memory-cycle semiconductor exposure with high realized volatility.",
+        priority=8,
+    ),
+    StockExpansionCandidate(
+        "OKLO",
+        sector="utilities",
+        thesis="Nuclear-power growth exposure with policy/news regime distinct from software and semis.",
+        priority=8,
+    ),
+    StockExpansionCandidate(
+        "ORCL",
+        sector="technology_services",
+        thesis="Enterprise software/cloud exposure outside mega-cap internet.",
+        priority=8,
+    ),
+    StockExpansionCandidate(
+        "CSCO",
+        sector="electronic_technology",
+        thesis="Networking infrastructure anchor with different trend regime.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "LITE",
+        sector="electronic_technology",
+        thesis="Laser chips and optical components exposure for AI data-center photonics.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "COHR",
+        sector="electronic_technology",
+        thesis="Vertically integrated optical transceiver and laser exposure for AI data-center demand.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "MRVL",
+        sector="electronic_technology",
+        thesis="AI infrastructure silicon and optical interconnect adjacency.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "MTSI",
+        sector="electronic_technology",
+        thesis="RF and photonics components for data-center and communications infrastructure.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "AAOI",
+        sector="electronic_technology",
+        thesis="Higher-beta optical transceiver growth candidate; requires stricter liquidity and drawdown validation.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "IPGP",
+        sector="electronic_technology",
+        thesis="Industrial fiber-laser leader with photonics factor exposure distinct from datacenter names.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "FN",
+        sector="electronic_technology",
+        thesis="Optical packaging and manufacturing exposure to the AI optical buildout.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "MKSI",
+        sector="producer_manufacturing",
+        thesis="Broader industrial photonics and process-control exposure.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "CIEN",
+        sector="electronic_technology",
+        thesis="Optical networking exposure tied to AI and data-center connectivity demand.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "LRCX",
+        sector="producer_manufacturing",
+        thesis="Semicap equipment exposure complementary to NVDA/AMD.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "AMAT",
+        sector="producer_manufacturing",
+        thesis="Semicap equipment with large-cap liquidity.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "IBM",
+        sector="technology_services",
+        thesis="Older enterprise tech factor with AI narrative but different price structure.",
+        priority=7,
+    ),
     StockExpansionCandidate("CRM", sector="technology_services", thesis="Large-cap SaaS exposure.", priority=7),
-    StockExpansionCandidate("ANET", sector="electronic_technology", thesis="AI-networking adjacency and strong trendiness.", priority=7),
-    StockExpansionCandidate("SHOP", sector="commercial_services", thesis="High-beta software/ecommerce platform.", priority=7),
-    StockExpansionCandidate("PANW", sector="technology_services", thesis="Cybersecurity leader with software-like behavior.", priority=7),
-    StockExpansionCandidate("INTU", sector="technology_services", thesis="Stable software compounder that may smooth PnL.", priority=6),
-    StockExpansionCandidate("NOW", sector="technology_services", thesis="Large-cap workflow SaaS exposure.", priority=6),
-    StockExpansionCandidate("UBER", sector="transportation", thesis="High-liquidity platform business with different intraday regime.", priority=6),
-    StockExpansionCandidate("BKNG", sector="consumer_services", thesis="Travel platform exposure; complements existing short basket dynamics.", priority=5),
-    StockExpansionCandidate("WMT", sector="retail_trade", thesis="Defensive mega-cap retail anchor for diversity.", priority=4),
-    StockExpansionCandidate("JPM", sector="finance", thesis="Highly liquid finance bellwether for regime diversification.", priority=4),
-    StockExpansionCandidate("V", sector="finance", thesis="Payments network with resilient trend behavior.", priority=4),
+    StockExpansionCandidate(
+        "ANET",
+        sector="electronic_technology",
+        thesis="AI-networking adjacency and strong trendiness.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "SHOP",
+        sector="commercial_services",
+        thesis="High-beta software/ecommerce platform.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "PANW",
+        sector="technology_services",
+        thesis="Cybersecurity leader with software-like behavior.",
+        priority=7,
+    ),
+    StockExpansionCandidate(
+        "INTU",
+        sector="technology_services",
+        thesis="Stable software compounder that may smooth PnL.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "NOW",
+        sector="technology_services",
+        thesis="Large-cap workflow SaaS exposure.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "UBER",
+        sector="transportation",
+        thesis="High-liquidity platform business with different intraday regime.",
+        priority=6,
+    ),
+    StockExpansionCandidate(
+        "BKNG",
+        sector="consumer_services",
+        thesis="Travel platform exposure; complements existing short basket dynamics.",
+        priority=5,
+    ),
+    StockExpansionCandidate(
+        "WMT",
+        sector="retail_trade",
+        thesis="Defensive mega-cap retail anchor for diversity.",
+        priority=4,
+    ),
+    StockExpansionCandidate(
+        "JPM",
+        sector="finance",
+        thesis="Highly liquid finance bellwether for regime diversification.",
+        priority=4,
+    ),
+    StockExpansionCandidate(
+        "V",
+        sector="finance",
+        thesis="Payments network with resilient trend behavior.",
+        priority=4,
+    ),
 )
 
 
@@ -495,7 +649,7 @@ def get_sp500_symbols(
     Otherwise fetches the current list from Wikipedia and (if use_cache is True)
     saves it to cache_file for future calls.
     """
-    import pandas as pd  # noqa: PLC0415
+    import pandas as pd
 
     cache_path = Path(cache_file)
     if use_cache and cache_path.exists():
