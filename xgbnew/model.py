@@ -179,17 +179,24 @@ class XGBStockModel:
 
         # When booster is on CUDA, move X to GPU first to avoid the
         # "falling back to prediction using DMatrix" warning/slowdown.
+        # Some sklearn-compatible models stored in this wrapper, notably
+        # CatBoost, reject CuPy inputs even when the wrapper has device=cuda.
+        # In that case retry on NumPy so blended XGB+Cat live inference works.
         dev = getattr(self, "device", None)
         if dev and str(dev).startswith("cuda"):
             try:
                 import cupy as cp
                 X_in = cp.asarray(X)
+                try:
+                    proba = self.clf.predict_proba(X_in)[:, 1]
+                except Exception as exc:
+                    logger.debug("GPU predict_proba failed; retrying on NumPy: %s", exc)
+                    proba = self.clf.predict_proba(X)[:, 1]
             except ImportError:
-                X_in = X
+                proba = self.clf.predict_proba(X)[:, 1]
         else:
-            X_in = X
+            proba = self.clf.predict_proba(X)[:, 1]
 
-        proba = self.clf.predict_proba(X_in)[:, 1]
         if hasattr(proba, "get"):  # CuPy → NumPy
             proba = proba.get()
         return pd.Series(proba, index=df.index, name="xgb_score")

@@ -123,6 +123,12 @@ CHRONOS_FEATURE_COLS = [
 ]
 
 ALL_FEATURE_COLS = DAILY_FEATURE_COLS + CHRONOS_FEATURE_COLS
+LIVE_SUPPORTED_FEATURE_COLS = frozenset(
+    DAILY_FEATURE_COLS
+    + CHRONOS_FEATURE_COLS
+    + DAILY_RANK_FEATURE_COLS
+    + DAILY_DISPERSION_FEATURE_COLS
+)
 
 
 def build_features_for_symbol(
@@ -416,6 +422,7 @@ __all__ = [
     "DAILY_DISPERSION_FEATURE_COLS",
     "CHRONOS_FEATURE_COLS",
     "ALL_FEATURE_COLS",
+    "LIVE_SUPPORTED_FEATURE_COLS",
     "HOURLY_FEATURE_COLS",
     "build_features_for_symbol",
     "build_features_for_symbol_hourly",

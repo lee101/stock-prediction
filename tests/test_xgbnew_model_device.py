@@ -9,6 +9,7 @@ are in [0, 1].
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -81,6 +82,37 @@ def test_save_load_preserves_device(tmp_path):
     # round-trip predictions should work too
     scores = m2.predict_scores(df)
     assert scores.between(0.0, 1.0).all()
+
+
+def test_cuda_predict_retries_numpy_when_model_rejects_gpu_input(monkeypatch):
+    class _FakeGpuArray:
+        pass
+
+    fake_cupy = types.SimpleNamespace(asarray=lambda _x: _FakeGpuArray())
+    monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
+
+    class _CpuOnlyClassifier:
+        def __init__(self):
+            self.calls = []
+
+        def predict_proba(self, x):
+            self.calls.append(type(x).__name__)
+            if isinstance(x, _FakeGpuArray):
+                raise TypeError("gpu array unsupported")
+            return np.array([[0.25, 0.75], [0.60, 0.40]], dtype=np.float32)
+
+    df = pd.DataFrame({"feat_0": [1.0, np.nan], "feat_1": [0.0, 2.0]})
+    model = XGBStockModel.__new__(XGBStockModel)
+    model._fitted = True
+    model.feature_cols = ["feat_0", "feat_1"]
+    model._col_medians = np.array([1.0, 2.0], dtype=np.float32)
+    model.device = "cuda"
+    model.clf = _CpuOnlyClassifier()
+
+    scores = model.predict_scores(df)
+
+    assert model.clf.calls == ["_FakeGpuArray", "ndarray"]
+    assert scores.tolist() == pytest.approx([0.75, 0.40])
 
 
 @pytest.mark.skipif(not _xgboost_has_cuda(), reason="xgboost not built with CUDA")
