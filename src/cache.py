@@ -3,6 +3,7 @@ import hashlib
 import logging
 import pickle
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar, cast
@@ -13,6 +14,11 @@ F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 SyncF = TypeVar("SyncF", bound=Callable[..., Any])
 
 logger = logging.getLogger(__name__)
+
+if __name__ == "cache":
+    sys.modules.setdefault("src.cache", sys.modules[__name__])
+elif __name__ == "src.cache":
+    sys.modules.setdefault("cache", sys.modules[__name__])
 
 
 class _MemoryCache:

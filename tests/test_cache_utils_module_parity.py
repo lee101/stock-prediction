@@ -14,6 +14,18 @@ def test_cache_utils_root_module_aliases_src_module():
     assert root_module is src_module
 
 
+def test_cache_utils_src_module_aliases_root_module_when_imported_first():
+    sys.modules.pop("cache_utils", None)
+    sys.modules.pop("src.cache_utils", None)
+
+    src_module = importlib.import_module("src.cache_utils")
+    root_module = importlib.import_module("cache_utils")
+
+    assert root_module is src_module
+    assert sys.modules["cache_utils"] is src_module
+    assert sys.modules["src.cache_utils"] is src_module
+
+
 def test_cache_utils_root_and_src_share_live_behavior(tmp_path, monkeypatch):
     sys.modules.pop("cache_utils", None)
     sys.modules.pop("src.cache_utils", None)

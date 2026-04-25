@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 
 _HF_ENV_VARS: Sequence[str] = ("HF_HOME", "TRANSFORMERS_CACHE", "HUGGINGFACE_HUB_CACHE")
 _CACHE_SENTINEL = ".cache-write-test"
+
+if __name__ == "cache_utils":
+    sys.modules.setdefault("src.cache_utils", sys.modules[__name__])
+elif __name__ == "src.cache_utils":
+    sys.modules.setdefault("cache_utils", sys.modules[__name__])
 
 
 def _expand_path(path_like: str) -> Path:
