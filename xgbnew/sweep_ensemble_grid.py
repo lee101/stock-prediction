@@ -31,13 +31,15 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
-import sys
 import time
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass
 from datetime import date
+from itertools import product
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -46,8 +48,8 @@ from xgbnew.backtest import BacktestConfig, simulate
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
 from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
-    DAILY_FEATURE_COLS,
     DAILY_RANK_FEATURE_COLS,
+    LIVE_SUPPORTED_FEATURE_COLS,
 )
 from xgbnew.model import XGBStockModel
 from xgbnew.model_registry import load_any_model
@@ -77,10 +79,19 @@ class CellResult:
     median_sortino: float
     worst_dd_pct: float
     n_neg: int
+    # Aggressive packing floor. 0 means classic min_score-gated behavior.
+    min_picks: int = 0
     # Composite "one-scalar" optimization target — see compute_goodness().
     goodness_score: float = 0.0
     # Asymmetric-downside variant — see compute_robust_goodness().
     robust_goodness_score: float = 0.0
+    # Robust downside score with explicit equity-curve pain penalties.
+    pain_adjusted_goodness_score: float = 0.0
+    # Fail-fast pruning fields. When enabled, a cell that breaches the
+    # configured risk budget keeps observed partial metrics but its ranking
+    # scores are forced to FAIL_FAST_SCORE so it cannot win a sweep.
+    fail_fast_triggered: bool = False
+    fail_fast_reason: str = ""
     # Intraday unrealized excursions, aggregated across windows.
     # worst_intraday_dd_pct = max over windows of that window's worst
     #   within-day unrealized drawdown (from entry fill to bar low, at
@@ -94,6 +105,12 @@ class CellResult:
     # Paired median aggregation mirrors median_monthly_pct / median_sortino.
     time_under_water_pct: float = 0.0
     ulcer_index:          float = 0.0
+    # Fraction of elapsed OOS days with at least one simulated trade.
+    # This is diagnostic only, but important: monthly returns are annualised
+    # over elapsed window days, not only active days, so sparse high-gate
+    # strategies cannot look better merely because they sat in cash.
+    median_active_day_pct: float = 0.0
+    min_active_day_pct:    float = 0.0
     # Inference-side liquidity floor applied to the pick pool — stays at
     # 5M$ unless explicitly swept via --inference-min-dolvol-grid.
     inference_min_dolvol: float = 5_000_000.0
@@ -136,6 +153,33 @@ class CellResult:
     # for skew.
     regime_cs_iqr_max:  float = 0.0
     regime_cs_skew_min: float = -1e9
+    # No-picks fallback — see BacktestConfig.no_picks_fallback_*.
+    # Empty symbol = disabled (legacy hold-cash behaviour). When set,
+    # sim buys this symbol at leverage * alloc_scale on days where no
+    # scored candidate clears min_score (or every candidate was filtered
+    # out). Use to keep market exposure on low-conviction days.
+    no_picks_fallback_symbol: str = ""
+    no_picks_fallback_alloc_scale: float = 0.0
+    # Conviction-scaled allocation — see BacktestConfig.conviction_*.
+    # Binary (trade/cash) and scaled (trade at size proportional to
+    # top-score) policies are mutually compatible with no_picks_fallback.
+    conviction_scaled_alloc: bool = False
+    conviction_alloc_low:  float = 0.55
+    conviction_alloc_high: float = 0.85
+    # Per-day allocation weights across the selected top-N names.
+    # equal = legacy; score_norm/softmax concentrate more capital into
+    # higher-confidence names when top_n > 1.
+    allocation_mode: str = "equal"
+    allocation_temp: float = 1.0
+    # Full rolling-window count available to this cell before fail-fast or
+    # simulator early-stop pruning. Older checkpoint rows may omit this and
+    # keep the legacy minimum-window compatibility path.
+    expected_n_windows: int = 0
+    # Ensemble feature mode used to build the scored OOS panel. Persisted so
+    # promotion/deploy audits can verify live scoring supports the evaluated
+    # feature schema.
+    ensemble_needs_ranks: bool = False
+    ensemble_needs_dispersion: bool = False
 
 
 # Default weights: p10 drives the reward; worst-DD is a unit-for-unit
@@ -164,6 +208,54 @@ ROBUST_GOODNESS_WEIGHTS = {
     "neg_count_coef":     50.0,
     "neg_magnitude_coef":  2.0,
 }
+
+
+# Pain-adjusted variant — starts from robust_goodness and then penalizes
+# how long the strategy stays underwater plus the RMS depth of drawdowns.
+# This matches the production preference for strategies that recover fast,
+# not merely ones with acceptable endpoint DD.
+PAIN_ADJUSTED_GOODNESS_WEIGHTS = {
+    "tuw_coef":   0.25,   # 20% time underwater => -5 points
+    "ulcer_coef": 1.00,   # ulcer 5 => -5 points
+}
+
+
+FAIL_FAST_SCORE = -1_000_000_000.0
+PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT = 27.0
+PRODUCTION_TARGET_MAX_DD_PCT = 25.0
+PRODUCTION_TARGET_MAX_NEG_WINDOWS = 0
+PRODUCTION_TARGET_MIN_WINDOWS = 1
+PRODUCTION_TARGET_EXIT_CODE = 3
+
+
+STRATEGY_PARAM_FIELDS = (
+    "leverage",
+    "min_score",
+    "hold_through",
+    "top_n",
+    "min_picks",
+    "inference_min_dolvol",
+    "inference_min_vol_20d",
+    "inference_max_vol_20d",
+    "skip_prob",
+    "skip_seed",
+    "regime_gate_window",
+    "vol_target_ann",
+    "inv_vol_target_ann",
+    "inv_vol_floor",
+    "inv_vol_cap",
+    "max_ret_20d_rank_pct",
+    "min_ret_5d_rank_pct",
+    "regime_cs_iqr_max",
+    "regime_cs_skew_min",
+    "no_picks_fallback_symbol",
+    "no_picks_fallback_alloc_scale",
+    "conviction_scaled_alloc",
+    "conviction_alloc_low",
+    "conviction_alloc_high",
+    "allocation_mode",
+    "allocation_temp",
+)
 
 
 def compute_goodness(
@@ -224,6 +316,37 @@ def compute_robust_goodness(
     )
 
 
+def compute_pain_adjusted_goodness(
+    monthlies: "list[float] | np.ndarray",
+    worst_dd_pct: float,
+    time_under_water_pct: float,
+    ulcer_index: float,
+    *,
+    robust_weights: dict | None = None,
+    pain_weights: dict | None = None,
+) -> float:
+    """Robust goodness further penalized by equity-curve pain.
+
+    This keeps the robust downside-aware ranking intact, then subtracts:
+
+      0.25 * time_under_water_pct + 1.0 * ulcer_index
+
+    so otherwise-similar strategies that spend less time below prior highs
+    rank ahead of long-recovery variants.
+    """
+    pw = PAIN_ADJUSTED_GOODNESS_WEIGHTS if pain_weights is None else pain_weights
+    robust = compute_robust_goodness(
+        monthlies,
+        worst_dd_pct,
+        weights=robust_weights,
+    )
+    return (
+        robust
+        - pw["tuw_coef"] * float(time_under_water_pct)
+        - pw["ulcer_coef"] * float(ulcer_index)
+    )
+
+
 def _build_windows(days, window_days: int, stride_days: int):
     if len(days) < window_days:
         return []
@@ -240,6 +363,27 @@ def _monthly_return(total_pct: float, n_days: int) -> float:
     if n_days <= 0:
         return 0.0
     return (1.0 + total_pct / 100.0) ** (21.0 / n_days) - 1.0
+
+
+def _elapsed_window_days(w_df: pd.DataFrame, res) -> int:
+    """Elapsed trading days represented by a window result.
+
+    ``simulate().day_results`` intentionally contains traded days only. For
+    ranking monthly returns, cash days must still count as elapsed time;
+    otherwise strict gates that fire once in a 30-day window get annualised as
+    a one-day strategy. When the simulator stops early, count days only through
+    the stop day so fail-fast partial metrics describe observed time.
+    """
+    if "date" not in w_df.columns:
+        return 0
+    dates = pd.Index(sorted(pd.unique(w_df["date"])))
+    if len(dates) == 0:
+        return 0
+    if bool(getattr(res, "stopped_early", False)) and getattr(res, "day_results", None):
+        stop_day = getattr(res.day_results[-1], "day", None)
+        if stop_day is not None:
+            return int(np.sum(dates <= stop_day))
+    return int(len(dates))
 
 
 def _load_symbols(path: Path) -> list[str]:
@@ -266,6 +410,176 @@ def _blend_scores(oos_df: pd.DataFrame, models: list[XGBStockModel],
     return pd.Series(blended, index=oos_df.index, name="ensemble_score")
 
 
+def _allocation_grid_pairs(
+    allocation_modes: list[str],
+    allocation_temps: list[float],
+) -> list[tuple[str, float]]:
+    """Return unique allocation configs, dropping temp-invariant duplicates."""
+    pairs: list[tuple[str, float]] = []
+    seen: set[tuple[str, float]] = set()
+    for raw_mode in allocation_modes:
+        mode = str(raw_mode or "equal").strip().lower()
+        temps = allocation_temps if mode == "softmax" else [1.0]
+        for raw_temp in temps:
+            temp = float(raw_temp)
+            pair = (mode, temp)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            pairs.append(pair)
+    return pairs
+
+
+def _key_float(value: object) -> float:
+    return round(float(value), 12)
+
+
+def _resolved_fill_buffer_for_key(fee_regime: str, fill_buffer_bps: float | None) -> float:
+    fees = FEE_REGIMES[fee_regime]
+    if fill_buffer_bps is None or float(fill_buffer_bps) < 0.0:
+        return float(fees["fill_buffer_bps"])
+    return float(fill_buffer_bps)
+
+
+def _cell_key_from_mapping(row: dict) -> tuple:
+    """Stable identity for a sweep cell, independent of score metrics."""
+    fee_regime = str(row.get("fee_regime", ""))
+    fill_buffer_bps = row.get("fill_buffer_bps")
+    fill_buffer_key = (
+        _resolved_fill_buffer_for_key(fee_regime, fill_buffer_bps)
+        if fee_regime in FEE_REGIMES
+        else (-1.0 if fill_buffer_bps is None else float(fill_buffer_bps))
+    )
+    return (
+        _key_float(row.get("leverage", 0.0)),
+        _key_float(row.get("min_score", 0.0)),
+        bool(row.get("hold_through", False)),
+        int(row.get("top_n", 0)),
+        int(row.get("min_picks", 0)),
+        fee_regime,
+        _key_float(row.get("inference_min_dolvol", 5_000_000.0)),
+        _key_float(row.get("inference_min_vol_20d", 0.0)),
+        _key_float(row.get("inference_max_vol_20d", 0.0)),
+        _key_float(row.get("skip_prob", 0.0)),
+        int(row.get("skip_seed", 0)),
+        _key_float(fill_buffer_key),
+        int(row.get("regime_gate_window", 0)),
+        _key_float(row.get("vol_target_ann", 0.0)),
+        _key_float(row.get("inv_vol_target_ann", 0.0)),
+        _key_float(row.get("inv_vol_floor", 0.05)),
+        _key_float(row.get("inv_vol_cap", 3.0)),
+        _key_float(row.get("max_ret_20d_rank_pct", 1.0)),
+        _key_float(row.get("min_ret_5d_rank_pct", 0.0)),
+        _key_float(row.get("regime_cs_iqr_max", 0.0)),
+        _key_float(row.get("regime_cs_skew_min", -1e9)),
+        str(row.get("no_picks_fallback_symbol", "") or ""),
+        _key_float(row.get("no_picks_fallback_alloc_scale", 0.0)),
+        bool(row.get("conviction_scaled_alloc", False)),
+        _key_float(row.get("conviction_alloc_low", 0.55)),
+        _key_float(row.get("conviction_alloc_high", 0.85)),
+        str(row.get("allocation_mode", "equal") or "equal"),
+        _key_float(row.get("allocation_temp", 1.0)),
+    )
+
+
+def _strategy_key_from_mapping(row: dict) -> tuple:
+    """Stable identity for a strategy, excluding fee/slippage stress axes."""
+    out = []
+    for field in STRATEGY_PARAM_FIELDS:
+        value = row.get(field, 0 if field == "min_picks" else None)
+        if isinstance(value, float):
+            out.append(_key_float(value))
+        else:
+            out.append(value)
+    return tuple(out)
+
+
+def _cell_key_from_values(
+    *,
+    leverage: float,
+    min_score: float,
+    hold_through: bool,
+    top_n: int,
+    min_picks: int,
+    fee_regime: str,
+    inference_min_dolvol: float,
+    inference_min_vol_20d: float,
+    inference_max_vol_20d: float,
+    skip_prob: float,
+    skip_seed: int,
+    fill_buffer_bps: float | None,
+    regime_gate_window: int,
+    vol_target_ann: float,
+    inv_vol_target_ann: float,
+    inv_vol_floor: float,
+    inv_vol_cap: float,
+    max_ret_20d_rank_pct: float,
+    min_ret_5d_rank_pct: float,
+    regime_cs_iqr_max: float,
+    regime_cs_skew_min: float,
+    no_picks_fallback_symbol: str,
+    no_picks_fallback_alloc_scale: float,
+    conviction_scaled_alloc: bool,
+    conviction_alloc_low: float,
+    conviction_alloc_high: float,
+    allocation_mode: str,
+    allocation_temp: float,
+) -> tuple:
+    return _cell_key_from_mapping(
+        {
+            "leverage": leverage,
+            "min_score": min_score,
+            "hold_through": hold_through,
+            "top_n": top_n,
+            "min_picks": min_picks,
+            "fee_regime": fee_regime,
+            "inference_min_dolvol": inference_min_dolvol,
+            "inference_min_vol_20d": inference_min_vol_20d,
+            "inference_max_vol_20d": inference_max_vol_20d,
+            "skip_prob": skip_prob,
+            "skip_seed": skip_seed,
+            "fill_buffer_bps": _resolved_fill_buffer_for_key(fee_regime, fill_buffer_bps),
+            "regime_gate_window": regime_gate_window,
+            "vol_target_ann": vol_target_ann,
+            "inv_vol_target_ann": inv_vol_target_ann,
+            "inv_vol_floor": inv_vol_floor,
+            "inv_vol_cap": inv_vol_cap,
+            "max_ret_20d_rank_pct": max_ret_20d_rank_pct,
+            "min_ret_5d_rank_pct": min_ret_5d_rank_pct,
+            "regime_cs_iqr_max": regime_cs_iqr_max,
+            "regime_cs_skew_min": regime_cs_skew_min,
+            "no_picks_fallback_symbol": no_picks_fallback_symbol,
+            "no_picks_fallback_alloc_scale": no_picks_fallback_alloc_scale,
+            "conviction_scaled_alloc": conviction_scaled_alloc,
+            "conviction_alloc_low": conviction_alloc_low,
+            "conviction_alloc_high": conviction_alloc_high,
+            "allocation_mode": allocation_mode,
+            "allocation_temp": allocation_temp,
+        }
+    )
+
+
+def _cell_from_row(row: dict) -> CellResult:
+    """Rehydrate a checkpoint row into the current CellResult shape."""
+    kwargs = {}
+    for field_name, field_def in CellResult.__dataclass_fields__.items():
+        if field_name in row:
+            kwargs[field_name] = row[field_name]
+        elif field_def.default is not MISSING:
+            kwargs[field_name] = field_def.default
+    cell = CellResult(**kwargs)
+    if "fill_buffer_bps" not in row and cell.fee_regime in FEE_REGIMES:
+        cell.fill_buffer_bps = float(FEE_REGIMES[cell.fee_regime]["fill_buffer_bps"])
+    return cell
+
+
+def _resume_cells_from_rows(rows: list[dict]) -> dict[tuple, CellResult]:
+    resumed: dict[tuple, CellResult] = {}
+    for row in rows:
+        resumed[_cell_key_from_mapping(row)] = _cell_from_row(row)
+    return resumed
+
+
 def _run_cell(
     oos_df: pd.DataFrame,
     scores: pd.Series,
@@ -275,6 +589,7 @@ def _run_cell(
     hold_through: bool,
     top_n: int,
     fee_regime: str,
+    min_picks: int = 0,
     inference_min_dolvol: float = 5_000_000.0,
     inference_min_vol_20d: float = 0.0,
     inference_max_vol_20d: float = 0.0,
@@ -291,6 +606,16 @@ def _run_cell(
     min_ret_5d_rank_pct: float = 0.0,
     regime_cs_iqr_max: float = 0.0,
     regime_cs_skew_min: float = -1e9,
+    no_picks_fallback_symbol: str = "",
+    no_picks_fallback_alloc_scale: float = 0.0,
+    conviction_scaled_alloc: bool = False,
+    conviction_alloc_low: float = 0.55,
+    conviction_alloc_high: float = 0.85,
+    allocation_mode: str = "equal",
+    allocation_temp: float = 1.0,
+    fail_fast_max_dd_pct: float = 0.0,
+    fail_fast_max_intraday_dd_pct: float = 0.0,
+    fail_fast_neg_windows: int = 0,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     # Override fill_buffer if the caller explicitly set it; otherwise
@@ -302,6 +627,7 @@ def _run_cell(
     )
     cfg = BacktestConfig(
         top_n=int(top_n),
+        min_picks=int(min_picks),
         leverage=float(leverage),
         xgb_weight=1.0,
         fee_rate=float(fees["fee_rate"]),
@@ -323,12 +649,16 @@ def _run_cell(
         min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
         regime_cs_iqr_max=float(regime_cs_iqr_max),
         regime_cs_skew_min=float(regime_cs_skew_min),
+        no_picks_fallback_symbol=str(no_picks_fallback_symbol or ""),
+        no_picks_fallback_alloc_scale=float(no_picks_fallback_alloc_scale),
+        conviction_scaled_alloc=bool(conviction_scaled_alloc),
+        conviction_alloc_low=float(conviction_alloc_low),
+        conviction_alloc_high=float(conviction_alloc_high),
+        allocation_mode=str(allocation_mode or "equal"),
+        allocation_temp=float(allocation_temp),
+        stop_on_drawdown_pct=max(float(fail_fast_max_dd_pct), 0.0),
+        stop_on_intraday_drawdown_pct=max(float(fail_fast_max_intraday_dd_pct), 0.0),
     )
-
-    dummy = XGBStockModel(device="cpu", n_estimators=1, max_depth=1, learning_rate=0.1)
-    dummy.feature_cols = DAILY_FEATURE_COLS
-    dummy._col_medians = np.zeros(len(DAILY_FEATURE_COLS), dtype=np.float32)
-    dummy._fitted = True
 
     monthlies: list[float] = []
     sortinos: list[float] = []
@@ -337,18 +667,23 @@ def _run_cell(
     intra_dds_avg:   list[float] = []
     tuws: list[float] = []
     ulcers: list[float] = []
+    active_day_pcts: list[float] = []
+    fail_fast_reason = ""
     for w_start, w_end in windows:
         w_df = oos_df[(oos_df["date"] >= w_start) & (oos_df["date"] <= w_end)]
         if len(w_df) < 5:
             continue
         w_scores = scores.loc[w_df.index]
         res = simulate(
-            w_df, dummy, cfg,
+            w_df, None, cfg,  # type: ignore[arg-type]
             precomputed_scores=w_scores,
             spy_close_by_date=spy_close_by_date,
         )
-        n_days = len(res.day_results)
-        monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
+        elapsed_days = max(_elapsed_window_days(w_df, res), 1)
+        active_day_pcts.append(
+            float(len(res.day_results)) / float(elapsed_days) * 100.0
+        )
+        monthly = _monthly_return(res.total_return_pct, elapsed_days) * 100.0
         monthlies.append(monthly)
         sortinos.append(res.sortino_ratio)
         dds.append(res.max_drawdown_pct)
@@ -356,12 +691,30 @@ def _run_cell(
         intra_dds_avg.append(res.avg_intraday_dd_pct)
         tuws.append(res.time_under_water_pct)
         ulcers.append(res.ulcer_index)
+        if fail_fast_max_dd_pct > 0.0 and res.max_drawdown_pct >= fail_fast_max_dd_pct:
+            fail_fast_reason = f"max_dd_pct>={fail_fast_max_dd_pct:g}"
+            break
+        if (
+            fail_fast_max_intraday_dd_pct > 0.0
+            and res.worst_intraday_dd_pct >= fail_fast_max_intraday_dd_pct
+        ):
+            fail_fast_reason = (
+                f"intraday_dd_pct>={fail_fast_max_intraday_dd_pct:g}"
+            )
+            break
+        if fail_fast_neg_windows > 0 and sum(m < 0.0 for m in monthlies) >= fail_fast_neg_windows:
+            fail_fast_reason = f"neg_windows>={fail_fast_neg_windows:d}"
+            break
 
     n = len(monthlies)
     if n == 0:
         empty = CellResult(leverage, min_score, hold_through, top_n, fee_regime,
                            0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+        empty.min_picks = int(min_picks)
         empty.fill_buffer_bps = fb_resolved
+        empty.allocation_mode = str(allocation_mode or "equal")
+        empty.allocation_temp = float(allocation_temp)
+        empty.expected_n_windows = int(len(windows))
         return empty
 
     arr = np.array(monthlies)
@@ -374,6 +727,18 @@ def _run_cell(
     avg_intra   = float(np.mean(intra_dds_avg))  if intra_dds_avg   else 0.0
     tuw_med     = float(np.median(tuws))    if tuws    else 0.0
     ulcer_med   = float(np.median(ulcers))  if ulcers  else 0.0
+    active_med  = float(np.median(active_day_pcts)) if active_day_pcts else 0.0
+    active_min  = float(np.min(active_day_pcts)) if active_day_pcts else 0.0
+    pain_adjusted_goodness = compute_pain_adjusted_goodness(
+        arr,
+        worst_dd,
+        tuw_med,
+        ulcer_med,
+    )
+    if fail_fast_reason:
+        goodness = FAIL_FAST_SCORE
+        robust_goodness = FAIL_FAST_SCORE
+        pain_adjusted_goodness = FAIL_FAST_SCORE
     return CellResult(
         leverage=leverage,
         min_score=min_score,
@@ -386,12 +751,18 @@ def _run_cell(
         median_sortino=float(np.median(sortinos)),
         worst_dd_pct=worst_dd,
         n_neg=n_neg,
+        min_picks=int(min_picks),
         goodness_score=goodness,
         robust_goodness_score=robust_goodness,
+        pain_adjusted_goodness_score=pain_adjusted_goodness,
+        fail_fast_triggered=bool(fail_fast_reason),
+        fail_fast_reason=fail_fast_reason,
         worst_intraday_dd_pct=worst_intra,
         avg_intraday_dd_pct=avg_intra,
         time_under_water_pct=tuw_med,
         ulcer_index=ulcer_med,
+        median_active_day_pct=active_med,
+        min_active_day_pct=active_min,
         inference_min_dolvol=float(inference_min_dolvol),
         inference_min_vol_20d=float(inference_min_vol_20d),
         inference_max_vol_20d=float(inference_max_vol_20d),
@@ -407,6 +778,14 @@ def _run_cell(
         min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
         regime_cs_iqr_max=float(regime_cs_iqr_max),
         regime_cs_skew_min=float(regime_cs_skew_min),
+        no_picks_fallback_symbol=str(no_picks_fallback_symbol or ""),
+        no_picks_fallback_alloc_scale=float(no_picks_fallback_alloc_scale),
+        conviction_scaled_alloc=bool(conviction_scaled_alloc),
+        conviction_alloc_low=float(conviction_alloc_low),
+        conviction_alloc_high=float(conviction_alloc_high),
+        allocation_mode=str(allocation_mode or "equal"),
+        allocation_temp=float(allocation_temp),
+        expected_n_windows=int(len(windows)),
     )
 
 
@@ -426,6 +805,7 @@ def run_sweep(
     hold_through_grid: list[bool],
     top_n_grid: list[int],
     fee_regimes: list[str],
+    min_picks_grid: list[int] | None = None,
     blend_mode: str = "mean",
     chronos_cache_path: Path | None = None,
     min_dollar_vol: float = 5_000_000.0,
@@ -446,6 +826,19 @@ def run_sweep(
     min_ret_5d_rank_pct_grid: list[float] | None = None,
     regime_cs_iqr_max_grid: list[float] | None = None,
     regime_cs_skew_min_grid: list[float] | None = None,
+    no_picks_fallback_symbol: str = "",
+    no_picks_fallback_alloc_grid: list[float] | None = None,
+    conviction_scaled_alloc_grid: list[bool] | None = None,
+    conviction_alloc_low: float = 0.55,
+    conviction_alloc_high: float = 0.85,
+    allocation_mode_grid: list[str] | None = None,
+    allocation_temp_grid: list[float] | None = None,
+    fail_fast_max_dd_pct: float = 0.0,
+    fail_fast_max_intraday_dd_pct: float = 0.0,
+    fail_fast_neg_windows: int = 0,
+    fast_features: bool = False,
+    progress_callback: Callable[[list[CellResult], int, int], None] | None = None,
+    resume_rows: list[dict] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     for p in model_paths:
@@ -468,32 +861,37 @@ def run_sweep(
     for p in model_paths:
         logger.info("loading %s", p)
         models.append(load_any_model(p))
-    def _model_has_ranks(m) -> bool:
-        fc = getattr(m, "feature_cols", None) or []
-        return any(c in fc for c in DAILY_RANK_FEATURE_COLS)
 
-    def _model_has_dispersion(m) -> bool:
-        fc = getattr(m, "feature_cols", None) or []
-        return any(c in fc for c in DAILY_DISPERSION_FEATURE_COLS)
+    first_features: tuple[str, ...] | None = None
+    first_path: Path | None = None
+    for model, path in zip(models, model_paths, strict=True):
+        raw_features = getattr(model, "feature_cols", None)
+        if (
+            not isinstance(raw_features, (list, tuple))
+            or not raw_features
+            or not all(isinstance(col, str) and col for col in raw_features)
+        ):
+            raise ValueError(f"{path}: model feature_cols must be a non-empty list")
+        features = tuple(raw_features)
+        unsupported = sorted(set(features) - LIVE_SUPPORTED_FEATURE_COLS)
+        if unsupported:
+            raise ValueError(
+                f"{path}: model feature_cols contains unsupported live features: "
+                f"{unsupported}"
+            )
+        if first_features is None:
+            first_features = features
+            first_path = path
+        elif features != first_features:
+            raise ValueError(
+                "Ensemble feature_cols mismatch: "
+                f"{path} has {len(features)} features but {first_path} has "
+                f"{len(first_features)}"
+            )
 
-    have_ranks = [_model_has_ranks(m) for m in models]
-    have_disp = [_model_has_dispersion(m) for m in models]
-    needs_ranks = any(have_ranks)
-    needs_disp = any(have_disp)
-    # All models must agree — a mixed ensemble (some with ranks, some without)
-    # would silently produce different feature sets per member. Reject.
-    if any(have_ranks) and not all(have_ranks):
-        raise ValueError(
-            "Ensemble mixes rank-trained and non-rank-trained models. "
-            f"feature_cols per model: "
-            f"{[len(m.feature_cols) for m in models]}"
-        )
-    if any(have_disp) and not all(have_disp):
-        raise ValueError(
-            "Ensemble mixes dispersion-trained and non-dispersion models. "
-            f"feature_cols per model: "
-            f"{[len(m.feature_cols) for m in models]}"
-        )
+    assert first_features is not None
+    needs_ranks = any(c in first_features for c in DAILY_RANK_FEATURE_COLS)
+    needs_disp = any(c in first_features for c in DAILY_DISPERSION_FEATURE_COLS)
     logger.info("ensemble feature-mode: ranks=%s disp=%s", needs_ranks, needs_disp)
 
     _t = time.perf_counter()
@@ -506,7 +904,7 @@ def run_sweep(
         test_start=oos_start, test_end=oos_end,
         chronos_cache=chronos_cache if chronos_cache else None,
         min_dollar_vol=min_dollar_vol,
-        fast_features=False,
+        fast_features=bool(fast_features),
         include_cross_sectional_ranks=needs_ranks,
         include_cross_sectional_dispersion=needs_disp,
     )
@@ -540,6 +938,32 @@ def run_sweep(
     r5g_grid  = [float(x) for x in (min_ret_5d_rank_pct_grid or [0.0])]
     rgiqr_grid  = [float(x) for x in (regime_cs_iqr_max_grid  or [0.0])]
     rgskew_grid = [float(x) for x in (regime_cs_skew_min_grid or [-1e9])]
+    minp_grid = [int(x) for x in (min_picks_grid or [0])]
+    # No-picks fallback axis — 0.0 means "no fallback" for legacy parity.
+    # When the symbol is empty, alloc_grid is forced to [0.0] (no fallback
+    # can fire without a target symbol).
+    fb_sym = str(no_picks_fallback_symbol or "").strip().upper()
+    fb_alloc_grid = (
+        [float(x) for x in (no_picks_fallback_alloc_grid or [0.0])]
+        if fb_sym else [0.0]
+    )
+    conv_grid = list(conviction_scaled_alloc_grid or [False])
+    alloc_mode_grid = [str(x or "equal").strip().lower() for x in (allocation_mode_grid or ["equal"])]
+    alloc_temp_grid = [float(x) for x in (allocation_temp_grid or [1.0])]
+    valid_alloc_modes = {"equal", "score_norm", "softmax"}
+    bad_alloc_modes = sorted(set(alloc_mode_grid) - valid_alloc_modes)
+    if bad_alloc_modes:
+        raise ValueError(
+            f"Unknown allocation_mode values {bad_alloc_modes}; "
+            "expected equal|score_norm|softmax"
+        )
+    alloc_pairs = _allocation_grid_pairs(alloc_mode_grid, alloc_temp_grid)
+    dropped_alloc_cells = len(alloc_mode_grid) * len(alloc_temp_grid) - len(alloc_pairs)
+    if dropped_alloc_cells > 0:
+        logger.info(
+            "allocation grid canonicalized: dropped %d temp-invariant duplicate cells",
+            dropped_alloc_cells,
+        )
 
     # SPY series used by BOTH knobs (regime gate + vol target).
     spy_close_by_date: pd.Series | None = None
@@ -563,74 +987,137 @@ def run_sweep(
             len(spy_close_by_date), rgw_grid, vta_grid,
         )
 
+    resume_by_key = _resume_cells_from_rows(resume_rows or [])
+    if resume_by_key:
+        logger.info("resume enabled: loaded %d completed checkpoint cells", len(resume_by_key))
+
     cells: list[CellResult] = []
+    skip_pairs = [
+        (float(sp), int(sseed))
+        for sp in sp_grid
+        for sseed in (ss_list if sp > 0 else [0])
+    ]
     total = (
         len(leverage_grid) * len(min_score_grid)
-        * len(hold_through_grid) * len(top_n_grid) * len(fee_regimes)
+        * len(hold_through_grid) * len(top_n_grid) * len(minp_grid) * len(fee_regimes)
         * len(inf_grid) * len(vol_grid) * len(maxvol_grid)
-        * len(sp_grid) * len(ss_list) * len(fb_grid)
+        * len(skip_pairs) * len(fb_grid)
         * len(rgw_grid) * len(vta_grid) * len(ivt_grid)
         * len(r20g_grid) * len(r5g_grid)
         * len(rgiqr_grid) * len(rgskew_grid)
+        * len(fb_alloc_grid) * len(conv_grid)
+        * len(alloc_pairs)
     )
     i = 0
-    for lev in leverage_grid:
-        for ms in min_score_grid:
-            for ht in hold_through_grid:
-                for tn in top_n_grid:
-                    for reg in fee_regimes:
-                        for inf_dv in inf_grid:
-                            for inf_vol in vol_grid:
-                                for inf_maxvol in maxvol_grid:
-                                    for sp in sp_grid:
-                                        # Only iterate seeds when skipping;
-                                        # at skip=0 the sim is deterministic.
-                                        seed_iter = ss_list if sp > 0 else [0]
-                                        for sseed in seed_iter:
-                                            for fb in fb_grid:
-                                                for rgw in rgw_grid:
-                                                    for vta in vta_grid:
-                                                        for ivt in ivt_grid:
-                                                            for r20g in r20g_grid:
-                                                                for r5g in r5g_grid:
-                                                                    for rgiqr in rgiqr_grid:
-                                                                        for rgskew in rgskew_grid:
-                                                                            i += 1
-                                                                            cell = _run_cell(
-                                                                                oos_df=oos_df, scores=scores, windows=windows,
-                                                                                leverage=lev, min_score=ms, hold_through=ht,
-                                                                                top_n=tn, fee_regime=reg,
-                                                                                inference_min_dolvol=inf_dv,
-                                                                                inference_min_vol_20d=inf_vol,
-                                                                                inference_max_vol_20d=inf_maxvol,
-                                                                                skip_prob=sp, skip_seed=sseed,
-                                                                                fill_buffer_bps=fb,
-                                                                                regime_gate_window=rgw,
-                                                                                vol_target_ann=vta,
-                                                                                spy_close_by_date=spy_close_by_date,
-                                                                                inv_vol_target_ann=ivt,
-                                                                                inv_vol_floor=inv_vol_floor,
-                                                                                inv_vol_cap=inv_vol_cap,
-                                                                                max_ret_20d_rank_pct=r20g,
-                                                                                min_ret_5d_rank_pct=r5g,
-                                                                                regime_cs_iqr_max=rgiqr,
-                                                                                regime_cs_skew_min=rgskew,
-                                                                            )
-                                                                            logger.info(
-                                                                                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d reg=%s "
-                                                                                "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
-                                                                                "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
-                                                                                "rgiqr=%.3f rgskew=%+.2f "
-                                                                                "med=%+.2f%% p10=%+.2f%% neg=%d/%d",
-                                                                                i, total, lev, ms, ht, tn, reg,
-                                                                                inf_dv, inf_vol, inf_maxvol, sp, sseed,
-                                                                                cell.fill_buffer_bps,
-                                                                                rgw, vta, ivt, r20g, r5g,
-                                                                                rgiqr, rgskew,
-                                                                                cell.median_monthly_pct, cell.p10_monthly_pct,
-                                                                                cell.n_neg, cell.n_windows,
-                                                                            )
-                                                                            cells.append(cell)
+    for (
+        lev, ms, ht, tn, minp, reg, inf_dv, inf_vol, inf_maxvol, skip_pair,
+        fb, rgw, vta, ivt, r20g, r5g, rgiqr, rgskew, fb_alloc, conv,
+        alloc_pair,
+    ) in product(
+        leverage_grid, min_score_grid, hold_through_grid, top_n_grid, minp_grid, fee_regimes,
+        inf_grid, vol_grid, maxvol_grid, skip_pairs, fb_grid, rgw_grid, vta_grid,
+        ivt_grid, r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid, fb_alloc_grid,
+        conv_grid, alloc_pairs,
+    ):
+        alloc_mode, alloc_temp = alloc_pair
+        sp, sseed = skip_pair
+        i += 1
+        cell_key = _cell_key_from_values(
+            leverage=lev,
+            min_score=ms,
+            hold_through=ht,
+            top_n=tn,
+            min_picks=minp,
+            fee_regime=reg,
+            inference_min_dolvol=inf_dv,
+            inference_min_vol_20d=inf_vol,
+            inference_max_vol_20d=inf_maxvol,
+            skip_prob=sp,
+            skip_seed=sseed,
+            fill_buffer_bps=fb,
+            regime_gate_window=rgw,
+            vol_target_ann=vta,
+            inv_vol_target_ann=ivt,
+            inv_vol_floor=inv_vol_floor,
+            inv_vol_cap=inv_vol_cap,
+            max_ret_20d_rank_pct=r20g,
+            min_ret_5d_rank_pct=r5g,
+            regime_cs_iqr_max=rgiqr,
+            regime_cs_skew_min=rgskew,
+            no_picks_fallback_symbol=fb_sym if fb_alloc != 0.0 else "",
+            no_picks_fallback_alloc_scale=fb_alloc,
+            conviction_scaled_alloc=bool(conv),
+            conviction_alloc_low=conviction_alloc_low,
+            conviction_alloc_high=conviction_alloc_high,
+            allocation_mode=alloc_mode,
+            allocation_temp=alloc_temp,
+        )
+        resumed_cell = resume_by_key.get(cell_key)
+        if resumed_cell is not None:
+            resumed_cell.ensemble_needs_ranks = bool(needs_ranks)
+            resumed_cell.ensemble_needs_dispersion = bool(needs_disp)
+            logger.info(
+                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d reg=%s "
+                "alloc=%s/%.2f resumed from checkpoint",
+                i, total, lev, ms, ht, tn, minp, reg, alloc_mode, alloc_temp,
+            )
+            cells.append(resumed_cell)
+            if progress_callback is not None:
+                progress_callback(cells, i, total)
+            continue
+        cell = _run_cell(
+            oos_df=oos_df, scores=scores, windows=windows,
+            leverage=lev, min_score=ms, hold_through=ht,
+            top_n=tn, min_picks=minp, fee_regime=reg,
+            inference_min_dolvol=inf_dv,
+            inference_min_vol_20d=inf_vol,
+            inference_max_vol_20d=inf_maxvol,
+            skip_prob=sp, skip_seed=sseed,
+            fill_buffer_bps=fb,
+            regime_gate_window=rgw,
+            vol_target_ann=vta,
+            spy_close_by_date=spy_close_by_date,
+            inv_vol_target_ann=ivt,
+            inv_vol_floor=inv_vol_floor,
+            inv_vol_cap=inv_vol_cap,
+            max_ret_20d_rank_pct=r20g,
+            min_ret_5d_rank_pct=r5g,
+            regime_cs_iqr_max=rgiqr,
+            regime_cs_skew_min=rgskew,
+            no_picks_fallback_symbol=fb_sym if fb_alloc != 0.0 else "",
+            no_picks_fallback_alloc_scale=fb_alloc,
+            conviction_scaled_alloc=bool(conv),
+            conviction_alloc_low=conviction_alloc_low,
+            conviction_alloc_high=conviction_alloc_high,
+            allocation_mode=alloc_mode,
+            allocation_temp=alloc_temp,
+            fail_fast_max_dd_pct=float(fail_fast_max_dd_pct),
+            fail_fast_max_intraday_dd_pct=float(fail_fast_max_intraday_dd_pct),
+            fail_fast_neg_windows=int(fail_fast_neg_windows),
+        )
+        cell.ensemble_needs_ranks = bool(needs_ranks)
+        cell.ensemble_needs_dispersion = bool(needs_disp)
+        logger.info(
+            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d reg=%s "
+            "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
+            "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
+            "rgiqr=%.3f rgskew=%+.2f "
+            "fb_sym=%s fb_alloc=%.2f conv=%s alloc=%s/%.2f "
+            "med=%+.2f%% p10=%+.2f%% neg=%d/%d%s",
+            i, total, lev, ms, ht, tn, minp, reg,
+            inf_dv, inf_vol, inf_maxvol, sp, sseed,
+            cell.fill_buffer_bps,
+            rgw, vta, ivt, r20g, r5g,
+            rgiqr, rgskew,
+            fb_sym if fb_alloc != 0.0 else "",
+            fb_alloc, conv, alloc_mode, alloc_temp,
+            cell.median_monthly_pct, cell.p10_monthly_pct,
+            cell.n_neg, cell.n_windows,
+            f" FAIL_FAST({cell.fail_fast_reason})" if cell.fail_fast_triggered else "",
+        )
+        cells.append(cell)
+        if progress_callback is not None:
+            progress_callback(cells, i, total)
     return cells
 
 
@@ -639,6 +1126,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
         {
             "leverage": c.leverage, "min_score": c.min_score,
             "hold_through": c.hold_through, "top_n": c.top_n,
+            "min_picks": c.min_picks,
             "fee_regime": c.fee_regime,
             "n_windows": c.n_windows,
             "median_monthly_pct": c.median_monthly_pct,
@@ -648,10 +1136,15 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "n_neg": c.n_neg,
             "goodness_score": c.goodness_score,
             "robust_goodness_score": c.robust_goodness_score,
+            "pain_adjusted_goodness_score": c.pain_adjusted_goodness_score,
+            "fail_fast_triggered": c.fail_fast_triggered,
+            "fail_fast_reason": c.fail_fast_reason,
             "worst_intraday_dd_pct": c.worst_intraday_dd_pct,
             "avg_intraday_dd_pct":   c.avg_intraday_dd_pct,
             "time_under_water_pct":  c.time_under_water_pct,
             "ulcer_index":           c.ulcer_index,
+            "median_active_day_pct": c.median_active_day_pct,
+            "min_active_day_pct":    c.min_active_day_pct,
             "inference_min_dolvol":  c.inference_min_dolvol,
             "inference_min_vol_20d": c.inference_min_vol_20d,
             "inference_max_vol_20d": c.inference_max_vol_20d,
@@ -667,9 +1160,272 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "min_ret_5d_rank_pct":   c.min_ret_5d_rank_pct,
             "regime_cs_iqr_max":     c.regime_cs_iqr_max,
             "regime_cs_skew_min":    c.regime_cs_skew_min,
+            "no_picks_fallback_symbol":     c.no_picks_fallback_symbol,
+            "no_picks_fallback_alloc_scale": c.no_picks_fallback_alloc_scale,
+            "conviction_scaled_alloc":      c.conviction_scaled_alloc,
+            "conviction_alloc_low":         c.conviction_alloc_low,
+            "conviction_alloc_high":        c.conviction_alloc_high,
+            "allocation_mode":              c.allocation_mode,
+            "allocation_temp":              c.allocation_temp,
+            "expected_n_windows":           c.expected_n_windows,
+            "ensemble_needs_ranks":         c.ensemble_needs_ranks,
+            "ensemble_needs_dispersion":    c.ensemble_needs_dispersion,
         }
         for c in cells
     ]
+
+
+def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
+    """Aggregate sweep rows across fee/slippage cells by strategy params.
+
+    The production rule is evaluated on the worst friction cell, not the
+    easiest row. This summary groups identical strategy knobs while treating
+    fee_regime and fill_buffer_bps as stress axes. Higher-is-better metrics
+    use the minimum across the group; lower-is-better pain/risk metrics use
+    the maximum.
+    """
+    grouped: dict[tuple, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(_strategy_key_from_mapping(row), []).append(row)
+
+    summaries: list[dict] = []
+    high_good = (
+        "median_monthly_pct",
+        "p10_monthly_pct",
+        "median_sortino",
+        "goodness_score",
+        "robust_goodness_score",
+        "pain_adjusted_goodness_score",
+        "median_active_day_pct",
+        "min_active_day_pct",
+    )
+    low_good = (
+        "worst_dd_pct",
+        "worst_intraday_dd_pct",
+        "avg_intraday_dd_pct",
+        "time_under_water_pct",
+        "ulcer_index",
+        "n_neg",
+    )
+    for group_rows in grouped.values():
+        first = group_rows[0]
+        summary = {field: first.get(field) for field in STRATEGY_PARAM_FIELDS}
+        for metric in high_good:
+            summary[f"worst_{metric}"] = min(
+                float(r.get(metric, 0.0)) for r in group_rows
+            )
+        for metric in low_good:
+            raw = max(float(r.get(metric, 0.0)) for r in group_rows)
+            summary[f"max_{metric}"] = int(raw) if metric == "n_neg" else raw
+        summary["min_n_windows"] = min(int(r.get("n_windows", 0)) for r in group_rows)
+        summary["max_expected_n_windows"] = max(
+            int(r.get("expected_n_windows", 0)) for r in group_rows
+        )
+        summary["required_min_n_windows"] = max(
+            PRODUCTION_TARGET_MIN_WINDOWS,
+            int(summary["max_expected_n_windows"]),
+        )
+        summary["n_friction_cells"] = len(group_rows)
+        summary["fee_regimes"] = sorted({str(r.get("fee_regime", "")) for r in group_rows})
+        summary["fill_buffer_bps_values"] = sorted(
+            {float(r.get("fill_buffer_bps", 0.0)) for r in group_rows}
+        )
+        worst_row = min(
+            group_rows,
+            key=lambda r: float(r.get("pain_adjusted_goodness_score", 0.0)),
+        )
+        summary["worst_fee_regime_by_pain"] = worst_row.get("fee_regime", "")
+        summary["worst_fill_buffer_bps_by_pain"] = float(
+            worst_row.get("fill_buffer_bps", 0.0)
+        )
+        summary["any_fail_fast_triggered"] = any(
+            bool(r.get("fail_fast_triggered", False)) for r in group_rows
+        )
+        summary["production_target_pass"] = (
+            not summary["any_fail_fast_triggered"]
+            and summary["worst_median_monthly_pct"] >= PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT
+            and summary["max_worst_dd_pct"] <= PRODUCTION_TARGET_MAX_DD_PCT
+            and summary["max_n_neg"] <= PRODUCTION_TARGET_MAX_NEG_WINDOWS
+            and summary["min_n_windows"] >= summary["required_min_n_windows"]
+        )
+        summaries.append(summary)
+
+    summaries.sort(
+        key=lambda r: (
+            bool(r["production_target_pass"]),
+            float(r["worst_pain_adjusted_goodness_score"]),
+            float(r["worst_median_monthly_pct"]),
+        ),
+        reverse=True,
+    )
+    return summaries
+
+
+def _production_target_pass_rows(rows: list[dict]) -> list[dict]:
+    """Return friction-robust strategy summaries that clear prod targets."""
+    return [
+        r for r in _friction_robust_strategy_rows(rows)
+        if bool(r.get("production_target_pass", False))
+    ]
+
+
+def _production_target_exit_code(rows: list[dict], *, required: bool) -> int:
+    if not required:
+        return 0
+    return 0 if _production_target_pass_rows(rows) else PRODUCTION_TARGET_EXIT_CODE
+
+
+def _sweep_json_payload(
+    *,
+    model_paths: list[Path],
+    model_sha256: list[str] | None = None,
+    ensemble_manifest: dict | None = None,
+    oos_start: str,
+    oos_end: date,
+    window_days: int,
+    stride_days: int,
+    fee_regimes: list[str],
+    fail_fast_max_dd_pct: float,
+    fail_fast_max_intraday_dd_pct: float,
+    fail_fast_neg_windows: int,
+    rows: list[dict],
+    complete: bool,
+) -> dict:
+    robust_strategies = _friction_robust_strategy_rows(rows)
+    production_passes = [
+        r for r in robust_strategies
+        if bool(r.get("production_target_pass", False))
+    ]
+    payload = {
+        "model_paths": [str(p) for p in model_paths],
+        "oos_start": oos_start,
+        "oos_end": str(oos_end),
+        "window_days": int(window_days),
+        "stride_days": int(stride_days),
+        "fee_regimes": {k: FEE_REGIMES[k] for k in fee_regimes},
+        "goodness_weights": GOODNESS_WEIGHTS,
+        "robust_goodness_weights": ROBUST_GOODNESS_WEIGHTS,
+        "pain_adjusted_goodness_weights": PAIN_ADJUSTED_GOODNESS_WEIGHTS,
+        "ensemble_feature_mode": {
+            "needs_ranks": any(bool(row.get("ensemble_needs_ranks", False)) for row in rows),
+            "needs_dispersion": any(
+                bool(row.get("ensemble_needs_dispersion", False)) for row in rows
+            ),
+        },
+        "production_target": {
+            "median_monthly_pct": PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT,
+            "max_dd_pct": PRODUCTION_TARGET_MAX_DD_PCT,
+            "max_neg_windows": PRODUCTION_TARGET_MAX_NEG_WINDOWS,
+            "min_windows": PRODUCTION_TARGET_MIN_WINDOWS,
+            "expected_windows_required": True,
+            "basis": "worst fee_regime/fill_buffer_bps cell per strategy",
+        },
+        "fail_fast": {
+            "max_dd_pct": float(fail_fast_max_dd_pct),
+            "max_intraday_dd_pct": float(fail_fast_max_intraday_dd_pct),
+            "neg_windows": int(fail_fast_neg_windows),
+            "score": FAIL_FAST_SCORE,
+        },
+        "complete": bool(complete),
+        "n_cells": len(rows),
+        "n_friction_robust_strategies": len(robust_strategies),
+        "n_production_target_pass": len(production_passes),
+        "best_production_target_strategy": production_passes[0] if production_passes else None,
+        "friction_robust_strategies": robust_strategies,
+        "cells": rows,
+    }
+    hashes = _model_sha256(model_paths) if model_sha256 is None else list(model_sha256)
+    if hashes is not None:
+        payload["model_sha256"] = hashes
+    manifest = _ensemble_manifest_metadata(model_paths) if ensemble_manifest is None else ensemble_manifest
+    if manifest is not None:
+        payload["ensemble_manifest"] = manifest
+    return payload
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _model_sha256(model_paths: list[Path]) -> list[str] | None:
+    """Return per-model file hashes when all model files are available."""
+    hashes: list[str] = []
+    for path in model_paths:
+        if not path.is_file():
+            return None
+        hashes.append(_file_sha256(path))
+    return hashes
+
+
+def _ensemble_manifest_metadata(model_paths: list[Path]) -> dict | None:
+    """Return shared alltrain manifest provenance when model paths have one."""
+    if not model_paths:
+        return None
+    parents = {path.parent for path in model_paths}
+    if len(parents) != 1:
+        return None
+    manifest_path = next(iter(parents)) / "alltrain_ensemble.json"
+    if not manifest_path.is_file():
+        return None
+    metadata: dict = {
+        "path": str(manifest_path),
+        "sha256": _file_sha256(manifest_path),
+    }
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return metadata
+    if not isinstance(payload, dict):
+        return metadata
+    for key in ("trained_at", "train_start", "train_end", "seeds", "config"):
+        if key in payload:
+            metadata[key] = payload[key]
+    return metadata
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(path)
+
+
+def _load_checkpoint_rows(
+    path: Path,
+    *,
+    expected_model_paths: list[Path] | None = None,
+    expected_oos_start: str | None = None,
+    expected_oos_end: date | str | None = None,
+    expected_window_days: int | None = None,
+    expected_stride_days: int | None = None,
+) -> list[dict]:
+    payload = json.loads(path.read_text())
+    mismatches: list[str] = []
+    if expected_model_paths is not None:
+        expected = [str(p) for p in expected_model_paths]
+        if payload.get("model_paths") != expected:
+            mismatches.append("model_paths")
+    if expected_oos_start is not None and payload.get("oos_start") != str(expected_oos_start):
+        mismatches.append("oos_start")
+    if expected_oos_end is not None and payload.get("oos_end") != str(expected_oos_end):
+        mismatches.append("oos_end")
+    if expected_window_days is not None and payload.get("window_days") != int(expected_window_days):
+        mismatches.append("window_days")
+    if expected_stride_days is not None and payload.get("stride_days") != int(expected_stride_days):
+        mismatches.append("stride_days")
+    if mismatches:
+        joined = ", ".join(mismatches)
+        raise ValueError(f"checkpoint {path} does not match current sweep: {joined}")
+    rows = payload.get("cells")
+    if not isinstance(rows, list):
+        raise ValueError(f"checkpoint {path} does not contain a cells list")
+    if not all(isinstance(row, dict) for row in rows):
+        raise ValueError(f"checkpoint {path} contains non-object cells")
+    return rows
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -690,6 +1446,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--leverage-grid", type=str, default="2.0")
     p.add_argument("--min-score-grid", type=str, default="0.0")
     p.add_argument("--top-n-grid", type=str, default="1")
+    p.add_argument("--min-picks-grid", type=str, default="",
+                   help="Aggressive packing floor grid. Comma-separated "
+                        "integers bounded by top_n inside the simulator. "
+                        "0 or empty preserves classic min_score-gated "
+                        "behavior; positive values force at least that many "
+                        "best-ranked picks after live-replicable filters.")
     p.add_argument("--hold-through", action="store_true",
                    help="Include hold_through=True in sweep.")
     p.add_argument("--no-hold-through", action="store_true",
@@ -790,6 +1552,82 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "universe. Very negative disables (defaults to -1e9). "
                         "Positive values keep only right-skew days (few "
                         "winners dominate the panel).")
+    p.add_argument("--no-picks-fallback", type=str, default="",
+                   help="Symbol to buy on days where no scored candidate "
+                        "clears min_score (or conviction-scaling sizes to "
+                        "zero). Typical: 'SPY' (broad market) or 'QQQ' "
+                        "(higher drift, higher DD). Empty = hold cash "
+                        "(legacy). Requires the symbol to exist in the "
+                        "training universe so the build_daily_dataset "
+                        "pipeline produces bars for it.")
+    p.add_argument("--no-picks-fallback-alloc-grid", type=str, default="",
+                   help="Comma-separated allocation scales for the no-picks "
+                        "fallback, e.g. '0.25,0.5,1.0'. Each value is the "
+                        "fraction of config.leverage to apply on no-picks "
+                        "days. Empty = single cell at 0.0 (disabled). "
+                        "Ignored when --no-picks-fallback is empty.")
+    p.add_argument("--conviction-scaled-alloc-grid", type=str, default="",
+                   help="Comma-separated booleans for conviction-scaled "
+                        "allocation, e.g. '0,1' to A/B vs binary gate. "
+                        "0 = off, 1 = on. Empty = single cell at 0 (off). "
+                        "When on, each day's exposure is scaled by "
+                        "clip((top_score - low) / (high - low), 0, 1).")
+    p.add_argument("--conviction-alloc-low", type=float, default=0.55,
+                   help="Lower edge of the conviction-scaled allocation "
+                        "ramp (score at which exposure is 0%%). Default 0.55.")
+    p.add_argument("--conviction-alloc-high", type=float, default=0.85,
+                   help="Upper edge of the conviction-scaled allocation "
+                        "ramp (score at which exposure is 100%%). "
+                        "Default 0.85.")
+    p.add_argument("--allocation-mode-grid", type=str, default="",
+                   help="Comma-separated allocation weighting modes for "
+                        "top_n>1: equal, score_norm, softmax. Empty = "
+                        "equal only. This changes sizing across selected "
+                        "pairs without changing the pick set.")
+    p.add_argument("--allocation-temp-grid", type=str, default="",
+                   help="Comma-separated softmax temperatures for "
+                        "--allocation-mode-grid softmax cells. Lower is "
+                        "more concentrated. Ignored for equal/score_norm "
+                        "because those modes are temperature-invariant. "
+                        "Empty = 1.0.")
+    p.add_argument("--fail-fast-max-dd-pct", type=float, default=0.0,
+                   help="Stop evaluating a cell once any completed window's "
+                        "max drawdown reaches this percentage. 0 disables. "
+                        "Pruned cells keep partial metrics but receive "
+                        "FAIL_FAST_SCORE ranking values so they cannot win. "
+                        "Example: 40 means prune after a 40%% window DD.")
+    p.add_argument("--fail-fast-max-intraday-dd-pct", type=float, default=0.0,
+                   help="Stop evaluating a cell once any window's OHLC-based "
+                        "portfolio intraday drawdown reaches this percentage. "
+                        "0 disables. This catches high-leverage cells that "
+                        "recover by close but exceed live risk while open. "
+                        "Example: 40 means prune after a 40%% intraday DD.")
+    p.add_argument("--fail-fast-neg-windows", type=int, default=0,
+                   help="Stop evaluating a cell once this many completed "
+                        "windows have negative monthly returns. 0 disables. "
+                        "Useful for large grids where early losing cells are "
+                        "not production candidates regardless of later windows.")
+    p.add_argument("--checkpoint-every-cells", type=int, default=0,
+                   help="Write an atomic partial JSON checkpoint every N "
+                        "completed cells. 0 disables. The checkpoint path "
+                        "defaults to sweep_<timestamp>.partial.json under "
+                        "--output-dir and uses the same schema as final JSON "
+                        "with complete=false.")
+    p.add_argument("--checkpoint-path", type=Path, default=None,
+                   help="Optional explicit partial checkpoint path. Ignored "
+                        "unless --checkpoint-every-cells is positive.")
+    p.add_argument("--resume-from-checkpoint", type=Path, default=None,
+                   help="Load completed cells from a previous partial/final "
+                        "sweep JSON and skip matching grid cells. The final "
+                        "output preserves the current grid order and recomputes "
+                        "only missing cells.")
+    p.add_argument("--require-production-target", action="store_true",
+                   help="Exit nonzero after writing output if no friction-robust "
+                        "strategy clears the project production target "
+                        f"(median>={PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT:g}% "
+                        f"and dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}% on the "
+                        "worst fee/fill cell). Default research mode still "
+                        "exits 0 even when all cells fail.")
     p.add_argument("--invert-scores", action="store_true",
                    help="Replace blended scores with 1 - scores so the sim "
                         "picks the bottom-N (originally worst) symbols. "
@@ -801,6 +1639,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "Experimental diagnostic only; LOWER --min-score-grid "
                         "when using this since the inverted distribution "
                         "skews toward lower values.")
+    p.add_argument("--fast-features", action="store_true",
+                   help="Use the Polars feature builder for large-universe sweeps.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -824,6 +1664,8 @@ def main(argv=None) -> int:
 
     symbols = _load_symbols(args.symbols_file)
     model_paths = [Path(p.strip()) for p in args.model_paths.split(",") if p.strip()]
+    model_sha256 = _model_sha256(model_paths)
+    ensemble_manifest = _ensemble_manifest_metadata(model_paths)
     ht_grid: list[bool] = []
     if args.hold_through:
         ht_grid.append(True)
@@ -833,6 +1675,64 @@ def main(argv=None) -> int:
         ht_grid = [False]
 
     oos_end = date.fromisoformat(args.oos_end) if args.oos_end else date.today()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    out = args.output_dir / f"sweep_{ts}.json"
+    fee_regime_names = [r.strip() for r in args.fee_regimes.split(",") if r.strip()]
+    checkpoint_every = int(args.checkpoint_every_cells)
+    checkpoint_path = (
+        args.checkpoint_path
+        if args.checkpoint_path is not None
+        else args.output_dir / f"sweep_{ts}.partial.json"
+    )
+    resume_rows = (
+        _load_checkpoint_rows(
+            args.resume_from_checkpoint,
+            expected_model_paths=model_paths,
+            expected_oos_start=args.oos_start,
+            expected_oos_end=oos_end,
+            expected_window_days=int(args.window_days),
+            expected_stride_days=int(args.stride_days),
+        )
+        if args.resume_from_checkpoint is not None
+        else None
+    )
+    if resume_rows is not None:
+        logger.info(
+            "loaded %d resume cells from %s",
+            len(resume_rows),
+            args.resume_from_checkpoint,
+        )
+
+    def _checkpoint(cells_so_far: list[CellResult], done: int, total: int) -> None:
+        if checkpoint_every <= 0:
+            return
+        if done != total and done % checkpoint_every != 0:
+            return
+        rows_so_far = _cells_to_rows(cells_so_far)
+        _write_json_atomic(
+            checkpoint_path,
+            _sweep_json_payload(
+                model_paths=model_paths,
+                model_sha256=model_sha256,
+                ensemble_manifest=ensemble_manifest,
+                oos_start=args.oos_start,
+                oos_end=oos_end,
+                window_days=int(args.window_days),
+                stride_days=int(args.stride_days),
+                fee_regimes=fee_regime_names,
+                fail_fast_max_dd_pct=float(args.fail_fast_max_dd_pct),
+                fail_fast_max_intraday_dd_pct=float(args.fail_fast_max_intraday_dd_pct),
+                fail_fast_neg_windows=int(args.fail_fast_neg_windows),
+                rows=rows_so_far,
+                complete=False,
+            ),
+        )
+        logger.info(
+            "checkpoint wrote %s (%d/%d cells)",
+            checkpoint_path, done, total,
+        )
+
     cells = run_sweep(
         symbols=symbols,
         data_root=args.data_root,
@@ -847,7 +1747,11 @@ def main(argv=None) -> int:
         min_score_grid=_parse_float_list(args.min_score_grid),
         hold_through_grid=ht_grid,
         top_n_grid=_parse_int_list(args.top_n_grid),
-        fee_regimes=[r.strip() for r in args.fee_regimes.split(",") if r.strip()],
+        fee_regimes=fee_regime_names,
+        min_picks_grid=(
+            _parse_int_list(args.min_picks_grid)
+            if args.min_picks_grid else None
+        ),
         blend_mode=args.blend_mode,
         chronos_cache_path=args.chronos_cache,
         min_dollar_vol=float(args.min_dollar_vol),
@@ -904,22 +1808,52 @@ def main(argv=None) -> int:
             _parse_float_list(args.regime_cs_skew_min_grid)
             if args.regime_cs_skew_min_grid else None
         ),
+        no_picks_fallback_symbol=str(args.no_picks_fallback or "").strip().upper(),
+        no_picks_fallback_alloc_grid=(
+            _parse_float_list(args.no_picks_fallback_alloc_grid)
+            if args.no_picks_fallback_alloc_grid else None
+        ),
+        conviction_scaled_alloc_grid=(
+            [bool(int(x)) for x in args.conviction_scaled_alloc_grid.split(",") if x.strip()]
+            if args.conviction_scaled_alloc_grid else None
+        ),
+        conviction_alloc_low=float(args.conviction_alloc_low),
+        conviction_alloc_high=float(args.conviction_alloc_high),
+        allocation_mode_grid=(
+            [x.strip().lower() for x in args.allocation_mode_grid.split(",") if x.strip()]
+            if args.allocation_mode_grid else None
+        ),
+        allocation_temp_grid=(
+            _parse_float_list(args.allocation_temp_grid)
+            if args.allocation_temp_grid else None
+        ),
+        fail_fast_max_dd_pct=float(args.fail_fast_max_dd_pct),
+        fail_fast_max_intraday_dd_pct=float(args.fail_fast_max_intraday_dd_pct),
+        fail_fast_neg_windows=int(args.fail_fast_neg_windows),
+        fast_features=bool(args.fast_features),
+        progress_callback=_checkpoint if checkpoint_every > 0 else None,
+        resume_rows=resume_rows,
     )
 
     rows = _cells_to_rows(cells)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    out = args.output_dir / f"sweep_{ts}.json"
-    out.write_text(json.dumps({
-        "model_paths": [str(p) for p in model_paths],
-        "oos_start": args.oos_start, "oos_end": str(oos_end),
-        "window_days": int(args.window_days), "stride_days": int(args.stride_days),
-        "fee_regimes": {k: FEE_REGIMES[k] for k in
-                        [r.strip() for r in args.fee_regimes.split(",")]},
-        "goodness_weights": GOODNESS_WEIGHTS,
-        "robust_goodness_weights": ROBUST_GOODNESS_WEIGHTS,
-        "cells": rows,
-    }, indent=2))
+    _write_json_atomic(
+        out,
+        _sweep_json_payload(
+            model_paths=model_paths,
+            model_sha256=model_sha256,
+            ensemble_manifest=ensemble_manifest,
+            oos_start=args.oos_start,
+            oos_end=oos_end,
+            window_days=int(args.window_days),
+            stride_days=int(args.stride_days),
+            fee_regimes=fee_regime_names,
+            fail_fast_max_dd_pct=float(args.fail_fast_max_dd_pct),
+            fail_fast_max_intraday_dd_pct=float(args.fail_fast_max_intraday_dd_pct),
+            fail_fast_neg_windows=int(args.fail_fast_neg_windows),
+            rows=rows,
+            complete=True,
+        ),
+    )
     print(f"[sweep] wrote {out}  ({len(rows)} cells)", flush=True)
 
     # Pretty table — sorted by goodness descending for easy frontier read.
@@ -932,9 +1866,19 @@ def main(argv=None) -> int:
     vol_grid_active = len({r["inference_min_vol_20d"] for r in rows}) > 1
     sp_grid_active  = len({r["skip_prob"] for r in rows}) > 1
     fb_grid_active  = len({r["fill_buffer_bps"] for r in rows}) > 1
-    hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'reg':>10} "
+    ff_active = any(r["fail_fast_triggered"] for r in rows)
+    alloc_grid_active = (
+        len({r["allocation_mode"] for r in rows}) > 1
+        or len({r["allocation_temp"] for r in rows}) > 1
+    )
+    hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
-           f"{'tuw%':>6} {'ulc':>6} {'neg':>6} {'good':>8} {'robG':>8}")
+           f"{'tuw%':>6} {'ulc':>6} {'act%':>6} {'neg':>6} "
+           f"{'good':>8} {'robG':>8} {'painG':>8}")
+    if ff_active:
+        hdr += f" {'ff':>2}"
+    if alloc_grid_active:
+        hdr += f" {'alloc':>10} {'tmp':>5}"
     if inf_grid_active:
         hdr += f" {'inf$V':>8}"
     if vol_grid_active:
@@ -945,6 +1889,8 @@ def main(argv=None) -> int:
         hdr += f" {'fb':>5}"
     print(hdr)
     print("-" * (115
+                 + (3 if ff_active else 0)
+                 + (17 if alloc_grid_active else 0)
                  + (9 if inf_grid_active else 0)
                  + (8 if vol_grid_active else 0)
                  + (9 if sp_grid_active else 0)
@@ -952,15 +1898,22 @@ def main(argv=None) -> int:
     for r in rows_sorted:
         line = (f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
                 f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
+                f"{int(r.get('min_picks', 0)):3d} "
                 f"{r['fee_regime']:>10} "
                 f"{r['median_monthly_pct']:+8.2f} {r['p10_monthly_pct']:+8.2f} "
                 f"{r['median_sortino']:6.2f} {r['worst_dd_pct']:6.2f} "
                 f"{r['worst_intraday_dd_pct']:6.2f} "
                 f"{r['time_under_water_pct']:6.2f} "
                 f"{r['ulcer_index']:6.2f} "
+                f"{r['median_active_day_pct']:6.2f} "
                 f"{r['n_neg']:3d}/{r['n_windows']:3d} "
                 f"{r['goodness_score']:+8.2f} "
-                f"{r['robust_goodness_score']:+8.2f}")
+                f"{r['robust_goodness_score']:+8.2f} "
+                f"{r['pain_adjusted_goodness_score']:+8.2f}")
+        if ff_active:
+            line += f" {'Y' if r['fail_fast_triggered'] else 'N':>2}"
+        if alloc_grid_active:
+            line += f" {r['allocation_mode']:>10} {r['allocation_temp']:5.2f}"
         if inf_grid_active:
             line += f" {r['inference_min_dolvol']:8.2e}"
         if vol_grid_active:
@@ -970,6 +1923,52 @@ def main(argv=None) -> int:
         if fb_grid_active:
             line += f" {r['fill_buffer_bps']:5.1f}"
         print(line)
+
+    friction_rows = _friction_robust_strategy_rows(rows)
+    friction_active = any(r["n_friction_cells"] > 1 for r in friction_rows)
+    if friction_active:
+        hdr2 = (
+            f"\nFriction-robust strategy ranking "
+            f"(target: med>={PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT:g}%, "
+            f"dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}%, "
+            f"neg<={PRODUCTION_TARGET_MAX_NEG_WINDOWS} on worst fee/fill cell)\n"
+            f"{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} "
+            f"{'medW':>8} {'p10W':>8} {'ddMax':>6} {'tuwMax':>7} "
+            f"{'actMin':>7} {'negMax':>6} {'painW':>8} {'pass':>4} "
+            f"{'worstReg':>10} {'fb':>5} {'cells':>5}"
+        )
+        print(hdr2)
+        print("-" * 111)
+        for r in friction_rows:
+            print(
+                f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
+                f"{'Y' if r['hold_through'] else 'N':>3} {r['top_n']:3d} "
+                f"{int(r.get('min_picks', 0)):3d} "
+                f"{r['worst_median_monthly_pct']:+8.2f} "
+                f"{r['worst_p10_monthly_pct']:+8.2f} "
+                f"{r['max_worst_dd_pct']:6.2f} "
+                f"{r['max_time_under_water_pct']:7.2f} "
+                f"{r['worst_min_active_day_pct']:7.2f} "
+                f"{r['max_n_neg']:6d} "
+                f"{r['worst_pain_adjusted_goodness_score']:+8.2f} "
+                f"{'Y' if r['production_target_pass'] else 'N':>4} "
+                f"{str(r['worst_fee_regime_by_pain']):>10} "
+                f"{r['worst_fill_buffer_bps_by_pain']:5.1f} "
+                f"{r['n_friction_cells']:5d}"
+            )
+    exit_code = _production_target_exit_code(
+        rows,
+        required=bool(args.require_production_target),
+    )
+    if exit_code != 0:
+        print(
+            "[sweep] no friction-robust strategy cleared production target "
+            f"(median>={PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT:g}%, "
+            f"dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}%, "
+            f"neg<={PRODUCTION_TARGET_MAX_NEG_WINDOWS} on worst fee/fill cell)",
+            flush=True,
+        )
+        return exit_code
     return 0
 
 

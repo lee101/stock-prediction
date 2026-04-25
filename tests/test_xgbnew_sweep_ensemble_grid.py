@@ -1,7 +1,7 @@
 """Tests for xgbnew.sweep_ensemble_grid.
 
 We avoid retraining XGB in the test suite (too slow). Instead we stub
-``build_daily_dataset`` and ``XGBStockModel.load`` to return a tiny synthetic
+``build_daily_dataset`` and ``load_any_model`` to return a tiny synthetic
 panel + fake model, then verify:
 
 1. The sweep produces one CellResult per grid cell.
@@ -13,10 +13,12 @@ panel + fake model, then verify:
 """
 from __future__ import annotations
 
+import json
+import hashlib
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -26,8 +28,8 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew import sweep_ensemble_grid as sweep  # noqa: E402
-from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
+from xgbnew import sweep_ensemble_grid as sweep
+from xgbnew.features import DAILY_FEATURE_COLS
 
 
 def _mk_panel(n_days: int = 40, n_syms: int = 6) -> pd.DataFrame:
@@ -68,6 +70,8 @@ def _mk_panel(n_days: int = 40, n_syms: int = 6) -> pd.DataFrame:
 class _FakeModel:
     """Returns per-row score = rank of (symbol_id + tiny date noise)."""
 
+    feature_cols = list(DAILY_FEATURE_COLS)
+
     def __init__(self, seed: int):
         self._seed = seed
 
@@ -93,8 +97,8 @@ def _install_fakes(monkeypatch, n_models: int = 3):
     )
     # Load returns a FakeModel keyed by the filename.
     monkeypatch.setattr(
-        sweep.XGBStockModel, "load",
-        classmethod(lambda cls, path: _FakeModel(seed=hash(str(path)) & 0xFFFF)),
+        sweep, "load_any_model",
+        lambda path: _FakeModel(seed=hash(str(path)) & 0xFFFF),
     )
     return oos, n_models
 
@@ -132,6 +136,135 @@ def test_sweep_cells_match_grid_product(monkeypatch, tmp_path):
     assert all(c.n_windows > 0 for c in cells)
 
 
+def test_run_sweep_progress_callback_receives_partial_cells(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    events: list[tuple[int, int, int]] = []
+
+    def _progress(cells_so_far, done, total):
+        events.append((len(cells_so_far), done, total))
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0, 2.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[True],
+        top_n_grid=[1],
+        fee_regimes=["deploy", "stress36x"],
+        progress_callback=_progress,
+    )
+
+    assert len(cells) == 4
+    assert events == [(1, 1, 4), (2, 2, 4), (3, 3, 4), (4, 4, 4)]
+
+
+def test_run_sweep_resume_rows_skips_completed_cells(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    resumed = sweep.CellResult(
+        leverage=1.0,
+        min_score=0.0,
+        hold_through=True,
+        top_n=1,
+        fee_regime="deploy",
+        n_windows=7,
+        median_monthly_pct=123.0,
+        p10_monthly_pct=100.0,
+        median_sortino=9.0,
+        worst_dd_pct=4.0,
+        n_neg=0,
+        goodness_score=96.0,
+        robust_goodness_score=94.0,
+        pain_adjusted_goodness_score=93.0,
+        fill_buffer_bps=sweep.FEE_REGIMES["deploy"]["fill_buffer_bps"],
+    )
+    calls: list[float] = []
+    events: list[tuple[int, int, int]] = []
+
+    def _fake_run_cell(**kwargs):
+        calls.append(float(kwargs["leverage"]))
+        return sweep.CellResult(
+            leverage=float(kwargs["leverage"]),
+            min_score=float(kwargs["min_score"]),
+            hold_through=bool(kwargs["hold_through"]),
+            top_n=int(kwargs["top_n"]),
+            fee_regime=str(kwargs["fee_regime"]),
+            n_windows=5,
+            median_monthly_pct=456.0,
+            p10_monthly_pct=400.0,
+            median_sortino=8.0,
+            worst_dd_pct=6.0,
+            n_neg=0,
+            goodness_score=394.0,
+            fill_buffer_bps=sweep.FEE_REGIMES[str(kwargs["fee_regime"])]["fill_buffer_bps"],
+        )
+
+    def _progress(cells_so_far, done, total):
+        events.append((len(cells_so_far), done, total))
+
+    monkeypatch.setattr(sweep, "_run_cell", _fake_run_cell)
+    resume_rows = sweep._cells_to_rows([resumed])
+    # Older checkpoints did not always include fill_buffer_bps; resume should
+    # still match those rows against the fee-regime default.
+    resume_rows[0].pop("fill_buffer_bps")
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0, 2.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[True],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+        progress_callback=_progress,
+        resume_rows=resume_rows,
+    )
+
+    assert calls == [2.0]
+    assert [c.leverage for c in cells] == [1.0, 2.0]
+    assert cells[0].median_monthly_pct == 123.0
+    assert cells[0].fill_buffer_bps == sweep.FEE_REGIMES["deploy"]["fill_buffer_bps"]
+    assert cells[1].median_monthly_pct == 456.0
+    assert events == [(1, 1, 2), (2, 2, 2)]
+
+
+def test_load_checkpoint_rows_validates_shape(tmp_path):
+    good = tmp_path / "checkpoint.json"
+    good.write_text(json.dumps({
+        "model_paths": ["model_a.pkl"],
+        "oos_start": "2025-01-02",
+        "oos_end": "2025-04-01",
+        "window_days": 30,
+        "stride_days": 7,
+        "cells": [{"leverage": 1.0}],
+    }))
+    assert sweep._load_checkpoint_rows(good) == [{"leverage": 1.0}]
+    assert sweep._load_checkpoint_rows(
+        good,
+        expected_model_paths=[Path("model_a.pkl")],
+        expected_oos_start="2025-01-02",
+        expected_oos_end=date(2025, 4, 1),
+        expected_window_days=30,
+        expected_stride_days=7,
+    ) == [{"leverage": 1.0}]
+    with pytest.raises(ValueError, match="model_paths"):
+        sweep._load_checkpoint_rows(good, expected_model_paths=[Path("other.pkl")])
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"cells": {"leverage": 1.0}}))
+    with pytest.raises(ValueError, match="cells list"):
+        sweep._load_checkpoint_rows(bad)
+
+
 def test_sweep_blends_scores_once(monkeypatch, tmp_path):
     """predict_scores must fire exactly once per model regardless of cell count."""
     _install_fakes(monkeypatch)
@@ -141,7 +274,7 @@ def test_sweep_blends_scores_once(monkeypatch, tmp_path):
     call_counts = [0, 0, 0]
     real_predict = _FakeModel.predict_scores
 
-    def _tracking_predict(self, df, _i=[0]):  # noqa: B008 — stable closure
+    def _tracking_predict(self, df):
         # Use object id to bucket by model instance.
         idx = id(self) % 3
         call_counts[idx] += 1
@@ -251,6 +384,15 @@ def test_cells_to_rows_shapes():
         median_monthly_pct=141.0, p10_monthly_pct=96.0,
         median_sortino=40.0, worst_dd_pct=12.0, n_neg=0,
         goodness_score=84.0,
+        no_picks_fallback_symbol="SPY",
+        no_picks_fallback_alloc_scale=0.5,
+        conviction_scaled_alloc=True,
+        conviction_alloc_low=0.40,
+        conviction_alloc_high=0.90,
+        allocation_mode="softmax",
+        allocation_temp=0.25,
+        ensemble_needs_ranks=True,
+        ensemble_needs_dispersion=True,
     )
     rows = sweep._cells_to_rows([c])
     assert len(rows) == 1
@@ -258,7 +400,537 @@ def test_cells_to_rows_shapes():
     assert r["leverage"] == 2.0
     assert r["n_neg"] == 0
     assert r["hold_through"] is True
+    assert r["min_picks"] == 0
     assert r["goodness_score"] == 84.0
+    assert r["no_picks_fallback_symbol"] == "SPY"
+    assert r["no_picks_fallback_alloc_scale"] == 0.5
+    assert r["conviction_scaled_alloc"] is True
+    assert r["conviction_alloc_low"] == 0.40
+    assert r["conviction_alloc_high"] == 0.90
+    assert r["allocation_mode"] == "softmax"
+    assert r["allocation_temp"] == 0.25
+    assert r["fail_fast_triggered"] is False
+    assert r["fail_fast_reason"] == ""
+    assert r["ensemble_needs_ranks"] is True
+    assert r["ensemble_needs_dispersion"] is True
+
+
+def test_sweep_json_payload_and_atomic_write(tmp_path):
+    rows = [{
+        "leverage": 2.0,
+        "min_score": 0.85,
+        "hold_through": True,
+        "top_n": 1,
+        "fee_regime": "deploy",
+        "n_windows": 4,
+        "median_monthly_pct": 30.0,
+        "p10_monthly_pct": 20.0,
+        "median_sortino": 2.0,
+        "worst_dd_pct": 10.0,
+        "n_neg": 0,
+        "goodness_score": 10.0,
+        "robust_goodness_score": 9.0,
+        "pain_adjusted_goodness_score": 8.0,
+        "fill_buffer_bps": 5.0,
+        "ensemble_needs_ranks": True,
+        "ensemble_needs_dispersion": True,
+    }]
+    payload = sweep._sweep_json_payload(
+        model_paths=[Path("model_a.pkl")],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=rows,
+        complete=False,
+    )
+    out = tmp_path / "nested" / "partial.json"
+    sweep._write_json_atomic(out, payload)
+
+    loaded = json.loads(out.read_text())
+    assert loaded["complete"] is False
+    assert loaded["n_cells"] == 1
+    assert loaded["cells"] == rows
+    assert loaded["fail_fast"]["max_dd_pct"] == 40.0
+    assert loaded["fail_fast"]["max_intraday_dd_pct"] == 35.0
+    assert loaded["fail_fast"]["neg_windows"] == 2
+    assert loaded["fee_regimes"]["deploy"] == sweep.FEE_REGIMES["deploy"]
+    assert loaded["production_target"]["median_monthly_pct"] == 27.0
+    assert loaded["production_target"]["max_dd_pct"] == 25.0
+    assert loaded["production_target"]["max_neg_windows"] == 0
+    assert loaded["production_target"]["min_windows"] == 1
+    assert loaded["production_target"]["expected_windows_required"] is True
+    assert loaded["ensemble_feature_mode"] == {
+        "needs_ranks": True,
+        "needs_dispersion": True,
+    }
+    assert loaded["n_friction_robust_strategies"] == 1
+    assert loaded["n_production_target_pass"] == 1
+    assert loaded["best_production_target_strategy"]["production_target_pass"] is True
+    assert loaded["friction_robust_strategies"][0]["production_target_pass"] is True
+    assert not list(out.parent.glob("*.tmp"))
+
+
+def test_sweep_json_payload_records_model_hashes_when_files_exist(tmp_path):
+    model_a = tmp_path / "model_a.pkl"
+    model_b = tmp_path / "model_b.pkl"
+    model_a.write_bytes(b"model-a")
+    model_b.write_bytes(b"model-b")
+
+    payload = sweep._sweep_json_payload(
+        model_paths=[model_a, model_b],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["model_sha256"] == [
+        hashlib.sha256(b"model-a").hexdigest(),
+        hashlib.sha256(b"model-b").hexdigest(),
+    ]
+
+
+def test_sweep_json_payload_reuses_supplied_model_hashes(monkeypatch, tmp_path):
+    model = tmp_path / "model.pkl"
+    model.write_bytes(b"model")
+
+    def _fail_if_rehashed(_paths):
+        raise AssertionError("checkpoint payload should reuse precomputed hashes")
+
+    monkeypatch.setattr(sweep, "_model_sha256", _fail_if_rehashed)
+
+    payload = sweep._sweep_json_payload(
+        model_paths=[model],
+        model_sha256=["precomputed"],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["model_sha256"] == ["precomputed"]
+
+
+def test_sweep_json_payload_records_ensemble_manifest_metadata(tmp_path):
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    model = model_dir / "alltrain_seed0.pkl"
+    manifest = model_dir / "alltrain_ensemble.json"
+    model.write_bytes(b"model")
+    manifest_payload = {
+        "trained_at": "2026-04-25T00:00:00",
+        "train_start": "2020-01-01",
+        "train_end": "2026-04-25",
+        "seeds": [0],
+        "config": {"feature_cols": ["ret_1d"]},
+    }
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    payload = sweep._sweep_json_payload(
+        model_paths=[model],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["ensemble_manifest"] == {
+        "path": str(manifest),
+        "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        **manifest_payload,
+    }
+
+
+def test_run_sweep_records_model_feature_mode(monkeypatch, tmp_path):
+    oos = _mk_panel()
+    train = oos.copy()
+    build_kwargs: list[dict] = []
+
+    def _fake_build_daily_dataset(**kwargs):
+        build_kwargs.append(kwargs)
+        return train, train.iloc[:0], oos
+
+    class _PanelFeatureFakeModel(_FakeModel):
+        feature_cols = (
+            ["rank_ret_1d"]
+            + ["cs_iqr_ret5"]
+        )
+
+    monkeypatch.setattr(sweep, "build_daily_dataset", _fake_build_daily_dataset)
+    monkeypatch.setattr(
+        sweep,
+        "load_any_model",
+        lambda path: _PanelFeatureFakeModel(seed=hash(str(path)) & 0xFFFF),
+    )
+    paths = _fake_paths(tmp_path, 2)
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[True],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+    )
+
+    assert build_kwargs[0]["include_cross_sectional_ranks"] is True
+    assert build_kwargs[0]["include_cross_sectional_dispersion"] is True
+    assert cells
+    assert all(cell.ensemble_needs_ranks is True for cell in cells)
+    assert all(cell.ensemble_needs_dispersion is True for cell in cells)
+    rows = sweep._cells_to_rows(cells)
+    assert all(row["ensemble_needs_ranks"] is True for row in rows)
+    assert all(row["ensemble_needs_dispersion"] is True for row in rows)
+
+
+def test_run_sweep_rejects_unsupported_model_feature_cols(monkeypatch, tmp_path):
+    class _BadFeatureModel(_FakeModel):
+        feature_cols = ["ret_1d", "future_alpha_leak"]
+
+    monkeypatch.setattr(
+        sweep,
+        "load_any_model",
+        lambda path: _BadFeatureModel(seed=hash(str(path)) & 0xFFFF),
+    )
+    paths = _fake_paths(tmp_path, 1)
+
+    with pytest.raises(ValueError, match="unsupported live features"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[True],
+            top_n_grid=[1],
+            fee_regimes=["deploy"],
+        )
+
+
+def test_run_sweep_rejects_mixed_ensemble_feature_contract(monkeypatch, tmp_path):
+    paths = _fake_paths(tmp_path, 2)
+    features_by_path = {
+        paths[0]: ["ret_1d", "ret_5d"],
+        paths[1]: ["ret_5d", "ret_1d"],
+    }
+
+    class _FeatureModel(_FakeModel):
+        def __init__(self, seed: int, feature_cols: list[str]):
+            super().__init__(seed)
+            self.feature_cols = feature_cols
+
+    monkeypatch.setattr(
+        sweep,
+        "load_any_model",
+        lambda path: _FeatureModel(
+            seed=hash(str(path)) & 0xFFFF,
+            feature_cols=features_by_path[Path(path)],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Ensemble feature_cols mismatch"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[True],
+            top_n_grid=[1],
+            fee_regimes=["deploy"],
+        )
+
+
+def test_production_target_gate_counts_only_friction_robust_passes():
+    good = {
+        "leverage": 2.0,
+        "min_score": 0.85,
+        "hold_through": True,
+        "top_n": 1,
+        "fee_regime": "deploy",
+        "n_windows": 4,
+        "expected_n_windows": 4,
+        "median_monthly_pct": 30.0,
+        "p10_monthly_pct": 20.0,
+        "median_sortino": 2.0,
+        "worst_dd_pct": 10.0,
+        "n_neg": 0,
+        "pain_adjusted_goodness_score": 8.0,
+        "fill_buffer_bps": 5.0,
+        "fail_fast_triggered": False,
+    }
+    bad = {
+        **good,
+        "leverage": 2.5,
+        "median_monthly_pct": 20.0,
+        "worst_dd_pct": 12.0,
+        "pain_adjusted_goodness_score": 7.0,
+    }
+    fail_fast = {
+        **good,
+        "leverage": 3.0,
+        "median_monthly_pct": 50.0,
+        "worst_dd_pct": 8.0,
+        "fail_fast_triggered": True,
+    }
+    negative_window = {
+        **good,
+        "leverage": 3.5,
+        "median_monthly_pct": 60.0,
+        "worst_dd_pct": 8.0,
+        "n_neg": 1,
+        "pain_adjusted_goodness_score": 12.0,
+    }
+    no_windows = {
+        **good,
+        "leverage": 4.0,
+        "median_monthly_pct": 70.0,
+        "worst_dd_pct": 8.0,
+        "n_windows": 0,
+        "pain_adjusted_goodness_score": 13.0,
+    }
+    incomplete_windows = {
+        **good,
+        "leverage": 4.5,
+        "median_monthly_pct": 80.0,
+        "worst_dd_pct": 8.0,
+        "n_windows": 3,
+        "expected_n_windows": 4,
+        "pain_adjusted_goodness_score": 14.0,
+    }
+    rows = [bad, fail_fast, negative_window, no_windows, incomplete_windows, good]
+
+    passes = sweep._production_target_pass_rows(rows)
+
+    assert [r["leverage"] for r in passes] == [2.0]
+    summaries = sweep._friction_robust_strategy_rows(rows)
+    incomplete = next(r for r in summaries if r["leverage"] == 4.5)
+    assert incomplete["min_n_windows"] == 3
+    assert incomplete["max_expected_n_windows"] == 4
+    assert incomplete["required_min_n_windows"] == 4
+    assert incomplete["production_target_pass"] is False
+    assert sweep._production_target_exit_code(rows, required=False) == 0
+    assert sweep._production_target_exit_code(rows, required=True) == 0
+    assert sweep._production_target_exit_code([bad], required=True) == sweep.PRODUCTION_TARGET_EXIT_CODE
+    assert sweep._production_target_exit_code([negative_window], required=True) == sweep.PRODUCTION_TARGET_EXIT_CODE
+    assert sweep._production_target_exit_code([no_windows], required=True) == sweep.PRODUCTION_TARGET_EXIT_CODE
+    assert sweep._production_target_exit_code([incomplete_windows], required=True) == sweep.PRODUCTION_TARGET_EXIT_CODE
+
+
+def test_require_production_target_flag_parses():
+    args = sweep.parse_args([
+        "--symbols-file", "symbols.txt",
+        "--model-paths", "model.pkl",
+        "--require-production-target",
+    ])
+
+    assert args.require_production_target is True
+
+
+def test_friction_robust_strategy_rows_take_worst_fee_cell():
+    base = {
+        "leverage": 2.0,
+        "min_score": 0.85,
+        "hold_through": True,
+        "top_n": 1,
+        "n_windows": 8,
+        "p10_monthly_pct": 26.0,
+        "median_sortino": 3.0,
+        "n_neg": 0,
+        "goodness_score": 15.0,
+        "robust_goodness_score": 13.0,
+        "pain_adjusted_goodness_score": 11.0,
+        "worst_intraday_dd_pct": 18.0,
+        "avg_intraday_dd_pct": 4.0,
+        "time_under_water_pct": 20.0,
+        "ulcer_index": 3.0,
+        "inference_min_dolvol": 5_000_000.0,
+        "inference_min_vol_20d": 0.0,
+        "inference_max_vol_20d": 0.0,
+        "skip_prob": 0.0,
+        "skip_seed": 0,
+        "regime_gate_window": 0,
+        "vol_target_ann": 0.0,
+        "inv_vol_target_ann": 0.0,
+        "inv_vol_floor": 0.05,
+        "inv_vol_cap": 3.0,
+        "max_ret_20d_rank_pct": 1.0,
+        "min_ret_5d_rank_pct": 0.0,
+        "regime_cs_iqr_max": 0.0,
+        "regime_cs_skew_min": -1e9,
+        "no_picks_fallback_symbol": "",
+        "no_picks_fallback_alloc_scale": 0.0,
+        "conviction_scaled_alloc": False,
+        "conviction_alloc_low": 0.55,
+        "conviction_alloc_high": 0.85,
+        "allocation_mode": "equal",
+        "allocation_temp": 1.0,
+        "fail_fast_triggered": False,
+    }
+    deploy = {
+        **base,
+        "fee_regime": "deploy",
+        "fill_buffer_bps": 5.0,
+        "median_monthly_pct": 34.0,
+        "worst_dd_pct": 12.0,
+    }
+    stress = {
+        **base,
+        "fee_regime": "stress36x",
+        "fill_buffer_bps": 15.0,
+        "median_monthly_pct": 24.0,
+        "worst_dd_pct": 28.0,
+        "n_neg": 2,
+        "pain_adjusted_goodness_score": -8.0,
+        "time_under_water_pct": 55.0,
+    }
+
+    summaries = sweep._friction_robust_strategy_rows([deploy, stress])
+
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["n_friction_cells"] == 2
+    assert summary["fee_regimes"] == ["deploy", "stress36x"]
+    assert summary["fill_buffer_bps_values"] == [5.0, 15.0]
+    assert summary["worst_median_monthly_pct"] == 24.0
+    assert summary["max_worst_dd_pct"] == 28.0
+    assert summary["max_time_under_water_pct"] == 55.0
+    assert summary["max_n_neg"] == 2
+    assert summary["worst_pain_adjusted_goodness_score"] == -8.0
+    assert summary["worst_fee_regime_by_pain"] == "stress36x"
+    assert summary["production_target_pass"] is False
+
+
+def test_allocation_grid_pairs_drop_temp_invariant_duplicates():
+    pairs = sweep._allocation_grid_pairs(
+        ["equal", "score_norm", "softmax"],
+        [0.25, 1.0],
+    )
+    assert pairs == [
+        ("equal", 1.0),
+        ("score_norm", 1.0),
+        ("softmax", 0.25),
+        ("softmax", 1.0),
+    ]
+
+
+def test_fallback_and_conviction_axes_match_grid_product(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+        no_picks_fallback_symbol="SPY",
+        no_picks_fallback_alloc_grid=[0.25, 0.50],
+        conviction_scaled_alloc_grid=[False, True],
+        conviction_alloc_low=0.40,
+        conviction_alloc_high=0.90,
+        min_picks_grid=[0, 1],
+    )
+
+    assert len(cells) == 8
+    assert sorted({c.no_picks_fallback_alloc_scale for c in cells}) == [0.25, 0.50]
+    assert sorted({c.conviction_scaled_alloc for c in cells}) == [False, True]
+    assert sorted({c.min_picks for c in cells}) == [0, 1]
+    for c in cells:
+        assert c.no_picks_fallback_symbol == "SPY"
+        assert c.conviction_alloc_low == pytest.approx(0.40)
+        assert c.conviction_alloc_high == pytest.approx(0.90)
+
+
+def test_allocation_mode_axes_match_grid_product(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[2],
+        fee_regimes=["deploy"],
+        allocation_mode_grid=["equal", "score_norm", "softmax"],
+        allocation_temp_grid=[0.25, 1.0],
+    )
+
+    assert len(cells) == 4
+    pairs = [(c.allocation_mode, c.allocation_temp) for c in cells]
+    assert pairs == [
+        ("equal", 1.0),
+        ("score_norm", 1.0),
+        ("softmax", 0.25),
+        ("softmax", 1.0),
+    ]
+
+
+def test_allocation_mode_rejects_unknown_value(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 1)
+
+    with pytest.raises(ValueError, match="allocation_mode"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[False],
+            top_n_grid=[2],
+            fee_regimes=["deploy"],
+            allocation_mode_grid=["martingale"],
+        )
 
 
 def test_goodness_score_formula():
@@ -310,6 +982,188 @@ def test_cells_populated_with_goodness(monkeypatch, tmp_path):
         assert c.goodness_score == pytest.approx(expected, abs=1e-9)
 
 
+def test_run_cell_monthly_uses_elapsed_window_days_not_traded_days(monkeypatch):
+    """Sparse-gate cells should not get one-day annualisation."""
+    oos = _mk_panel(n_days=10, n_syms=3)
+    scores = pd.Series(1.0, index=oos.index)
+    windows = [(oos["date"].min(), oos["date"].max())]
+    trade_day = sorted(oos["date"].unique())[0]
+
+    def _fake_simulate(*args, **kwargs):
+        return SimpleNamespace(
+            day_results=[SimpleNamespace(day=trade_day)],
+            total_return_pct=10.0,
+            sortino_ratio=3.0,
+            max_drawdown_pct=0.0,
+            worst_intraday_dd_pct=0.0,
+            avg_intraday_dd_pct=0.0,
+            time_under_water_pct=0.0,
+            ulcer_index=0.0,
+            stopped_early=False,
+        )
+
+    monkeypatch.setattr(sweep, "simulate", _fake_simulate)
+
+    cell = sweep._run_cell(
+        oos_df=oos,
+        scores=scores,
+        windows=windows,
+        leverage=1.0,
+        min_score=0.0,
+        hold_through=True,
+        top_n=1,
+        fee_regime="deploy",
+    )
+
+    assert cell.median_monthly_pct == pytest.approx(
+        sweep._monthly_return(10.0, 10) * 100.0
+    )
+    assert cell.median_monthly_pct < sweep._monthly_return(10.0, 1) * 100.0
+    assert cell.median_active_day_pct == pytest.approx(10.0)
+    assert cell.min_active_day_pct == pytest.approx(10.0)
+
+
+def test_elapsed_window_days_stopped_early_counts_days_through_stop():
+    oos = _mk_panel(n_days=10, n_syms=2)
+    days = sorted(oos["date"].unique())
+    res = SimpleNamespace(
+        stopped_early=True,
+        day_results=[SimpleNamespace(day=days[4])],
+    )
+
+    assert sweep._elapsed_window_days(oos, res) == 5
+
+
+def test_fail_fast_max_dd_prunes_cell_and_forces_losing_rank(monkeypatch):
+    """A breached max-DD budget should stop more windows and never rank high."""
+    oos = _mk_panel(n_days=30, n_syms=6)
+    scores = pd.Series(1.0, index=oos.index)
+    windows = sweep._build_windows(sorted(oos["date"].unique()), 10, 5)
+    calls = {"n": 0}
+
+    def _fake_simulate(*args, **kwargs):
+        calls["n"] += 1
+        assert args[2].stop_on_drawdown_pct == pytest.approx(40.0)
+        return SimpleNamespace(
+            day_results=[object()] * 10,
+            total_return_pct=200.0,
+            sortino_ratio=10.0,
+            max_drawdown_pct=41.0,
+            worst_intraday_dd_pct=42.0,
+            avg_intraday_dd_pct=11.0,
+            time_under_water_pct=90.0,
+            ulcer_index=20.0,
+        )
+
+    monkeypatch.setattr(sweep, "simulate", _fake_simulate)
+
+    cell = sweep._run_cell(
+        oos_df=oos,
+        scores=scores,
+        windows=windows,
+        leverage=3.0,
+        min_score=0.0,
+        hold_through=True,
+        top_n=1,
+        fee_regime="deploy",
+        fail_fast_max_dd_pct=40.0,
+    )
+
+    assert calls["n"] == 1
+    assert cell.n_windows == 1
+    assert cell.fail_fast_triggered is True
+    assert cell.fail_fast_reason == "max_dd_pct>=40"
+    assert cell.goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.robust_goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.pain_adjusted_goodness_score == sweep.FAIL_FAST_SCORE
+
+
+def test_fail_fast_max_intraday_dd_prunes_cell_and_forces_losing_rank(monkeypatch):
+    """Intraday risk breach should prune even if close-to-close DD is fine."""
+    oos = _mk_panel(n_days=30, n_syms=6)
+    scores = pd.Series(1.0, index=oos.index)
+    windows = sweep._build_windows(sorted(oos["date"].unique()), 10, 5)
+    calls = {"n": 0}
+
+    def _fake_simulate(*args, **kwargs):
+        calls["n"] += 1
+        assert args[2].stop_on_intraday_drawdown_pct == pytest.approx(40.0)
+        return SimpleNamespace(
+            day_results=[object()] * 10,
+            total_return_pct=25.0,
+            sortino_ratio=2.0,
+            max_drawdown_pct=3.0,
+            worst_intraday_dd_pct=45.0,
+            avg_intraday_dd_pct=12.0,
+            time_under_water_pct=15.0,
+            ulcer_index=2.0,
+        )
+
+    monkeypatch.setattr(sweep, "simulate", _fake_simulate)
+
+    cell = sweep._run_cell(
+        oos_df=oos,
+        scores=scores,
+        windows=windows,
+        leverage=3.0,
+        min_score=0.0,
+        hold_through=True,
+        top_n=1,
+        fee_regime="deploy",
+        fail_fast_max_intraday_dd_pct=40.0,
+    )
+
+    assert calls["n"] == 1
+    assert cell.n_windows == 1
+    assert cell.fail_fast_triggered is True
+    assert cell.fail_fast_reason == "intraday_dd_pct>=40"
+    assert cell.goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.robust_goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.pain_adjusted_goodness_score == sweep.FAIL_FAST_SCORE
+
+
+def test_fail_fast_neg_windows_prunes_after_threshold(monkeypatch):
+    """Negative-window bail should stop once the configured count is reached."""
+    oos = _mk_panel(n_days=30, n_syms=6)
+    scores = pd.Series(1.0, index=oos.index)
+    windows = sweep._build_windows(sorted(oos["date"].unique()), 10, 5)
+    returns = iter([-10.0, -8.0, 100.0])
+    calls = {"n": 0}
+
+    def _fake_simulate(*args, **kwargs):
+        calls["n"] += 1
+        return SimpleNamespace(
+            day_results=[object()] * 10,
+            total_return_pct=next(returns),
+            sortino_ratio=-1.0,
+            max_drawdown_pct=5.0,
+            worst_intraday_dd_pct=6.0,
+            avg_intraday_dd_pct=2.0,
+            time_under_water_pct=75.0,
+            ulcer_index=4.0,
+        )
+
+    monkeypatch.setattr(sweep, "simulate", _fake_simulate)
+
+    cell = sweep._run_cell(
+        oos_df=oos,
+        scores=scores,
+        windows=windows,
+        leverage=2.0,
+        min_score=0.0,
+        hold_through=True,
+        top_n=1,
+        fee_regime="deploy",
+        fail_fast_neg_windows=2,
+    )
+
+    assert calls["n"] == 2
+    assert cell.n_neg == 2
+    assert cell.fail_fast_triggered is True
+    assert cell.fail_fast_reason == "neg_windows>=2"
+    assert cell.pain_adjusted_goodness_score == sweep.FAIL_FAST_SCORE
+
+
 # ─── robust_goodness tests ────────────────────────────────────────────────────
 
 def test_robust_goodness_all_positive_matches_expected():
@@ -349,8 +1203,6 @@ def test_robust_goodness_distinguishes_loss_magnitude():
     assert gap > 0, "deep losses should be strictly worse"
     # The magnitude term contributes EXACTLY +2.0 to the gap.
     p10_gap = np.percentile(shallow, 10) - np.percentile(deep, 10)
-    count_gap = 0.0  # same neg_frac
-    magnitude_gap = 2.0 * (60 / 60.0) * (15 - 3) / 60 * 5  # derivation below
     # Actually: mean_abs_neg_shallow = 15/60 = 0.25
     #           mean_abs_neg_deep    = 75/60 = 1.25
     #   gap from magnitude = 2 * (1.25 − 0.25) = 2.0
@@ -372,6 +1224,34 @@ def test_robust_goodness_custom_weights():
     assert (zero_dd_penalty - default) == pytest.approx(15.0, abs=1e-9)
 
 
+def test_pain_adjusted_goodness_penalizes_tuw_and_ulcer():
+    monthlies = [20.0] * 60
+    base = sweep.compute_pain_adjusted_goodness(monthlies, 5.0, 0.0, 0.0)
+    pain = sweep.compute_pain_adjusted_goodness(monthlies, 5.0, 20.0, 3.0)
+    expected_penalty = (
+        sweep.PAIN_ADJUSTED_GOODNESS_WEIGHTS["tuw_coef"] * 20.0
+        + sweep.PAIN_ADJUSTED_GOODNESS_WEIGHTS["ulcer_coef"] * 3.0
+    )
+    assert (base - pain) == pytest.approx(expected_penalty, abs=1e-9)
+
+
+def test_pain_adjusted_goodness_custom_weights():
+    monthlies = [15.0] * 60
+    default = sweep.compute_pain_adjusted_goodness(monthlies, 5.0, 12.0, 2.0)
+    no_pain = sweep.compute_pain_adjusted_goodness(
+        monthlies,
+        5.0,
+        12.0,
+        2.0,
+        pain_weights={**sweep.PAIN_ADJUSTED_GOODNESS_WEIGHTS, "tuw_coef": 0.0, "ulcer_coef": 0.0},
+    )
+    expected_delta = (
+        sweep.PAIN_ADJUSTED_GOODNESS_WEIGHTS["tuw_coef"] * 12.0
+        + sweep.PAIN_ADJUSTED_GOODNESS_WEIGHTS["ulcer_coef"] * 2.0
+    )
+    assert (no_pain - default) == pytest.approx(expected_delta, abs=1e-9)
+
+
 def test_robust_goodness_in_cell_result_and_rows():
     c = sweep.CellResult(
         leverage=2.0, min_score=0.85, hold_through=True, top_n=1,
@@ -379,9 +1259,11 @@ def test_robust_goodness_in_cell_result_and_rows():
         median_monthly_pct=141.0, p10_monthly_pct=96.0,
         median_sortino=40.0, worst_dd_pct=7.18, n_neg=0,
         goodness_score=88.82, robust_goodness_score=85.23,
+        pain_adjusted_goodness_score=74.56,
     )
     rows = sweep._cells_to_rows([c])
     assert rows[0]["robust_goodness_score"] == pytest.approx(85.23)
+    assert rows[0]["pain_adjusted_goodness_score"] == pytest.approx(74.56)
 
 
 def test_robust_goodness_sweep_end_to_end(monkeypatch, tmp_path):
@@ -418,11 +1300,13 @@ def test_tuw_and_ulcer_in_cell_result_and_rows():
         median_monthly_pct=141.0, p10_monthly_pct=96.0,
         median_sortino=40.0, worst_dd_pct=7.18, n_neg=0,
         goodness_score=88.82, robust_goodness_score=85.23,
+        pain_adjusted_goodness_score=74.56,
         time_under_water_pct=42.5, ulcer_index=3.17,
     )
     rows = sweep._cells_to_rows([c])
     assert rows[0]["time_under_water_pct"] == pytest.approx(42.5)
     assert rows[0]["ulcer_index"] == pytest.approx(3.17)
+    assert rows[0]["pain_adjusted_goodness_score"] == pytest.approx(74.56)
 
 
 def test_tuw_and_ulcer_sweep_end_to_end(monkeypatch, tmp_path):
@@ -447,6 +1331,8 @@ def test_tuw_and_ulcer_sweep_end_to_end(monkeypatch, tmp_path):
         assert c.ulcer_index >= 0.0
         # Ulcer ≤ max-DD in %. RMS ≤ max by definition.
         assert c.ulcer_index <= c.worst_dd_pct + 1e-9
+        assert np.isfinite(c.pain_adjusted_goodness_score)
+        assert c.pain_adjusted_goodness_score <= c.robust_goodness_score + 1e-9
 
 
 # ── SPY regime-gate + vol-target grids (task #92) ──────────────────────────
@@ -544,8 +1430,8 @@ def _install_fakes_with_vol(monkeypatch, sym_vols: dict[str, float]) -> None:
         lambda **kw: (train, train.iloc[:0], oos),
     )
     monkeypatch.setattr(
-        sweep.XGBStockModel, "load",
-        classmethod(lambda cls, path: _FakeModel(seed=hash(str(path)) & 0xFFFF)),
+        sweep, "load_any_model",
+        lambda path: _FakeModel(seed=hash(str(path)) & 0xFFFF),
     )
 
 
@@ -668,4 +1554,3 @@ def test_sweep_momentum_rank_axis_matches_product(monkeypatch, tmp_path):
         (0.75, 0.0), (0.75, 0.25),
         (0.50, 0.0), (0.50, 0.25),
     }
-
