@@ -16,7 +16,7 @@ import math
 
 import pytest
 
-from xgbnew.backtest import BacktestConfig, DayResult, _compute_result
+from xgbnew.backtest import BacktestConfig, DayResult, _compute_result, _compute_result_hourly
 
 
 def _mk_day_results(equities: list[float], *, initial: float = 10_000.0) -> list[DayResult]:
@@ -60,15 +60,23 @@ def test_flat_with_single_dip_known_values():
     # Equity: [10000, 10000, 9000, 10000, 10000]
     # Running max: [10000, 10000, 10000, 10000, 10000]
     # Dd frac:     [0,       0,    0.1,  0,     0]
-    # 6 samples total (initial + 5); 1 sample strictly underwater → 1/6.
+    # TuW/Ulcer score evaluated periods only, so the initial cash point sets
+    # the first peak but is not in the denominator.
     drs = _mk_day_results([10_000, 9_000, 10_000, 10_000])
     r = _compute_result(drs, _cfg())
-    # Sample count = 1 + len(drs) = 5.
-    # drawdowns: [0, 0, 0.1, 0, 0]  → 1/5 samples underwater.
-    assert r.time_under_water_pct == pytest.approx(20.0, abs=1e-9)
-    # Ulcer = sqrt(mean(dd^2)) * 100 = sqrt(0.01/5)*100 = sqrt(0.002)*100
-    expected_ulcer = math.sqrt(0.002) * 100.0
+    # Evaluated drawdowns: [0, 0.1, 0, 0] -> 1/4 samples underwater.
+    assert r.time_under_water_pct == pytest.approx(25.0, abs=1e-9)
+    # Ulcer = sqrt(mean(dd^2)) * 100 = sqrt(0.01/4)*100.
+    expected_ulcer = math.sqrt(0.01 / 4.0) * 100.0
     assert r.ulcer_index == pytest.approx(expected_ulcer, abs=1e-9)
+    assert r.max_drawdown_pct == pytest.approx(10.0, abs=1e-9)
+
+
+def test_first_day_loss_counts_fully_underwater():
+    drs = _mk_day_results([9_000])
+    r = _compute_result(drs, _cfg())
+    assert r.time_under_water_pct == pytest.approx(100.0, abs=1e-9)
+    assert r.ulcer_index == pytest.approx(10.0, abs=1e-9)
     assert r.max_drawdown_pct == pytest.approx(10.0, abs=1e-9)
 
 
@@ -78,9 +86,9 @@ def test_v_shape_dip_then_recover():
     # Dd frac:      [0, 0.05, 0.10, 0.05, 0]
     drs = _mk_day_results([9_500, 9_000, 9_500, 10_000])
     r = _compute_result(drs, _cfg())
-    # 3 of 5 samples strictly underwater (drs days 1, 2, 3).
-    assert r.time_under_water_pct == pytest.approx(60.0, abs=1e-9)
-    expected_ulcer = math.sqrt((0.05**2 + 0.10**2 + 0.05**2) / 5) * 100.0
+    # 3 of 4 evaluated samples strictly underwater.
+    assert r.time_under_water_pct == pytest.approx(75.0, abs=1e-9)
+    expected_ulcer = math.sqrt((0.05**2 + 0.10**2 + 0.05**2) / 4) * 100.0
     assert r.ulcer_index == pytest.approx(expected_ulcer, abs=1e-9)
     assert r.max_drawdown_pct == pytest.approx(10.0, abs=1e-9)
 
@@ -88,12 +96,12 @@ def test_v_shape_dip_then_recover():
 def test_new_high_resets_underwater():
     # Make a new peak mid-run: dd should reset to 0 from that point on.
     # Equity: [10000, 11000, 10500, 12000]
-    #   dd:   [0,      0,    ~4.54%, 0]  → 1 of 4 samples underwater.
+    #   dd:   [0,      0,    ~4.54%, 0]  → 1 of 3 evaluated samples underwater.
     drs = _mk_day_results([11_000, 10_500, 12_000])
     r = _compute_result(drs, _cfg())
-    assert r.time_under_water_pct == pytest.approx(25.0, abs=1e-9)
+    assert r.time_under_water_pct == pytest.approx(100.0 / 3.0, abs=1e-9)
     dd = 500.0 / 11_000.0   # 4.545...%
-    expected_ulcer = math.sqrt((dd * dd) / 4) * 100.0
+    expected_ulcer = math.sqrt((dd * dd) / 3) * 100.0
     assert r.ulcer_index == pytest.approx(expected_ulcer, abs=1e-9)
 
 
@@ -105,11 +113,11 @@ def test_long_drawdown_high_tuw_same_max_dd():
     equities = [10_000] + [9_000] * 10
     drs = _mk_day_results(equities)
     r = _compute_result(drs, _cfg())
-    # Sample count = 1 + 11 = 12; first 2 at peak (initial + day 0 both 10k),
-    # next 10 at 9k → 10/12 underwater.
-    assert r.time_under_water_pct == pytest.approx(10.0 / 12.0 * 100.0, abs=1e-9)
-    # Ulcer = sqrt(10 * 0.1^2 / 12)*100 = sqrt(0.1/12)*100
-    expected_ulcer = math.sqrt(0.1 / 12.0) * 100.0
+    # Evaluated sample count = 11; first evaluated day is at peak, next 10
+    # are underwater.
+    assert r.time_under_water_pct == pytest.approx(10.0 / 11.0 * 100.0, abs=1e-9)
+    # Ulcer = sqrt(10 * 0.1^2 / 11)*100 = sqrt(0.1/11)*100
+    expected_ulcer = math.sqrt(0.1 / 11.0) * 100.0
     assert r.ulcer_index == pytest.approx(expected_ulcer, abs=1e-9)
     assert r.max_drawdown_pct == pytest.approx(10.0, abs=1e-9)
 
@@ -138,3 +146,16 @@ def test_ulcer_penalizes_long_over_short_same_max_dd():
     # But Ulcer and TuW are both strictly larger for the long dip.
     assert long_dip.ulcer_index > short_dip.ulcer_index
     assert long_dip.time_under_water_pct > short_dip.time_under_water_pct
+
+
+def test_hourly_result_uses_same_evaluated_period_pain_denominator():
+    bars = _mk_day_results([9_000])
+    r = _compute_result_hourly(
+        bars,
+        _cfg(),
+        bars_per_year=252.0 * 6.5,
+        bars_per_month=21.0 * 6.5,
+    )
+    assert r.time_under_water_pct == pytest.approx(100.0, abs=1e-9)
+    assert r.ulcer_index == pytest.approx(10.0, abs=1e-9)
+    assert r.max_drawdown_pct == pytest.approx(10.0, abs=1e-9)

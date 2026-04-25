@@ -37,6 +37,11 @@ def test_allocation_mode_knobs_settable():
     assert cfg.allocation_temp == 0.5
 
 
+def test_min_picks_default_preserves_confidence_gate():
+    cfg = BacktestConfig()
+    assert cfg.min_picks == 0
+
+
 def test_equal_weights_uniform():
     w = _allocation_weights([3.0, 1.0, 0.5, -0.2], mode="equal")
     assert w.shape == (4,)
@@ -185,3 +190,47 @@ def test_simulate_softmax_biases_toward_top_score():
         # sm should lie between equal-mean and top-only.
         low, high = sorted([eq_ret, top.net_return_pct])
         assert low - 1e-9 <= sm_ret <= high + 1e-9
+
+
+def test_simulate_min_picks_forces_best_below_threshold_candidate():
+    """min_picks keeps the strategy invested on low-score days, while the
+    legacy confidence gate sits in cash."""
+    day = date(2024, 1, 2)
+    df = pd.DataFrame([
+        {
+            "date": day,
+            "symbol": "AAA",
+            "actual_open": 100.0,
+            "actual_close": 101.0,
+            "spread_bps": 5.0,
+            "dolvol_20d_log": np.log1p(1e9),
+            "_score_stub": 0.70,
+        },
+        {
+            "date": day,
+            "symbol": "BBB",
+            "actual_open": 100.0,
+            "actual_close": 99.0,
+            "spread_bps": 5.0,
+            "dolvol_20d_log": np.log1p(1e9),
+            "_score_stub": 0.60,
+        },
+    ])
+    scores = df["_score_stub"]
+    base_cfg = BacktestConfig(
+        top_n=2,
+        min_score=0.85,
+        fill_buffer_bps=0.0,
+        commission_bps=0.0,
+        fee_rate=0.0,
+        min_dollar_vol=0.0,
+        max_spread_bps=100.0,
+        xgb_weight=1.0,
+    )
+    gated = simulate(df, model=None, config=base_cfg, precomputed_scores=scores)  # type: ignore[arg-type]
+    forced_cfg = BacktestConfig(**{**base_cfg.__dict__, "min_picks": 1})
+    forced = simulate(df, model=None, config=forced_cfg, precomputed_scores=scores)  # type: ignore[arg-type]
+
+    assert len(gated.day_results) == 0
+    assert len(forced.day_results) == 1
+    assert [t.symbol for t in forced.day_results[0].trades] == ["AAA"]

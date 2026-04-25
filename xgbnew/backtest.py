@@ -25,7 +25,6 @@ import numpy as np
 import pandas as pd
 
 from src.fees import get_fee_for_symbol
-from .features import CHRONOS_FEATURE_COLS, DAILY_FEATURE_COLS
 from .model import XGBStockModel, combined_scores
 
 logger = logging.getLogger(__name__)
@@ -37,6 +36,12 @@ TRADING_DAYS_PER_YEAR = 252
 @dataclass
 class BacktestConfig:
     top_n: int = 2
+    # Aggressive packing floor. When >0, each day fills at least this many
+    # valid pick slots from the best-ranked names even if their score is below
+    # ``min_score``. This is bounded by ``top_n`` and only applies after the
+    # normal live-replicable universe filters, so it tests "stay invested" risk
+    # without bypassing liquidity/spread/vol realism.
+    min_picks: int = 0
     initial_cash: float = 10_000.0
     commission_bps: float = 0.0         # per side legacy override; prefer fee_rate
     leverage: float = 1.0               # 1.0 = no leverage, max 2.0
@@ -123,6 +128,42 @@ class BacktestConfig:
     # 0.0 disables (identity with pre-MC sim).
     skip_prob: float = 0.0
     skip_seed: int = 0
+    # No-picks fallback. When the day's pick pool is empty (because no
+    # symbol's score >= min_score, or every pick was filtered out, or
+    # missed-order MC dropped them all), if ``no_picks_fallback_symbol``
+    # is set we look the symbol up in the UNFILTERED test_df for that day
+    # and buy it at leverage ``config.leverage * no_picks_fallback_alloc_scale``
+    # (so the caller can run a small "keep market exposure" position on
+    # low-conviction days). Empty string disables; recommended values are
+    # "SPY" (broad) or "QQQ" (higher drift, higher DD). Fees and fill
+    # buffer identical to a normal churn-day trade. Does NOT participate
+    # in hold_through continuations — a fallback day always flattens the
+    # hold_through state (so a real pick returning tomorrow triggers a
+    # fresh buy, not a claim of "held through the SPY day").
+    no_picks_fallback_symbol: str = ""
+    no_picks_fallback_alloc_scale: float = 0.5
+    # Conviction-scaled allocation. When enabled, each day's allocation
+    # is scaled by clip((top_score - alloc_low) / (alloc_high - alloc_low), 0, 1).
+    # Below alloc_low → 0% allocation (equivalent to "min_score gate at
+    # alloc_low"); above alloc_high → full allocation; in between → linear.
+    # Orthogonal to min_score: if min_score=0.0 the gate opens fully and
+    # conviction scaling is the sole sizing lever.
+    # 0 alloc days that would otherwise have a pick trigger the no-picks
+    # fallback if configured.
+    conviction_scaled_alloc: bool = False
+    conviction_alloc_low: float = 0.55
+    conviction_alloc_high: float = 0.85
+    # Optional simulator circuit breaker. When positive, simulate() stops
+    # immediately after the first traded day whose close-to-close equity
+    # drawdown from the running peak reaches this percentage. This is for
+    # large grid pruning and production-risk diagnostics; 0 preserves the
+    # historical full-window simulation.
+    stop_on_drawdown_pct: float = 0.0
+    # Optional intraday circuit breaker. When positive, simulate() stops after
+    # the first traded day whose OHLC-based portfolio adverse excursion reaches
+    # this percentage. This catches high-leverage cells that recover by close
+    # but would have been unacceptable live risk while the position was open.
+    stop_on_intraday_drawdown_pct: float = 0.0
 
 
 @dataclass
@@ -195,6 +236,8 @@ class BacktestResult:
     # ulcer_index          = RMS of drawdown-depth % across the curve
     time_under_water_pct: float = 0.0
     ulcer_index:          float = 0.0
+    stopped_early: bool = False
+    stop_reason: str = ""
 
 
 def _day_margin_cost(leverage: float) -> float:
@@ -258,6 +301,25 @@ def _sortino_semi(rets: np.ndarray, mean_r: float, ann_factor: float) -> float:
         return _SORTINO_CAP if mean_r > 0 else 0.0
     raw = mean_r / semi_dev * ann_factor
     return float(np.clip(raw, -_SORTINO_CAP, _SORTINO_CAP))
+
+
+def _equity_drawdown_metrics(eq: np.ndarray) -> tuple[float, float, float]:
+    """Return (max_dd_frac, time_under_water_pct, ulcer_index).
+
+    ``eq`` includes the initial equity as element 0. The initial point sets
+    the first peak, but it is not an evaluated period; TuW and Ulcer therefore
+    use drawdowns from eq[1:] only. Including eq[0] dilutes early losses and
+    makes a first-day underwater state look artificially less painful.
+    """
+    if eq.size <= 1:
+        return 0.0, 0.0, 0.0
+    running_max = np.maximum.accumulate(eq)
+    dd_frac = (running_max - eq) / running_max
+    dd_path = dd_frac[1:]
+    max_dd = float(np.max(dd_frac))
+    tuw_pct = float(np.mean(dd_path > 0.0)) * 100.0
+    ulcer = float(np.sqrt(np.mean(dd_path * dd_path))) * 100.0
+    return max_dd, tuw_pct, ulcer
 
 
 def _resolve_fee_rate(symbol: str, config: BacktestConfig) -> float:
@@ -353,7 +415,10 @@ def _build_vol_scale(
     if not sp.index.is_unique:
         sp = sp.groupby(level=0).last()
     log_ret = np.log(sp / sp.shift(1))
-    realised_ann = log_ret.rolling(window=int(lookback_days), min_periods=int(lookback_days)).std() * np.sqrt(trading_days_per_year)
+    realised_ann = (
+        log_ret.rolling(window=int(lookback_days), min_periods=int(lookback_days)).std()
+        * np.sqrt(trading_days_per_year)
+    )
     ratio = (float(target_ann) / realised_ann).clip(upper=1.0)
     aligned = ratio.reindex(all_dates).fillna(1.0).astype(float)
     return aligned
@@ -447,6 +512,40 @@ def simulate(
     test_df = test_df.copy()
     test_df["_score"] = scores.values
 
+    # Snapshot rows before deployable inference filters. Hold-through live
+    # keeps existing positions when no new pick clears the gate; this lookup
+    # lets the simulator mark those stale holds close-to-close even if the
+    # held symbol would not be in today's filtered pick pool.
+    hold_lookup: dict[tuple[date, str], pd.Series] = {
+        (row["date"], str(row["symbol"])): row
+        for _, row in (
+            test_df.dropna(subset=["date", "symbol"])
+            .drop_duplicates(subset=["date", "symbol"], keep="last")
+            .iterrows()
+        )
+    }
+
+    # Snapshot fallback-symbol rows BEFORE any filter dropped them. We
+    # key by (symbol, date) so the no-picks path can pull the bar back
+    # even if dolvol / vol / spread / rank filters excluded it from the
+    # pick pool. Returns None for the lookup when no fallback is
+    # configured so the hot path pays zero overhead.
+    fallback_sym = (config.no_picks_fallback_symbol or "").strip().upper()
+    fallback_lookup: dict | None = None
+    if fallback_sym:
+        _fb_rows = test_df[test_df["symbol"].astype(str).str.upper() == fallback_sym]
+        # Index rows by date for O(1) lookup; keep the most recent duplicate
+        # (should never happen but defensive). This is built before filters
+        # so an all-filtered day can still fall back to the configured symbol.
+        fallback_lookup = {
+            row["date"]: row
+            for _, row in (
+                _fb_rows.dropna(subset=["date"])
+                .drop_duplicates(subset=["date"], keep="last")
+                .iterrows()
+            )
+        }
+
     # Liquidity filter
     min_dolvol_log = np.log1p(config.min_dollar_vol)
     if "dolvol_20d_log" in test_df.columns:
@@ -513,6 +612,8 @@ def simulate(
         symbol_fee_rates = {}
 
     unique_dates = pd.Index(sorted(test_df["date"].unique()))
+    if fallback_lookup is not None:
+        unique_dates = pd.Index(sorted(set(unique_dates).union(fallback_lookup.keys())))
     regime_closed = _build_regime_flags(
         spy_close_by_date, unique_dates, window=config.regime_gate_window
     )
@@ -521,7 +622,10 @@ def simulate(
     )
 
     equity = config.initial_cash
+    peak_equity = config.initial_cash
     day_results: list[DayResult] = []
+    stopped_early = False
+    stop_reason = ""
     # Hold-through state: last day's pick set + per-symbol close prices. When
     # today's pick set equals yesterday's (as a set), we carry the positions
     # instead of sell-at-close + buy-at-open. The carry day's return is
@@ -538,7 +642,11 @@ def simulate(
         if _skip_prob > 0.0 else None
     )
 
-    for day, day_df in test_df.groupby("date", sort=True):
+    grouped_by_day = {day: day_df for day, day_df in test_df.groupby("date", sort=True)}
+    empty_day_df = test_df.iloc[0:0]
+
+    for day in unique_dates:
+        day_df = grouped_by_day.get(day, empty_day_df)
         # Regime gate — if SPY under MA for the day, skip (stay in cash).
         if bool(regime_closed.get(day, False)):
             # Flatten hold state on gated days so a re-entry can't claim a
@@ -555,13 +663,15 @@ def simulate(
             ascending.append(False)
         day_df = day_df.sort_values(sort_cols, ascending=ascending, kind="mergesort")
 
-        picks = day_df[day_df["_score"] >= config.min_score].head(config.top_n * 3)
-
         # Materialize today's pick rows up to top_n (skipping invalid prices).
         pick_rows: list[pd.Series] = []
-        for _, row in picks.iterrows():
+        min_pick_floor = min(max(int(config.min_picks), 0), int(config.top_n))
+        for _, row in day_df.iterrows():
             if len(pick_rows) >= config.top_n:
                 break
+            score = float(row.get("_score", 0.0) or 0.0)
+            if score < config.min_score and len(pick_rows) >= min_pick_floor:
+                continue
             o = float(row["actual_open"])
             c = float(row["actual_close"])
             if o <= 0 or c <= 0:
@@ -595,6 +705,58 @@ def simulate(
             today_sym_list = [str(r["symbol"]) for r in pick_rows]
             today_pick_set = frozenset(today_sym_list)
 
+        # Conviction-scaled allocation — sizes today's exposure by the
+        # top-of-pool score. Computed from the DAY's top score before any
+        # of the pick_rows assembly trims it; falls back to 0 if no pick.
+        # When the scale lands at 0 we drop the pick rows entirely so the
+        # no-picks fallback path can fire (keeps the "trade with conviction
+        # or SPY else" semantics cleaner than simulating a zero-leverage
+        # trade that pays neither fees nor gets upside).
+        conviction_scale = 1.0
+        if config.conviction_scaled_alloc:
+            top_score = (
+                float(pick_rows[0]["_score"]) if pick_rows
+                else float(day_df["_score"].max()) if len(day_df) > 0
+                else 0.0
+            )
+            lo = float(config.conviction_alloc_low)
+            hi = float(config.conviction_alloc_high)
+            span = max(hi - lo, 1e-9)
+            conviction_scale = float(np.clip((top_score - lo) / span, 0.0, 1.0))
+            if conviction_scale <= 0.0:
+                pick_rows = []
+                today_sym_list = []
+                today_pick_set = frozenset()
+                is_continuation = False
+
+        # Live hold-through semantics: if today's model emits no valid pick
+        # but the bot already holds yesterday's pick, it does not liquidate.
+        # It simply keeps the position. Model that as a close-to-close
+        # continuation using the unfiltered daily row for the held symbol.
+        if (
+            config.hold_through
+            and not pick_rows
+            and prev_pick_set is not None
+            and prev_close_by_sym
+        ):
+            held_rows: list[pd.Series] = []
+            missing_held = False
+            for sym in sorted(prev_pick_set):
+                row = hold_lookup.get((day, sym))
+                if row is None:
+                    missing_held = True
+                    break
+                c = float(row.get("actual_close", 0.0) or 0.0)
+                if c <= 0 or prev_close_by_sym.get(sym, 0.0) <= 0:
+                    missing_held = True
+                    break
+                held_rows.append(row)
+            if not missing_held and held_rows:
+                pick_rows = held_rows
+                today_sym_list = [str(r["symbol"]) for r in pick_rows]
+                today_pick_set = frozenset(today_sym_list)
+                is_continuation = True
+
         trades: list[DayTrade] = []
         for row in pick_rows:
             o = float(row["actual_open"])
@@ -610,7 +772,7 @@ def simulate(
                 floor=config.inv_vol_floor,
                 cap=config.inv_vol_cap,
             )
-            eff_lev = config.leverage * pick_scale
+            eff_lev = config.leverage * pick_scale * conviction_scale
 
             if is_continuation:
                 # Position is held across the prior close — no trade fires
@@ -681,8 +843,73 @@ def simulate(
                 intraday_best_runup_pct=best_runup,
             ))
 
-        # Update hold-through state for next day.
-        if config.hold_through and trades:
+        # No-picks fallback — only fires on churn days (not continuations).
+        # When the pick pool is empty OR conviction-scaling produced a zero
+        # allocation, look up the fallback symbol in the pre-filter
+        # snapshot and trade it at a reduced exposure. The fallback
+        # symbol is NEVER a hold_through carry — even if tomorrow's
+        # picks land empty again we submit a fresh fallback order, since
+        # the production live_trader path would do the same (no "was I
+        # already in SPY" state machine in the bot).
+        fell_back = False
+        if (
+            not trades
+            and not is_continuation
+            and fallback_lookup is not None
+            and float(config.no_picks_fallback_alloc_scale) != 0.0
+        ):
+            fb_row = fallback_lookup.get(day)
+            if fb_row is not None:
+                fb_o = float(fb_row.get("actual_open", 0.0) or 0.0)
+                fb_c = float(fb_row.get("actual_close", 0.0) or 0.0)
+                if fb_o > 0 and fb_c > 0:
+                    fb_spread = float(fb_row.get("spread_bps", 5.0))
+                    if not np.isfinite(fb_spread) or fb_spread <= 0:
+                        fb_spread = 5.0
+                    fb_lev = float(config.leverage) * float(
+                        config.no_picks_fallback_alloc_scale
+                    )
+                    fb_fee = _resolve_fee_rate(fallback_sym, config)
+                    fb_entry, fb_exit = _fill_prices(
+                        fb_o, fb_c, fill_buffer_bps=config.fill_buffer_bps
+                    )
+                    if fb_entry > 0 and fb_exit > 0:
+                        fb_gross_oc = (fb_exit - fb_entry) / fb_entry
+                        fb_round_trip = (
+                            fb_exit * (1.0 - fb_fee) / (fb_entry * (1.0 + fb_fee))
+                        ) - 1.0
+                        fb_gross_lev = fb_lev * fb_round_trip
+                        fb_cost = (
+                            fb_lev * (2.0 * config.commission_bps) / 10_000.0
+                            + _day_margin_cost(fb_lev)
+                        )
+                        fb_net = fb_gross_lev - fb_cost
+                        fb_worst, fb_runup = _intraday_excursion_pct(
+                            fb_row, fb_entry, fb_lev,
+                        )
+                        trades.append(DayTrade(
+                            symbol=fallback_sym,
+                            score=0.0,
+                            actual_open=fb_o,
+                            actual_close=fb_c,
+                            entry_fill_price=fb_entry,
+                            exit_fill_price=fb_exit,
+                            spread_bps=fb_spread,
+                            commission_bps=config.commission_bps,
+                            fee_rate=fb_fee,
+                            fill_buffer_bps=float(config.fill_buffer_bps),
+                            leverage=fb_lev,
+                            gross_return_pct=fb_gross_oc * 100.0,
+                            net_return_pct=fb_net * 100.0,
+                            intraday_worst_dd_pct=fb_worst,
+                            intraday_best_runup_pct=fb_runup,
+                        ))
+                        fell_back = True
+
+        # Update hold-through state for next day. Fallback days always
+        # flatten the hold state — the fallback symbol isn't "held
+        # through" tomorrow.
+        if config.hold_through and trades and not fell_back:
             prev_pick_set = today_pick_set
             prev_close_by_sym = {t.symbol: float(t.actual_close) for t in trades}
         else:
@@ -725,11 +952,44 @@ def simulate(
             intraday_best_runup_pct=day_intraday_runup,
         ))
         equity = equity_end
+        peak_equity = max(peak_equity, equity_end)
+        if (
+            float(config.stop_on_intraday_drawdown_pct) > 0.0
+            and day_intraday_dd >= float(config.stop_on_intraday_drawdown_pct)
+        ):
+            stopped_early = True
+            stop_reason = (
+                "intraday_drawdown_pct>="
+                f"{float(config.stop_on_intraday_drawdown_pct):g}"
+            )
+            break
+        if (
+            float(config.stop_on_drawdown_pct) > 0.0
+            and peak_equity > 0.0
+        ):
+            realized_dd_pct = (peak_equity - equity_end) / peak_equity * 100.0
+            if realized_dd_pct >= float(config.stop_on_drawdown_pct):
+                stopped_early = True
+                stop_reason = (
+                    f"drawdown_pct>={float(config.stop_on_drawdown_pct):g}"
+                )
+                break
 
-    return _compute_result(day_results, config)
+    return _compute_result(
+        day_results,
+        config,
+        stopped_early=stopped_early,
+        stop_reason=stop_reason,
+    )
 
 
-def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> BacktestResult:
+def _compute_result(
+    day_results: list[DayResult],
+    config: BacktestConfig,
+    *,
+    stopped_early: bool = False,
+    stop_reason: str = "",
+) -> BacktestResult:
     if not day_results:
         return BacktestResult(
             config=config, day_results=[], initial_cash=config.initial_cash,
@@ -738,6 +998,8 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
             sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown_pct=0.0,
             win_rate_pct=0.0, total_trades=0, avg_spread_bps=0.0, avg_fee_bps=0.0,
             directional_accuracy_pct=0.0,
+            stopped_early=stopped_early,
+            stop_reason=stop_reason,
         )
 
     rets = np.array([r.daily_return_pct / 100.0 for r in day_results])
@@ -754,16 +1016,7 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
 
     sortino = _sortino_semi(rets, mean_r, ann_factor=np.sqrt(TRADING_DAYS_PER_YEAR))
 
-    running_max = np.maximum.accumulate(eq)
-    dd_frac = (running_max - eq) / running_max  # ≥ 0 always
-    max_dd = float(np.max(dd_frac))
-    # TuW: fraction of samples strictly below the prior peak. Excludes the
-    # initial cash point (dd_frac == 0 by construction).
-    tuw_pct = float(np.mean(dd_frac > 0.0)) * 100.0
-    # Ulcer Index: RMS of drawdown depth as %. Integrates pain over the
-    # whole curve, so a short-but-deep dip and a long-but-shallow dip can
-    # land at the same Max DD yet have very different UI.
-    ulcer = float(np.sqrt(np.mean(dd_frac * dd_frac))) * 100.0
+    max_dd, tuw_pct, ulcer = _equity_drawdown_metrics(eq)
 
     win_rate = float(np.mean(rets > 0)) * 100.0
 
@@ -800,6 +1053,8 @@ def _compute_result(day_results: list[DayResult], config: BacktestConfig) -> Bac
         worst_intraday_runup_pct=worst_intraday_runup,
         time_under_water_pct=tuw_pct,
         ulcer_index=ulcer,
+        stopped_early=stopped_early,
+        stop_reason=stop_reason,
     )
 
 
@@ -1071,11 +1326,7 @@ def _compute_result_hourly(
     sharpe = mean_r / std_r * np.sqrt(bars_per_year) if std_r > 0 else 0.0
     sortino = _sortino_semi(rets, mean_r, ann_factor=np.sqrt(bars_per_year))
 
-    running_max = np.maximum.accumulate(eq)
-    dd_frac = (running_max - eq) / running_max
-    max_dd = float(np.max(dd_frac))
-    tuw_pct = float(np.mean(dd_frac > 0.0)) * 100.0
-    ulcer = float(np.sqrt(np.mean(dd_frac * dd_frac))) * 100.0
+    max_dd, tuw_pct, ulcer = _equity_drawdown_metrics(eq)
 
     win_rate = float(np.mean(rets > 0)) * 100.0
 
