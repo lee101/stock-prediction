@@ -125,6 +125,62 @@ def test_cross_sectional_regime_iqr_gate_closes_wide_day():
     assert out.empty
 
 
+def test_score_all_symbols_can_penalize_ensemble_disagreement(monkeypatch, tmp_path):
+    local_df = pd.DataFrame({"close": [100.0] * 80})
+
+    def _fake_features(_df, *, symbol):
+        row = {col: 1.0 for col in live_trader.DAILY_FEATURE_COLS}
+        row.update({
+            "symbol": symbol,
+            "actual_close": 100.0,
+            "dolvol_20d_log": float(live_trader.np.log1p(20_000_000.0)),
+            "spread_bps": 5.0,
+            "ret_5d": 0.0,
+            "ret_20d": 0.0,
+            "vol_20d": 0.20,
+        })
+        return pd.DataFrame([row])
+
+    class _Model:
+        feature_cols: list[str] = []
+
+        def __init__(self, scores):
+            self._scores = scores
+
+        def predict_scores(self, frame):
+            return [self._scores[sym] for sym in frame["symbol"]]
+
+    monkeypatch.setattr(live_trader, "_load_symbol_csv", lambda _sym, _root: local_df)
+    monkeypatch.setattr(live_trader, "_extend_with_live_bars", lambda df, *_args: df)
+    monkeypatch.setattr(live_trader, "_latest_daily_bar_is_fresh", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(live_trader, "build_features_for_symbol", _fake_features)
+
+    models = [
+        _Model({"A": 0.99, "B": 0.69}),
+        _Model({"A": 0.41, "B": 0.69}),
+    ]
+
+    unpenalized = live_trader.score_all_symbols(
+        ["A", "B"],
+        tmp_path,
+        models,
+        score_uncertainty_penalty=0.0,
+    )
+    penalized = live_trader.score_all_symbols(
+        ["A", "B"],
+        tmp_path,
+        models,
+        score_uncertainty_penalty=1.0,
+    )
+
+    assert list(unpenalized["symbol"]) == ["A", "B"]
+    assert list(penalized["symbol"]) == ["B", "A"]
+    a_row = penalized.loc[penalized["symbol"] == "A"].iloc[0]
+    assert a_row["raw_score_mean"] == pytest.approx(0.70)
+    assert a_row["score_std"] == pytest.approx(0.29)
+    assert a_row["score"] == pytest.approx(0.41)
+
+
 # ── embedded EOD deleverage ───────────────────────────────────────────────────
 
 
@@ -469,6 +525,56 @@ def test_score_and_pick_min_picks_forces_low_confidence_candidate(monkeypatch):
     filtered_event = [fields for event, fields in tlog.events if event == "filtered"][-1]
     assert filtered_event["n_forced_low_confidence"] == 1
     assert filtered_event["min_picks"] == 1
+
+
+def test_score_and_pick_applies_uncertainty_adjusted_sorting(monkeypatch):
+    scores = pd.DataFrame([
+        {
+            "symbol": "HIGH_VAR",
+            "score": 0.80,
+            "last_close": 100.0,
+            "spread_bps": 2.0,
+            "per_seed_scores": [1.0, 0.6],
+        },
+        {
+            "symbol": "STABLE",
+            "score": 0.75,
+            "last_close": 50.0,
+            "spread_bps": 2.5,
+            "per_seed_scores": [0.76, 0.74],
+        },
+    ])
+    monkeypatch.setattr(live_trader, "_get_latest_bars", lambda *a, **k: {})
+
+    def _fake_score_all(*args, **kwargs):
+        penalty = float(kwargs["score_uncertainty_penalty"])
+        out = scores.copy()
+        std = out["per_seed_scores"].map(lambda xs: pd.Series(xs).std(ddof=0))
+        out["raw_score_mean"] = out["score"]
+        out["score_std"] = std
+        out["score"] = out["score"] - penalty * std
+        return out.sort_values("score", ascending=False).reset_index(drop=True)
+
+    monkeypatch.setattr(live_trader, "score_all_symbols", _fake_score_all)
+    args = SimpleNamespace(
+        min_dollar_vol=0.0,
+        min_vol_20d=0.0,
+        max_vol_20d=0.0,
+        max_ret_20d_rank_pct=1.0,
+        min_ret_5d_rank_pct=0.0,
+        regime_cs_iqr_max=0.0,
+        regime_cs_skew_min=-1e9,
+        min_score=0.0,
+        min_picks=0,
+        top_n=1,
+        score_uncertainty_penalty=1.0,
+    )
+
+    picks, _ = live_trader._score_and_pick(
+        ["HIGH_VAR", "STABLE"], Path("."), MagicMock(), args
+    )
+
+    assert list(picks["symbol"]) == ["STABLE"]
 
 
 def test_execute_buys_records_buy_price_for_each_fill(monkeypatch):

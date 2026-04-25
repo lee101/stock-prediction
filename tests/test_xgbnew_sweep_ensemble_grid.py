@@ -322,6 +322,66 @@ def test_missing_pkl_raises(monkeypatch, tmp_path):
         )
 
 
+def test_run_sweep_rejects_duplicate_model_paths(tmp_path):
+    path = tmp_path / "fake_seed0.pkl"
+    path.write_bytes(b"fake")
+
+    with pytest.raises(ValueError, match="model path list contains duplicates"):
+        sweep.run_sweep(
+            symbols=["SYM0"],
+            data_root=Path("/tmp"),
+            model_paths=[path, path],
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0], min_score_grid=[0.0],
+            hold_through_grid=[False], top_n_grid=[1],
+            fee_regimes=["deploy"],
+        )
+
+
+def test_run_sweep_rejects_duplicate_alltrain_seed_paths(tmp_path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    path0_left = left / "alltrain_seed0.pkl"
+    path0_right = right / "alltrain_seed0.pkl"
+    path0_left.write_bytes(b"fake")
+    path0_right.write_bytes(b"fake")
+
+    with pytest.raises(ValueError, match="model path seeds contain duplicates"):
+        sweep.run_sweep(
+            symbols=["SYM0"],
+            data_root=Path("/tmp"),
+            model_paths=[path0_left, path0_right],
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0], min_score_grid=[0.0],
+            hold_through_grid=[False], top_n_grid=[1],
+            fee_regimes=["deploy"],
+        )
+
+
+def test_run_sweep_rejects_malformed_alltrain_seed_path(tmp_path):
+    path = tmp_path / "alltrain_seedx.pkl"
+    path.write_bytes(b"fake")
+
+    with pytest.raises(ValueError, match="filename must match alltrain_seed<seed>.pkl"):
+        sweep.run_sweep(
+            symbols=["SYM0"],
+            data_root=Path("/tmp"),
+            model_paths=[path],
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0], min_score_grid=[0.0],
+            hold_through_grid=[False], top_n_grid=[1],
+            fee_regimes=["deploy"],
+        )
+
+
 def test_unknown_fee_regime_raises(monkeypatch, tmp_path):
     _install_fakes(monkeypatch)
     paths = _fake_paths(tmp_path, 2)
@@ -383,6 +443,7 @@ def test_cells_to_rows_shapes():
         fee_regime="deploy", n_windows=60,
         median_monthly_pct=141.0, p10_monthly_pct=96.0,
         median_sortino=40.0, worst_dd_pct=12.0, n_neg=0,
+        score_uncertainty_penalty=0.75,
         goodness_score=84.0,
         no_picks_fallback_symbol="SPY",
         no_picks_fallback_alloc_scale=0.5,
@@ -401,6 +462,7 @@ def test_cells_to_rows_shapes():
     assert r["n_neg"] == 0
     assert r["hold_through"] is True
     assert r["min_picks"] == 0
+    assert r["score_uncertainty_penalty"] == 0.75
     assert r["goodness_score"] == 84.0
     assert r["no_picks_fallback_symbol"] == "SPY"
     assert r["no_picks_fallback_alloc_scale"] == 0.5
@@ -413,6 +475,17 @@ def test_cells_to_rows_shapes():
     assert r["fail_fast_reason"] == ""
     assert r["ensemble_needs_ranks"] is True
     assert r["ensemble_needs_dispersion"] is True
+
+
+def test_uncertainty_adjusted_scores_penalize_seed_disagreement():
+    scores = pd.Series([0.70, 0.69], index=["A", "B"], name="ensemble_score")
+    score_std = pd.Series([0.29, 0.0], index=["A", "B"])
+
+    adjusted = sweep._uncertainty_adjusted_scores(scores, score_std, penalty=1.0)
+
+    assert adjusted.loc["A"] == pytest.approx(0.41)
+    assert adjusted.loc["B"] == pytest.approx(0.69)
+    assert adjusted.sort_values(ascending=False).index.tolist() == ["B", "A"]
 
 
 def test_sweep_json_payload_and_atomic_write(tmp_path):

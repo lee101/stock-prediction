@@ -81,6 +81,9 @@ class CellResult:
     n_neg: int
     # Aggressive packing floor. 0 means classic min_score-gated behavior.
     min_picks: int = 0
+    # Uncertainty-adjusted sorting penalty. Scores used for selection are
+    # ensemble_mean - penalty * ensemble_std across seed models. 0 disables.
+    score_uncertainty_penalty: float = 0.0
     # Composite "one-scalar" optimization target — see compute_goodness().
     goodness_score: float = 0.0
     # Asymmetric-downside variant — see compute_robust_goodness().
@@ -234,6 +237,7 @@ STRATEGY_PARAM_FIELDS = (
     "hold_through",
     "top_n",
     "min_picks",
+    "score_uncertainty_penalty",
     "inference_min_dolvol",
     "inference_min_vol_20d",
     "inference_max_vol_20d",
@@ -410,6 +414,40 @@ def _blend_scores(oos_df: pd.DataFrame, models: list[XGBStockModel],
     return pd.Series(blended, index=oos_df.index, name="ensemble_score")
 
 
+def _ensemble_score_mean_std(
+    oos_df: pd.DataFrame,
+    models: list[XGBStockModel],
+    blend_mode: str,
+) -> tuple[pd.Series, pd.Series]:
+    """Return ensemble center and cross-seed dispersion for uncertainty sorting."""
+    mat = np.stack(
+        [m.predict_scores(oos_df).values for m in models], axis=0
+    )
+    if blend_mode == "mean":
+        center = mat.mean(axis=0)
+    elif blend_mode == "median":
+        center = np.median(mat, axis=0)
+    else:
+        raise ValueError(f"unsupported blend_mode: {blend_mode}")
+    spread = mat.std(axis=0)
+    return (
+        pd.Series(center, index=oos_df.index, name="ensemble_score"),
+        pd.Series(spread, index=oos_df.index, name="ensemble_score_std"),
+    )
+
+
+def _uncertainty_adjusted_scores(
+    scores: pd.Series,
+    score_std: pd.Series | None,
+    penalty: float,
+) -> pd.Series:
+    penalty = max(float(penalty or 0.0), 0.0)
+    if penalty <= 0.0 or score_std is None:
+        return scores
+    adjusted = scores - penalty * score_std.reindex(scores.index).fillna(0.0)
+    return adjusted.rename(f"{scores.name or 'score'}_uadj")
+
+
 def _allocation_grid_pairs(
     allocation_modes: list[str],
     allocation_temps: list[float],
@@ -456,6 +494,7 @@ def _cell_key_from_mapping(row: dict) -> tuple:
         bool(row.get("hold_through", False)),
         int(row.get("top_n", 0)),
         int(row.get("min_picks", 0)),
+        _key_float(row.get("score_uncertainty_penalty", 0.0)),
         fee_regime,
         _key_float(row.get("inference_min_dolvol", 5_000_000.0)),
         _key_float(row.get("inference_min_vol_20d", 0.0)),
@@ -501,6 +540,7 @@ def _cell_key_from_values(
     hold_through: bool,
     top_n: int,
     min_picks: int,
+    score_uncertainty_penalty: float,
     fee_regime: str,
     inference_min_dolvol: float,
     inference_min_vol_20d: float,
@@ -532,6 +572,7 @@ def _cell_key_from_values(
             "hold_through": hold_through,
             "top_n": top_n,
             "min_picks": min_picks,
+            "score_uncertainty_penalty": score_uncertainty_penalty,
             "fee_regime": fee_regime,
             "inference_min_dolvol": inference_min_dolvol,
             "inference_min_vol_20d": inference_min_vol_20d,
@@ -590,6 +631,7 @@ def _run_cell(
     top_n: int,
     fee_regime: str,
     min_picks: int = 0,
+    score_uncertainty_penalty: float = 0.0,
     inference_min_dolvol: float = 5_000_000.0,
     inference_min_vol_20d: float = 0.0,
     inference_max_vol_20d: float = 0.0,
@@ -711,6 +753,7 @@ def _run_cell(
         empty = CellResult(leverage, min_score, hold_through, top_n, fee_regime,
                            0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
         empty.min_picks = int(min_picks)
+        empty.score_uncertainty_penalty = float(score_uncertainty_penalty)
         empty.fill_buffer_bps = fb_resolved
         empty.allocation_mode = str(allocation_mode or "equal")
         empty.allocation_temp = float(allocation_temp)
@@ -752,6 +795,7 @@ def _run_cell(
         worst_dd_pct=worst_dd,
         n_neg=n_neg,
         min_picks=int(min_picks),
+        score_uncertainty_penalty=float(score_uncertainty_penalty),
         goodness_score=goodness,
         robust_goodness_score=robust_goodness,
         pain_adjusted_goodness_score=pain_adjusted_goodness,
@@ -787,6 +831,38 @@ def _run_cell(
         allocation_temp=float(allocation_temp),
         expected_n_windows=int(len(windows)),
     )
+
+
+def _alltrain_seed_from_path(path: Path) -> int | None:
+    prefix = "alltrain_seed"
+    stem = path.stem
+    if not stem.startswith(prefix):
+        return None
+    seed_text = stem[len(prefix):]
+    try:
+        return int(seed_text)
+    except ValueError as exc:
+        raise ValueError(f"{path}: filename must match alltrain_seed<seed>.pkl") from exc
+
+
+def _validate_model_paths_for_sweep(model_paths: list[Path]) -> None:
+    if not model_paths:
+        raise ValueError("model path list is empty")
+    normalized_paths = [path.expanduser().resolve(strict=False) for path in model_paths]
+    if len(set(normalized_paths)) != len(normalized_paths):
+        raise ValueError("model path list contains duplicates")
+    seen_seeds: dict[int, Path] = {}
+    for path in model_paths:
+        seed = _alltrain_seed_from_path(path)
+        if seed is None:
+            continue
+        previous = seen_seeds.get(seed)
+        if previous is not None:
+            raise ValueError(
+                f"model path seeds contain duplicates: seed {seed} "
+                f"appears in {previous} and {path}"
+            )
+        seen_seeds[seed] = path
 
 
 def run_sweep(
@@ -833,6 +909,7 @@ def run_sweep(
     conviction_alloc_high: float = 0.85,
     allocation_mode_grid: list[str] | None = None,
     allocation_temp_grid: list[float] | None = None,
+    score_uncertainty_penalty_grid: list[float] | None = None,
     fail_fast_max_dd_pct: float = 0.0,
     fail_fast_max_intraday_dd_pct: float = 0.0,
     fail_fast_neg_windows: int = 0,
@@ -841,6 +918,7 @@ def run_sweep(
     resume_rows: list[dict] | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
+    _validate_model_paths_for_sweep(model_paths)
     for p in model_paths:
         if not p.exists():
             raise FileNotFoundError(f"model path not found: {p}")
@@ -911,13 +989,14 @@ def run_sweep(
     logger.info("dataset built in %.1fs | train=%d oos=%d",
                 time.perf_counter() - _t, len(train_df), len(oos_df))
 
-    scores = _blend_scores(oos_df, models, blend_mode)
+    scores, score_std = _ensemble_score_mean_std(oos_df, models, blend_mode)
     if invert_scores:
         # Flip rank-order so "top-N" becomes the worst-scored names. Kept
         # in [0,1] so existing min_score gates stay meaningful on the
         # inverted distribution (callers should LOWER the gate).
         logger.info("invert_scores=True → flipping score ranks for short-side test")
         scores = (1.0 - scores).rename("ensemble_score_inv")
+        score_std = score_std.rename("ensemble_score_inv_std")
 
     all_days = sorted(oos_df["date"].unique())
     windows = _build_windows(all_days, window_days, stride_days)
@@ -950,6 +1029,7 @@ def run_sweep(
     conv_grid = list(conviction_scaled_alloc_grid or [False])
     alloc_mode_grid = [str(x or "equal").strip().lower() for x in (allocation_mode_grid or ["equal"])]
     alloc_temp_grid = [float(x) for x in (allocation_temp_grid or [1.0])]
+    sup_grid = [float(x) for x in (score_uncertainty_penalty_grid or [0.0])]
     valid_alloc_modes = {"equal", "score_norm", "softmax"}
     bad_alloc_modes = sorted(set(alloc_mode_grid) - valid_alloc_modes)
     if bad_alloc_modes:
@@ -1006,21 +1086,22 @@ def run_sweep(
         * len(r20g_grid) * len(r5g_grid)
         * len(rgiqr_grid) * len(rgskew_grid)
         * len(fb_alloc_grid) * len(conv_grid)
-        * len(alloc_pairs)
+        * len(alloc_pairs) * len(sup_grid)
     )
     i = 0
     for (
         lev, ms, ht, tn, minp, reg, inf_dv, inf_vol, inf_maxvol, skip_pair,
         fb, rgw, vta, ivt, r20g, r5g, rgiqr, rgskew, fb_alloc, conv,
-        alloc_pair,
+        alloc_pair, sup,
     ) in product(
         leverage_grid, min_score_grid, hold_through_grid, top_n_grid, minp_grid, fee_regimes,
         inf_grid, vol_grid, maxvol_grid, skip_pairs, fb_grid, rgw_grid, vta_grid,
         ivt_grid, r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid, fb_alloc_grid,
-        conv_grid, alloc_pairs,
+        conv_grid, alloc_pairs, sup_grid,
     ):
         alloc_mode, alloc_temp = alloc_pair
         sp, sseed = skip_pair
+        cell_scores = _uncertainty_adjusted_scores(scores, score_std, float(sup))
         i += 1
         cell_key = _cell_key_from_values(
             leverage=lev,
@@ -1028,6 +1109,7 @@ def run_sweep(
             hold_through=ht,
             top_n=tn,
             min_picks=minp,
+            score_uncertainty_penalty=sup,
             fee_regime=reg,
             inference_min_dolvol=inf_dv,
             inference_min_vol_20d=inf_vol,
@@ -1057,18 +1139,20 @@ def run_sweep(
             resumed_cell.ensemble_needs_ranks = bool(needs_ranks)
             resumed_cell.ensemble_needs_dispersion = bool(needs_disp)
             logger.info(
-                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d reg=%s "
+                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d up=%.2f reg=%s "
                 "alloc=%s/%.2f resumed from checkpoint",
-                i, total, lev, ms, ht, tn, minp, reg, alloc_mode, alloc_temp,
+                i, total, lev, ms, ht, tn, minp, sup, reg, alloc_mode, alloc_temp,
             )
             cells.append(resumed_cell)
             if progress_callback is not None:
                 progress_callback(cells, i, total)
             continue
         cell = _run_cell(
-            oos_df=oos_df, scores=scores, windows=windows,
+            oos_df=oos_df, scores=cell_scores, windows=windows,
             leverage=lev, min_score=ms, hold_through=ht,
-            top_n=tn, min_picks=minp, fee_regime=reg,
+            top_n=tn, min_picks=minp,
+            score_uncertainty_penalty=sup,
+            fee_regime=reg,
             inference_min_dolvol=inf_dv,
             inference_min_vol_20d=inf_vol,
             inference_max_vol_20d=inf_maxvol,
@@ -1098,13 +1182,13 @@ def run_sweep(
         cell.ensemble_needs_ranks = bool(needs_ranks)
         cell.ensemble_needs_dispersion = bool(needs_disp)
         logger.info(
-            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d reg=%s "
+            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d up=%.2f reg=%s "
             "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
             "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
             "rgiqr=%.3f rgskew=%+.2f "
             "fb_sym=%s fb_alloc=%.2f conv=%s alloc=%s/%.2f "
             "med=%+.2f%% p10=%+.2f%% neg=%d/%d%s",
-            i, total, lev, ms, ht, tn, minp, reg,
+            i, total, lev, ms, ht, tn, minp, sup, reg,
             inf_dv, inf_vol, inf_maxvol, sp, sseed,
             cell.fill_buffer_bps,
             rgw, vta, ivt, r20g, r5g,
@@ -1127,6 +1211,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "leverage": c.leverage, "min_score": c.min_score,
             "hold_through": c.hold_through, "top_n": c.top_n,
             "min_picks": c.min_picks,
+            "score_uncertainty_penalty": c.score_uncertainty_penalty,
             "fee_regime": c.fee_regime,
             "n_windows": c.n_windows,
             "median_monthly_pct": c.median_monthly_pct,
@@ -1590,6 +1675,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "more concentrated. Ignored for equal/score_norm "
                         "because those modes are temperature-invariant. "
                         "Empty = 1.0.")
+    p.add_argument("--score-uncertainty-penalty-grid", type=str, default="",
+                   help="Comma-separated penalties for uncertainty-adjusted "
+                        "sorting: adjusted_score = ensemble_mean - penalty "
+                        "* ensemble_std across seed models. 0 or empty "
+                        "preserves raw score sorting.")
     p.add_argument("--fail-fast-max-dd-pct", type=float, default=0.0,
                    help="Stop evaluating a cell once any completed window's "
                         "max drawdown reaches this percentage. 0 disables. "
@@ -1664,6 +1754,11 @@ def main(argv=None) -> int:
 
     symbols = _load_symbols(args.symbols_file)
     model_paths = [Path(p.strip()) for p in args.model_paths.split(",") if p.strip()]
+    try:
+        _validate_model_paths_for_sweep(model_paths)
+    except ValueError as exc:
+        print(f"[sweep] ERROR: {exc}", flush=True)
+        return 2
     model_sha256 = _model_sha256(model_paths)
     ensemble_manifest = _ensemble_manifest_metadata(model_paths)
     ht_grid: list[bool] = []
@@ -1827,6 +1922,10 @@ def main(argv=None) -> int:
             _parse_float_list(args.allocation_temp_grid)
             if args.allocation_temp_grid else None
         ),
+        score_uncertainty_penalty_grid=(
+            _parse_float_list(args.score_uncertainty_penalty_grid)
+            if args.score_uncertainty_penalty_grid else None
+        ),
         fail_fast_max_dd_pct=float(args.fail_fast_max_dd_pct),
         fail_fast_max_intraday_dd_pct=float(args.fail_fast_max_intraday_dd_pct),
         fail_fast_neg_windows=int(args.fail_fast_neg_windows),
@@ -1871,6 +1970,7 @@ def main(argv=None) -> int:
         len({r["allocation_mode"] for r in rows}) > 1
         or len({r["allocation_temp"] for r in rows}) > 1
     )
+    uncertainty_grid_active = len({r.get("score_uncertainty_penalty", 0.0) for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
            f"{'tuw%':>6} {'ulc':>6} {'act%':>6} {'neg':>6} "
@@ -1879,6 +1979,8 @@ def main(argv=None) -> int:
         hdr += f" {'ff':>2}"
     if alloc_grid_active:
         hdr += f" {'alloc':>10} {'tmp':>5}"
+    if uncertainty_grid_active:
+        hdr += f" {'uPen':>5}"
     if inf_grid_active:
         hdr += f" {'inf$V':>8}"
     if vol_grid_active:
@@ -1891,6 +1993,7 @@ def main(argv=None) -> int:
     print("-" * (115
                  + (3 if ff_active else 0)
                  + (17 if alloc_grid_active else 0)
+                 + (6 if uncertainty_grid_active else 0)
                  + (9 if inf_grid_active else 0)
                  + (8 if vol_grid_active else 0)
                  + (9 if sp_grid_active else 0)
@@ -1914,6 +2017,8 @@ def main(argv=None) -> int:
             line += f" {'Y' if r['fail_fast_triggered'] else 'N':>2}"
         if alloc_grid_active:
             line += f" {r['allocation_mode']:>10} {r['allocation_temp']:5.2f}"
+        if uncertainty_grid_active:
+            line += f" {float(r.get('score_uncertainty_penalty', 0.0)):5.2f}"
         if inf_grid_active:
             line += f" {r['inference_min_dolvol']:8.2e}"
         if vol_grid_active:

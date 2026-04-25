@@ -446,6 +446,7 @@ def score_all_symbols(
     max_vol_20d: float = 0.0,
     max_ret_20d_rank_pct: float = 1.0,
     min_ret_5d_rank_pct: float = 0.0,
+    score_uncertainty_penalty: float = 0.0,
     now: datetime | None = None,
 ) -> pd.DataFrame:
     """Score all symbols for today's open-to-close trade.
@@ -566,11 +567,16 @@ def score_all_symbols(
     ]
     score_matrix = np.vstack(per_model_scores)
     blended = np.mean(score_matrix, axis=0)
+    score_std = np.std(score_matrix, axis=0)
+    penalty = max(float(score_uncertainty_penalty or 0.0), 0.0)
+    adjusted = blended - penalty * score_std
 
     rows = []
     for idx, meta in enumerate(meta_rows):
         row = dict(meta)
-        row["score"] = float(blended[idx])
+        row["score"] = float(adjusted[idx])
+        row["raw_score_mean"] = float(blended[idx])
+        row["score_std"] = float(score_std[idx])
         row["per_seed_scores"] = [float(score_matrix[j, idx]) for j in range(score_matrix.shape[0])]
         rows.append(row)
 
@@ -714,6 +720,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         "max_vol_20d",
         "regime_cs_iqr_max",
         "crypto_max_gross",
+        "score_uncertainty_penalty",
     ):
         if finite(name) < 0.0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
@@ -771,6 +778,10 @@ def parse_args(argv=None):
                    help="Skip pick if blended predict_proba < min_score. "
                         "0.0 (default) = no filter. 0.55-0.70 gates on conviction. "
                         "If all top_n candidates fail, session holds cash.")
+    p.add_argument("--score-uncertainty-penalty", type=float, default=0.0,
+                   help="Rank and gate by mean_score - penalty * std(score "
+                        "across ensemble seeds). 0 disables. This implements "
+                        "uncertainty-adjusted sorting for the live ensemble.")
     p.add_argument("--commission-bps", type=float, default=10.0)
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
     p.add_argument("--min-vol-20d", type=float, default=0.0,
@@ -893,6 +904,9 @@ def _score_and_pick(
         max_vol_20d=float(getattr(args, "max_vol_20d", 0.0) or 0.0),
         max_ret_20d_rank_pct=float(getattr(args, "max_ret_20d_rank_pct", 1.0)),
         min_ret_5d_rank_pct=float(getattr(args, "min_ret_5d_rank_pct", 0.0) or 0.0),
+        score_uncertainty_penalty=float(
+            getattr(args, "score_uncertainty_penalty", 0.0) or 0.0
+        ),
     )
 
     if trade_logger is not None:
@@ -974,6 +988,9 @@ def _emit_session_start(
         allocation=float(args.allocation),
         allocation_mode=str(getattr(args, "allocation_mode", "equal") or "equal"),
         allocation_temp=float(getattr(args, "allocation_temp", 1.0) or 1.0),
+        score_uncertainty_penalty=float(
+            getattr(args, "score_uncertainty_penalty", 0.0) or 0.0
+        ),
         conviction_scaled_alloc=bool(getattr(args, "conviction_scaled_alloc", False)),
         conviction_alloc_low=float(
             0.55 if getattr(args, "conviction_alloc_low", None) is None
