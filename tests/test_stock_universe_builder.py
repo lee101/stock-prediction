@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 
 from scripts import build_stock_universe as cli_mod
-from src.stock_universe_builder import is_candidate_stock_symbol, rank_stock_universe, summarize_daily_stock_csv
+from src.stock_universe_builder import (
+    is_candidate_stock_symbol,
+    normalize_pinned_stock_symbols,
+    rank_stock_universe,
+    summarize_daily_stock_csv,
+)
 
 
 def _write_daily_csv(path: Path, *, close: float, volume: float, rows: int = 300) -> None:
@@ -70,6 +75,20 @@ def test_rank_stock_universe_prefers_liquidity_then_history(tmp_path: Path) -> N
     assert [candidate.symbol for candidate in ranked] == ["SPY", "AAPL"]
 
 
+def test_normalize_pinned_stock_symbols_filters_invalid_and_dedupes() -> None:
+    assert normalize_pinned_stock_symbols(["lite", "BTCUSD", "LITE", "../../bad", "COHR"]) == ("LITE", "COHR")
+
+
+def test_rank_stock_universe_appends_pinned_symbols_outside_top_n(tmp_path: Path) -> None:
+    _write_daily_csv(tmp_path / "AAPL.csv", close=100.0, volume=2_000_000.0, rows=400)
+    _write_daily_csv(tmp_path / "MSFT.csv", close=100.0, volume=1_500_000.0, rows=500)
+    _write_daily_csv(tmp_path / "MTSI.csv", close=75.0, volume=100_000.0, rows=450)
+
+    ranked = rank_stock_universe(sorted(tmp_path.glob("*.csv")), top_n=1, include_symbols=["mtsi"])
+
+    assert [candidate.symbol for candidate in ranked] == ["AAPL", "MTSI"]
+
+
 def test_cli_main_writes_symbol_file_and_json(tmp_path: Path) -> None:
     data_dir = tmp_path / "train"
     _write_daily_csv(data_dir / "AAPL.csv", close=100.0, volume=2_000_000.0, rows=400)
@@ -120,3 +139,34 @@ def test_cli_main_applies_min_last_date_filter(tmp_path: Path) -> None:
     assert result == 0
     assert output_file.read_text(encoding="utf-8") == ""
     assert '"selected_count": 0' in json_out.read_text(encoding="utf-8")
+
+
+def test_cli_main_pins_symbols_from_file_when_ranked_outside_top_n(tmp_path: Path) -> None:
+    data_dir = tmp_path / "train"
+    _write_daily_csv(data_dir / "AAPL.csv", close=100.0, volume=2_000_000.0, rows=400)
+    _write_daily_csv(data_dir / "MTSI.csv", close=75.0, volume=100_000.0, rows=400)
+    include_file = tmp_path / "photonics.txt"
+    include_file.write_text("# photonics\nMTSI, AAOI\n", encoding="utf-8")
+    output_file = tmp_path / "stocks.txt"
+    json_out = tmp_path / "stocks.json"
+
+    result = cli_mod.main(
+        [
+            "--data-dir",
+            str(data_dir),
+            "--top-n",
+            "1",
+            "--include-symbols-file",
+            str(include_file),
+            "--output-file",
+            str(output_file),
+            "--json-out",
+            str(json_out),
+        ]
+    )
+
+    assert result == 0
+    assert output_file.read_text(encoding="utf-8").splitlines() == ["AAPL", "MTSI"]
+    payload = json_out.read_text(encoding="utf-8")
+    assert '"include_symbols": [' in payload
+    assert '"MTSI"' in payload

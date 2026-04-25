@@ -39,6 +39,22 @@ def is_candidate_stock_symbol(symbol: str) -> bool:
     return True
 
 
+def normalize_pinned_stock_symbols(symbols: Iterable[str] | None) -> tuple[str, ...]:
+    if symbols is None:
+        return ()
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        symbol = str(raw or "").strip().upper()
+        if not is_candidate_stock_symbol(symbol):
+            continue
+        if symbol in seen:
+            continue
+        normalized.append(symbol)
+        seen.add(symbol)
+    return tuple(normalized)
+
+
 def summarize_daily_stock_csv(
     path: Path,
     *,
@@ -101,6 +117,7 @@ def rank_stock_universe(
     min_median_dollar_volume: float = 2_000_000.0,
     min_last_timestamp: str | None = None,
     top_n: int | None = None,
+    include_symbols: Iterable[str] | None = None,
 ) -> list[StockUniverseCandidate]:
     candidates: list[StockUniverseCandidate] = []
     for path in csv_paths:
@@ -120,13 +137,22 @@ def rank_stock_universe(
         key=lambda row: (-row.score, -row.median_dollar_volume, -row.rows, row.symbol),
     )
     if top_n is not None and top_n > 0:
-        return ranked[:top_n]
+        selected = ranked[:top_n]
+        pinned = set(normalize_pinned_stock_symbols(include_symbols))
+        if pinned:
+            selected_symbols = {candidate.symbol for candidate in selected}
+            for candidate in ranked:
+                if candidate.symbol in pinned and candidate.symbol not in selected_symbols:
+                    selected.append(candidate)
+                    selected_symbols.add(candidate.symbol)
+        return selected
     return ranked
 
 
 __all__ = [
     "StockUniverseCandidate",
     "is_candidate_stock_symbol",
+    "normalize_pinned_stock_symbols",
     "rank_stock_universe",
     "summarize_daily_stock_csv",
 ]

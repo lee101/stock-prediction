@@ -10,7 +10,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.stock_universe_builder import rank_stock_universe
+from src.stock_universe_builder import normalize_pinned_stock_symbols, rank_stock_universe
+
+
+def _load_symbols_file(path: Path) -> list[str]:
+    symbols: list[str] = []
+    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        symbols.extend(token.strip().upper() for token in line.replace(",", " ").split() if token.strip())
+    return symbols
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -71,12 +81,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("analysis/stocks_1000_v1.json"),
         help="JSON summary output.",
     )
+    parser.add_argument(
+        "--include-symbol",
+        action="append",
+        default=[],
+        help="Symbol to pin into the emitted list if it passes data/liquidity filters. Repeatable.",
+    )
+    parser.add_argument(
+        "--include-symbols-file",
+        type=Path,
+        default=None,
+        help="Optional newline/comma-delimited symbols to pin into the emitted list.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     csv_paths = sorted(args.data_dir.glob("*.csv"))
+    raw_include_symbols = list(args.include_symbol or [])
+    if args.include_symbols_file is not None:
+        raw_include_symbols.extend(_load_symbols_file(args.include_symbols_file))
+    include_symbols = normalize_pinned_stock_symbols(raw_include_symbols)
     ranked = rank_stock_universe(
         csv_paths,
         lookback_rows=args.lookback_rows,
@@ -85,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         min_median_dollar_volume=args.min_median_dollar_volume,
         min_last_timestamp=(f"{args.min_last_date}T00:00:00+00:00" if args.min_last_date else None),
         top_n=args.top_n,
+        include_symbols=include_symbols,
     )
     args.output_file.parent.mkdir(parents=True, exist_ok=True)
     args.output_file.write_text(
@@ -100,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         "min_last_close": args.min_last_close,
         "min_median_dollar_volume": args.min_median_dollar_volume,
         "min_last_date": args.min_last_date,
+        "include_symbols": list(include_symbols),
         "selected_count": len(ranked),
         "symbols": [candidate.symbol for candidate in ranked],
         "candidates": [candidate.to_dict() for candidate in ranked],
@@ -113,6 +141,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Top 10: {', '.join(candidate.symbol for candidate in ranked[:10])}")
     else:
         print("Top 10: <empty>")
+    if include_symbols:
+        selected = {candidate.symbol for candidate in ranked}
+        missing = [symbol for symbol in include_symbols if symbol not in selected]
+        selected_pinned = ", ".join(symbol for symbol in include_symbols if symbol in selected)
+        print(f"Pinned symbols selected: {selected_pinned or '<none>'}")
+        if missing:
+            print(f"Pinned symbols not selected: {', '.join(missing)}")
     return 0
 
 
