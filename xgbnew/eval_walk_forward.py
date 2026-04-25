@@ -36,7 +36,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -86,8 +85,10 @@ class FoldResult:
     train_date_min: date | None
     train_date_max: date | None
     oos_rows: int
+    oos_days_elapsed: int
     oos_days_traded: int
     monthly_return_pct: float
+    evaluated: bool = False
     day_results: list[DayResult] = field(default_factory=list)
 
 
@@ -136,6 +137,12 @@ def _fold_slice(feat_df: pd.DataFrame, fold_start: date, fold_end: date) -> pd.D
     return feat_df[(feat_df["date"] >= fold_start) & (feat_df["date"] <= fold_end)]
 
 
+def _monthly_from_total_pct(total_return_pct: float, elapsed_days: int) -> float:
+    if elapsed_days <= 0:
+        return 0.0
+    return ((1.0 + float(total_return_pct) / 100.0) ** (21.0 / float(elapsed_days)) - 1.0) * 100.0
+
+
 # ─── Core walk-forward ───────────────────────────────────────────────────────
 
 def run_walk_forward_core(
@@ -173,6 +180,7 @@ def run_walk_forward_core(
     for i, (fold_start, fold_end) in enumerate(schedule):
         tr = _train_slice(feat_df, fold_start, train_window_days)
         oos = _fold_slice(feat_df, fold_start, fold_end)
+        oos_days_elapsed = int(len(pd.unique(oos["date"]))) if len(oos) else 0
 
         tr_max_date = pd.to_datetime(tr["date"]).max().date() if len(tr) else None
         tr_min_date = pd.to_datetime(tr["date"]).min().date() if len(tr) else None
@@ -187,7 +195,8 @@ def run_walk_forward_core(
             fold_results.append(FoldResult(
                 fold_start=fold_start, fold_end=fold_end,
                 train_rows=len(tr), train_date_min=tr_min_date, train_date_max=tr_max_date,
-                oos_rows=len(oos), oos_days_traded=0, monthly_return_pct=0.0,
+                oos_rows=len(oos), oos_days_elapsed=oos_days_elapsed,
+                oos_days_traded=0, monthly_return_pct=0.0, evaluated=False,
             ))
             if progress:
                 print(
@@ -200,6 +209,7 @@ def run_walk_forward_core(
         model = XGBStockModel(device=device, **xgb_params)
         model.fit(tr, feature_cols, verbose=False)
         bt = simulate(oos, model, backtest_cfg)
+        fold_monthly = _monthly_from_total_pct(bt.total_return_pct, oos_days_elapsed)
 
         for day_res in bt.day_results:
             all_daily_returns[day_res.day] = day_res.daily_return_pct / 100.0
@@ -207,8 +217,10 @@ def run_walk_forward_core(
         fold_results.append(FoldResult(
             fold_start=fold_start, fold_end=fold_end,
             train_rows=len(tr), train_date_min=tr_min_date, train_date_max=tr_max_date,
-            oos_rows=len(oos), oos_days_traded=len(bt.day_results),
-            monthly_return_pct=bt.monthly_return_pct,
+            oos_rows=len(oos), oos_days_elapsed=oos_days_elapsed,
+            oos_days_traded=len(bt.day_results),
+            monthly_return_pct=fold_monthly,
+            evaluated=True,
             day_results=list(bt.day_results),
         ))
 
@@ -216,7 +228,8 @@ def run_walk_forward_core(
             print(
                 f"[wfwd] fold {i+1}/{len(schedule)} {fold_start}..{fold_end} "
                 f"train={len(tr)} ({tr_min_date}..{tr_max_date}) "
-                f"oos_days={len(bt.day_results)} monthly={bt.monthly_return_pct:+.2f}%",
+                f"oos_days={oos_days_elapsed} active={len(bt.day_results)} "
+                f"monthly={fold_monthly:+.2f}%",
                 flush=True,
             )
 
@@ -226,7 +239,7 @@ def run_walk_forward_core(
     else:
         ret_series = pd.Series(dtype=float)
 
-    fold_monthly = [fr.monthly_return_pct for fr in fold_results if fr.oos_days_traded > 0]
+    fold_monthly = [fr.monthly_return_pct for fr in fold_results if fr.evaluated]
     median_fm = float(np.median(fold_monthly)) if fold_monthly else 0.0
     p10_fm = float(np.percentile(fold_monthly, 10)) if fold_monthly else 0.0
     n_neg = sum(1 for m in fold_monthly if m < 0)
@@ -238,7 +251,7 @@ def run_walk_forward_core(
         median_fold_monthly_pct=median_fm,
         p10_fold_monthly_pct=p10_fm,
         n_neg_folds=n_neg,
-        n_folds=len([fr for fr in fold_results if fr.oos_days_traded > 0]),
+        n_folds=len([fr for fr in fold_results if fr.evaluated]),
     )
 
 

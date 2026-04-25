@@ -116,11 +116,23 @@ def _compute_xgb_mae(
     pred_ret = _predict_calibrated_returns(prob_up, calibration)
     actual_ret = df["target_oc"].astype(float)
     mae_return_pct_points = float(np.mean(np.abs((pred_ret - actual_ret) * 100.0)))
-    direction_mae = float(np.mean(np.abs(prob_up.to_numpy(dtype=np.float64) - df["target_oc_up"].to_numpy(dtype=np.float64))))
+    direction_mae = float(
+        np.mean(
+            np.abs(
+                prob_up.to_numpy(dtype=np.float64)
+                - df["target_oc_up"].to_numpy(dtype=np.float64)
+            )
+        )
+    )
     return {
         "count": int(len(df)),
         "return_mae_pct_points": mae_return_pct_points,
-        "return_mae_percent": float(compute_mae_percent(mae_return_pct_points, actual_ret.to_numpy(dtype=np.float64) * 100.0)),
+        "return_mae_percent": float(
+            compute_mae_percent(
+                mae_return_pct_points,
+                actual_ret.to_numpy(dtype=np.float64) * 100.0,
+            )
+        ),
         "direction_mae": direction_mae,
     }
 
@@ -339,7 +351,11 @@ def main(argv=None) -> int:
         fast_features=bool(args.fast_features),
     )
     _feat_src = "polars" if args.fast_features else "pandas"
-    print(f"[xgb-eval] dataset built in {time.perf_counter()-t0:.1f}s ({_feat_src}) | train={len(train_df):,} oos={len(oos_df):,}", flush=True)
+    print(
+        f"[xgb-eval] dataset built in {time.perf_counter()-t0:.1f}s ({_feat_src}) "
+        f"| train={len(train_df):,} oos={len(oos_df):,}",
+        flush=True,
+    )
     requested_symbol_count = len(symbols)
     train_symbol_count = int(train_df["symbol"].nunique()) if "symbol" in train_df.columns else 0
     oos_symbol_count = int(oos_df["symbol"].nunique()) if "symbol" in oos_df.columns else 0
@@ -454,13 +470,15 @@ def main(argv=None) -> int:
                 precomputed_scores=w_scores,
                 spy_close_by_date=spy_close_by_date,
             )
-            n_days = len(result.day_results)
+            n_days = int(len(pd.unique(w_df["date"])))
+            n_active_days = len(result.day_results)
             monthly = _monthly_return(result.total_return_pct, max(n_days, 1)) * 100.0
             window_results.append(
                 {
                     "w_start": str(w_start),
                     "w_end": str(w_end),
                     "n_trading_days": n_days,
+                    "n_active_days": n_active_days,
                     "total_return_pct": result.total_return_pct,
                     "monthly_return_pct": monthly,
                     "sharpe": result.sharpe_ratio,

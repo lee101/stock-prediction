@@ -44,7 +44,6 @@ if str(REPO) not in sys.path:
 
 from xgbnew.backtest import BacktestConfig, simulate
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS
 from xgbnew.model import XGBStockModel
 
 TRADING_DAYS_PER_MONTH = 21.0
@@ -232,11 +231,13 @@ def main(argv=None) -> int:
             continue
         w_scores = blended_scores.loc[w_df.index]
         res = simulate(w_df, models[0], backtest_cfg, precomputed_scores=w_scores)
-        n_days = len(res.day_results)
+        n_days = int(len(pd.unique(w_df["date"])))
+        n_active_days = len(res.day_results)
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
         wr = {
             "w_start": str(w_start), "w_end": str(w_end),
             "n_trading_days": n_days,
+            "n_active_days": n_active_days,
             "total_return_pct": res.total_return_pct,
             "monthly_return_pct": monthly,
             "sortino": res.sortino_ratio,

@@ -18,9 +18,9 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew import eval_walk_forward as wf
 from xgbnew.backtest import BacktestConfig
 from xgbnew.eval_walk_forward import (
-    FoldResult,
     WalkForwardResult,
     _train_slice,
     build_refit_schedule,
@@ -112,6 +112,24 @@ def _tiny_xgb_params() -> dict:
     return dict(n_estimators=10, max_depth=3, learning_rate=0.2, random_state=7)
 
 
+def _minimal_walk_forward_frame(n_days: int = 20) -> pd.DataFrame:
+    days = [date(2024, 1, 2) + timedelta(days=i) for i in range(n_days)]
+    return pd.DataFrame({
+        "date": days,
+        "symbol": ["AAA"] * n_days,
+        "target_oc_up": [1, 0] * (n_days // 2),
+        "feat": np.linspace(0.0, 1.0, n_days),
+    })
+
+
+class _NoopModel:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def fit(self, *args, **kwargs):
+        return self
+
+
 def test_walk_forward_produces_folds_and_no_lookahead():
     feat_df = _build_synthetic_feat_df(n_symbols=6, n_days=600)
     oos_start = date(2022, 10, 1)
@@ -169,6 +187,75 @@ def test_walk_forward_skips_folds_with_insufficient_training_data():
     assert trained == []
     assert res.median_fold_monthly_pct == 0.0
     assert res.n_folds == 0
+
+
+def test_walk_forward_monthly_uses_elapsed_oos_days_not_traded_days(monkeypatch):
+    feat_df = _minimal_walk_forward_frame(n_days=20)
+    schedule = [(date(2024, 1, 12), date(2024, 1, 21))]
+    trade_day = date(2024, 1, 12)
+
+    monkeypatch.setattr(wf, "XGBStockModel", _NoopModel)
+    monkeypatch.setattr(
+        wf,
+        "simulate",
+        lambda *args, **kwargs: type("Result", (), {
+            "day_results": [type("Day", (), {"day": trade_day, "daily_return_pct": 10.0})()],
+            "total_return_pct": 10.0,
+            "monthly_return_pct": 1000.0,
+        })(),
+    )
+
+    res = run_walk_forward_core(
+        feat_df,
+        schedule,
+        xgb_params={},
+        backtest_cfg=BacktestConfig(),
+        feature_cols=["feat"],
+        min_train_rows=1,
+    )
+
+    fold = res.folds[0]
+    assert fold.evaluated is True
+    assert fold.oos_days_elapsed == 10
+    assert fold.oos_days_traded == 1
+    assert fold.monthly_return_pct == pytest.approx(
+        ((1.10 ** (21.0 / 10.0)) - 1.0) * 100.0
+    )
+    assert fold.monthly_return_pct < 1000.0
+    assert res.fold_monthly_returns_pct == pytest.approx([fold.monthly_return_pct])
+    assert res.n_folds == 1
+
+
+def test_walk_forward_includes_evaluated_no_trade_folds_as_zero(monkeypatch):
+    feat_df = _minimal_walk_forward_frame(n_days=20)
+    schedule = [(date(2024, 1, 12), date(2024, 1, 21))]
+
+    monkeypatch.setattr(wf, "XGBStockModel", _NoopModel)
+    monkeypatch.setattr(
+        wf,
+        "simulate",
+        lambda *args, **kwargs: type("Result", (), {
+            "day_results": [],
+            "total_return_pct": 0.0,
+            "monthly_return_pct": 0.0,
+        })(),
+    )
+
+    res = run_walk_forward_core(
+        feat_df,
+        schedule,
+        xgb_params={},
+        backtest_cfg=BacktestConfig(),
+        feature_cols=["feat"],
+        min_train_rows=1,
+    )
+
+    assert res.folds[0].evaluated is True
+    assert res.folds[0].oos_days_elapsed == 10
+    assert res.folds[0].oos_days_traded == 0
+    assert res.fold_monthly_returns_pct == [0.0]
+    assert res.median_fold_monthly_pct == 0.0
+    assert res.n_folds == 1
 
 
 def test_walk_forward_sliding_window_limits_training_set_size():

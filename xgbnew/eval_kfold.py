@@ -242,11 +242,13 @@ def main(argv=None) -> int:
                 continue
             w_scores = oos_prob.loc[w_df.index]
             res = simulate(w_df, model, cfg, precomputed_scores=w_scores)
-            n_days = len(res.day_results)
+            n_days = int(len(pd.unique(w_df["date"])))
+            n_active_days = len(res.day_results)
             monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
             w_rows.append({
                 "w_start": str(w_start), "w_end": str(w_end),
                 "n_trading_days": n_days,
+                "n_active_days": n_active_days,
                 "monthly_return_pct": monthly,
                 "sortino": res.sortino_ratio,
                 "max_dd_pct": res.max_drawdown_pct,
