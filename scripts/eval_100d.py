@@ -3,7 +3,8 @@
 Loads an fp4 / pufferlib_market checkpoint, runs it through the C marketsim
 on rolling windows of N unseen days each, aggregates per-window
 returns/sortino/max_dd, estimates annualised monthly return, and asserts
-the configured target (default: 27%/month).
+the configured promotion gate (default: >=27%/month, <=25% max DD, and
+zero losing OOS windows).
 
 Emits two sibling artifacts next to the checkpoint:
 
@@ -26,6 +27,7 @@ produces ranked output.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -53,15 +55,58 @@ def _monthly_from_total(total_return: float, window_days: int,
         return 0.0
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _summary_int_metric(summary: Dict[str, Any], key: str, default: int = 0) -> int | None:
+    value = summary.get(key, default)
+    if isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(out) or not out.is_integer() or out < 0:
+        return None
+    return int(out)
+
+
 def _aggregate(summaries_by_bps: Dict[str, Any], window_days: int) -> Dict[str, Any]:
     """Flatten {bps: {...}} into a single aggregate dict.
 
     For each slippage cell we compute the implied median monthly return
     from ``median_return`` (a per-window total), then return the minimum
     across slippages (conservative: "does the worst slip still meet target?").
+    Drawdown is tracked both as the displayed median-window DD and the stricter
+    worst-window DD used by the promotion gate when available.
     """
-    out: Dict[str, Any] = {"by_slippage": {}, "worst_slip_monthly": None}
+    out: Dict[str, Any] = {
+        "by_slippage": {},
+        "worst_slip_monthly": None,
+        "worst_slip_bps_by_monthly": None,
+        "max_slip_median_max_drawdown": None,
+        "max_slip_worst_max_drawdown": None,
+        "worst_slip_bps_by_drawdown": None,
+        "max_slip_negative_windows": None,
+        "worst_slip_bps_by_negative_windows": None,
+        "min_slip_n_windows": None,
+        "worst_slip_bps_by_n_windows": None,
+    }
     worst: float | None = None
+    worst_bps: str | None = None
+    max_dd: float | None = None
+    max_dd_bps: str | None = None
+    max_neg: int | None = None
+    max_neg_bps: str | None = None
+    invalid_neg_count = False
+    min_n_windows: int | None = None
+    min_n_windows_bps: str | None = None
+    invalid_window_count = False
     for bps, cell in summaries_by_bps.items():
         # Both _run_slippage_sweep and _same_backend_eval emit slightly
         # different shapes; normalise here.
@@ -70,9 +115,16 @@ def _aggregate(summaries_by_bps: Dict[str, Any], window_days: int) -> Dict[str, 
         p10_ret = float(summary.get("p10_return", 0.0))
         mean_ret = float(summary.get("mean_return", 0.0))
         median_sortino = float(summary.get("sortino", 0.0))
-        median_dd = float(summary.get("max_drawdown", 0.0))
-        n = int(summary.get("n_windows", 0))
-        n_neg = int(summary.get("n_neg", 0))
+        median_dd = abs(float(summary.get("max_drawdown", 0.0)))
+        worst_dd = abs(float(summary.get("worst_max_drawdown", median_dd)))
+        n = _summary_int_metric(summary, "n_windows")
+        n_neg = _summary_int_metric(summary, "n_neg")
+        if n is None:
+            invalid_window_count = True
+            min_n_windows_bps = str(bps)
+        if n_neg is None:
+            invalid_neg_count = True
+            max_neg_bps = str(bps)
         monthly = _monthly_from_total(median_ret, window_days)
         p10_monthly = _monthly_from_total(p10_ret, window_days)
         cell_out = {
@@ -83,31 +135,227 @@ def _aggregate(summaries_by_bps: Dict[str, Any], window_days: int) -> Dict[str, 
             "p10_monthly_return": p10_monthly,
             "median_sortino": median_sortino,
             "median_max_drawdown": median_dd,
-            "n_windows": n,
-            "n_negative_windows": n_neg,
+            "worst_max_drawdown": worst_dd,
+            "n_windows": math.nan if n is None else n,
+            "n_negative_windows": math.nan if n_neg is None else n_neg,
         }
         out["by_slippage"][str(bps)] = cell_out
         if worst is None or monthly < worst:
             worst = monthly
+            worst_bps = str(bps)
+        if max_dd is None or worst_dd > max_dd:
+            max_dd = worst_dd
+            max_dd_bps = str(bps)
+        if n_neg is not None and not invalid_neg_count and (max_neg is None or n_neg > max_neg):
+            max_neg = n_neg
+            max_neg_bps = str(bps)
+        if n is not None and not invalid_window_count and (min_n_windows is None or n < min_n_windows):
+            min_n_windows = n
+            min_n_windows_bps = str(bps)
     out["worst_slip_monthly"] = float(worst if worst is not None else 0.0)
+    out["worst_slip_bps_by_monthly"] = worst_bps
+    out["max_slip_median_max_drawdown"] = max(
+        (float(c["median_max_drawdown"]) for c in out["by_slippage"].values()),
+        default=0.0,
+    )
+    out["max_slip_worst_max_drawdown"] = float(max_dd if max_dd is not None else 0.0)
+    out["worst_slip_bps_by_drawdown"] = max_dd_bps
+    out["max_slip_negative_windows"] = (
+        math.nan if invalid_neg_count else int(max_neg if max_neg is not None else 0)
+    )
+    out["worst_slip_bps_by_negative_windows"] = max_neg_bps
+    out["min_slip_n_windows"] = (
+        math.nan
+        if invalid_window_count
+        else int(min_n_windows if min_n_windows is not None else 0)
+    )
+    out["worst_slip_bps_by_n_windows"] = min_n_windows_bps
     return out
+
+
+def _finite_metric(aggregate: Dict[str, Any], key: str, failures: list[str]) -> tuple[float, bool]:
+    value = aggregate.get(key)
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        failures.append(f"{key} is not finite")
+        return 0.0, False
+    if not math.isfinite(out):
+        failures.append(f"{key} is not finite")
+        return 0.0, False
+    return out, True
+
+
+def _integer_metric(aggregate: Dict[str, Any], key: str, failures: list[str]) -> tuple[int, bool]:
+    value = aggregate.get(key)
+    if isinstance(value, bool):
+        failures.append(f"{key} is not an integer")
+        return 0, False
+    try:
+        out_float = float(value)
+    except (TypeError, ValueError):
+        failures.append(f"{key} is not an integer")
+        return 0, False
+    if not math.isfinite(out_float) or not out_float.is_integer():
+        failures.append(f"{key} is not an integer")
+        return 0, False
+    return int(out_float), True
+
+
+def _promotion_status(
+    aggregate: Dict[str, Any],
+    *,
+    target_monthly: float,
+    max_dd_target: float,
+    window_days: int | None = None,
+    min_window_days: int = 0,
+    decision_lag: int | None = None,
+    min_decision_lag: int = 0,
+    slippage_bps: list[int] | None = None,
+    min_max_slippage_bps: int = 0,
+    max_negative_windows: int = 0,
+    min_completed_windows: int = 0,
+) -> Dict[str, Any]:
+    failures: list[str] = []
+    worst_m, worst_m_ok = _finite_metric(aggregate, "worst_slip_monthly", failures)
+    if "max_slip_worst_max_drawdown" in aggregate:
+        worst_dd, worst_dd_ok = _finite_metric(aggregate, "max_slip_worst_max_drawdown", failures)
+    else:
+        worst_dd, worst_dd_ok = _finite_metric(aggregate, "max_slip_median_max_drawdown", failures)
+    median_dd, _median_dd_ok = _finite_metric(aggregate, "max_slip_median_max_drawdown", failures)
+    if worst_m_ok and worst_m < float(target_monthly):
+        failures.append(
+            f"worst_slip_monthly {worst_m * 100:.2f}% < "
+            f"{float(target_monthly) * 100:.2f}%"
+        )
+    if worst_dd_ok and worst_dd > float(max_dd_target):
+        failures.append(
+            f"max_slip_worst_max_drawdown {worst_dd * 100:.2f}% > "
+            f"{float(max_dd_target) * 100:.2f}%"
+        )
+    if window_days is not None and int(window_days) < int(min_window_days):
+        failures.append(f"window_days {int(window_days)} < {int(min_window_days)}")
+    if decision_lag is not None and int(decision_lag) < int(min_decision_lag):
+        failures.append(f"decision_lag {int(decision_lag)} < {int(min_decision_lag)}")
+    evaluated_max_slippage_bps = (
+        None if slippage_bps is None else max((int(x) for x in slippage_bps), default=0)
+    )
+    if (
+        evaluated_max_slippage_bps is not None
+        and int(evaluated_max_slippage_bps) < int(min_max_slippage_bps)
+    ):
+        failures.append(
+            f"max_slippage_bps {int(evaluated_max_slippage_bps)} < "
+            f"{int(min_max_slippage_bps)}"
+        )
+    negative_windows, negative_windows_ok = _integer_metric(
+        aggregate, "max_slip_negative_windows", failures
+    )
+    if (
+        negative_windows_ok
+        and int(max_negative_windows) >= 0
+        and negative_windows > int(max_negative_windows)
+    ):
+        failures.append(f"negative_windows {negative_windows} > {int(max_negative_windows)}")
+    completed_windows, completed_windows_ok = _integer_metric(
+        aggregate, "min_slip_n_windows", failures
+    )
+    if (
+        completed_windows_ok
+        and int(min_completed_windows) > 0
+        and completed_windows < int(min_completed_windows)
+    ):
+        failures.append(
+            f"completed_windows {completed_windows} < {int(min_completed_windows)}"
+        )
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "worst_slip_monthly": worst_m,
+        "max_slip_median_max_drawdown": median_dd,
+        "max_slip_worst_max_drawdown": worst_dd,
+        "monthly_target": float(target_monthly),
+        "max_dd_target": float(max_dd_target),
+        "window_days": None if window_days is None else int(window_days),
+        "min_window_days": int(min_window_days),
+        "decision_lag": None if decision_lag is None else int(decision_lag),
+        "min_decision_lag": int(min_decision_lag),
+        "max_slippage_bps": evaluated_max_slippage_bps,
+        "min_max_slippage_bps": int(min_max_slippage_bps),
+        "negative_windows": negative_windows,
+        "max_negative_windows": int(max_negative_windows),
+        "completed_windows": completed_windows,
+        "min_completed_windows": int(min_completed_windows),
+    }
+
+
+def _evaluated_slippage_bps(aggregate: Dict[str, Any]) -> list[int]:
+    values: list[int] = []
+    for bps in aggregate.get("by_slippage", {}).keys():
+        try:
+            values.append(int(bps))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(values))
 
 
 def _render_md(
     ckpt: Path,
+    checkpoint_sha256: str,
     aggregate: Dict[str, Any],
     window_days: int,
     n_windows: int,
     target_monthly: float,
+    max_dd_target: float,
     eval_result: Dict[str, Any],
+    min_window_days: int = 0,
+    decision_lag: int | None = None,
+    min_decision_lag: int = 0,
+    slippage_bps: list[int] | None = None,
+    min_max_slippage_bps: int = 0,
+    max_negative_windows: int = 0,
+    min_completed_windows: int = 0,
 ) -> str:
-    worst_m = float(aggregate.get("worst_slip_monthly", 0.0))
-    ok = "PASS" if worst_m >= target_monthly else "FAIL"
+    gate = _promotion_status(
+        aggregate,
+        target_monthly=float(target_monthly),
+        max_dd_target=float(max_dd_target),
+        window_days=int(window_days),
+        min_window_days=int(min_window_days),
+        decision_lag=decision_lag,
+        min_decision_lag=int(min_decision_lag),
+        slippage_bps=_evaluated_slippage_bps(aggregate),
+        min_max_slippage_bps=int(min_max_slippage_bps),
+        max_negative_windows=int(max_negative_windows),
+        min_completed_windows=int(min_completed_windows),
+    )
+    worst_m = float(gate["worst_slip_monthly"])
+    worst_dd = float(gate["max_slip_worst_max_drawdown"])
+    ok = "PASS" if bool(gate["passed"]) else "FAIL"
     lines: List[str] = []
     lines.append(f"# 100d unseen-data eval — `{ckpt.name}`")
     lines.append("")
-    lines.append(f"- **status**: {ok}  ({worst_m * 100:.2f}%/month vs target {target_monthly * 100:.2f}%/month)")
+    lines.append(f"- checkpoint_sha256: `{checkpoint_sha256}`")
+    lines.append(
+        f"- **status**: {ok}  "
+        f"({worst_m * 100:.2f}%/month vs target {target_monthly * 100:.2f}%/month; "
+        f"max DD {worst_dd * 100:.2f}% vs cap {max_dd_target * 100:.2f}%)"
+    )
+    if gate["failures"]:
+        lines.append(f"- failures: {'; '.join(gate['failures'])}")
     lines.append(f"- windows: {n_windows} × {window_days}d  (total {n_windows * window_days}d unseen)")
+    if decision_lag is not None:
+        lines.append(f"- decision_lag: {int(decision_lag)}")
+    if slippage_bps is not None:
+        lines.append(f"- slippage_bps: {','.join(str(int(x)) for x in slippage_bps)}")
+    lines.append(
+        f"- negative_windows: {int(gate['negative_windows'])} "
+        f"(cap {int(gate['max_negative_windows'])})"
+    )
+    lines.append(
+        f"- completed_windows: {int(gate['completed_windows'])} "
+        f"(min {int(gate['min_completed_windows'])})"
+    )
     lines.append(f"- backend: {eval_result.get('backend', 'pufferlib_market')}")
     if 'shape_mismatch' in eval_result:
         lines.append(f"- shape_mismatch: `{eval_result['shape_mismatch']}`")
@@ -118,8 +366,11 @@ def _render_md(
         if 'html' in vids:
             lines.append(f"- scrubber: `{vids['html']}`")
     lines.append("")
-    lines.append("| slip_bps | median total | median monthly | p10 total | p10 monthly | sortino | max dd | n_neg |")
-    lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append(
+        "| slip_bps | median total | median monthly | p10 total | p10 monthly | "
+        "sortino | med dd | worst dd | n_neg |"
+    )
+    lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for bps, cell in sorted(aggregate["by_slippage"].items(), key=lambda kv: int(kv[0])):
         lines.append(
             f"| {bps} "
@@ -129,6 +380,7 @@ def _render_md(
             f"| {cell['p10_monthly_return'] * 100:+.2f}% "
             f"| {cell['median_sortino']:.2f} "
             f"| {cell['median_max_drawdown'] * 100:.2f}% "
+            f"| {cell['worst_max_drawdown'] * 100:.2f}% "
             f"| {cell['n_negative_windows']}/{cell['n_windows']} |"
         )
     lines.append("")
@@ -157,13 +409,15 @@ def _summarise_window_metrics(rows: List[Dict[str, float]]) -> Dict[str, Any]:
     returns = np.asarray([float(r["total_return"]) for r in rows], dtype=np.float64)
     sortinos = np.asarray([float(r["sortino"]) for r in rows], dtype=np.float64)
     maxdds = np.asarray([float(r["max_drawdown"]) for r in rows], dtype=np.float64)
+    abs_maxdds = np.abs(maxdds)
     return {
         "p10_return": float(np.percentile(returns, 10)),
         "median_return": float(np.percentile(returns, 50)),
         "p90_return": float(np.percentile(returns, 90)),
         "mean_return": float(np.mean(returns)),
         "sortino": float(np.median(sortinos)),
-        "max_drawdown": float(np.median(maxdds)),
+        "max_drawdown": float(np.median(abs_maxdds)),
+        "worst_max_drawdown": float(np.max(abs_maxdds)),
         "n_neg": int(np.sum(returns < 0.0)),
         "n_windows": int(returns.size),
     }
@@ -186,6 +440,7 @@ def _evaluate_intrabar_hourly(
     stop_loss_pct: float,
     take_profit_pct: float,
     trade_hour_mode: str,
+    decision_lag: int,
     fail_fast: bool,
     fail_fast_max_dd: float,
     fail_fast_min_completed: int,
@@ -235,7 +490,7 @@ def _evaluate_intrabar_hourly(
                 loaded.policy,
                 num_symbols=num_symbols,
                 deterministic=True,
-                decision_lag=2,
+                decision_lag=int(decision_lag),
                 device=next(loaded.policy.parameters()).device,
             )
             window_start_day = full_start_day + np.timedelta64(int(start), "D")
@@ -265,10 +520,16 @@ def _evaluate_intrabar_hourly(
             cell_rows.append(rec)
             if fail_fast:
                 if rec["max_drawdown"] > float(fail_fast_max_dd):
-                    failed_fast_reason = f"window {idx} max_drawdown={rec['max_drawdown']:.3f} > {float(fail_fast_max_dd):.3f}"
+                    failed_fast_reason = (
+                        f"window {idx} max_drawdown={rec['max_drawdown']:.3f} > "
+                        f"{float(fail_fast_max_dd):.3f}"
+                    )
                     break
                 if rec["total_return"] < 0.0 and len(cell_rows) >= int(fail_fast_min_completed):
-                    failed_fast_reason = f"window {idx} total_return={rec['total_return']:.4f} < 0 after {len(cell_rows)} completed"
+                    failed_fast_reason = (
+                        f"window {idx} total_return={rec['total_return']:.4f} < 0 "
+                        f"after {len(cell_rows)} completed"
+                    )
                     break
 
         cell = _summarise_window_metrics(cell_rows)
@@ -297,8 +558,26 @@ def main(argv: list[str] | None = None) -> int:
                          "same-backend eval and keeps going.")
     ap.add_argument("--n-windows", type=int, default=30)
     ap.add_argument("--window-days", type=int, default=100)
+    ap.add_argument("--min-window-days", type=int, default=100,
+                    help="Minimum window length allowed to pass the final "
+                         "promotion gate (default 100). Shorter smoke evals "
+                         "still write artifacts but exit 3 unless this is "
+                         "lowered explicitly.")
+    ap.add_argument("--decision-lag", type=int, default=2,
+                    help="Bars/days between observation and executable "
+                         "decision. Production eval defaults to 2.")
+    ap.add_argument("--min-decision-lag", type=int, default=2,
+                    help="Minimum decision lag allowed to pass the final "
+                         "promotion gate (default 2). Lower-lag smoke evals "
+                         "still write artifacts but exit 3 unless this is "
+                         "lowered explicitly.")
     ap.add_argument("--slippage-bps", default="0,5,10,20",
                     help="Comma-separated slippage levels in bps")
+    ap.add_argument("--min-max-slippage-bps", type=int, default=20,
+                    help="Minimum maximum slippage that must be covered by "
+                         "the final promotion gate (default 20 bps). Lower "
+                         "values are useful for smoke tests but are not a "
+                         "production promotion check.")
     ap.add_argument("--fee-rate", type=float, default=0.001)
     ap.add_argument("--max-leverage", type=float, default=1.5)
     ap.add_argument(
@@ -308,9 +587,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Use the default C daily marketsim or replay daily decisions through hourly OHLC execution.",
     )
     ap.add_argument("--hourly-data-root", default=None,
-                    help="Required for --execution-granularity hourly_intrabar. Root with stocks/ and/or crypto/ hourly CSVs.")
+                    help="Required for --execution-granularity hourly_intrabar. "
+                         "Root with stocks/ and/or crypto/ hourly CSVs.")
     ap.add_argument("--daily-start-date", default=None,
-                    help="Required for --execution-granularity hourly_intrabar. UTC start date of row 0 in the MKTD file.")
+                    help="Required for --execution-granularity hourly_intrabar. "
+                         "UTC start date of row 0 in the MKTD file.")
     ap.add_argument("--hourly-fill-buffer-bps", type=float, default=5.0,
                     help="Hourly limit fill-through buffer for hourly_intrabar mode.")
     ap.add_argument("--hourly-max-hold-hours", type=int, default=0,
@@ -323,6 +604,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="When to query the daily policy inside each day for hourly_intrabar mode.")
     ap.add_argument("--monthly-target", type=float, default=0.27,
                     help="Minimum acceptable median monthly return (worst slip).")
+    ap.add_argument("--max-dd-target", type=float, default=0.25,
+                    help="Maximum acceptable worst-window max drawdown across "
+                         "slippage cells (default 0.25 = 25%%). The final "
+                         "promotion gate requires both --monthly-target and "
+                         "this drawdown cap.")
+    ap.add_argument("--max-negative-windows", type=int, default=0,
+                    help="Maximum losing OOS windows allowed by the final "
+                         "promotion gate (default 0). Set negative to disable "
+                         "for smoke/legacy inspection only.")
+    ap.add_argument("--min-completed-windows", type=int, default=None,
+                    help="Minimum completed windows required in every returned "
+                         "slippage cell. Defaults to --n-windows for production "
+                         "gates; lower explicitly for smoke/legacy inspection.")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--video", action="store_true",
                     help="Render an MP4+HTML of the rollout when running the "
@@ -349,7 +643,13 @@ def main(argv: list[str] | None = None) -> int:
     if not val.exists():
         print(f"eval_100d: val data not found: {val}", file=sys.stderr)
         return 2
+    checkpoint_sha256 = _file_sha256(ckpt)
     slippages = [int(x) for x in args.slippage_bps.split(",") if x.strip()]
+    min_completed_windows = (
+        int(args.n_windows)
+        if args.min_completed_windows is None
+        else int(args.min_completed_windows)
+    )
 
     # Build a cfg shaped like fp4_ppo_stocks12.yaml so evaluate_policy_file
     # reads the knobs it already knows.
@@ -365,6 +665,7 @@ def main(argv: list[str] | None = None) -> int:
             "eval_hours": int(args.window_days),
             "seed": int(args.seed),
             "video": bool(args.video),
+            "decision_lag": int(args.decision_lag),
             "fail_fast": bool(args.fail_fast),
             "fail_fast_max_dd": float(args.fail_fast_max_dd),
             "fail_fast_min_completed": int(args.fail_fast_min_completed),
@@ -394,6 +695,7 @@ def main(argv: list[str] | None = None) -> int:
             stop_loss_pct=float(args.hourly_stop_loss_pct),
             take_profit_pct=float(args.hourly_take_profit_pct),
             trade_hour_mode=str(args.hourly_trade_hour_mode),
+            decision_lag=int(args.decision_lag),
             fail_fast=bool(args.fail_fast),
             fail_fast_max_dd=float(args.fail_fast_max_dd),
             fail_fast_min_completed=int(args.fail_fast_min_completed),
@@ -407,7 +709,12 @@ def main(argv: list[str] | None = None) -> int:
               f"{result.get('reason', '<no reason>')}", file=sys.stderr)
         out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps(result, indent=2, default=str))
+        (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
+            "checkpoint": str(ckpt),
+            "checkpoint_sha256": checkpoint_sha256,
+            "val_data": str(val),
+            "raw": result,
+        }, indent=2, default=str))
         return 1
     if result.get("status") == "failed_fast":
         # Still emit JSON + a short MD so the leaderboard can record the dud
@@ -415,15 +722,47 @@ def main(argv: list[str] | None = None) -> int:
         # the same-backend path already skips them on failed_fast.
         out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
         out_dir.mkdir(parents=True, exist_ok=True)
+        aggregate = _aggregate(result.get("by_slippage", {}), window_days=int(args.window_days))
+        gate = _promotion_status(
+            aggregate,
+            target_monthly=float(args.monthly_target),
+            max_dd_target=float(args.max_dd_target),
+            window_days=int(args.window_days),
+            min_window_days=int(args.min_window_days),
+            decision_lag=int(args.decision_lag),
+            min_decision_lag=int(args.min_decision_lag),
+            slippage_bps=_evaluated_slippage_bps(aggregate),
+            min_max_slippage_bps=int(args.min_max_slippage_bps),
+            max_negative_windows=int(args.max_negative_windows),
+            min_completed_windows=int(min_completed_windows),
+        )
+        gate["passed"] = False
+        gate["failures"] = [
+            *list(gate.get("failures", [])),
+            f"failed_fast: {result.get('failed_reason', '<no reason>')}",
+        ]
         bail_md = (
             f"# 100d unseen-data eval — `{ckpt.name}`\n\n"
+            f"- checkpoint_sha256: `{checkpoint_sha256}`\n"
             f"- **status**: FAILED_FAST  ({result.get('failed_reason', '<no reason>')})\n"
+            f"- promotion_gate: FAIL\n"
             f"- backend: {result.get('backend', 'pufferlib_market')}\n"
         )
         (out_dir / f"{ckpt.stem}_eval100d.md").write_text(bail_md)
         (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
-            "checkpoint": str(ckpt), "val_data": str(val), "raw": result,
+            "checkpoint": str(ckpt),
+            "checkpoint_sha256": checkpoint_sha256,
+            "val_data": str(val), "raw": result,
+            "aggregate": aggregate,
+            "promotion_gate": gate,
             "monthly_target": float(args.monthly_target),
+            "max_dd_target": float(args.max_dd_target),
+            "min_window_days": int(args.min_window_days),
+            "decision_lag": int(args.decision_lag),
+            "min_decision_lag": int(args.min_decision_lag),
+            "min_max_slippage_bps": int(args.min_max_slippage_bps),
+            "max_negative_windows": int(args.max_negative_windows),
+            "min_completed_windows": int(min_completed_windows),
             "n_windows": int(args.n_windows), "window_days": int(args.window_days),
             "slippage_bps": slippages,
         }, indent=2, default=str))
@@ -434,28 +773,57 @@ def main(argv: list[str] | None = None) -> int:
     aggregate = _aggregate(by_slip, window_days=int(args.window_days))
     out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
     out_dir.mkdir(parents=True, exist_ok=True)
+    gate = _promotion_status(
+        aggregate,
+        target_monthly=float(args.monthly_target),
+        max_dd_target=float(args.max_dd_target),
+        window_days=int(args.window_days),
+        min_window_days=int(args.min_window_days),
+        decision_lag=int(args.decision_lag),
+        min_decision_lag=int(args.min_decision_lag),
+        slippage_bps=_evaluated_slippage_bps(aggregate),
+        min_max_slippage_bps=int(args.min_max_slippage_bps),
+        max_negative_windows=int(args.max_negative_windows),
+        min_completed_windows=int(min_completed_windows),
+    )
     full = {
         "checkpoint": str(ckpt),
+        "checkpoint_sha256": checkpoint_sha256,
         "val_data": str(val),
         "n_windows": int(args.n_windows),
         "window_days": int(args.window_days),
         "slippage_bps": slippages,
         "monthly_target": float(args.monthly_target),
+        "max_dd_target": float(args.max_dd_target),
+        "min_window_days": int(args.min_window_days),
+        "decision_lag": int(args.decision_lag),
+        "min_decision_lag": int(args.min_decision_lag),
+        "min_max_slippage_bps": int(args.min_max_slippage_bps),
+        "max_negative_windows": int(args.max_negative_windows),
+        "min_completed_windows": int(min_completed_windows),
         "raw": result,
         "aggregate": aggregate,
+        "promotion_gate": gate,
     }
     (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps(full, indent=2, default=str))
     md = _render_md(
-        ckpt=ckpt, aggregate=aggregate,
+        ckpt=ckpt, checkpoint_sha256=checkpoint_sha256, aggregate=aggregate,
         window_days=int(args.window_days), n_windows=int(args.n_windows),
         target_monthly=float(args.monthly_target),
+        max_dd_target=float(args.max_dd_target),
         eval_result=result,
+        min_window_days=int(args.min_window_days),
+        decision_lag=int(args.decision_lag),
+        min_decision_lag=int(args.min_decision_lag),
+        slippage_bps=slippages,
+        min_max_slippage_bps=int(args.min_max_slippage_bps),
+        max_negative_windows=int(args.max_negative_windows),
+        min_completed_windows=int(min_completed_windows),
     )
     (out_dir / f"{ckpt.stem}_eval100d.md").write_text(md)
     print(md)
 
-    worst_m = float(aggregate.get("worst_slip_monthly", 0.0))
-    return 0 if worst_m >= float(args.monthly_target) else 3
+    return 0 if bool(gate["passed"]) else 3
 
 
 if __name__ == "__main__":
