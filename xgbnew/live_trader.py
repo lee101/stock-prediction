@@ -1672,6 +1672,16 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
         if len(set(normalized_paths)) != len(normalized_paths):
             print("ERROR: --model-paths contains duplicate model paths", file=sys.stderr)
             return None
+        seeds: list[int] = []
+        for path in paths:
+            try:
+                seeds.append(_ensemble_model_path_seed(path))
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return None
+        if len(set(seeds)) != len(seeds):
+            print(f"ERROR: --model-paths contains duplicate model seeds: {seeds}", file=sys.stderr)
+            return None
         for mp in paths:
             if not mp.exists():
                 print(f"ERROR: Ensemble model not found at {mp}", file=sys.stderr)
@@ -1701,6 +1711,18 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
     if _validated_model_features(model, args.model_path) is None:
         return None
     return model
+
+
+def _ensemble_model_path_seed(path: Path) -> int:
+    stem = path.stem
+    prefix = "alltrain_seed"
+    if not stem.startswith(prefix):
+        raise ValueError(f"{path}: filename must match alltrain_seed<seed>.pkl")
+    seed_text = stem[len(prefix):]
+    try:
+        return int(seed_text)
+    except ValueError as exc:
+        raise ValueError(f"{path}: filename must match alltrain_seed<seed>.pkl") from exc
 
 
 def _validated_model_features(model: XGBStockModel, path: Path) -> tuple[str, ...] | None:

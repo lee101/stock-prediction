@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -22,8 +22,8 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew import sweep_ensemble_grid as sweep  # noqa: E402
-from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
+from xgbnew import sweep_ensemble_grid as sweep
+from xgbnew.features import DAILY_FEATURE_COLS
 
 
 def _mk_panel(n_days: int = 40, n_syms: int = 6) -> pd.DataFrame:
@@ -78,8 +78,7 @@ def _install_fakes(monkeypatch):
         m.predict_scores = fake_predict.__get__(m)
         m.feature_cols = DAILY_FEATURE_COLS
         return m
-    monkeypatch.setattr("xgbnew.model.XGBStockModel.load",
-                        staticmethod(fake_load))
+    monkeypatch.setattr(sweep, "load_any_model", fake_load)
 
 
 def _fake_paths(tmp_path: Path, n: int) -> list[Path]:

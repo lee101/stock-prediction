@@ -895,11 +895,45 @@ def test_load_models_normalized_duplicate_ensemble_paths_returns_none(
     assert "duplicate model paths" in capsys.readouterr().err
 
 
+def test_load_models_duplicate_ensemble_seed_names_return_none(tmp_path, capsys):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    path0_left = left / "alltrain_seed0.pkl"
+    path0_right = right / "alltrain_seed0.pkl"
+    path0_left.write_bytes(b"x")
+    path0_right.write_bytes(b"x")
+    args = SimpleNamespace(
+        model_paths=f"{path0_left},{path0_right}",
+        model_path=tmp_path / "whatever.pkl",
+    )
+
+    result = live_trader._load_models(args)
+
+    assert result is None
+    assert "duplicate model seeds" in capsys.readouterr().err
+
+
+def test_load_models_unparseable_ensemble_seed_name_returns_none(tmp_path, capsys):
+    path = tmp_path / "candidate.pkl"
+    path.write_bytes(b"x")
+    args = SimpleNamespace(
+        model_paths=str(path),
+        model_path=tmp_path / "whatever.pkl",
+    )
+
+    result = live_trader._load_models(args)
+
+    assert result is None
+    assert "filename must match alltrain_seed<seed>.pkl" in capsys.readouterr().err
+
+
 def test_load_models_missing_any_ensemble_member_returns_none(tmp_path, capsys):
     """If any member of --model-paths doesn't exist, fail fast with None."""
-    good = tmp_path / "ok.pkl"
+    good = tmp_path / "alltrain_seed0.pkl"
     good.write_bytes(b"x")  # content irrelevant — only `exists()` is checked
-    bad = tmp_path / "missing.pkl"
+    bad = tmp_path / "alltrain_seed7.pkl"
     args = SimpleNamespace(
         model_paths=f"{good},{bad}",
         model_path=tmp_path / "whatever.pkl",

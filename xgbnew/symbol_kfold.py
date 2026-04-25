@@ -198,7 +198,7 @@ def _run_cell(
             continue
         w_scores = local_scores.loc[w_df.index]
         res = simulate(w_df, dummy, cfg, precomputed_scores=w_scores)
-        n_days = len(res.day_results)
+        n_days = int(len(pd.unique(w_df["date"])))
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
         monthlies.append(monthly)
         sortinos.append(res.sortino_ratio)
@@ -265,7 +265,7 @@ def run_kfold(
         raise ValueError("mixed rank/no-rank ensemble — retrain all members")
     needs_ranks = any(has_ranks)
 
-    train_df, _, oos_df = build_daily_dataset(
+    _, _, oos_df = build_daily_dataset(
         data_root=data_root,
         symbols=symbols,
         train_start=train_start, train_end=train_end,

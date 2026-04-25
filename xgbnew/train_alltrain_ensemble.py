@@ -26,8 +26,10 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from datetime import date
@@ -46,6 +48,21 @@ from xgbnew.features import (
 from xgbnew.model import XGBStockModel
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def _load_symbols(path: Path) -> list[str]:
     syms: list[str] = []
     for line in path.read_text().splitlines():
@@ -54,6 +71,19 @@ def _load_symbols(path: Path) -> list[str]:
             syms.append(s)
     seen = set()
     return [s for s in syms if not (s in seen or seen.add(s))]
+
+
+def _parse_seed_list(value: str) -> list[int]:
+    seeds = [int(s.strip()) for s in value.split(",") if s.strip()]
+    seen: set[int] = set()
+    duplicates: list[int] = []
+    for seed in seeds:
+        if seed in seen and seed not in duplicates:
+            duplicates.append(seed)
+        seen.add(seed)
+    if duplicates:
+        raise ValueError(f"duplicate seeds are not allowed: {duplicates}")
+    return seeds
 
 
 def parse_args(argv=None):
@@ -132,7 +162,11 @@ def main(argv=None) -> int:
             print("ERROR: --shapes needs at least 2 tuples", file=sys.stderr)
             return 1
     else:
-        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+        try:
+            seeds = _parse_seed_list(args.seeds)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
         if len(seeds) < 2:
             print("ERROR: need at least 2 seeds", file=sys.stderr)
             return 1
@@ -196,6 +230,7 @@ def main(argv=None) -> int:
             saved.append({"seed": seed, "n_estimators": sp["n_est"],
                           "max_depth": sp["depth"], "learning_rate": sp["lr"],
                           "path": str(out_pkl),
+                          "sha256": _file_sha256(out_pkl),
                           "fit_seconds": round(time.perf_counter() - t_fit, 2)})
             print(f"  {tag} fit in {saved[-1]['fit_seconds']:.1f}s -> {out_pkl.name}",
                   flush=True)
@@ -215,6 +250,7 @@ def main(argv=None) -> int:
             out_pkl = args.out_dir / f"alltrain_seed{seed}.pkl"
             model.save(out_pkl)
             saved.append({"seed": int(seed), "path": str(out_pkl),
+                          "sha256": _file_sha256(out_pkl),
                           "fit_seconds": round(time.perf_counter() - t_fit, 2)})
             print(f"  seed={seed} fit in {saved[-1]['fit_seconds']:.1f}s -> {out_pkl.name}",
                   flush=True)
@@ -242,7 +278,7 @@ def main(argv=None) -> int:
         "blend_recipe": "predict_proba mean across seeds then pick top_n=1",
     }
     manifest_path = args.out_dir / "alltrain_ensemble.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _write_json_atomic(manifest_path, manifest)
     print(f"\n[xgb-alltrain-ens] Manifest → {manifest_path}")
     print(f"[xgb-alltrain-ens] Models   → {len(saved)} files in {args.out_dir}")
     print(f"[xgb-alltrain-ens] ⚠ No OOS metrics — trust champion hyperparams only.")
