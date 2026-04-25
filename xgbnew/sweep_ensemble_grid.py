@@ -1030,6 +1030,8 @@ def run_sweep(
     alloc_mode_grid = [str(x or "equal").strip().lower() for x in (allocation_mode_grid or ["equal"])]
     alloc_temp_grid = [float(x) for x in (allocation_temp_grid or [1.0])]
     sup_grid = [float(x) for x in (score_uncertainty_penalty_grid or [0.0])]
+    if any(x < 0.0 for x in sup_grid):
+        raise ValueError("score_uncertainty_penalty_grid values must be >= 0")
     valid_alloc_modes = {"equal", "score_norm", "softmax"}
     bad_alloc_modes = sorted(set(alloc_mode_grid) - valid_alloc_modes)
     if bad_alloc_modes:

@@ -488,6 +488,27 @@ def test_uncertainty_adjusted_scores_penalize_seed_disagreement():
     assert adjusted.sort_values(ascending=False).index.tolist() == ["B", "A"]
 
 
+def test_run_sweep_rejects_negative_uncertainty_penalty(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    with pytest.raises(ValueError, match="score_uncertainty_penalty_grid values"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[True],
+            top_n_grid=[1],
+            fee_regimes=["deploy"],
+            score_uncertainty_penalty_grid=[-0.1],
+        )
+
+
 def test_sweep_json_payload_and_atomic_write(tmp_path):
     rows = [{
         "leverage": 2.0,
