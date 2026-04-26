@@ -1,6 +1,21 @@
 # Binance Progress Log
 
-Updated: 2026-03-26
+Updated: 2026-04-27
+
+## PPO Binance Realism Reset (2026-04-27)
+
+- Tightened `pufferlib_market.train` periodic validation so `val_best.pt` is selected under the same target assumptions used for deployment screening: fee, slippage, 1x leverage, action-grid levels, lag-2 decisions, 5 bps fill buffer, and the long-only short mask when enabled.
+- Fixed fallback checkpoint metadata so periodic and final non-MLP checkpoints preserve `arch`, avoiding false `mlp` loads during sweep evaluation.
+- Added holdout smoothness diagnostics to `pufferlib_market.evaluate_holdout`: each window and summary now include PnL smoothness and ulcer index, so 30-day Binance sweeps can rank smooth equity curves instead of median return alone.
+- Built a reproducible wider local Binance daily universe:
+  - `scripts/export_binance33_daily.py` exports 33 USD-proxy Binance pairs from `trainingdatadailybinance`.
+  - `scripts/build_crypto30_augmented.py` is now parameterized, so the same vol-scale augmentation can produce `binance33_daily_aug_train.bin`.
+  - Local generated data: `binance33_daily_train.bin` (`33` symbols, `1734` days), `binance33_daily_val.bin` (`33` symbols, `165` days), and `binance33_daily_aug_train.bin` (`5202` augmented train days).
+- Failed fast experiments under the corrected validation:
+  - Existing crypto30 4-seed ensemble, 1x long-only, 30-day windows, 5 bps slippage: sampled smoke median `-3.3%`; earlier exhaustive baseline was flat/negative.
+  - `crypto30_1x_smooth_smoke` with allocation/level actions: exhaustive 30-day median `-22.6%`, `146/162` negative windows.
+  - `binance33_1x_smooth_smoke` old-style high trade penalty: exhaustive 30-day median `-17.4%`, `103/135` negative windows.
+- Conclusion: adding pairs and execution levels alone is not enough; old PPO training looked profitable in-sample but fails under realistic validation. Next active sweep is `scripts/sweep_binance33_1x_smooth.sh`, which keeps the corrected validation and fail-fast negative-window gate.
 
 ## Worksteal Audit (2026-03-26)
 

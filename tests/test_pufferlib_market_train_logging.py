@@ -4,10 +4,15 @@ import sys
 
 import numpy as np
 import pytest
+import torch
 
 import pufferlib_market.train as train_module
 from pufferlib_market.train import (
+    ResidualTradingPolicy,
+    _mask_short_logits,
+    _checkpoint_payload,
     _summarize_validation_results,
+    _validation_simulation_kwargs,
     _wandb_summary_update,
 )
 
@@ -44,6 +49,72 @@ def test_summarize_validation_results_penalizes_near_zero_trading() -> None:
 
     assert summary["val/avg_trades"] < 1.0
     assert summary["val/score"] == -100.0
+
+
+def test_mask_short_logits_handles_action_grids() -> None:
+    logits = torch.zeros((1, 13), dtype=torch.float32)
+
+    masked = _mask_short_logits(logits, num_actions=13)
+
+    min_val = torch.finfo(masked.dtype).min
+    assert torch.isfinite(masked[0, :7]).all()
+    assert torch.equal(masked[0, 7:], torch.full((6,), min_val))
+
+
+def test_validation_simulation_kwargs_match_realistic_training_args() -> None:
+    args = type(
+        "Args",
+        (),
+        {
+            "fee_rate": 0.001,
+            "fill_slippage_bps": 5.0,
+            "max_leverage": 1.0,
+            "periods_per_year": 365.0,
+            "short_borrow_apr": 0.0625,
+        },
+    )()
+    action_meta = {
+        "action_allocation_bins": 2,
+        "action_level_bins": 3,
+        "action_max_offset_bps": 25.0,
+    }
+
+    kwargs = _validation_simulation_kwargs(args, action_meta, window_steps=90)
+
+    assert kwargs["max_steps"] == 90
+    assert kwargs["fee_rate"] == pytest.approx(0.001)
+    assert kwargs["slippage_bps"] == pytest.approx(5.0)
+    assert kwargs["fill_buffer_bps"] == pytest.approx(5.0)
+    assert kwargs["max_leverage"] == pytest.approx(1.0)
+    assert kwargs["periods_per_year"] == pytest.approx(365.0)
+    assert kwargs["short_borrow_apr"] == pytest.approx(0.0625)
+    assert kwargs["action_allocation_bins"] == 2
+    assert kwargs["action_level_bins"] == 3
+    assert kwargs["action_max_offset_bps"] == pytest.approx(25.0)
+    assert kwargs["enable_drawdown_profit_early_exit"] is False
+
+
+def test_checkpoint_payload_requires_explicit_arch_metadata() -> None:
+    policy = ResidualTradingPolicy(obs_size=22, num_actions=3, hidden=16)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+
+    payload = _checkpoint_payload(
+        policy,
+        optimizer,
+        update=1,
+        global_step=128,
+        best_return=0.25,
+        disable_shorts=True,
+        action_meta={
+            "action_allocation_bins": 1,
+            "action_level_bins": 1,
+            "action_max_offset_bps": 0.0,
+        },
+        arch="resmlp",
+    )
+
+    assert payload["arch"] == "resmlp"
+    assert "input_proj.weight" in payload["model"]
 
 
 def test_wandb_summary_update_skips_nonfinite_values() -> None:

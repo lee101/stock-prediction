@@ -26,6 +26,7 @@ from pufferlib_market.checkpoint_loader import (
 )
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
+from src.robust_trading_metrics import compute_pnl_smoothness_from_equity, compute_ulcer_index
 
 
 def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int, per_symbol_actions: int = 1) -> torch.Tensor:
@@ -324,6 +325,8 @@ class WindowMetric:
     annualized_return: float
     sortino: float
     max_drawdown: float
+    pnl_smoothness: float
+    ulcer_index: float
     num_trades: int
     win_rate: float
 
@@ -343,6 +346,15 @@ def _percentile(values: list[float], q: float) -> float:
         return 0.0
     arr = np.asarray(values, dtype=np.float64)
     return float(np.percentile(arr, q))
+
+
+def _result_equity_curve(result: object) -> np.ndarray:
+    curve = getattr(result, "equity_curve", None)
+    if curve is None:
+        curve = getattr(result, "equity_history", None)
+    if curve is None:
+        return np.asarray([], dtype=np.float64)
+    return np.asarray(curve, dtype=np.float64)
 
 
 def load_policy(
@@ -685,6 +697,7 @@ def main() -> None:
             periods=float(steps),
             periods_per_year=float(args.periods_per_year),
         )
+        equity_curve = _result_equity_curve(result)
         metrics.append(
             WindowMetric(
                 start_idx=int(start_idx),
@@ -692,6 +705,8 @@ def main() -> None:
                 annualized_return=float(annualized_return),
                 sortino=float(result.sortino),
                 max_drawdown=float(result.max_drawdown),
+                pnl_smoothness=float(compute_pnl_smoothness_from_equity(equity_curve)),
+                ulcer_index=float(compute_ulcer_index(equity_curve)),
                 num_trades=int(result.num_trades),
                 win_rate=float(result.win_rate),
             )
@@ -701,6 +716,8 @@ def main() -> None:
     annualized_returns = [m.annualized_return for m in metrics]
     sortinos = [m.sortino for m in metrics]
     maxdds = [m.max_drawdown for m in metrics]
+    pnl_smoothness = [m.pnl_smoothness for m in metrics]
+    ulcer_indexes = [m.ulcer_index for m in metrics]
     best_window = max(metrics, key=lambda metric: metric.total_return)
     worst_window = min(metrics, key=lambda metric: metric.total_return)
 
@@ -749,6 +766,10 @@ def main() -> None:
             "negative_windows": int(sum(1 for r in returns if r < 0.0)),
             "median_max_drawdown": float(_percentile(maxdds, 50)),
             "p90_max_drawdown": float(_percentile(maxdds, 90)),
+            "median_pnl_smoothness": float(_percentile(pnl_smoothness, 50)),
+            "p90_pnl_smoothness": float(_percentile(pnl_smoothness, 90)),
+            "median_ulcer_index": float(_percentile(ulcer_indexes, 50)),
+            "p90_ulcer_index": float(_percentile(ulcer_indexes, 90)),
             "best_window": asdict(best_window),
             "worst_window": asdict(worst_window),
         },

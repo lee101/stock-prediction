@@ -298,7 +298,7 @@ def _checkpoint_payload(
     best_return: float,
     disable_shorts: bool,
     action_meta: dict[str, int | float],
-    arch: str = "mlp",
+    arch: str,
 ) -> dict[str, object]:
     activation_name = getattr(
         policy,
@@ -405,6 +405,29 @@ def _mask_short_logits(logits: torch.Tensor, num_actions: int) -> torch.Tensor:
     masked = logits.clone()
     masked[:, 1 + num_symbols :] = torch.finfo(masked.dtype).min
     return masked
+
+
+def _validation_simulation_kwargs(
+    args: argparse.Namespace,
+    action_meta: dict[str, int | float],
+    *,
+    window_steps: int,
+) -> dict[str, object]:
+    """Build holdout sim kwargs that mirror the trained/executable objective."""
+    return {
+        "max_steps": int(window_steps),
+        "fee_rate": float(getattr(args, "fee_rate", 0.001)),
+        "slippage_bps": float(getattr(args, "fill_slippage_bps", 0.0)),
+        "fill_buffer_bps": float(getattr(args, "val_fill_buffer_bps", 5.0)),
+        "max_leverage": float(getattr(args, "max_leverage", 1.0)),
+        "periods_per_year": float(getattr(args, "periods_per_year", 8760.0)),
+        "short_borrow_apr": float(getattr(args, "short_borrow_apr", 0.0)),
+        "action_allocation_bins": int(action_meta.get("action_allocation_bins", 1)),
+        "action_level_bins": int(action_meta.get("action_level_bins", 1)),
+        "action_max_offset_bps": float(action_meta.get("action_max_offset_bps", 0.0)),
+        "enable_drawdown_profit_early_exit": False,
+    }
+
 
 class TradingPolicy(nn.Module):
     """
@@ -2124,12 +2147,18 @@ def train(args):
             and (update - start_update) % args.val_eval_interval == 0
         ):
             policy.eval()
-            _use_enorm = getattr(policy, "_use_encoder_norm", False)
             _val_decision_lag = int(getattr(args, "val_decision_lag", 2))
+            _val_sim_kwargs = _validation_simulation_kwargs(
+                args,
+                action_meta,
+                window_steps=_VAL_WINDOW_STEPS,
+            )
             def _val_policy_fn(obs_np: np.ndarray) -> int:
                 obs_t = torch.from_numpy(obs_np.astype(np.float32, copy=False)).to(device).view(1, -1)
                 with torch.inference_mode():
                     logits, _ = policy(obs_t)
+                if bool(getattr(args, "disable_shorts", False)):
+                    logits = _mask_short_logits(logits, int(logits.shape[-1]))
                 return int(torch.argmax(logits, dim=-1).item())
             def _make_lagged_policy(fn, lag: int):
                 """Wrap fn with a decision lag queue matching production fill behaviour."""
@@ -2149,9 +2178,7 @@ def train(args):
             for _vs in _val_eval_starts:
                 _w = _slice_window(_val_data, start=int(_vs), steps=_VAL_WINDOW_STEPS)
                 _policy_for_window = _make_lagged_policy(_val_policy_fn, _val_decision_lag) if _val_decision_lag > 0 else _val_policy_fn
-                _r = simulate_daily_policy(_w, _policy_for_window, max_steps=_VAL_WINDOW_STEPS,
-                                           fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
-                                           enable_drawdown_profit_early_exit=False)
+                _r = simulate_daily_policy(_w, _policy_for_window, **_val_sim_kwargs)
                 val_rets.append(_r.total_return)
                 val_sortinos.append(_r.sortino)
                 val_max_drawdowns.append(_r.max_drawdown)
@@ -2222,17 +2249,16 @@ def train(args):
                         _rec_step["i"] += 1
                         return int(a)
 
-                    _r2 = simulate_daily_policy(
-                        _vw, _rec_policy_fn, max_steps=_VAL_WINDOW_STEPS,
-                        fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
-                        enable_drawdown_profit_early_exit=False,
-                    )
+                    _r2 = simulate_daily_policy(_vw, _rec_policy_fn, **_val_sim_kwargs)
 
                     # Reconstruct (position_sym, is_short, equity) from sim result.
                     # DailySimResult exposes per-step equity and per-step position via
                     # `equity_history` and (if available) `position_history`. Use what's
                     # there; fall back to flat positions when missing.
-                    _eq_hist = list(getattr(_r2, "equity_history", []))
+                    _curve = getattr(_r2, "equity_curve", None)
+                    if _curve is None:
+                        _curve = getattr(_r2, "equity_history", [])
+                    _eq_hist = list(_curve)
                     _pos_hist = list(getattr(_r2, "position_history", []))
                     _T_rec = len(_rec_actions)
                     for _i in range(_T_rec):
@@ -2416,6 +2442,7 @@ def train(args):
                     best_return=best_return,
                     disable_shorts=bool(args.disable_shorts),
                     action_meta=action_meta,
+                    arch=args.arch,
                 ),
                 ckpt_path,
             )
@@ -2434,6 +2461,7 @@ def train(args):
             best_return=best_return,
             disable_shorts=bool(args.disable_shorts),
             action_meta=action_meta,
+            arch=args.arch,
         ),
         ckpt_path,
     )

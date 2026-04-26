@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build vol-scale augmented crypto30 daily training binary.
+"""Build vol-scale augmented daily MKTD training binary.
 
 No session-shift (crypto is 24/7). Only volatility scaling: 0.7, 1.0, 1.3.
 """
 from __future__ import annotations
 
+import argparse
 import struct
 from pathlib import Path
 
@@ -68,18 +69,36 @@ def apply_vol_scale(feat: np.ndarray, sigma: float) -> np.ndarray:
     return out
 
 
-def main():
-    if not IN_TRAIN.exists():
-        print(f"ERROR: {IN_TRAIN} not found. Run export_crypto30_daily.py first.")
+def _parse_vol_scales(raw: str) -> list[float]:
+    scales = [float(part.strip()) for part in raw.split(",") if part.strip()]
+    if not scales:
+        raise ValueError("At least one vol scale is required")
+    return scales
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Build volatility-scaled MKTD training data.")
+    parser.add_argument("--input", type=Path, default=IN_TRAIN, help="Input MKTD train binary")
+    parser.add_argument("--output", type=Path, default=OUT_TRAIN, help="Output augmented MKTD binary")
+    parser.add_argument(
+        "--vol-scales",
+        default=",".join(str(scale) for scale in VOL_SCALES),
+        help="Comma-separated feature volatility scales (default: 0.7,1.0,1.3)",
+    )
+    args = parser.parse_args(argv)
+    vol_scales = _parse_vol_scales(args.vol_scales)
+
+    if not args.input.exists():
+        print(f"ERROR: {args.input} not found.")
         return 1
 
-    base = read_mktd(IN_TRAIN)
+    base = read_mktd(args.input)
     print(f"Base: {base['nsym']} symbols, {base['nts']} timesteps, {base['nfeat']} features")
 
     all_feat = []
     all_price = []
     all_mask = []
-    for sigma in VOL_SCALES:
+    for sigma in vol_scales:
         scaled = apply_vol_scale(base["feat"], sigma)
         all_feat.append(scaled)
         all_price.append(base["price"])
@@ -90,9 +109,9 @@ def main():
     combined_feat = np.concatenate(all_feat, axis=0)
     combined_price = np.concatenate(all_price, axis=0)
     combined_mask = np.concatenate(all_mask, axis=0) if all_mask else None
-    print(f"Combined: {combined_feat.shape[0]} timesteps ({len(VOL_SCALES)}x augmentation)")
+    print(f"Combined: {combined_feat.shape[0]} timesteps ({len(vol_scales)}x augmentation)")
 
-    write_mktd(OUT_TRAIN, base, combined_feat, combined_price, combined_mask)
+    write_mktd(args.output, base, combined_feat, combined_price, combined_mask)
     return 0
 
 

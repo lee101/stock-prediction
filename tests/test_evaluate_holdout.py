@@ -162,6 +162,23 @@ def test_load_policy_supports_bare_state_dict_payload(tmp_path: Path) -> None:
     assert loaded.action_max_offset_bps == pytest.approx(0.0)
 
 
+def test_load_policy_supports_resmlp_arch_metadata(tmp_path: Path) -> None:
+    source_policy = eval_mod.ResidualTradingPolicy(obs_size=22, num_actions=3, hidden=16)
+    payload = {"model": source_policy.state_dict(), "arch": "resmlp"}
+
+    with patch.object(eval_mod, "load_checkpoint_payload", return_value=payload):
+        loaded = eval_mod.load_policy(
+            str(tmp_path / "checkpoint.pt"),
+            num_symbols=1,
+            features_per_sym=16,
+            device=torch.device("cpu"),
+        )
+
+    assert isinstance(loaded.policy, eval_mod.ResidualTradingPolicy)
+    assert loaded.arch == "resmlp"
+    assert loaded.hidden_size == 16
+
+
 def test_load_policy_prefers_checkpoint_encoder_norm_flag(tmp_path: Path) -> None:
     source_policy = eval_mod.TradingPolicy(obs_size=22, num_actions=3, hidden=16)
     payload = {"model": source_policy.state_dict(), "use_encoder_norm": False}
@@ -228,9 +245,30 @@ def test_main_supports_bare_state_dict_payload(tmp_path: Path, capsys: pytest.Ca
     fake_args = _fake_main_args(tmp_path, out=str(tmp_path / "summary.json"))
     source_policy = eval_mod.TradingPolicy(obs_size=22, num_actions=3, hidden=16)
     fake_results = [
-        SimpleNamespace(total_return=0.25, sortino=1.5, max_drawdown=0.1, num_trades=4, win_rate=0.75),
-        SimpleNamespace(total_return=-0.10, sortino=-0.5, max_drawdown=0.2, num_trades=3, win_rate=0.25),
-        SimpleNamespace(total_return=0.05, sortino=0.4, max_drawdown=0.08, num_trades=2, win_rate=0.50),
+        SimpleNamespace(
+            total_return=0.25,
+            sortino=1.5,
+            max_drawdown=0.1,
+            num_trades=4,
+            win_rate=0.75,
+            equity_curve=np.asarray([100.0, 105.0, 90.0, 125.0], dtype=np.float64),
+        ),
+        SimpleNamespace(
+            total_return=-0.10,
+            sortino=-0.5,
+            max_drawdown=0.2,
+            num_trades=3,
+            win_rate=0.25,
+            equity_curve=np.asarray([100.0, 95.0, 90.0, 90.0], dtype=np.float64),
+        ),
+        SimpleNamespace(
+            total_return=0.05,
+            sortino=0.4,
+            max_drawdown=0.08,
+            num_trades=2,
+            win_rate=0.50,
+            equity_curve=np.asarray([100.0, 102.0, 101.0, 105.0], dtype=np.float64),
+        ),
     ]
 
     with (
@@ -258,7 +296,11 @@ def test_main_supports_bare_state_dict_payload(tmp_path: Path, capsys: pytest.Ca
     assert summary["sampled_window_count"] == fake_args.n_windows
     assert summary["sampled_with_replacement"] is False
     assert summary["median_total_return"] == pytest.approx(0.05)
+    assert summary["median_pnl_smoothness"] > 0.0
+    assert summary["median_ulcer_index"] > 0.0
     assert summary["best_window"]["total_return"] == pytest.approx(0.25)
+    assert summary["best_window"]["pnl_smoothness"] > 0.0
+    assert summary["best_window"]["ulcer_index"] > 0.0
     assert summary["worst_window"]["total_return"] == pytest.approx(-0.10)
     assert out["window_selection"]["mode"] == "sampled"
     assert out["window_selection"]["candidate_window_count"] == 16
@@ -268,6 +310,8 @@ def test_main_supports_bare_state_dict_payload(tmp_path: Path, capsys: pytest.Ca
     assert out["window_selection"]["sampled_start_indices"] == [window["start_idx"] for window in out["windows"]]
     assert out["summary"]["best_window"]["total_return"] == pytest.approx(0.25)
     assert out["summary"]["worst_window"]["total_return"] == pytest.approx(-0.10)
+    assert out["summary"]["p90_pnl_smoothness"] > 0.0
+    assert out["summary"]["p90_ulcer_index"] > 0.0
     assert out["summary"]["arch"] == "mlp"
     assert out["summary"]["action_max_offset_bps"] == pytest.approx(0.0)
     assert out["arch"] == "mlp"
