@@ -475,6 +475,20 @@ def _candidate_margin_pairs(symbol: str) -> list[str]:
     return pairs
 
 
+def _live_symbol_price_usd(client, symbol: str) -> float:
+    for pair in _candidate_margin_pairs(symbol):
+        try:
+            ticker = client.get_symbol_ticker(symbol=pair) if client else None
+        except Exception:
+            continue
+        if not isinstance(ticker, dict):
+            continue
+        price = _safe_finite_float(ticker.get("price"), default=0.0)
+        if price > 0.0:
+            return price
+    return 0.0
+
+
 def _order_status(order: dict) -> str:
     return str(order.get("status") or "").upper().strip()
 
@@ -2143,6 +2157,81 @@ def reconcile_exit_orders(
     return recent_trades
 
 
+def ensure_position_exit_order_coverage(
+    *,
+    client,
+    positions: dict,
+    now: datetime,
+    dry_run: bool,
+    config: WorkStealConfig = DEFAULT_CONFIG,
+) -> list[dict]:
+    """Place a target SELL for live positions that have no working exit order."""
+    recent_trades: list[dict] = []
+    for sym, pos in list(positions.items()):
+        if pos.get("exit_order_id") is not None:
+            continue
+        quantity = _coerce_positive_finite_float(pos.get("quantity"), fallback=0.0)
+        entry_price = _safe_finite_float(pos.get("entry_price", 0.0), default=0.0)
+        default_target = entry_price * (1.0 + config.profit_target_pct) if entry_price > 0.0 else 0.0
+        target_sell = _safe_finite_float(pos.get("target_sell", default_target), default=default_target)
+        if entry_price > 0.0 and target_sell <= entry_price:
+            target_sell = default_target
+        if quantity <= 0.0 or target_sell <= 0.0:
+            logger.warning(
+                f"Skipping exit coverage for {sym}: invalid quantity={quantity!r} target={target_sell!r}"
+            )
+            continue
+
+        reason = "position_exit_coverage"
+        logger.info(f"EXIT COVERAGE {sym}: placing target sell at {target_sell:.4f} qty={quantity:.8f}")
+        if dry_run:
+            trade = {
+                "timestamp": now.isoformat(),
+                "symbol": sym,
+                "side": "staged_sell",
+                "price": target_sell,
+                "quantity": quantity,
+                "reason": reason,
+                "pnl": (target_sell - entry_price) * quantity if entry_price > 0.0 else 0.0,
+                "dry_run": True,
+            }
+            log_trade(trade)
+            recent_trades.append(trade)
+            continue
+
+        raw_order = place_limit_sell(client, sym, target_sell, quantity)
+        order, order_id = _submitted_margin_order_or_none(
+            raw_order,
+            context=f"margin order submit response for exit coverage {sym}",
+        )
+        if order is None:
+            continue
+        if order_id is None:
+            logger.warning(f"EXIT COVERAGE FAILED {sym}: no live order placed at {target_sell:.4f}")
+            continue
+
+        pos["exit_order_id"] = order_id
+        pos["exit_order_symbol"] = str(order.get("symbol") or get_binance_pair(sym, prefer_fdusd=True))
+        pos["exit_order_status"] = _order_status(order) or "NEW"
+        pos["exit_price"] = target_sell
+        pos["exit_reason"] = reason
+        pos["target_sell"] = target_sell
+        trade = {
+            "timestamp": now.isoformat(),
+            "symbol": sym,
+            "side": "staged_sell",
+            "price": target_sell,
+            "quantity": quantity,
+            "reason": reason,
+            "pnl": (target_sell - entry_price) * quantity if entry_price > 0.0 else 0.0,
+            "dry_run": False,
+            "order_id": order_id,
+        }
+        log_trade(trade)
+        recent_trades.append(trade)
+    return recent_trades
+
+
 def synchronize_positions_from_exchange(
     *,
     client,
@@ -2206,6 +2295,8 @@ def synchronize_positions_from_exchange(
             current_bars.get(symbol, {}).get("close") if symbol in current_bars else 0.0,
             default=0.0,
         )
+        if close_price <= 0.0:
+            close_price = _live_symbol_price_usd(client, symbol)
         est_value = quantity * close_price
         if (
             est_value < MIN_TRACKED_POSITION_VALUE_USD
@@ -2254,6 +2345,12 @@ def synchronize_positions_from_exchange(
             )
             current_high = _safe_finite_float(current_bars[symbol].get("high"), default=0.0)
             position["peak_price"] = max(current_peak, current_high)
+        elif close_price > 0.0:
+            current_peak = _safe_finite_float(
+                position.get("peak_price", position.get("entry_price", 0.0)),
+                default=_safe_finite_float(position.get("entry_price", 0.0), default=0.0),
+            )
+            position["peak_price"] = max(current_peak, close_price)
 
         open_sell = sell_orders_by_symbol.get(symbol)
         if open_sell is not None:
@@ -2927,13 +3024,21 @@ def run_daily_cycle(
             now=now,
         )
     )
-
     if len(positions) >= config.max_positions and pending_entries:
         for sym, entry in list(pending_entries.items()):
             if _cancel_pending_entry(client, sym, entry):
                 del pending_entries[sym]
 
     if not all_bars:
+        recent_trades.extend(
+            ensure_position_exit_order_coverage(
+                client=client,
+                positions=positions,
+                now=now,
+                dry_run=dry_run,
+                config=config,
+            )
+        )
         logger.warning(
             f"Daily cycle: no market data fetched for any of {len(symbols)} symbols; skipping exits and entries"
         )
@@ -3098,6 +3203,16 @@ def run_daily_cycle(
         }
         log_trade(trade)
         recent_trades.append(trade)
+
+    recent_trades.extend(
+        ensure_position_exit_order_coverage(
+            client=client,
+            positions=positions,
+            now=now,
+            dry_run=dry_run,
+            config=config,
+        )
+    )
 
     # Stage new entries
     entry_regime = resolve_entry_regime(
@@ -4163,6 +4278,15 @@ def main(argv: list[str] | None = None):
                 )
                 before_positions = len(positions)
                 before_pending = len(pending_entries)
+                if not args.dry_run:
+                    synchronize_positions_from_exchange(
+                        client=client,
+                        symbols=symbols,
+                        positions=positions,
+                        current_bars={},
+                        config=config,
+                        now=now,
+                    )
                 refreshed = reconcile_pending_entries(
                     client=client,
                     pending_entries=pending_entries,
@@ -4177,6 +4301,15 @@ def main(argv: list[str] | None = None):
                         positions=positions,
                         last_exit=last_exit,
                         now=now,
+                    )
+                )
+                refreshed.extend(
+                    ensure_position_exit_order_coverage(
+                        client=client,
+                        positions=positions,
+                        now=now,
+                        dry_run=args.dry_run,
+                        config=config,
                     )
                 )
                 if refreshed or len(positions) != before_positions or len(pending_entries) != before_pending:

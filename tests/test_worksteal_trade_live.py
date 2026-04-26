@@ -27,6 +27,7 @@ from binance_worksteal.trade_live import (
     _submitted_margin_order_or_none,
     build_arg_parser,
     build_runtime_config,
+    ensure_position_exit_order_coverage,
     fetch_daily_bars,
     get_account_equity,
     load_state,
@@ -1150,6 +1151,86 @@ def test_reconcile_pending_entries_promotes_filled_orders(monkeypatch, tmp_path)
     ]
 
 
+def test_ensure_position_exit_order_coverage_places_missing_target_sell(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    placed = []
+
+    def fake_place_limit_sell(client, symbol, price, quantity):
+        placed.append((client, symbol, price, quantity))
+        return {
+            "symbol": "BTCUSDT",
+            "orderId": 456,
+            "status": "NEW",
+            "price": str(price),
+            "origQty": str(quantity),
+        }
+
+    monkeypatch.setattr("binance_worksteal.trade_live.place_limit_sell", fake_place_limit_sell)
+    client = object()
+    positions = {
+        "BTCUSD": {
+            "entry_price": 78000.0,
+            "entry_date": "2026-04-26T22:53:00+00:00",
+            "quantity": 0.00391,
+            "peak_price": 78000.0,
+            "target_sell": 79560.0,
+            "stop_price": 70200.0,
+            "source": "pending_fill",
+        }
+    }
+
+    recent = ensure_position_exit_order_coverage(
+        client=client,
+        positions=positions,
+        now=datetime(2026, 4, 26, 23, tzinfo=UTC),
+        dry_run=False,
+    )
+
+    assert placed == [(client, "BTCUSD", 79560.0, 0.00391)]
+    assert positions["BTCUSD"]["exit_order_id"] == 456
+    assert positions["BTCUSD"]["exit_order_symbol"] == "BTCUSDT"
+    assert positions["BTCUSD"]["exit_order_status"] == "NEW"
+    assert positions["BTCUSD"]["exit_reason"] == "position_exit_coverage"
+    assert recent == [
+        {
+            "timestamp": "2026-04-26T23:00:00+00:00",
+            "symbol": "BTCUSD",
+            "side": "staged_sell",
+            "price": 79560.0,
+            "quantity": 0.00391,
+            "reason": "position_exit_coverage",
+            "pnl": pytest.approx((79560.0 - 78000.0) * 0.00391),
+            "dry_run": False,
+            "order_id": 456,
+        }
+    ]
+
+
+def test_ensure_position_exit_order_coverage_skips_existing_exit(monkeypatch):
+    def fail_place_limit_sell(*_args, **_kwargs):
+        raise AssertionError("should not place another sell")
+
+    monkeypatch.setattr("binance_worksteal.trade_live.place_limit_sell", fail_place_limit_sell)
+    positions = {
+        "BTCUSD": {
+            "entry_price": 78000.0,
+            "quantity": 0.00391,
+            "target_sell": 79560.0,
+            "exit_order_id": 456,
+        }
+    }
+
+    recent = ensure_position_exit_order_coverage(
+        client=object(),
+        positions=positions,
+        now=datetime(2026, 4, 26, 23, tzinfo=UTC),
+        dry_run=False,
+    )
+
+    assert recent == []
+    assert positions["BTCUSD"]["exit_order_id"] == 456
+
+
 def test_reconcile_pending_entries_prefers_executed_average_price_over_limit_price(monkeypatch, tmp_path):
     monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
 
@@ -1811,6 +1892,59 @@ def test_synchronize_positions_from_exchange_rebuilds_missing_positions(monkeypa
     assert "exit_order_id" not in positions["ZECUSD"]
     assert "DOGEUSD" not in positions
     assert [event["symbol"] for event in events] == ["ADAUSD", "ZECUSD"]
+
+
+def test_synchronize_positions_from_exchange_uses_live_ticker_without_bars(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    class DummyClient:
+        def get_margin_account(self):
+            return {
+                "userAssets": [
+                    {"asset": "BTC", "free": "0.00390923", "netAsset": "0.00390923", "borrowed": "0"},
+                ]
+            }
+
+        def get_open_margin_orders(self, **kwargs):
+            return []
+
+        def get_symbol_ticker(self, symbol):
+            assert symbol in {"BTCFDUSD", "BTCUSDT"}
+            return {"price": "78650"}
+
+        def get_all_margin_orders(self, symbol, **kwargs):
+            if symbol == "BTCUSDT":
+                return [
+                    {
+                        "symbol": "BTCUSDT",
+                        "status": "FILLED",
+                        "side": "BUY",
+                        "price": "78200",
+                        "executedQty": "0.00391",
+                        "time": 1774440129390,
+                        "updateTime": 1774440959689,
+                    }
+                ]
+            return []
+
+    positions = {}
+
+    events = synchronize_positions_from_exchange(
+        client=DummyClient(),
+        symbols=["BTCUSD"],
+        positions=positions,
+        current_bars={},
+        config=DEFAULT_CONFIG,
+        now=datetime(2026, 4, 26, 23, tzinfo=UTC),
+    )
+
+    assert set(positions) == {"BTCUSD"}
+    assert positions["BTCUSD"]["entry_price"] == 78200.0
+    assert positions["BTCUSD"]["quantity"] == pytest.approx(0.00390923)
+    assert positions["BTCUSD"]["peak_price"] == 78650.0
+    assert positions["BTCUSD"]["target_sell"] == pytest.approx(78200.0 * (1.0 + DEFAULT_CONFIG.profit_target_pct))
+    assert "exit_order_id" not in positions["BTCUSD"]
+    assert [event["symbol"] for event in events] == ["BTCUSD"]
 
 
 def test_synchronize_positions_from_exchange_rebuilds_position_without_nan_peak_from_live_bars(monkeypatch, tmp_path):

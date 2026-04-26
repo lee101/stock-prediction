@@ -34,6 +34,28 @@ Updated: 2026-04-27
   - Regime-switching long/short rules did not solve robustness: recent 120-day median can be positive, but older-history stride-10 checks remain negative with severe drawdowns.
 - Conclusion: the promising recent edge is mostly bear-regime short exposure, not a robust smooth 1x/2x strategy. Do not deploy; next useful direction is a proper regime-conditioned learner or supervised forecast/ranking model evaluated with the same 30-day + 120-day unseen gates.
 
+## Binance33 XGBoost Ranker + Margin Exit Audit (2026-04-27)
+
+- Added `scripts/binance_margin_exit_coverage.py`, a read-only cross-margin audit that compares positive non-stable positions above the minimum trade value with open SELL quantities.
+  - It aggregates coverage across USDT/FDUSD/BUSD/USDC quote routes so BTC/ETH FDUSD exits are not false positives.
+  - Latest live read-only audit: `positions=5 covered=4 partial=0 missing=1`; LINK, ETH, AAVE, and DOGE are covered, while BTC (`~0.00390923`, about `$307`) has no open SELL coverage.
+  - The apparent `14 positions / 5 sells` mismatch is mostly dust/low-value assets below minimum trade size, but the BTC gap is real and should be covered by the worksteal fix below after the live process is restarted or rerun.
+- Fixed `binance_worksteal.trade_live` so filled/reconciled live positions without an `exit_order_id` get an immediate target SELL coverage order through the existing worksteal margin order path.
+  - The coverage hook runs after pending-entry reconciliation, after exchange-position sync and normal exit evaluation, and in daemon heartbeat reconciliation.
+  - Daemon heartbeat now also syncs exchange positions using live ticker prices when local bars are unavailable, so a filled exchange position that is missing from `live_state.json` can still be discovered and covered.
+  - This prevents filled pending buys from remaining uncovered until the next explicit profit/stop/trailing/max-hold exit condition.
+- Added `scripts/sweep_binance33_xgb.py`, a compact supervised XGBoost ranker sweep for the Binance33 daily MKTD panel.
+  - It trains cross-sectional forward-return predictors, supports 20 preset experiments, lag-2 binary-fill daily evaluation, cached eval scores for fast leverage sweeps, and targeted reruns via `--experiment-names`.
+  - Full 1x run: `analysis/binance33_xgb_1x_20260427.csv`.
+- 20-experiment XGBoost 1x result at 20 bps slippage:
+  - best 30-day median: `xgb14` (`h=20`, raw, short-bottom, rebalance 14d) at `+14.23%`, but p10 `-18.07%`, `35/135` negative windows, p90 DD `44.67%`.
+  - best 120-day median: `xgb08` (`h=5`, raw, short-bottom, rebalance 7d) at `+68.96%`, p10 `+8.39%`, `2/45` negative windows, p90 DD `55.02%`.
+  - Verdict: still below the `>=27%` monthly target at 1x and not smooth enough.
+- Targeted leverage sweep on top XGBoost rows: `analysis/binance33_xgb_top_leverage_20260427.csv`.
+  - `xgb14` at 2x reaches 30-day median `+27.65%`, but p10 is `-37.15%` and p90 DD is `79.45%`.
+  - 3x rows push median higher (`xgb14` `+31.54%`, `xgb08` `+28.95%`) but have tail losses worse than `-80%` to `-112%` and p90 DD above `90%`.
+  - Verdict: no XGBoost candidate should be promoted or deployed; leverage is amplifying a fragile short-reversion edge, not creating a smooth strategy.
+
 ## Worksteal Audit (2026-03-26)
 
 - Aligned the daily simulator/backtest with the live bot’s entry logic:
