@@ -9,19 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
-
-# Disable early exit so we get full-period results
-import src.market_sim_early_exit as _mse
-
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(
-        should_stop=False, progress_fraction=0.0,
-        total_return=0.0, max_drawdown=0.0,
-    )
-
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
 
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
@@ -74,6 +62,7 @@ def load_and_eval(ckpt_path, data, periods, device="cpu"):
             tail, policy_fn, max_steps=steps,
             fee_rate=FEE_RATE, fill_buffer_bps=FILL_BUFFER_BPS,
             max_leverage=MAX_LEVERAGE, periods_per_year=PERIODS_PER_YEAR,
+            enable_drawdown_profit_early_exit=False,
         )
         ann = annualize_total_return(
             float(sim.total_return), periods=float(steps),
@@ -125,7 +114,10 @@ def main():
             print(f"  {name}: ERROR {e}")
 
     # Print comparison table
-    header = f"{'Name':<25} {'120d Ret%':>10} {'120d Sort':>10} {'120d DD%':>9} {'180d Ret%':>10} {'180d Sort':>10} {'180d DD%':>9}"
+    header = (
+        f"{'Name':<25} {'120d Ret%':>10} {'120d Sort':>10} {'120d DD%':>9} "
+        f"{'180d Ret%':>10} {'180d Sort':>10} {'180d DD%':>9}"
+    )
     print(header)
     print("-" * len(header))
 

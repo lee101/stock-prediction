@@ -28,6 +28,26 @@ if "STATE_DIR" not in os.environ:
 
 import pytest
 
+import src.market_sim_early_exit as _market_sim_early_exit
+
+_ORIGINAL_MARKET_SIM_EARLY_EXIT_FUNCS = {
+    "evaluate_drawdown_vs_profit_early_exit": _market_sim_early_exit.evaluate_drawdown_vs_profit_early_exit,
+    "evaluate_baseline_comparability_early_exit": _market_sim_early_exit.evaluate_baseline_comparability_early_exit,
+    "evaluate_metric_threshold_early_exit": _market_sim_early_exit.evaluate_metric_threshold_early_exit,
+}
+
+
+def _restore_market_sim_early_exit_functions() -> None:
+    """Undo legacy eval-script import-time monkeypatches of simulator early exits."""
+
+    for name, func in _ORIGINAL_MARKET_SIM_EARLY_EXIT_FUNCS.items():
+        setattr(_market_sim_early_exit, name, func)
+
+
+@pytest.fixture
+def restore_market_sim_early_exit_functions():
+    return _restore_market_sim_early_exit_functions
+
 
 @pytest.fixture
 def reset_package_submodules():
@@ -145,6 +165,100 @@ if "retry" not in sys.modules:
     retry_mod.retry = _retry
     sys.modules["retry"] = retry_mod
 
+
+class _EnumString(str):
+    @property
+    def value(self) -> str:
+        return str(self)
+
+
+def _enum_value(value: str) -> _EnumString:
+    return _EnumString(value)
+
+
+def _ensure_enum_value(container, name: str, value: str) -> None:
+    member = getattr(container, name, None)
+    if member != value or getattr(member, "value", None) != value:
+        setattr(container, name, _enum_value(value))
+
+
+def _ensure_alpaca_test_stubs() -> None:
+    """Repair common Alpaca test stubs after legacy modules mutate sys.modules."""
+
+    alpaca_mod = sys.modules.setdefault("alpaca", types.ModuleType("alpaca"))
+
+    alpaca_trading_mod = sys.modules.get("alpaca.trading")
+    if alpaca_trading_mod is None or not isinstance(alpaca_trading_mod, types.ModuleType):
+        alpaca_trading_mod = types.ModuleType("alpaca.trading")
+        sys.modules["alpaca.trading"] = alpaca_trading_mod
+    alpaca_mod.trading = alpaca_trading_mod  # type: ignore[attr-defined]
+
+    alpaca_trading_client = sys.modules.get("alpaca.trading.client")
+    if alpaca_trading_client is None or not isinstance(alpaca_trading_client, types.ModuleType):
+        alpaca_trading_client = types.ModuleType("alpaca.trading.client")
+        sys.modules["alpaca.trading.client"] = alpaca_trading_client
+    alpaca_trading_mod.client = alpaca_trading_client  # type: ignore[attr-defined]
+    if not hasattr(alpaca_trading_client, "TradingClient"):
+        alpaca_trading_client.TradingClient = MagicMock()
+    alpaca_trading_mod.TradingClient = alpaca_trading_client.TradingClient
+
+    alpaca_trading_requests = sys.modules.get("alpaca.trading.requests")
+    if alpaca_trading_requests is None or not isinstance(alpaca_trading_requests, types.ModuleType):
+        alpaca_trading_requests = types.ModuleType("alpaca.trading.requests")
+        sys.modules["alpaca.trading.requests"] = alpaca_trading_requests
+    alpaca_trading_mod.requests = alpaca_trading_requests  # type: ignore[attr-defined]
+    if not hasattr(alpaca_trading_requests, "MarketOrderRequest"):
+        alpaca_trading_requests.MarketOrderRequest = MagicMock()
+    if not hasattr(alpaca_trading_requests, "LimitOrderRequest"):
+        alpaca_trading_requests.LimitOrderRequest = MagicMock()
+    if not hasattr(alpaca_trading_requests, "GetOrdersRequest"):
+        alpaca_trading_requests.GetOrdersRequest = MagicMock()
+    alpaca_trading_mod.MarketOrderRequest = alpaca_trading_requests.MarketOrderRequest
+    alpaca_trading_mod.LimitOrderRequest = alpaca_trading_requests.LimitOrderRequest
+    alpaca_trading_mod.GetOrdersRequest = alpaca_trading_requests.GetOrdersRequest
+
+    alpaca_trading_enums = sys.modules.get("alpaca.trading.enums")
+    if alpaca_trading_enums is None or not isinstance(alpaca_trading_enums, types.ModuleType):
+        alpaca_trading_enums = types.ModuleType("alpaca.trading.enums")
+        sys.modules["alpaca.trading.enums"] = alpaca_trading_enums
+    alpaca_trading_mod.enums = alpaca_trading_enums  # type: ignore[attr-defined]
+
+    order_side = getattr(alpaca_trading_enums, "OrderSide", None)
+    if order_side is None:
+        order_side = types.SimpleNamespace(BUY=_enum_value("buy"), SELL=_enum_value("sell"))
+        alpaca_trading_enums.OrderSide = order_side
+    else:
+        _ensure_enum_value(order_side, "BUY", "buy")
+        _ensure_enum_value(order_side, "SELL", "sell")
+
+    time_in_force = getattr(alpaca_trading_enums, "TimeInForce", None)
+    if time_in_force is None:
+        time_in_force = types.SimpleNamespace(
+            DAY=_enum_value("day"),
+            GTC=_enum_value("gtc"),
+            IOC=_enum_value("ioc"),
+        )
+        alpaca_trading_enums.TimeInForce = time_in_force
+    else:
+        _ensure_enum_value(time_in_force, "DAY", "day")
+        _ensure_enum_value(time_in_force, "GTC", "gtc")
+        _ensure_enum_value(time_in_force, "IOC", "ioc")
+
+    query_order_status = getattr(alpaca_trading_enums, "QueryOrderStatus", None)
+    if query_order_status is None:
+        query_order_status = types.SimpleNamespace(
+            OPEN=_enum_value("open"),
+            CLOSED=_enum_value("closed"),
+        )
+        alpaca_trading_enums.QueryOrderStatus = query_order_status
+    else:
+        _ensure_enum_value(query_order_status, "OPEN", "open")
+        _ensure_enum_value(query_order_status, "CLOSED", "closed")
+
+    if not hasattr(alpaca_trading_mod, "Order"):
+        alpaca_trading_mod.Order = MagicMock()
+
+
 if "alpaca" not in sys.modules:
     alpaca_mod = types.ModuleType("alpaca")
     alpaca_common = types.ModuleType("alpaca.common")
@@ -235,6 +349,8 @@ else:
         alpaca_trading_requests.MarketOrderRequest = MagicMock()
     if not hasattr(alpaca_trading_requests, "LimitOrderRequest"):
         alpaca_trading_requests.LimitOrderRequest = MagicMock()
+
+_ensure_alpaca_test_stubs()
 
 sys.modules.setdefault("alpaca_trade_api", types.ModuleType("alpaca_trade_api"))
 alpaca_rest = sys.modules.setdefault(
@@ -392,6 +508,13 @@ def pytest_collection_modifyitems(config, items):
         if is_ci and os.getenv("RUN_EXTERNAL_TESTS", "0") not in ("1", "true", "TRUE", "yes", "YES"):
             if "external" in item.keywords or "network_required" in item.keywords:
                 item.add_marker(pytest.mark.skip(reason="External/network test skipped in CI"))
+
+
+def pytest_collectreport(report):
+    """Repair collection-time stubs/globals after legacy modules mutate sys.modules."""
+
+    _ensure_alpaca_test_stubs()
+    _restore_market_sim_early_exit_functions()
 
 
 def _module_available(module: str) -> bool:

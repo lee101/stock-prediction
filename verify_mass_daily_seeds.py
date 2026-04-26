@@ -1,27 +1,17 @@
 #!/usr/bin/env python3
 """Verify mass_daily results across all seeds and trade_penalty values."""
 
-import sys
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
 
-# Disable early exit
-import src.market_sim_early_exit as _mse
-_orig = _mse.evaluate_drawdown_vs_profit_early_exit
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(should_stop=False, progress_fraction=0.0,
-                                   total_return=0.0, max_drawdown=0.0)
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.evaluate_tail import (
     TradingPolicy, _infer_num_actions, _infer_arch, _infer_hidden_size, _slice_tail,
 )
-from torch.distributions import Categorical
 
 DATA = "pufferlib_market/data/crypto5_daily_val.bin"
 BASE = Path("pufferlib_market/checkpoints")
@@ -62,7 +52,8 @@ def load_and_eval(ckpt_path, data, periods_dict, device="cpu"):
         tail = _slice_tail(data, steps=steps)
         sim = simulate_daily_policy(tail, policy_fn, max_steps=steps,
                                      fee_rate=0.001, fill_buffer_bps=8.0,
-                                     max_leverage=1.0, periods_per_year=365.0)
+                                     max_leverage=1.0, periods_per_year=365.0,
+                                     enable_drawdown_profit_early_exit=False)
         ann = annualize_total_return(float(sim.total_return), periods=float(steps),
                                       periods_per_year=365.0)
         results[pname] = {
@@ -102,7 +93,10 @@ def main():
     # Sort by 120d Sortino
     results_120d.sort(key=lambda x: x[1].get("120d", {}).get("sortino", -999), reverse=True)
 
-    print(f"{'Name':<25} {'60d Ret%':>9} {'90d Ret%':>9} {'120d Ret%':>10} {'120d Sort':>10} {'120d DD%':>9} {'180d Ret%':>10}")
+    print(
+        f"{'Name':<25} {'60d Ret%':>9} {'90d Ret%':>9} {'120d Ret%':>10} "
+        f"{'120d Sort':>10} {'120d DD%':>9} {'180d Ret%':>10}"
+    )
     print("-" * 95)
     for name, r in results_120d:
         r60 = r.get("60d", {})

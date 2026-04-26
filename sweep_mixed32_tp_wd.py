@@ -35,15 +35,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# Disable early exit before importing simulate_daily_policy
-import src.market_sim_early_exit as _mse
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(
-        should_stop=False, progress_fraction=0.0,
-        total_return=0.0, max_drawdown=0.0,
-    )
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.evaluate_tail import (
     TradingPolicy, _infer_num_actions, _infer_arch, _infer_hidden_size,
@@ -241,6 +232,7 @@ def load_and_eval(ckpt_path: str, data: MktdData, periods_dict: dict, device: st
             tail, policy_fn, max_steps=steps,
             fee_rate=0.001, fill_buffer_bps=8.0,
             max_leverage=1.0, periods_per_year=365.0,
+            enable_drawdown_profit_early_exit=False,
         )
         results[pname] = {
             "return_pct": sim.total_return * 100,

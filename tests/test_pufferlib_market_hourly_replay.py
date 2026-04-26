@@ -533,7 +533,11 @@ def test_simulate_daily_policy_prints_early_exit_when_drawdown_exceeds_profit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     close = np.asarray(
-        [100.0, 104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 120.0, 108.0, 96.0, 84.0, 72.0, 60.0, 58.0, 56.0, 54.0, 52.0, 50.0, 48.0],
+        [
+            100.0, 104.0, 108.0, 112.0, 116.0, 120.0, 124.0,
+            128.0, 132.0, 120.0, 108.0, 96.0, 84.0, 72.0,
+            60.0, 58.0, 56.0, 54.0, 52.0, 50.0, 48.0,
+        ],
         dtype=np.float32,
     )
     data = _single_symbol_daily_data(close)
@@ -556,7 +560,11 @@ def test_simulate_daily_policy_can_early_exit_on_max_drawdown_threshold(
 ) -> None:
     data = _single_symbol_daily_data(
         np.asarray(
-            [100.0, 108.0, 116.0, 124.0, 132.0, 140.0, 138.0, 126.0, 114.0, 102.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 78.0, 76.0, 74.0, 72.0, 70.0],
+            [
+                100.0, 108.0, 116.0, 124.0, 132.0, 140.0, 138.0,
+                126.0, 114.0, 102.0, 90.0, 88.0, 86.0, 84.0,
+                82.0, 80.0, 78.0, 76.0, 74.0, 72.0, 70.0,
+            ],
             dtype=np.float32,
         )
     )
@@ -580,12 +588,49 @@ def test_simulate_daily_policy_can_early_exit_on_max_drawdown_threshold(
     assert "max drawdown" in capsys.readouterr().out.lower()
 
 
+def test_simulate_daily_policy_can_disable_metric_threshold_early_exit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = _single_symbol_daily_data(
+        np.asarray(
+            [
+                100.0, 108.0, 116.0, 124.0, 132.0, 140.0, 138.0,
+                126.0, 114.0, 102.0, 90.0, 88.0, 86.0, 84.0,
+                82.0, 80.0, 78.0, 76.0, 74.0, 72.0, 70.0,
+            ],
+            dtype=np.float32,
+        )
+    )
+
+    result = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=20,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+        enable_drawdown_profit_early_exit=False,
+        enable_metric_threshold_early_exit=False,
+        early_exit_max_drawdown=0.20,
+        drawdown_profit_early_exit_min_steps=6,
+        drawdown_profit_early_exit_progress_fraction=0.5,
+    )
+
+    assert result.stopped_early is False
+    assert result.evaluated_steps == 20
+    assert "early stopping" not in capsys.readouterr().out.lower()
+
+
 def test_simulate_daily_policy_can_early_exit_on_running_sortino_threshold(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     data = _single_symbol_daily_data(
         np.asarray(
-            [100.0, 102.0, 99.0, 101.0, 98.0, 100.0, 97.0, 99.0, 96.0, 98.0, 95.0, 97.0, 94.0, 96.0, 93.0, 95.0, 92.0, 94.0, 91.0, 93.0, 90.0],
+            [
+                100.0, 102.0, 99.0, 101.0, 98.0, 100.0, 97.0,
+                99.0, 96.0, 98.0, 95.0, 97.0, 94.0, 96.0,
+                93.0, 95.0, 92.0, 94.0, 91.0, 93.0, 90.0,
+            ],
             dtype=np.float32,
         )
     )
@@ -612,7 +657,6 @@ def test_simulate_daily_policy_can_early_exit_on_running_sortino_threshold(
 def test_read_mktd_wide_universe(tmp_path):
     """read_mktd must accept num_symbols up to 1024 (regression for >64 limit)."""
     import struct
-    from pathlib import Path
     from pufferlib_market.hourly_replay import read_mktd
 
     # Build a minimal valid MKTD binary with 73 symbols (wide73 use case).

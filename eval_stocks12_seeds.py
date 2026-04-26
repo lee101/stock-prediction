@@ -15,16 +15,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-
-import src.market_sim_early_exit as _mse
-def _no_early_exit(*a, **k):
-    return _mse.EarlyExitDecision(False, 0.0, 0.0, 0.0)
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
-from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
-from pufferlib_market.evaluate_holdout import _slice_window, TradingPolicy, _infer_arch, _infer_hidden_size, _infer_num_actions
-
 import torch
+
+from pufferlib_market.evaluate_holdout import (
+    TradingPolicy,
+    _infer_arch,
+    _infer_hidden_size,
+    _infer_num_actions,
+    _slice_window,
+)
+from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
 
 
 def eval_checkpoint(ckpt_path: Path, data, n_windows=50, eval_steps=90, seed=42, fee=0.001, fill_bps=5.0) -> dict:
@@ -106,7 +106,10 @@ def main():
             res = eval_checkpoint(ckpt, data, n_windows=args.n_windows, eval_steps=args.eval_steps)
             results.append({**res, "name": d.name})
             neg_str = "✓ 0/50 neg" if res["neg"] == 0 else f"✗ {res['neg']}/50 neg"
-            print(f"  {d.name:30s} med={res['med']:+.1f}%  p10={res['p10']:+.1f}%  worst={res['worst']:+.1f}%  {neg_str}")
+            print(
+                f"  {d.name:30s} med={res['med']:+.1f}%  p10={res['p10']:+.1f}%  "
+                f"worst={res['worst']:+.1f}%  {neg_str}"
+            )
         except Exception as e:
             print(f"  {d.name}: ERROR {e}")
 

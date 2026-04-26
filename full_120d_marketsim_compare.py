@@ -5,28 +5,18 @@ Runs each checkpoint on its matching val data with no early exit.
 Uses the pure-Python market simulator (simulate_daily_policy) for realistic PnL.
 """
 
-import sys
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 
-# Disable early exit by monkey-patching
-import src.market_sim_early_exit as _mse
-_orig = _mse.evaluate_drawdown_vs_profit_early_exit
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(should_stop=False, progress_fraction=0.0,
-                                   total_return=0.0, max_drawdown=0.0)
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
-from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
+from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.evaluate_tail import (
     TradingPolicy, ResidualTradingPolicy,
     _infer_num_actions, _infer_arch, _infer_hidden_size,
-    _infer_resmlp_blocks, _mask_all_shorts, _slice_tail,
+    _infer_resmlp_blocks, _slice_tail,
 )
 
 
@@ -67,7 +57,7 @@ def run_backtest(name, ckpt_path, data_path, periods, fee_rate=0.001, fill_buffe
     nsym = data.num_symbols
 
     try:
-        policy, num_actions = load_policy(ckpt_path, nsym, device)
+        policy, _num_actions = load_policy(ckpt_path, nsym, device)
     except Exception as e:
         return {p: {"error": str(e)} for p in periods}
 
@@ -84,6 +74,7 @@ def run_backtest(name, ckpt_path, data_path, periods, fee_rate=0.001, fill_buffe
             tail, policy_fn, max_steps=steps,
             fee_rate=fee_rate, fill_buffer_bps=fill_buffer_bps,
             max_leverage=1.0, periods_per_year=periods_per_year,
+            enable_drawdown_profit_early_exit=False,
         )
 
         ann = annualize_total_return(float(sim.total_return), periods=float(steps),
@@ -173,7 +164,10 @@ def main():
     print(f"\n{'='*110}")
     print(f"120-DAY PNL COMPARISON (deterministic tail slice)")
     print(f"{'='*110}")
-    print(f"{'Name':<35} {'Return%':>9} {'Annual%':>9} {'Sortino':>8} {'MaxDD%':>7} {'Trades':>7} {'WR':>7} {'Hold':>6}")
+    print(
+        f"{'Name':<35} {'Return%':>9} {'Annual%':>9} {'Sortino':>8} {'MaxDD%':>7} "
+        f"{'Trades':>7} {'WR':>7} {'Hold':>6}"
+    )
     print(f"{'-'*35} {'-'*9} {'-'*9} {'-'*8} {'-'*7} {'-'*7} {'-'*7} {'-'*6}")
 
     items = []

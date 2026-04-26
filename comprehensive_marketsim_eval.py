@@ -23,23 +23,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# ---------------------------------------------------------------------------
-# Monkey-patch early exit so we never stop mid-simulation
-# ---------------------------------------------------------------------------
-import src.market_sim_early_exit as _mse
-
-
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(
-        should_stop=False,
-        progress_fraction=0.0,
-        total_return=0.0,
-        max_drawdown=0.0,
-    )
-
-
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.evaluate_tail import (
@@ -255,6 +238,7 @@ def evaluate_checkpoint_period(
         fill_buffer_bps=FILL_BUFFER_BPS,
         max_leverage=MAX_LEVERAGE,
         periods_per_year=PERIODS_PER_YEAR,
+        enable_drawdown_profit_early_exit=False,
     )
 
     annualized = annualize_total_return(
@@ -498,7 +482,10 @@ def main():
     period_rows.sort(key=lambda r: r.sortino, reverse=True)
 
     # Header
-    fmt = "{rank:>4}  {name:<50} {universe:<12} {period:>4}  {ret:>8}  {ann:>8}  {sortino:>8}  {dd:>7}  {trades:>6}  {wr:>5}  {hold:>5}"
+    fmt = (
+        "{rank:>4}  {name:<50} {universe:<12} {period:>4}  {ret:>8}  {ann:>8}  "
+        "{sortino:>8}  {dd:>7}  {trades:>6}  {wr:>5}  {hold:>5}"
+    )
     print(fmt.format(
         rank="Rank",
         name="Checkpoint",

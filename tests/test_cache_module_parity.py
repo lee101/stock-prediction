@@ -1,7 +1,23 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 import sys
+from pathlib import Path
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def test_cache_root_shims_are_not_gitignored():
+    for path in ("cache.py", "cache_utils.py"):
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", path],
+            cwd=REPO,
+            check=False,
+        )
+
+        assert result.returncode == 1
 
 
 def test_cache_root_module_aliases_src_module():

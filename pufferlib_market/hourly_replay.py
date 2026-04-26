@@ -332,7 +332,13 @@ def _action_level_offset_bps(*, level_idx: int, level_bins: int, max_offset_bps:
     return (2.0 * frac - 1.0) * max_bps
 
 
-def _open_long(cash: float, sym: int, price: float, fee_rate: float, max_leverage: float) -> tuple[float, Optional[Position]]:
+def _open_long(
+    cash: float,
+    sym: int,
+    price: float,
+    fee_rate: float,
+    max_leverage: float,
+) -> tuple[float, Optional[Position]]:
     if price <= 0.0 or cash <= 0.0:
         return float(cash), None
     buy_budget = cash * max_leverage
@@ -342,7 +348,13 @@ def _open_long(cash: float, sym: int, price: float, fee_rate: float, max_leverag
     return float(cash), Position(sym=sym, is_short=False, qty=float(qty), entry_price=float(price))
 
 
-def _open_short(cash: float, sym: int, price: float, fee_rate: float, max_leverage: float) -> tuple[float, Optional[Position]]:
+def _open_short(
+    cash: float,
+    sym: int,
+    price: float,
+    fee_rate: float,
+    max_leverage: float,
+) -> tuple[float, Optional[Position]]:
     if price <= 0.0 or cash <= 0.0:
         return float(cash), None
     sell_budget = cash * max_leverage
@@ -599,6 +611,7 @@ def simulate_daily_policy(
     max_hold_bars: int = 0,
     min_notional_usd: float = 0.0,
     enable_drawdown_profit_early_exit: bool = True,
+    enable_metric_threshold_early_exit: bool = True,
     drawdown_profit_early_exit_verbose: bool = True,
     drawdown_profit_early_exit_min_steps: int = 20,
     drawdown_profit_early_exit_progress_fraction: float = 0.5,
@@ -842,7 +855,7 @@ def simulate_daily_policy(
             equity_after = float(cash)
         else:
             price_new = float(data.prices[t_new, pos.sym, P_CLOSE])
-            cash, borrow_fee = _apply_short_borrow_cost(
+            cash, _borrow_fee = _apply_short_borrow_cost(
                 cash=cash,
                 pos=pos,
                 price=price_new,
@@ -934,19 +947,20 @@ def simulate_daily_policy(
                     print_early_exit(drawdown_profit_exit)
                 early_exit = drawdown_profit_exit
 
-        metric_threshold_exit = evaluate_metric_threshold_early_exit(
-            equity_history,
-            total_steps=max_steps + 1,
-            label="pufferlib_market.simulate_daily_policy",
-            periods_per_year=periods_per_year,
-            max_drawdown_limit=early_exit_max_drawdown,
-            min_sortino_limit=early_exit_min_sortino,
-            min_total_steps=drawdown_profit_early_exit_min_steps,
-            progress_fraction=drawdown_profit_early_exit_progress_fraction,
-        )
-        if metric_threshold_exit.should_stop:
-            print_early_exit(metric_threshold_exit)
-            early_exit = metric_threshold_exit
+        if enable_metric_threshold_early_exit:
+            metric_threshold_exit = evaluate_metric_threshold_early_exit(
+                equity_history,
+                total_steps=max_steps + 1,
+                label="pufferlib_market.simulate_daily_policy",
+                periods_per_year=periods_per_year,
+                max_drawdown_limit=early_exit_max_drawdown,
+                min_sortino_limit=early_exit_min_sortino,
+                min_total_steps=drawdown_profit_early_exit_min_steps,
+                progress_fraction=drawdown_profit_early_exit_progress_fraction,
+            )
+            if metric_threshold_exit.should_stop:
+                print_early_exit(metric_threshold_exit)
+                early_exit = metric_threshold_exit
 
         done = (
             (early_exit is not None and early_exit.should_stop)

@@ -26,33 +26,18 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-# ---------------------------------------------------------------------------
-# Monkey-patch early exit so we never stop mid-simulation
-# ---------------------------------------------------------------------------
-import src.market_sim_early_exit as _mse
-
-
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(
-        should_stop=False,
-        progress_fraction=0.0,
-        total_return=0.0,
-        max_drawdown=0.0,
-    )
-
-
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.evaluate_tail import (
     TradingPolicy,
     ResidualTradingPolicy,
     _infer_num_actions,
+    _slice_tail,
+)
+from pufferlib_market.evaluate_holdout import (
     _infer_arch,
     _infer_hidden_size,
     _infer_resmlp_blocks,
-    _slice_tail,
 )
 
 # ---------------------------------------------------------------------------
@@ -242,7 +227,12 @@ def try_compile_policy(policy: nn.Module) -> nn.Module:
     try:
         compiled = torch.compile(policy, mode="reduce-overhead")
         # Warmup with a dummy forward pass to trigger compilation
-        dummy = torch.zeros(1, policy.encoder[0].in_features if hasattr(policy, 'encoder') else policy.input_proj.in_features)
+        input_dim = (
+            policy.encoder[0].in_features
+            if hasattr(policy, "encoder")
+            else policy.input_proj.in_features
+        )
+        dummy = torch.zeros(1, input_dim)
         with torch.inference_mode():
             compiled(dummy)
         return compiled
@@ -380,6 +370,7 @@ def _eval_all_periods(
             trailing_stop_pct=trailing_stop_pct,
             max_hold_bars=max_hold_bars,
             min_notional_usd=min_notional_usd,
+            enable_drawdown_profit_early_exit=False,
         )
         results.append(_format_sim_result(sim_result, ckpt_name, universe, period_days, periods_per_year))
     return results
@@ -400,14 +391,8 @@ def evaluate_single_checkpoint(
 ) -> list[dict]:
     """Evaluate a single checkpoint across all periods. Designed for use in worker processes.
 
-    Each worker re-applies the early-exit monkey-patch and loads its own data,
-    since subprocess state is not shared with the parent.
+    Each worker loads its own data since subprocess state is not shared with the parent.
     """
-    # Re-apply monkey-patch in subprocess
-    import src.market_sim_early_exit as _mse_local
-    _mse_local.evaluate_drawdown_vs_profit_early_exit = lambda *a, **k: _mse_local.EarlyExitDecision(
-        should_stop=False, progress_fraction=0.0, total_return=0.0, max_drawdown=0.0)
-
     device = torch.device("cpu")
     path = Path(ckpt_path)
 
@@ -809,7 +794,11 @@ def main():
     print(f"Compile: {use_compile}")
     print(f"Parallel: {parallel}")
     print(f"Fee: {FEE_RATE*10000:.0f}bps + {SLIPPAGE_BPS:.1f}bps slippage")
-    print(f"Trailing stop: {TRAILING_STOP_PCT*100:.2f}%  Max hold: {MAX_HOLD_BARS} bars  Min notional: ${MIN_NOTIONAL_USD:.0f}")
+    print(
+        f"Trailing stop: {TRAILING_STOP_PCT*100:.2f}%  "
+        f"Max hold: {MAX_HOLD_BARS} bars  "
+        f"Min notional: ${MIN_NOTIONAL_USD:.0f}"
+    )
     print()
 
     t_start = time.time()

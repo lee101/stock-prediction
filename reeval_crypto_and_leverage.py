@@ -35,21 +35,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# Disable early exit so we get full-period results
-import src.market_sim_early_exit as _mse
-
-
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(
-        should_stop=False,
-        progress_fraction=0.0,
-        total_return=0.0,
-        max_drawdown=0.0,
-    )
-
-
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy, MktdData
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.evaluate_multiperiod import load_policy, make_policy_fn
@@ -122,6 +107,7 @@ def _sim_and_summarize(
         fill_buffer_bps=FILL_BUFFER_BPS,
         max_leverage=max_leverage,
         periods_per_year=PERIODS_PER_YEAR,
+        enable_drawdown_profit_early_exit=False,
     )
     ann = annualize_total_return(
         float(sim.total_return),

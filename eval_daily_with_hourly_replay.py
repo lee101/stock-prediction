@@ -20,22 +20,6 @@ import json
 import sys
 from pathlib import Path
 
-# --- Monkey-patch early exit BEFORE importing anything that uses it ---
-import src.market_sim_early_exit as _mse
-
-
-def _no_early_exit(*args, **kwargs):
-    return _mse.EarlyExitDecision(
-        should_stop=False,
-        progress_fraction=0.0,
-        total_return=0.0,
-        max_drawdown=0.0,
-    )
-
-
-_mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-_mse.evaluate_metric_threshold_early_exit = _no_early_exit
-
 import numpy as np
 import pandas as pd
 import torch
@@ -127,6 +111,8 @@ def evaluate_checkpoint_daily_and_hourly(
         fill_buffer_bps=FILL_BUFFER_BPS,
         max_leverage=MAX_LEVERAGE,
         periods_per_year=DAILY_PERIODS_PER_YEAR,
+        enable_drawdown_profit_early_exit=False,
+        enable_metric_threshold_early_exit=False,
     )
 
     daily_ann = annualize_total_return(

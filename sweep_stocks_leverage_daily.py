@@ -229,14 +229,6 @@ def run_market_sim(config: SweepConfig, checkpoint_dir: str, periods: dict[str, 
     if ckpt_path is None:
         return {"error": "no checkpoint"}
 
-    # Disable early exit
-    import src.market_sim_early_exit as _mse
-    _orig = _mse.evaluate_drawdown_vs_profit_early_exit
-    def _no_early_exit(*args, **kwargs):
-        return _mse.EarlyExitDecision(should_stop=False, progress_fraction=0.0,
-                                       total_return=0.0, max_drawdown=0.0)
-    _mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
     try:
         import numpy as np
         import torch
@@ -275,6 +267,7 @@ def run_market_sim(config: SweepConfig, checkpoint_dir: str, periods: dict[str, 
                 tail, policy_fn, max_steps=steps,
                 fee_rate=FEE_RATE, fill_buffer_bps=FILL_SLIPPAGE_BPS_EVAL,
                 max_leverage=config.leverage, periods_per_year=PERIODS_PER_YEAR,
+                enable_drawdown_profit_early_exit=False,
             )
             ann = annualize_total_return(
                 float(sim.total_return), periods=float(steps),
@@ -291,8 +284,6 @@ def run_market_sim(config: SweepConfig, checkpoint_dir: str, periods: dict[str, 
         return results
     except Exception as e:
         return {"error": str(e)}
-    finally:
-        _mse.evaluate_drawdown_vs_profit_early_exit = _orig
 
 
 def main():

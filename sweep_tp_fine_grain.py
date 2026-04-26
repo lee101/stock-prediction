@@ -305,6 +305,7 @@ def run_market_sim_eval(tp: float, seed: int, data, sim_deps) -> dict:
                 tail, policy_fn, max_steps=steps,
                 fee_rate=FEE_RATE, fill_buffer_bps=FILL_BUFFER_BPS,
                 max_leverage=MAX_LEVERAGE, periods_per_year=PERIODS_PER_YEAR,
+                enable_drawdown_profit_early_exit=False,
             )
             ann = annualize_total_return(
                 float(sim.total_return), periods=float(steps),
@@ -462,16 +463,6 @@ def main():
     CKPT_ROOT.mkdir(parents=True, exist_ok=True)
 
     # Pre-load market sim dependencies once (avoid repeated data reads)
-    import src.market_sim_early_exit as _mse
-    _orig_early_exit = _mse.evaluate_drawdown_vs_profit_early_exit
-
-    def _no_early_exit(*args, **kwargs):
-        return _mse.EarlyExitDecision(
-            should_stop=False, progress_fraction=0.0,
-            total_return=0.0, max_drawdown=0.0,
-        )
-    _mse.evaluate_drawdown_vs_profit_early_exit = _no_early_exit
-
     from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
     from pufferlib_market.metrics import annualize_total_return
     from pufferlib_market.evaluate_tail import (
@@ -531,9 +522,6 @@ def main():
         row.update(eval_result)
         row.update({k: v for k, v in sim_result.items() if k != "error" or "error" not in row})
         append_leaderboard(row)
-
-    # Restore early exit
-    _mse.evaluate_drawdown_vs_profit_early_exit = _orig_early_exit
 
     # Final reports
     print_leaderboard()

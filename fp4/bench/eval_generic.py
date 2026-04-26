@@ -29,7 +29,6 @@ ground truth per ``CLAUDE.md``.
 """
 from __future__ import annotations
 
-import math
 import struct
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -82,7 +81,7 @@ def _infer_dims(sd: Dict[str, Any]) -> Tuple[int, int, int]:
     shapes = _linear_shapes(sd)
     if not shapes:
         raise ValueError("state_dict contains no 2-D Linear weights")
-    first_key, (hidden, obs_dim) = shapes[0]
+    _first_key, (hidden, obs_dim) = shapes[0]
     act_dim: int | None = None
     for key, (out, _in) in shapes:
         lk = key.lower()
@@ -107,7 +106,6 @@ def _build_compatible_policy(sd: Dict[str, Any], obs_dim: int, act_dim: int, hid
     import torch
     from torch import nn
 
-    shapes = _linear_shapes(sd)
     # Trunk = every Linear that doesn't look like an actor/critic head; but to
     # keep this robust against adapters we *only* hard-wire a 2-layer tanh
     # trunk (obs_dim -> hidden -> hidden) + a policy head (hidden -> act_dim).
@@ -166,13 +164,15 @@ def _summarise_windows(returns: List[float], sortinos: List[float], maxdds: List
     if not returns:
         return {"error": "no windows completed"}
     arr = np.asarray(returns, dtype=np.float64)
+    dd_arr = np.abs(np.asarray(maxdds, dtype=np.float64)) if maxdds else np.asarray([], dtype=np.float64)
     return {
         "p10_return": float(np.percentile(arr, 10)),
         "median_return": float(np.percentile(arr, 50)),
         "p90_return": float(np.percentile(arr, 90)),
         "mean_return": float(arr.mean()),
         "sortino": float(np.median(sortinos)) if sortinos else 0.0,
-        "max_drawdown": float(np.median(maxdds)) if maxdds else 0.0,
+        "max_drawdown": float(np.median(dd_arr)) if dd_arr.size else 0.0,
+        "worst_max_drawdown": float(np.max(dd_arr)) if dd_arr.size else 0.0,
         "n_neg": int(int(np.sum(arr < 0.0))),
         "n_windows": int(arr.size),
     }
@@ -379,7 +379,6 @@ def _same_backend_eval(
         return {"status": "skip", "reason": f"same-backend make_env failed: {exc}"}
 
     real_obs_dim = int(handle.obs_dim)
-    real_act_dim = int(handle.action_dim)
     if real_obs_dim != obs_dim:
         return {
             "status": "skip",
@@ -511,7 +510,6 @@ def _same_backend_eval(
     if (recorder is not None and video_out_dir is not None
             and failed_fast_reason is None):
         try:
-            from fp4.fp4.replay_recorder import trajectory_to_marketsim_trace
             from fp4.bench.render_replay import render_videos
             traj = recorder.trajectory()
             video_out_dir.mkdir(parents=True, exist_ok=True)
