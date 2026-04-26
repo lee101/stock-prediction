@@ -1,20 +1,28 @@
 """Tests for trade_crypto30_daily.py"""
-import json
+
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 import pandas as pd
 import pytest
-from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from trade_crypto30_daily import (
-    SYMBOLS_30, INTERNAL_SYMBOLS, to_binance_symbol,
-    PortfolioState, load_state, save_state, execute_binance_order,
-    Crypto30Ensemble, fetch_daily_klines,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import trade_crypto30_daily as crypto30_mod
 from pufferlib_market.inference import TradingSignal
+from trade_crypto30_daily import (
+    INTERNAL_SYMBOLS,
+    SYMBOLS_30,
+    Crypto30Ensemble,
+    PortfolioState,
+    execute_binance_order,
+    load_state,
+    save_state,
+    to_binance_symbol,
+)
 
 
 def test_symbol_count():
@@ -54,15 +62,20 @@ def test_portfolio_state_defaults():
 
 
 def test_state_persistence(tmp_path):
-    import trade_crypto30_daily as mod
-    orig_dir = mod.STATE_DIR
-    orig_file = mod.STATE_FILE
+    orig_dir = crypto30_mod.STATE_DIR
+    orig_file = crypto30_mod.STATE_FILE
     try:
-        mod.STATE_DIR = tmp_path
-        mod.STATE_FILE = tmp_path / "state.json"
-        state = PortfolioState(cash_usd=5000.0, position_symbol="BTCUSD",
-                               position_qty=0.1, entry_price=50000.0,
-                               hold_days=3, episode_step=10, total_value=10000.0)
+        crypto30_mod.STATE_DIR = tmp_path
+        crypto30_mod.STATE_FILE = tmp_path / "state.json"
+        state = PortfolioState(
+            cash_usd=5000.0,
+            position_symbol="BTCUSD",
+            position_qty=0.1,
+            entry_price=50000.0,
+            hold_days=3,
+            episode_step=10,
+            total_value=10000.0,
+        )
         save_state(state)
         loaded = load_state()
         assert loaded.cash_usd == 5000.0
@@ -71,13 +84,12 @@ def test_state_persistence(tmp_path):
         assert loaded.entry_price == 50000.0
         assert loaded.hold_days == 3
     finally:
-        mod.STATE_DIR = orig_dir
-        mod.STATE_FILE = orig_file
+        crypto30_mod.STATE_DIR = orig_dir
+        crypto30_mod.STATE_FILE = orig_file
 
 
 def test_execute_flat_closes_position():
-    state = PortfolioState(cash_usd=500.0, position_symbol="BTCUSD",
-                           position_qty=0.1, entry_price=50000.0, hold_days=5)
+    state = PortfolioState(cash_usd=500.0, position_symbol="BTCUSD", position_qty=0.1, entry_price=50000.0, hold_days=5)
     signal = TradingSignal("flat", None, None, 0.5, 1.0)
     prices = {"BTCUSD": 55000.0}
     execute_binance_order(signal, state, prices, dry_run=True)
@@ -98,8 +110,7 @@ def test_execute_buy_new_position():
 
 
 def test_execute_rotate_position():
-    state = PortfolioState(cash_usd=500.0, position_symbol="BTCUSD",
-                           position_qty=0.1, entry_price=50000.0, hold_days=3)
+    state = PortfolioState(cash_usd=500.0, position_symbol="BTCUSD", position_qty=0.1, entry_price=50000.0, hold_days=3)
     signal = TradingSignal("long_ETHUSD", "ETHUSD", "long", 0.4, 1.2)
     prices = {"BTCUSD": 55000.0, "ETHUSD": 2000.0}
     execute_binance_order(signal, state, prices, dry_run=True)
@@ -112,8 +123,7 @@ def test_execute_rotate_position():
 
 def test_execute_no_double_buy():
     """If already holding same symbol, do nothing."""
-    state = PortfolioState(cash_usd=500.0, position_symbol="ETHUSD",
-                           position_qty=4.0, entry_price=2000.0)
+    state = PortfolioState(cash_usd=500.0, position_symbol="ETHUSD", position_qty=4.0, entry_price=2000.0)
     signal = TradingSignal("long_ETHUSD", "ETHUSD", "long", 0.3, 1.0)
     prices = {"ETHUSD": 2100.0}
     execute_binance_order(signal, state, prices, dry_run=True)
@@ -139,21 +149,28 @@ def _make_ohlcv_df(n=90, base_price=100.0):
     dates = pd.date_range("2026-01-01", periods=n, freq="D", tz="UTC")
     np.random.seed(42)
     prices = base_price * np.exp(np.cumsum(np.random.randn(n) * 0.02))
-    return pd.DataFrame({
-        "open": prices * 0.99,
-        "high": prices * 1.02,
-        "low": prices * 0.98,
-        "close": prices,
-        "volume": np.random.uniform(1e6, 1e7, n),
-    }, index=dates)
+    return pd.DataFrame(
+        {
+            "open": prices * 0.99,
+            "high": prices * 1.02,
+            "low": prices * 0.98,
+            "close": prices,
+            "volume": np.random.uniform(1e6, 1e7, n),
+        },
+        index=dates,
+    )
+
+
+def _available_crypto30_checkpoints() -> list[str]:
+    checkpoints = [Path(f"pufferlib_market/checkpoints/crypto30_ensemble/s{s}.pt") for s in [2, 19, 21, 23]]
+    for checkpoint in checkpoints:
+        if not checkpoint.exists():
+            pytest.skip("checkpoints not available")
+    return [str(checkpoint) for checkpoint in checkpoints]
 
 
 def test_ensemble_init():
-    ckpts = [f"pufferlib_market/checkpoints/crypto30_ensemble/s{s}.pt"
-             for s in [2, 19, 21, 23]]
-    for c in ckpts:
-        if not os.path.exists(c):
-            pytest.skip("checkpoints not available")
+    ckpts = _available_crypto30_checkpoints()
     ensemble = Crypto30Ensemble(ckpts)
     assert len(ensemble.traders) == 4
     assert ensemble.num_symbols == 30
@@ -161,11 +178,7 @@ def test_ensemble_init():
 
 
 def test_ensemble_signal():
-    ckpts = [f"pufferlib_market/checkpoints/crypto30_ensemble/s{s}.pt"
-             for s in [2, 19, 21, 23]]
-    for c in ckpts:
-        if not os.path.exists(c):
-            pytest.skip("checkpoints not available")
+    ckpts = _available_crypto30_checkpoints()
     ensemble = Crypto30Ensemble(ckpts)
     daily_dfs = {}
     prices = {}
@@ -183,11 +196,7 @@ def test_ensemble_signal():
 
 
 def test_ensemble_shorts_masked():
-    ckpts = [f"pufferlib_market/checkpoints/crypto30_ensemble/s{s}.pt"
-             for s in [2, 19, 21, 23]]
-    for c in ckpts:
-        if not os.path.exists(c):
-            pytest.skip("checkpoints not available")
+    ckpts = _available_crypto30_checkpoints()
     ensemble = Crypto30Ensemble(ckpts)
     daily_dfs = {}
     prices = {}
@@ -201,11 +210,7 @@ def test_ensemble_shorts_masked():
 
 
 def test_observation_shape():
-    ckpts = [f"pufferlib_market/checkpoints/crypto30_ensemble/s{s}.pt"
-             for s in [2, 19, 21, 23]]
-    for c in ckpts:
-        if not os.path.exists(c):
-            pytest.skip("checkpoints not available")
+    ckpts = _available_crypto30_checkpoints()
     ensemble = Crypto30Ensemble(ckpts)
     fps = ensemble.features_per_sym
     expected_obs = 30 * fps + 5 + 30
