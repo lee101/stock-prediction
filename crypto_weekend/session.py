@@ -25,22 +25,20 @@ import os
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import pandas as pd
 
 # Module-level imports of alpaca-py so tests can patch them and inspect
 # constructor call args (the alpaca types are stubbed in tests/conftest.py).
-from alpaca.trading.enums import OrderSide, TimeInForce  # noqa: E402
-from alpaca.trading.requests import MarketOrderRequest  # noqa: E402
+from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import LimitOrderRequest
 
 # Re-export the pure signal logic from the standalone module so we don't
 # duplicate window-gating / signal math (and keep the 23-test suite valid).
-from crypto_weekend.live_trader import (  # noqa: E402
+from crypto_weekend.live_trader import (
     DUST_MARKET_VALUE_USD,
-    SMA_MULT,
     SYMBOLS,
-    VOL_CAP,
     compute_signal_from_df,
     in_hold_window,
     is_buy_trigger,
@@ -52,6 +50,7 @@ REPO = Path(__file__).resolve().parent.parent
 LOG_DIR = REPO / "analysis" / "crypto_weekend_live"
 
 DEFAULT_MAX_GROSS = 0.5
+DEFAULT_LIMIT_GUARD_BPS = 15.0
 
 
 def utc_now() -> datetime:
@@ -71,12 +70,48 @@ def log_event(event: str, **kwargs: Any) -> None:
     try:
         with _open_log_file(day).open("a") as f:
             f.write(line)
-    except Exception as exc:  # noqa: BLE001 — logging must never crash the loop
+    except Exception as exc:
         print(f"[crypto_session] log write failed: {exc}", flush=True)
     print(line.rstrip(), flush=True)
 
 
 # ---------- alpaca-py adapters ----------
+
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _active_crypto_data_credentials() -> tuple[str | None, str | None]:
+    """Return the Alpaca data credentials matching ALP_PAPER.
+
+    The embedded crypto sleeve runs inside the stock live process, so it
+    must follow the same paper/live env contract as xgbnew.live_trader.
+    """
+    paper = os.environ.get("ALP_PAPER", "1") != "0"
+    if paper:
+        return (
+            _first_env("APCA_API_KEY_ID", "ALP_KEY_ID_PAPER", "ALP_KEY_ID"),
+            _first_env(
+                "APCA_API_SECRET_KEY",
+                "ALP_SECRET_KEY_PAPER",
+                "ALP_SECRET_KEY",
+                "ALP_SECRET",
+            ),
+        )
+    return (
+        _first_env("APCA_API_KEY_ID", "ALP_KEY_ID_PROD", "ALP_KEY_ID"),
+        _first_env(
+            "APCA_API_SECRET_KEY",
+            "ALP_SECRET_KEY_PROD",
+            "ALP_SECRET_KEY",
+            "ALP_SECRET",
+        ),
+    )
+
 
 def _crypto_data_client():
     """Create a CryptoHistoricalDataClient using the same keys as the
@@ -84,9 +119,68 @@ def _crypto_data_client():
     for consistency / higher rate limits.
     """
     from alpaca.data.historical import CryptoHistoricalDataClient
-    key = os.environ.get("APCA_API_KEY_ID") or os.environ.get("ALP_KEY_ID")
-    sec = os.environ.get("APCA_API_SECRET_KEY") or os.environ.get("ALP_SECRET")
+    key, sec = _active_crypto_data_credentials()
     return CryptoHistoricalDataClient(api_key=key, secret_key=sec)
+
+
+def _extract_crypto_quote(raw: Any, slashed_symbol: str) -> Any:
+    if isinstance(raw, dict):
+        return (
+            raw.get(slashed_symbol)
+            or raw.get(slashed_symbol.replace("/", ""))
+            or raw.get(slashed_symbol.upper())
+            or raw.get(slashed_symbol.replace("/", "").upper())
+        )
+    return raw
+
+
+def _latest_crypto_bid_ask(symbol: str) -> tuple[float, float]:
+    """Return latest crypto (bid, ask), or (0, 0) when unavailable."""
+    from alpaca.data.requests import CryptoLatestQuoteRequest
+
+    slashed = _to_slashed(symbol)
+    client = _crypto_data_client()
+    req = CryptoLatestQuoteRequest(symbol_or_symbols=slashed)
+    quote = _extract_crypto_quote(client.get_crypto_latest_quote(req), slashed)
+    if quote is None:
+        return 0.0, 0.0
+    bid = float(getattr(quote, "bid_price", 0.0) or 0.0)
+    ask = float(getattr(quote, "ask_price", 0.0) or 0.0)
+    return bid, ask
+
+
+def _crypto_limit_price(
+    symbol: str,
+    side: OrderSide,
+    *,
+    fallback_price: float = 0.0,
+    guard_bps: float = DEFAULT_LIMIT_GUARD_BPS,
+) -> tuple[float, str]:
+    """Explicit price for crypto orders.
+
+    Buy limits are capped near the latest ask; sell limits rest near the
+    latest bid. If quote data is unavailable, use the caller-provided
+    reference/current price as a bounded fallback. Never return a market
+    order path.
+    """
+    bps = max(float(guard_bps or 0.0), 0.0) / 10_000.0
+    try:
+        bid, ask = _latest_crypto_bid_ask(symbol)
+    except Exception as exc:
+        log_event("quote_error", symbol=symbol, err=str(exc))
+        bid, ask = 0.0, 0.0
+
+    if side == OrderSide.BUY and ask > 0:
+        return round(ask * (1.0 + bps), 2), "ask"
+    if side == OrderSide.SELL and bid > 0:
+        return round(max(bid * (1.0 - bps), 0.000001), 2), "bid"
+
+    fallback = float(fallback_price or 0.0)
+    if fallback > 0:
+        if side == OrderSide.BUY:
+            return round(fallback * (1.0 + bps), 2), "fallback"
+        return round(max(fallback * (1.0 - bps), 0.000001), 2), "fallback"
+    return 0.0, "none"
 
 
 def fetch_daily_closes(symbol: str, n_days: int = 30) -> pd.DataFrame:
@@ -139,7 +233,7 @@ def evaluate_signals() -> list[dict]:
     for alpaca_sym, _compact, hist_sym in SYMBOLS:
         try:
             sig = compute_signal(hist_sym)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log_event("signal_error", symbol=alpaca_sym, err=str(exc),
                       trace=traceback.format_exc(limit=3))
             continue
@@ -156,7 +250,7 @@ def get_crypto_positions(trading_client, dust_threshold_usd: float = DUST_MARKET
     """Return only crypto positions we care about, excluding dust (<$5)."""
     try:
         positions = trading_client.get_all_positions()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log_event("positions_error", err=str(exc))
         return []
     our_syms = {normalize_symbol_for_match(s) for trio in SYMBOLS for s in trio[:2]}
@@ -175,6 +269,36 @@ def get_crypto_positions(trading_client, dust_threshold_usd: float = DUST_MARKET
     return ours
 
 
+def _load_crypto_positions_for_tick(trading_client) -> tuple[list[Any], bool]:
+    """Return (positions, ok) for the trading state machine.
+
+    The public ``get_crypto_positions`` helper returns [] on API errors for
+    legacy callers. The live trading tick must fail closed instead: after a
+    restart, treating a transient position-read failure as "flat" can submit
+    a duplicate Saturday buy.
+    """
+    try:
+        positions = trading_client.get_all_positions()
+    except Exception as exc:
+        log_event("positions_error", err=str(exc))
+        return [], False
+
+    our_syms = {normalize_symbol_for_match(s) for trio in SYMBOLS for s in trio[:2]}
+    ours = []
+    for pos in positions:
+        sym_norm = normalize_symbol_for_match(getattr(pos, "symbol", ""))
+        if sym_norm not in our_syms:
+            continue
+        try:
+            mv = abs(float(getattr(pos, "market_value", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            mv = 0.0
+        if mv < DUST_MARKET_VALUE_USD:
+            continue
+        ours.append(pos)
+    return ours, True
+
+
 def _to_slashed(symbol: str) -> str:
     """Alpaca trading API wants slashed crypto symbols (BTC/USD)."""
     s = symbol.upper()
@@ -186,7 +310,7 @@ def _to_slashed(symbol: str) -> str:
 
 
 def do_sell(trading_client, positions, dry_run: bool) -> int:
-    """Close each position via MarketOrder GTC."""
+    """Close each position via explicit-priced limit GTC."""
     if not positions:
         log_event("sell_skip_no_positions")
         return 0
@@ -200,23 +324,35 @@ def do_sell(trading_client, positions, dry_run: bool) -> int:
         # Close long → sell; close short → buy (we never go short crypto,
         # but defend against it).
         side = OrderSide.SELL if "long" in side_raw else OrderSide.BUY
+        fallback_price = float(getattr(pos, "current_price", 0.0) or 0.0)
+        limit_price, price_src = _crypto_limit_price(
+            sym,
+            side,
+            fallback_price=fallback_price,
+        )
+        if limit_price <= 0:
+            log_event("sell_skip_no_limit_price", symbol=sym, side=side.value)
+            continue
         log_event("sell_submit", symbol=sym, qty=qty, side=side.value,
+                  limit_price=limit_price, price_src=price_src,
                   dry_run=dry_run)
         if dry_run:
             closed += 1
             continue
         try:
-            req = MarketOrderRequest(
+            req = LimitOrderRequest(
                 symbol=_to_slashed(sym),
                 qty=qty,
                 side=side,
                 time_in_force=TimeInForce.GTC,
+                limit_price=limit_price,
             )
             order = trading_client.submit_order(order_data=req)
             log_event("sell_submitted", symbol=sym, qty=qty,
+                      limit_price=limit_price, price_src=price_src,
                       order_id=str(getattr(order, "id", "")))
             closed += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log_event("sell_error", symbol=sym, err=str(exc),
                       trace=traceback.format_exc(limit=3))
     return closed
@@ -233,7 +369,7 @@ def do_buy(trading_client, picks: list[dict], max_gross: float,
         equity = float(account.equity)
         cash = float(getattr(account, "cash", 0.0) or 0.0)
         buying_power = float(getattr(account, "buying_power", 0.0) or 0.0)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log_event("equity_error", err=str(exc))
         return 0
 
@@ -259,29 +395,41 @@ def do_buy(trading_client, picks: list[dict], max_gross: float,
         if ref_price <= 0:
             log_event("buy_skip_no_price", symbol=alpaca_sym)
             continue
-        qty = per_pick_gross / ref_price
+        limit_price, price_src = _crypto_limit_price(
+            alpaca_sym,
+            OrderSide.BUY,
+            fallback_price=ref_price,
+        )
+        if limit_price <= 0:
+            log_event("buy_skip_no_limit_price", symbol=alpaca_sym)
+            continue
+        qty = per_pick_gross / limit_price
         qty = round(qty, 6)
         if qty <= 0:
             log_event("buy_skip_zero_qty", symbol=alpaca_sym, qty=qty)
             continue
         log_event("buy_submit", symbol=alpaca_sym, qty=qty, price=ref_price,
+                  limit_price=limit_price, price_src=price_src,
                   notional=per_pick_gross, dry_run=dry_run)
         if dry_run:
             submitted += 1
             continue
         try:
-            req = MarketOrderRequest(
+            req = LimitOrderRequest(
                 symbol=_to_slashed(alpaca_sym),
                 qty=qty,
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.GTC,
+                limit_price=limit_price,
             )
             order = trading_client.submit_order(order_data=req)
             log_event("buy_submitted", symbol=alpaca_sym, qty=qty,
                       price=ref_price,
+                      limit_price=limit_price,
+                      price_src=price_src,
                       order_id=str(getattr(order, "id", "")))
             submitted += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log_event("buy_error", symbol=alpaca_sym, err=str(exc),
                       trace=traceback.format_exc(limit=3))
     return submitted
@@ -303,7 +451,7 @@ def run_crypto_tick(trading_client, *, max_gross: float = DEFAULT_MAX_GROSS,
     global _LAST_ACTION_DATE
     now = now or utc_now()
     today = now.strftime("%Y-%m-%d")
-    positions = get_crypto_positions(trading_client)
+    positions, positions_ok = _load_crypto_positions_for_tick(trading_client)
     n_positions = len(positions)
     sell_win = is_sell_trigger(now)
     buy_win = is_buy_trigger(now)
@@ -312,11 +460,14 @@ def run_crypto_tick(trading_client, *, max_gross: float = DEFAULT_MAX_GROSS,
         "ts": now.isoformat(), "n_positions": n_positions,
         "buy_win": buy_win, "sell_win": sell_win,
         "hold_win": in_hold_window(now),
+        "positions_ok": positions_ok,
         "last_action_date": _LAST_ACTION_DATE,
         "action": "none",
     }
 
-    if sell_win and n_positions > 0:
+    if not positions_ok:
+        status["action"] = "skip_positions_error"
+    elif sell_win and n_positions > 0:
         log_event("sell_trigger", n_positions=n_positions, now=str(now))
         do_sell(trading_client, positions, dry_run)
         _LAST_ACTION_DATE = today
@@ -327,6 +478,7 @@ def run_crypto_tick(trading_client, *, max_gross: float = DEFAULT_MAX_GROSS,
         do_buy(trading_client, picks, max_gross, dry_run)
         _LAST_ACTION_DATE = today
         status["action"] = "buy"
+    log_event("tick_status", **status)
     return status
 
 
