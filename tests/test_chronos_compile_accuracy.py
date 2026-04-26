@@ -41,6 +41,8 @@ from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("chronos_compile_test")
 
+pytestmark = [pytest.mark.slow, pytest.mark.model_required, pytest.mark.cuda_required]
+
 SYMBOLS: Tuple[str, ...] = ("BTCUSD", "ETHUSD")
 CONTEXT_LENGTH = 1024
 PREDICTION_LENGTH = 32
@@ -297,7 +299,8 @@ def _run_inference(symbol: str, compiled: bool) -> Dict[str, float | bool]:
                     except Exception as exc:
                         if torch.cuda.is_available() and _is_cuda_resource_pressure_error(exc):
                             pytest.skip(
-                                f"Chronos2 compile accuracy prediction skipped under shared-GPU resource pressure: {exc}"
+                                "Chronos2 compile accuracy prediction skipped "
+                                f"under shared-GPU resource pressure: {exc}"
                             )
                         raise
                     if torch.cuda.is_available():
@@ -321,7 +324,8 @@ def _run_inference(symbol: str, compiled: bool) -> Dict[str, float | bool]:
                     if compile_runtime_fallback:
                         if attempt < MAX_INFERENCE_ATTEMPTS - 1:
                             logger.warning(
-                                "Retrying Chronos compile accuracy inference for %s after compiled runtime fallback to eager mode.",
+                                "Retrying Chronos compile accuracy inference for %s "
+                                "after compiled runtime fallback to eager mode.",
                                 symbol,
                             )
                             last_exc = RuntimeError(
@@ -336,7 +340,8 @@ def _run_inference(symbol: str, compiled: bool) -> Dict[str, float | bool]:
                     transient_nonfinite = _is_transient_nonfinite_forecast_error(exc)
                     if transient_nonfinite and attempt < MAX_INFERENCE_ATTEMPTS - 1:
                         logger.warning(
-                            "Retrying Chronos compile accuracy inference for %s after transient non-finite forecasts (%s mode).",
+                            "Retrying Chronos compile accuracy inference for %s "
+                            "after transient non-finite forecasts (%s mode).",
                             symbol,
                             "compiled" if compiled else "eager",
                         )

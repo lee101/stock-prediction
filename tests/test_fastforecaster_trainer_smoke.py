@@ -5,10 +5,13 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from FastForecaster.config import FastForecasterConfig
 from FastForecaster.trainer import FastForecasterTrainer
+
+pytestmark = [pytest.mark.slow, pytest.mark.model_required]
 
 
 def _write_symbol_csv(path: Path, symbol: str, periods: int = 420) -> None:

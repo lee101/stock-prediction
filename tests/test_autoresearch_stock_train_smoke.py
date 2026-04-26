@@ -11,7 +11,11 @@ import pytest
 import torch
 
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="autoresearch trainer requires CUDA")
+pytestmark = [
+    pytest.mark.cuda_required,
+    pytest.mark.slow,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="autoresearch trainer requires CUDA"),
+]
 
 
 def _hourly_market_timestamps(count: int) -> list[pd.Timestamp]:

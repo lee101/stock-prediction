@@ -105,7 +105,12 @@ def test_fetch_stock_history_frames_uses_wide_enough_calendar_lookback(monkeypat
 
     monkeypatch.setattr(data_enums, "DataFeed", SimpleNamespace(IEX="iex"), raising=False)
     monkeypatch.setattr(data_timeframe, "TimeFrame", SimpleNamespace(Hour="hour"), raising=False)
-    monkeypatch.setattr(data_requests, "StockBarsRequest", lambda **kwargs: requests_seen.append(kwargs) or kwargs, raising=False)
+    monkeypatch.setattr(
+        data_requests,
+        "StockBarsRequest",
+        lambda **kwargs: requests_seen.append(kwargs) or kwargs,
+        raising=False,
+    )
 
     class _Client:
         def get_stock_bars(self, request):

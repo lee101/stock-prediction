@@ -41,6 +41,8 @@ from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("chronos2_compile_fuzzing")
 
+pytestmark = [pytest.mark.slow, pytest.mark.model_required, pytest.mark.cuda_required]
+
 # Test configuration
 CONTEXT_LENGTH = 128
 PREDICTION_LENGTH = 16
@@ -917,14 +919,26 @@ def test_extreme_data_robustness(device: str, scenario: str) -> None:
     data = _create_extreme_data(scenario=scenario)
     context = data.iloc[:-PREDICTION_LENGTH]
 
-    eager_success, eager_preds, eager_has_nan, eager_has_inf, eager_used_safe_backend = _run_robustness_mode(
+    (
+        eager_success,
+        eager_preds,
+        eager_has_nan,
+        eager_has_inf,
+        eager_used_safe_backend,
+    ) = _run_robustness_mode(
         device=device,
         context=context,
         scenario=scenario,
         compile_enabled=False,
     )
 
-    compiled_success, compiled_preds, compiled_has_nan, compiled_has_inf, compiled_used_safe_backend = _run_robustness_mode(
+    (
+        compiled_success,
+        compiled_preds,
+        compiled_has_nan,
+        compiled_has_inf,
+        compiled_used_safe_backend,
+    ) = _run_robustness_mode(
         device=device,
         context=context,
         scenario=scenario,

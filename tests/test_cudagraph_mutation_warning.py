@@ -6,6 +6,8 @@ import contextlib
 
 import pytest
 
+pytestmark = [pytest.mark.slow, pytest.mark.cuda_required]
+
 
 @pytest.fixture(name="require_cuda")
 def _require_cuda() -> None:

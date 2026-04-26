@@ -290,7 +290,7 @@ def test_tp_sell_cancels_old_sell_before_placing_new():
         open_orders=[old_sell],
     )
 
-    orders = execute_crypto_signals(signals, snapshot, dry_run=False, alpaca_client=client)
+    execute_crypto_signals(signals, snapshot, dry_run=False, alpaca_client=client)
 
     # Old sell should be canceled
     assert "old-tp-sell" in client.canceled_ids
@@ -338,7 +338,7 @@ def test_tp_sell_not_placed_when_sell_price_below_current():
         open_orders=[],
     )
 
-    orders = execute_crypto_signals(signals, snapshot, dry_run=False, alpaca_client=client)
+    execute_crypto_signals(signals, snapshot, dry_run=False, alpaca_client=client)
 
     sell_orders = [o for o in client.submitted_orders if getattr(o, 'side', None) == "sell"]
     assert len(sell_orders) == 0

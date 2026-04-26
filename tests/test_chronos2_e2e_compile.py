@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -17,6 +16,8 @@ from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("chronos2_e2e")
+
+pytestmark = [pytest.mark.slow, pytest.mark.model_required]
 
 
 def create_test_data(n_points: int = 128) -> pd.DataFrame:

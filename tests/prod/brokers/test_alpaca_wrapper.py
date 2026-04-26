@@ -78,6 +78,7 @@ alpaca_trading.client.TradingClient = MagicMock()
 alpaca_trading.enums.OrderSide = MagicMock()
 alpaca_trading.enums.TimeInForce = MagicMock()
 alpaca_trading.requests.MarketOrderRequest = MagicMock()
+alpaca_trading.requests.LimitOrderRequest = MagicMock()
 
 sys.modules["alpaca"] = alpaca
 sys.modules["alpaca.data"] = alpaca_data

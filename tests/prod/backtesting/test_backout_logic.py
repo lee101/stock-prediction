@@ -51,6 +51,14 @@ alpaca_trading.Order = object
 alpaca_trading.client = types.ModuleType("client")
 alpaca_trading.enums = types.ModuleType("enums")
 alpaca_trading.requests = types.ModuleType("requests")
+_ORDER_SIDE_STUB = types.SimpleNamespace(
+    BUY=types.SimpleNamespace(value='buy'),
+    SELL=types.SimpleNamespace(value='sell'),
+)
+_TIME_IN_FORCE_STUB = types.SimpleNamespace(
+    DAY=types.SimpleNamespace(value='day'),
+    GTC=types.SimpleNamespace(value='gtc'),
+)
 class DummyTradingClient:
     def __init__(self, *a, **k):
         self.orders = []
@@ -66,13 +74,15 @@ class DummyTradingClient:
         self.orders.append(order_data)
         return order_data
 alpaca_trading.client.TradingClient = DummyTradingClient
-alpaca_trading.enums.OrderSide = types.SimpleNamespace(BUY='buy', SELL='sell')
-alpaca_trading.enums.TimeInForce = types.SimpleNamespace(DAY='day', GTC='gtc')
+alpaca_trading.enums.OrderSide = _ORDER_SIDE_STUB
+alpaca_trading.enums.TimeInForce = _TIME_IN_FORCE_STUB
 alpaca_trading.requests.MarketOrderRequest = object
+alpaca_trading.requests.LimitOrderRequest = lambda **kw: kw
 sys.modules["alpaca.trading.client"].TradingClient = DummyTradingClient
-sys.modules["alpaca.trading.enums"].OrderSide = types.SimpleNamespace(BUY='buy', SELL='sell')
-sys.modules["alpaca.trading.enums"].TimeInForce = types.SimpleNamespace(DAY='day', GTC='gtc')
+sys.modules["alpaca.trading.enums"].OrderSide = _ORDER_SIDE_STUB
+sys.modules["alpaca.trading.enums"].TimeInForce = _TIME_IN_FORCE_STUB
 sys.modules["alpaca.trading.requests"].MarketOrderRequest = object
+sys.modules["alpaca.trading.requests"].LimitOrderRequest = lambda **kw: kw
 try:
     import typer as _typer_real  # noqa: F401 (ensure real typer is in sys.modules)
 except ImportError:

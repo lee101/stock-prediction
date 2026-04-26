@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -362,9 +363,13 @@ def test_artifacts_server_cache_handles_concurrent_misses(
             errors.append(exc)
 
     threads = [threading.Thread(target=_worker) for _ in range(2)]
-    for thread in threads:
-        thread.start()
+    threads[0].start()
     assert start_event.wait(timeout=2)
+    threads[1].start()
+    deadline = time.monotonic() + 2
+    while artifacts_server._listing_cache_stats()["waits"] != 1:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
     release_event.set()
     for thread in threads:
         thread.join(timeout=2)

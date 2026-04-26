@@ -572,7 +572,7 @@ class TestValidatePlanSafety:
     def test_no_prices_set_for_long_rejected(self):
         from unified_orchestrator.orchestrator import validate_plan_safety
         plan = self._plan(buy_price=0.0, sell_price=0.0)
-        ok, reason = validate_plan_safety(plan, current_price=100.0)
+        ok, _reason = validate_plan_safety(plan, current_price=100.0)
         assert not ok
 
 

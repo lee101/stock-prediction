@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from fastmarketsim import FastMarketEnv
 from pufferlibtraining3.envs.market_env import MarketEnv, MarketEnvConfig
+
+pytestmark = pytest.mark.slow
 
 
 def _load_price_tensor(symbol: str, data_root: str):

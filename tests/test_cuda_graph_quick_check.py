@@ -13,9 +13,14 @@ from pathlib import Path
 import pytest
 import torch
 
+pytestmark = [pytest.mark.slow, pytest.mark.model_required, pytest.mark.cuda_required]
+
 # Ensure TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS is set before any torch imports
 os.environ.setdefault("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS", "1")
-os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(Path(__file__).parent.parent / "compiled_models" / "torch_inductor"))
+os.environ.setdefault(
+    "TORCHINDUCTOR_CACHE_DIR",
+    str(Path(__file__).parent.parent / "compiled_models" / "torch_inductor"),
+)
 
 # Add project root to path
 project_root = Path(__file__).parent.parent

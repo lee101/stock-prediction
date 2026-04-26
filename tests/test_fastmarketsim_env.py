@@ -3,9 +3,12 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 import torch
 
 from fastmarketsim import FastMarketEnv
+
+pytestmark = pytest.mark.slow
 
 
 def _make_prices(T: int = 64) -> torch.Tensor:
