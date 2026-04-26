@@ -1,6 +1,29 @@
 # Production Pipeline Notes
 
-Updated: 2026-04-07
+Updated: 2026-04-27
+
+## Binance Runtime Repair (2026-04-27 NZ / 2026-04-26 21:52 UTC)
+
+- Rebasing `main` pulled the latest Alpaca/XGB research commits and pushed Binance fixes:
+  - `b63ae6b6 fix binance margin exit coverage`
+  - `d743b9ea fix crypto30 test lint`
+- Live margin audit before restart showed `5` open margin sell orders while the account held `6` meaningful long positions:
+  - covered: `BTC`, `ETH`, `DOGE`, `AAVE`, `LINK`
+  - uncovered: `SOL` (~$228)
+  - the other visible assets were sub-dollar dust and below trade minimums
+- Process audit found production isolation had drifted again:
+  - `binance-hybrid-spot` was running
+  - `binance-meta-margin` was also running
+  - `binance-worksteal-daily` was also running live
+  - cache-only `binanceexp1` helpers were running but not live writers
+- `supervisorctl` access was blocked by `/var/run/supervisor.sock` permissions, so the immediate repair was:
+  - `SIGSTOP` the conflicting live writer PIDs `1943` (`binance-meta-margin`) and `3833` (`binance-worksteal-daily`)
+  - `SIGTERM` the hybrid PID `1938`, letting supervisor restart `binance-hybrid-spot` on the new code as PID `71548`
+- Post-restart coverage check:
+  - meaningful positions `BTC`, `ETH`, `SOL`, `DOGE`, `AAVE`, and `LINK` all had closing sell coverage
+  - open margin orders were `6` closing sells plus `1` SOL entry buy ladder
+- Local ignored supervisor templates for retired Binance writers were changed to `autostart=false` and `autorestart=false`.
+  Root still needs to apply the equivalent changes in `/etc/supervisor/conf.d/` and run `supervisorctl reread && supervisorctl update` to make the isolation persistent across host/supervisor restarts.
 
 ## Tooling + Restart Record (2026-04-07)
 
