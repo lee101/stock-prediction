@@ -17,6 +17,23 @@ Updated: 2026-04-27
   - `binance33_1x_smooth_smoke` old-style high trade penalty: exhaustive 30-day median `-17.4%`, `103/135` negative windows.
 - Conclusion: adding pairs and execution levels alone is not enough; old PPO training looked profitable in-sample but fails under realistic validation. Next active sweep is `scripts/sweep_binance33_1x_smooth.sh`, which keeps the corrected validation and fail-fast negative-window gate.
 
+## Binance33 120-Day Unseen Screen (2026-04-27)
+
+- Fixed `pufferlib_market.evaluate_holdout` to honor `disable_shorts` stored in checkpoints. Without this, a long-only checkpoint could be evaluated with short actions enabled unless the CLI flag was also passed.
+- Added reusable evaluators:
+  - `scripts/eval_binance33_120d.sh` evaluates completed Binance33 checkpoints on exhaustive 120-day unseen windows at lag 2, 1x, 5/20 bps slippage.
+  - `scripts/sweep_binance33_rules.py` runs deterministic lagged feature-rule baselines across 30-day and 120-day windows, optional leverage, and older-history stride checks.
+- PPO Binance33 1x sweep result after corrected evaluation:
+  - best 30-day unseen, worst slippage 20 bps: `long_relu_sq_tp03` median `-5.27%`, `92/135` negative windows.
+  - best 120-day unseen, worst slippage 20 bps: `long_relu_sq_tp03` median `-36.75%`, `45/45` negative windows.
+  - Verdict: no PPO checkpoint from this sweep is production-candidate.
+- Deterministic rule baseline findings:
+  - 1x recent unseen: short mean-reversion (`reversal5_short_bottom`) is strong on 120-day windows, but 30-day median at 20 bps is only about `+15%` to `+17%`.
+  - 2x recent unseen: top short-reversion row reaches 30-day median `+30.02%` at 20 bps, but p10 is `-10.62%` and p90 drawdown is `46.07%`.
+  - 2x recent 120-day can look excellent (`+217%` median, p10 `+85.65%`, `0/45` negative) with BTC-gated short-reversion, but older-history checks collapse to `0%` median or worse.
+  - Regime-switching long/short rules did not solve robustness: recent 120-day median can be positive, but older-history stride-10 checks remain negative with severe drawdowns.
+- Conclusion: the promising recent edge is mostly bear-regime short exposure, not a robust smooth 1x/2x strategy. Do not deploy; next useful direction is a proper regime-conditioned learner or supervised forecast/ranking model evaluated with the same 30-day + 120-day unseen gates.
+
 ## Worksteal Audit (2026-03-26)
 
 - Aligned the daily simulator/backtest with the live bot’s entry logic:

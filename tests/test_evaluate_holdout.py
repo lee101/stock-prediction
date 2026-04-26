@@ -157,6 +157,7 @@ def test_load_policy_supports_bare_state_dict_payload(tmp_path: Path) -> None:
     assert isinstance(loaded.policy, eval_mod.TradingPolicy)
     assert loaded.arch == "mlp"
     assert loaded.hidden_size == 16
+    assert loaded.disable_shorts is False
     assert loaded.action_allocation_bins == 1
     assert loaded.action_level_bins == 1
     assert loaded.action_max_offset_bps == pytest.approx(0.0)
@@ -164,7 +165,7 @@ def test_load_policy_supports_bare_state_dict_payload(tmp_path: Path) -> None:
 
 def test_load_policy_supports_resmlp_arch_metadata(tmp_path: Path) -> None:
     source_policy = eval_mod.ResidualTradingPolicy(obs_size=22, num_actions=3, hidden=16)
-    payload = {"model": source_policy.state_dict(), "arch": "resmlp"}
+    payload = {"model": source_policy.state_dict(), "arch": "resmlp", "disable_shorts": True}
 
     with patch.object(eval_mod, "load_checkpoint_payload", return_value=payload):
         loaded = eval_mod.load_policy(
@@ -177,6 +178,7 @@ def test_load_policy_supports_resmlp_arch_metadata(tmp_path: Path) -> None:
     assert isinstance(loaded.policy, eval_mod.ResidualTradingPolicy)
     assert loaded.arch == "resmlp"
     assert loaded.hidden_size == 16
+    assert loaded.disable_shorts is True
 
 
 def test_load_policy_prefers_checkpoint_encoder_norm_flag(tmp_path: Path) -> None:
@@ -543,6 +545,7 @@ def test_main_applies_tradable_symbol_mask_and_reports_subset(tmp_path: Path) ->
         policy=FakePolicy(),
         arch="mlp",
         hidden_size=16,
+        disable_shorts=False,
         action_allocation_bins=1,
         action_level_bins=1,
         action_max_offset_bps=0.0,
@@ -565,6 +568,52 @@ def test_main_applies_tradable_symbol_mask_and_reports_subset(tmp_path: Path) ->
     assert seen_actions == [1, 1, 1]
     assert out["tradable_symbols"] == ["SYM0"]
     assert out["summary"]["tradable_symbols"] == ["SYM0"]
+
+
+def test_main_honors_checkpoint_disable_shorts_metadata(tmp_path: Path) -> None:
+    fake_args = _fake_main_args(tmp_path, out=str(tmp_path / "summary.json"))
+    fake_result = SimpleNamespace(
+        total_return=0.1,
+        sortino=0.8,
+        max_drawdown=0.05,
+        num_trades=2,
+        win_rate=0.5,
+    )
+    seen_actions: list[int] = []
+
+    class FakePolicy:
+        def __call__(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            logits = torch.tensor([[0.0, 1.0, 4.0, 10.0, 9.0]], dtype=torch.float32)
+            value = torch.tensor([0.0], dtype=torch.float32)
+            return logits, value
+
+    loaded = eval_mod.LoadedPolicy(
+        policy=FakePolicy(),
+        arch="mlp",
+        hidden_size=16,
+        disable_shorts=True,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+    )
+
+    def _simulate_once(window, policy_fn, **kwargs):
+        obs = np.zeros((39,), dtype=np.float32)
+        seen_actions.append(policy_fn(obs))
+        return fake_result
+
+    with (
+        patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
+        patch.object(eval_mod, "load_policy", return_value=loaded),
+        patch.object(eval_mod, "read_mktd", return_value=_make_data(40, num_symbols=2)),
+        patch.object(eval_mod, "simulate_daily_policy", side_effect=_simulate_once),
+    ):
+        eval_mod.main()
+
+    out = json.loads(Path(fake_args.out).read_text())
+    assert seen_actions == [2, 2, 2]
+    assert out["disable_shorts"] is True
+    assert out["summary"]["disable_shorts"] is True
 
 
 def test_main_uses_shared_checkpoint_loader_boundary(tmp_path: Path) -> None:

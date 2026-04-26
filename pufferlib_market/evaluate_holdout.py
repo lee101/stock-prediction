@@ -336,6 +336,7 @@ class LoadedPolicy:
     policy: nn.Module
     arch: str
     hidden_size: int
+    disable_shorts: bool
     action_allocation_bins: int
     action_level_bins: int
     action_max_offset_bps: float
@@ -423,6 +424,7 @@ def load_policy(
         policy=policy,
         arch=str(arch),
         hidden_size=int(hidden),
+        disable_shorts=bool(payload.get("disable_shorts", False)) if isinstance(payload, Mapping) else False,
         action_allocation_bins=int(alloc_bins),
         action_level_bins=int(level_bins),
         action_max_offset_bps=float(max_offset_bps),
@@ -522,6 +524,7 @@ def main() -> None:
     policy = loaded.policy
     arch = loaded.arch
     hidden = loaded.hidden_size
+    disable_shorts = bool(args.disable_shorts or loaded.disable_shorts)
     alloc_bins = loaded.action_allocation_bins
     level_bins = loaded.action_level_bins
     max_offset_bps = loaded.action_max_offset_bps
@@ -570,7 +573,7 @@ def main() -> None:
                 per_symbol_actions=int(per_symbol_actions),
                 tradable_mask=tradable_mask,
             )
-        if args.disable_shorts:
+        if disable_shorts:
             logits = _mask_all_shorts(
                 logits,
                 num_symbols=int(num_symbols),
@@ -728,6 +731,7 @@ def main() -> None:
         "data_path": str(Path(args.data_path)),
         "arch": str(arch),
         "hidden_size": int(hidden),
+        "disable_shorts": bool(disable_shorts),
         "eval_hours": int(steps),
         "action_allocation_bins": int(alloc_bins),
         "action_level_bins": int(level_bins),
