@@ -57,6 +57,25 @@ def test_paper_mode_singleton_is_noop(tmp_path):
     assert "OK" in proc.stdout
 
 
+def test_force_live_singleton_acquires_even_when_env_is_paper(tmp_path):
+    proc = _run_snippet(
+        """
+        from src.alpaca_singleton import enforce_live_singleton
+        lock = enforce_live_singleton(
+            service_name='forced_live',
+            account_name='alpaca_test_writer',
+            force_live=True,
+        )
+        assert lock is not None, 'force_live should acquire the writer lock'
+        print('LOCKED')
+        """,
+        env_extra={"ALP_PAPER": "1"},
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "LOCKED" in proc.stdout
+
+
 def test_buy_memory_path_rejects_path_like_account_name(tmp_path):
     proc = _run_snippet(
         """

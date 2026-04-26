@@ -175,12 +175,15 @@ def enforce_live_singleton(
     *,
     service_name: str,
     account_name: str = DEFAULT_ALPACA_ACCOUNT_NAME,
+    force_live: bool = False,
 ) -> Optional[AlpacaAccountLock]:
     """Acquire the live-writer lock. Paper mode is a no-op.
 
     Call this once at startup (``alpaca_wrapper`` does it automatically at
     import time). Returns the ``AlpacaAccountLock`` handle on success, or
     ``None`` on paper. Raises ``SystemExit(42)`` on contention.
+    ``force_live=True`` is for entry points whose own CLI has already selected
+    live trading and must not rely on env_real.PAPER defaults.
 
     The override ``ALPACA_SINGLETON_OVERRIDE=1`` disables the lock but
     logs every time it does so, so a catastrophic override leaves a loud
@@ -189,10 +192,13 @@ def enforce_live_singleton(
     global _STATE
 
     # Paper mode: no singleton required — unlimited paper instances OK.
-    try:
-        from env_real import PAPER
-    except Exception:
-        PAPER = True
+    if force_live:
+        PAPER = False
+    else:
+        try:
+            from env_real import PAPER
+        except Exception:
+            PAPER = True
     if PAPER:
         _write_marker("enforce_live_singleton",
                       f"paper mode, no lock (service={service_name})")

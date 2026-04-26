@@ -43,6 +43,11 @@ if [ -f "$HOME/.secretbashrc" ]; then
   set -euo pipefail
 fi
 
+# Managed live services must never inherit human break-glass overrides from
+# ~/.secretbashrc. Those levers are terminal-only recovery tools.
+unset ALPACA_SINGLETON_OVERRIDE
+unset ALPACA_DEATH_SPIRAL_OVERRIDE
+
 cd /nvme0n1-disk/code/stock-prediction
 source .venv/bin/activate
 
@@ -66,6 +71,10 @@ exec python -u -m xgbnew.live_trader \
   --crypto-weekend \
   --crypto-poll-seconds 300 \
   --crypto-max-gross 0.5 \
+  --eod-deleverage \
+  --eod-max-gross-leverage 2.0 \
+  --eod-deleverage-window-minutes 60 \
+  --eod-force-market-minutes 5 \
   --live \
   --loop \
   --verbose
