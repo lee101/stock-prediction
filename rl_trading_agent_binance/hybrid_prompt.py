@@ -482,6 +482,9 @@ For each symbol with allocation > 0, set:
 - entry_price: limit buy price (slightly below current for favorable fill)
 - exit_price: take-profit price (your target exit)
 
+Every non-zero allocation must have a concrete exit_price grounded in the Chronos2 path; never leave an active allocation without an executable closing price.
+Use forecast-based exits by default. Keep targets realistic enough that the live runner can rest an actual closing order instead of waiting for an implausible move.
+
 Guidelines:
 - Fees: {". ".join(fee_info)}.
 

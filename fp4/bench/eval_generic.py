@@ -213,6 +213,18 @@ def _run_slippage_sweep(
     import torch
     from pufferlib_market import binding
 
+    def _fallback_to_cpu(exc: Exception) -> bool:
+        message = str(exc).lower()
+        if "out of memory" not in message and "cuda error" not in message:
+            return False
+        if not torch.cuda.is_available():
+            return False
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        return True
+
     num_symbols, num_timesteps, features_per_sym = _read_header(data_path)
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
 
@@ -228,8 +240,15 @@ def _run_slippage_sweep(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     try:
         policy_callable.to(device)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    except Exception as exc:
+        if device.type == "cuda" and _fallback_to_cpu(exc):
+            device = torch.device("cpu")
+            try:
+                policy_callable.to(device)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        else:
+            pass
 
     out_by_bps: Dict[str, Any] = {}
     for bps in slippages_bps:
@@ -270,8 +289,20 @@ def _run_slippage_sweep(
                 if not active.any() or failed_fast_reason is not None:
                     break
                 with torch.inference_mode():
-                    obs_t = obs_cpu.to(device, non_blocking=True)
-                    logits = policy_callable(obs_t)
+                    try:
+                        obs_t = obs_cpu.to(device, non_blocking=True)
+                        logits = policy_callable(obs_t)
+                    except Exception as exc:
+                        if device.type == "cuda" and _fallback_to_cpu(exc):
+                            device = torch.device("cpu")
+                            try:
+                                policy_callable.to(device)  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                            obs_t = obs_cpu.to(device)
+                            logits = policy_callable(obs_t)
+                        else:
+                            raise
                     if isinstance(logits, tuple):
                         logits = logits[0]
                     actions = logits.argmax(dim=-1)

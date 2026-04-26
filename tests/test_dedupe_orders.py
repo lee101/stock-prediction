@@ -106,6 +106,37 @@ def test_existing_order_covers_notional():
 
 
 @patch.object(trade_binance_live_module, "_cancel_open_order")
+def test_existing_order_covers_qty_but_stale_price_replaces(mock_cancel):
+    order = _make_order(qty=1.0, executed=0.0, price=50000.0, order_id=777)
+    result, skip = _dedupe_side_orders(
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.95,
+        desired_price=51050.0,
+    )
+    assert skip is False
+    mock_cancel.assert_called_once_with("margin", "BTCUSDT", 777)
+    assert result == []
+
+
+def test_existing_order_covers_notional_and_price_within_tolerance_skips():
+    order = _make_order(qty=1.0, executed=0.0, price=50000.0)
+    _result, skip = _dedupe_side_orders(
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_notional=49000.0,
+        desired_price=50080.0,
+    )
+    assert skip is True
+
+
+@patch.object(trade_binance_live_module, "_cancel_open_order")
 def test_cancel_succeeds(mock_cancel):
     order = _make_order(order_id=101, qty=0.3)
     other = _make_order(symbol="ETHUSDT", order_id=200)

@@ -394,7 +394,11 @@ def _draw_forecast_candle(ax, x: float, ohlc4: np.ndarray, color: str, *, label:
 
 def _ffmpeg_has_nvenc() -> bool:
     import subprocess
-    import imageio_ffmpeg
+
+    try:
+        import imageio_ffmpeg
+    except Exception:
+        return False
 
     try:
         exe = imageio_ffmpeg.get_ffmpeg_exe()

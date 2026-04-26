@@ -67,19 +67,11 @@ def snapshot_allowed_market_symbols(
 
 
 def iter_snapshot_order_symbols(snapshot: dict[str, Any]) -> list[str]:
-    orders = snapshot.get("orders")
-    if not isinstance(orders, dict):
-        return []
     symbols: list[str] = []
-    for bucket in orders.values():
-        if not isinstance(bucket, list):
-            continue
-        for order in bucket:
-            if not isinstance(order, dict):
-                continue
-            symbol = str(order.get("symbol") or "").strip().upper()
-            if symbol:
-                symbols.append(symbol)
+    for order in iter_snapshot_active_orders(snapshot):
+        symbol = str(order.get("symbol") or "").strip().upper()
+        if symbol:
+            symbols.append(symbol)
     return symbols
 
 
@@ -89,25 +81,39 @@ def iter_snapshot_active_orders(snapshot: dict[str, Any]) -> list[dict[str, Any]
         return []
 
     active_orders: list[dict[str, Any]] = []
+    seen: set[tuple[object, ...]] = set()
+
+    def _append_bucket(bucket: list[Any]) -> None:
+        for order in bucket:
+            if not isinstance(order, dict):
+                continue
+            key = (
+                order.get("order_id", order.get("orderId")),
+                str(order.get("symbol") or "").strip().upper(),
+                str(order.get("side") or "").strip().upper(),
+                safe_float(order.get("price")),
+                safe_float(order.get("orig_qty", order.get("origQty", order.get("qty")))),
+                safe_float(order.get("executed_qty", order.get("executedQty"))),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            active_orders.append(order)
+
     used_target_buckets = False
     for bucket_name in ("open_after_cleanup", "placed"):
         bucket = orders.get(bucket_name)
         if not isinstance(bucket, list):
             continue
         used_target_buckets = True
-        for order in bucket:
-            if isinstance(order, dict):
-                active_orders.append(order)
+        _append_bucket(bucket)
 
     if used_target_buckets:
         return active_orders
 
     for bucket in orders.values():
-        if not isinstance(bucket, list):
-            continue
-        for order in bucket:
-            if isinstance(order, dict):
-                active_orders.append(order)
+        if isinstance(bucket, list):
+            _append_bucket(bucket)
     return active_orders
 
 

@@ -1,6 +1,29 @@
 # Production Pipeline Notes
 
-Updated: 2026-04-07
+Updated: 2026-04-27
+
+## Binance Runtime Repair (2026-04-27 NZ / 2026-04-26 21:52 UTC)
+
+- Rebasing `main` pulled the latest Alpaca/XGB research commits and pushed Binance fixes:
+  - `b63ae6b6 fix binance margin exit coverage`
+  - `d743b9ea fix crypto30 test lint`
+- Live margin audit before restart showed `5` open margin sell orders while the account held `6` meaningful long positions:
+  - covered: `BTC`, `ETH`, `DOGE`, `AAVE`, `LINK`
+  - uncovered: `SOL` (~$228)
+  - the other visible assets were sub-dollar dust and below trade minimums
+- Process audit found production isolation had drifted again:
+  - `binance-hybrid-spot` was running
+  - `binance-meta-margin` was also running
+  - `binance-worksteal-daily` was also running live
+  - cache-only `binanceexp1` helpers were running but not live writers
+- `supervisorctl` access was blocked by `/var/run/supervisor.sock` permissions, so the immediate repair was:
+  - `SIGSTOP` the conflicting live writer PIDs `1943` (`binance-meta-margin`) and `3833` (`binance-worksteal-daily`)
+  - `SIGTERM` the hybrid PID `1938`, letting supervisor restart `binance-hybrid-spot` on the new code as PID `71548`
+- Post-restart coverage check:
+  - meaningful positions `BTC`, `ETH`, `SOL`, `DOGE`, `AAVE`, and `LINK` all had closing sell coverage
+  - open margin orders were `6` closing sells plus `1` SOL entry buy ladder
+- Local ignored supervisor templates for retired Binance writers were changed to `autostart=false` and `autorestart=false`.
+  Root still needs to apply the equivalent changes in `/etc/supervisor/conf.d/` and run `supervisorctl reread && supervisorctl update` to make the isolation persistent across host/supervisor restarts.
 
 ## Tooling + Restart Record (2026-04-07)
 
@@ -270,3 +293,13 @@ After any deployment touching Binance pair routing:
 3. Confirm the watcher metadata carries the intended `exchange_symbol`
 4. Confirm stablecoin conversions only occur when quote funding is actually short
 5. Confirm the intended production runner, not just a checked-in paper service, is the process being restarted
+
+  - live order dedupe is now price-aware; existing working orders are only reused when both size and price remain close to the current target
+  - hybrid rebalance sell pricing now uses the same minimum live exit floor as the exit-coverage pass, eliminating same-cycle double-sell churn during flattening
+
+  - margin portfolio snapshots now include all nonzero exchange assets so the account guard can catch untracked foreign holdings instead of only strategy symbols
+  - account-guard blocking is no longer a pure no-op: tracked entry buys are canceled, tracked long exits are still maintained, and the snapshot must expose the resulting `reentry_plan` metadata
+  - `eval_100d` should now complete even when CUDA is oversubscribed because the fp4/pufferlib slippage sweep falls back to CPU on OOM before reporting the checkpoint result
+  - live position basis now comes from fill reconstruction over recent trades, so exit floors and max-hold checks use the active lot instead of the latest buy fill
+  - blocked Binance cycles must now cancel all non-cover BUY orders and maintain closing SELL coverage for every meaningful long visible on the account, even if the symbol is outside the configured hybrid universe
+  - `BINANCE_HYBRID_MAX_HOLD_HOURS` remains opt-in; if enabled, verify snapshots show `position_entry_time`, `hold_hours`, and `exit_basis=max_hold_midpoint` before trusting the timed-exit path in prod

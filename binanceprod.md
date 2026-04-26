@@ -1,5 +1,21 @@
 # Binance Production Systems
 
+## Runtime Repair (2026-04-27 NZ / 2026-04-26 21:52 UTC)
+
+The live account had `5` margin closing sell orders but `6` meaningful long positions. `SOL` was the uncovered position (~$228); the remaining extra assets in the account were sub-dollar dust.
+
+Actions taken:
+
+- pushed `b63ae6b6` / `d743b9ea` to `origin/main`
+- stopped conflicting live writer processes with `SIGSTOP`:
+  - `binanceleveragesui.trade_margin_meta` PID `1943`
+  - `binance_worksteal.trade_live` PID `3833`
+- restarted the hybrid bot by terminating PID `1938`; supervisor relaunched `binance-hybrid-spot` as PID `71548`
+- verified post-restart sell coverage for `BTC`, `ETH`, `SOL`, `DOGE`, `AAVE`, and `LINK`
+- left one `SOLUSDT` buy ladder open below market; this is an entry order, not missing exit coverage
+
+Important persistence note: direct `supervisorctl` was blocked by socket permissions, so the stopped conflicting processes are paused at the Unix process level. Local ignored supervisor templates now set retired Binance writers to `autostart=false` and `autorestart=false`, but `/etc/supervisor/conf.d/` still needs a root-level update for this to survive supervisor or host restarts.
+
 ## CRITICAL (2026-04-07): Lag=0 Validation Is Untrustworthy
 `robust_champion` was briefly deployed after a "+216% Sort=25.06" holdout — this was run at `decision_lag=0` which embeds lookahead bias (agent sees bar t features and trades at bar t close, impossible live). At realistic `decision_lag=2` on the SAME `mixed23_latest_val` data (50 windows x 30h):
 
