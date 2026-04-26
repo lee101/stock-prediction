@@ -1,0 +1,10 @@
+# Direct photonics / AI data-center optical exposure candidates.
+LITE
+COHR
+MRVL
+MTSI
+AAOI
+IPGP
+FN
+MKSI
+CIEN

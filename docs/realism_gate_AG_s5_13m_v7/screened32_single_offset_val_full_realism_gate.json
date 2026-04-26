@@ -1,0 +1,62 @@
+{
+  "val_data": "/nvme0n1-disk/code/stock-prediction/pufferlib_market/data/screened32_single_offset_val_full.bin",
+  "window_days": 50,
+  "fee_rate": 0.001,
+  "slippage_bps": 5.0,
+  "decision_lag": 2,
+  "disable_shorts": true,
+  "monthly_target": 0.27,
+  "ensemble_size": 13,
+  "ensemble_mode": "softmax_avg",
+  "checkpoints": [
+    "pufferlib_market/prod_ensemble_screened32/C_s7.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s42.pt",
+    "pufferlib_market/prod_ensemble_screened32/AD_s4.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s28.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s57.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s64.pt",
+    "pufferlib_market/prod_ensemble_screened32/I_s32.pt",
+    "pufferlib_market/checkpoints/screened32_sweep/AG/s5/update_000450.pt"
+  ],
+  "n_windows_per_cell": 263,
+  "fill_buffer_bps_grid": [
+    5.0
+  ],
+  "max_leverage_grid": [
+    1.0,
+    1.5
+  ],
+  "cells": [
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.0,
+      "median_total_return": 0.15797617265000843,
+      "p10_total_return": 0.021270773804155884,
+      "p90_total_return": 0.25148786501427806,
+      "median_monthly_return": 0.06354003243788399,
+      "p10_monthly_return": 0.008879226106348585,
+      "median_sortino": 5.4447783133619545,
+      "median_max_dd": 0.06969128676074306,
+      "n_neg": 15,
+      "n_windows": 263
+    },
+    {
+      "fill_buffer_bps": 5.0,
+      "max_leverage": 1.5,
+      "median_total_return": 0.2585912124479226,
+      "p10_total_return": 0.07007419500406531,
+      "p90_total_return": 0.4000739648052414,
+      "median_monthly_return": 0.10141648410278392,
+      "p10_monthly_return": 0.02885419873579712,
+      "median_sortino": 5.310963440437017,
+      "median_max_dd": 0.10453693014111468,
+      "n_neg": 12,
+      "n_windows": 263
+    }
+  ]
+}
