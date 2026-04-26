@@ -63,7 +63,7 @@ def check_xgb_daily_trader_live() -> CheckResult:
     since 2026-04-19. Verifies supervisor RUNNING, pid matches singleton lock,
     and no recent auth/traceback errors in the stdout log.
     """
-    rc, out, err = run_cmd("sudo -n supervisorctl status xgb-daily-trader-live 2>&1")
+    _rc, out, err = run_cmd("sudo -n supervisorctl status xgb-daily-trader-live 2>&1")
     if "RUNNING" not in out:
         return CheckResult(
             "xgb-daily-trader-live",
@@ -118,7 +118,7 @@ def check_xgb_daily_trader_live() -> CheckResult:
     # Error scan on today/yesterday only.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     yday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-    rc2, out2, _ = run_cmd(
+    _rc2, out2, _ = run_cmd(
         "sudo -n tail -3000 /var/log/supervisor/xgb-daily-trader-live.log 2>&1 | "
         f"grep -E '^({today}|{yday})' | "
         "grep -iE '401|unauthorized|Traceback|death-spiral|RuntimeError' | wc -l"
@@ -153,7 +153,7 @@ def check_daily_rl_trader_stopped() -> CheckResult:
     they'll race for the singleton lock and one will crash. Expected state
     is STOPPED / EXITED / FATAL / not-in-config.
     """
-    rc, out, _ = run_cmd("sudo -n supervisorctl status daily-rl-trader 2>&1")
+    _rc, out, _ = run_cmd("sudo -n supervisorctl status daily-rl-trader 2>&1")
     if "RUNNING" in out:
         return CheckResult(
             "daily-rl-trader-stopped",
@@ -178,11 +178,11 @@ def check_trading_server_stopped() -> CheckResult:
     port is open, either the rollback was triggered without stopping XGB
     (race condition) or a stale process is lingering.
     """
-    rc, out, _ = run_cmd("sudo -n supervisorctl status trading-server 2>&1")
+    _rc, out, _ = run_cmd("sudo -n supervisorctl status trading-server 2>&1")
     supervisor_running = "RUNNING" in out
     # Also probe the port directly — even a non-supervisor process would
     # be a violation since we expect :8050 CLOSED.
-    rc_ss, out_ss, _ = run_cmd("ss -ltn 2>/dev/null | grep ':8050' | head -1")
+    _rc_ss, out_ss, _ = run_cmd("ss -ltn 2>/dev/null | grep ':8050' | head -1")
     port_open = bool(out_ss.strip())
     if supervisor_running or port_open:
         return CheckResult(
@@ -275,7 +275,7 @@ def check_llm_stock_trader() -> CheckResult:
     unit isn't configured or is stopped, report `warn` rather than `fail`
     so core-prod health isn't masked by an optional component being down.
     """
-    rc, out, _ = run_cmd("sudo -n supervisorctl status llm-stock-trader 2>&1")
+    _rc, out, _ = run_cmd("sudo -n supervisorctl status llm-stock-trader 2>&1")
     if "RUNNING" in out:
         return CheckResult("llm-stock-trader", "ok", "supervisor process running")
     if "no such process" in out.lower() or "no such group" in out.lower():
@@ -285,7 +285,7 @@ def check_llm_stock_trader() -> CheckResult:
 
 def check_cancel_multi_orders() -> CheckResult:
     """Check alpaca-cancel-multi-orders.service."""
-    rc, out, _ = run_cmd("sudo systemctl is-active alpaca-cancel-multi-orders.service")
+    _rc, out, _ = run_cmd("sudo systemctl is-active alpaca-cancel-multi-orders.service")
     if out == "active":
         return CheckResult("cancel-multi-orders", "ok", "service active")
     return CheckResult("cancel-multi-orders", "warn", f"service not active: {out}")
@@ -340,7 +340,8 @@ def check_alpaca_api() -> CheckResult:
         if key_id.startswith("alpaca-") or secret.startswith("alpaca-"):
             return CheckResult(
                 "alpaca-api", "warn",
-                "env_real using placeholder keys — source ~/.secretbashrc before calling, or export ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD",
+                "env_real using placeholder keys — source ~/.secretbashrc before calling, "
+                "or export ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD",
             )
 
         import urllib.request
@@ -424,7 +425,7 @@ def check_recent_activity() -> CheckResult:
 
     # Also count supervisor stdout Scoring/No-picks lines as a
     # secondary activity signal.
-    rc, out, _ = run_cmd(
+    _rc, out, _ = run_cmd(
         "sudo -n tail -4000 /var/log/supervisor/xgb-daily-trader-live.log 2>&1 | "
         f"grep -E '^({today}|{yday})' | "
         "grep -cE 'Scoring |No picks today|Conviction filter|BUY |SELL '"
@@ -446,6 +447,65 @@ def check_recent_activity() -> CheckResult:
         "ok",
         f"{session_events} trade-log events + {sup_count} stdout session markers "
         f"in last 48h" + (f" (latest: {last_file.name})" if last_file else ""),
+    )
+
+
+def check_xgb_spy_provenance() -> CheckResult:
+    """Fail if XGB live SPY risk-control decision events lack byte provenance."""
+    analyzer = REPO_ROOT / "scripts" / "analyze_xgb_trade_log.py"
+    rc, out, err = run_cmd(
+        f"{sys.executable} {analyzer} --json --fail-on-spy-provenance-warning",
+        timeout=30,
+    )
+
+    if rc == 0 and not out:
+        return CheckResult(
+            "xgb-spy-provenance",
+            "ok",
+            "no XGB trade-log files to inspect; recent-activity handles staleness",
+            {"stderr": err},
+        )
+
+    payload: dict | None = None
+    if out:
+        try:
+            payload = json.loads(out)
+        except Exception as exc:
+            return CheckResult(
+                "xgb-spy-provenance",
+                "warn",
+                f"trade-log analyzer returned non-JSON output: {exc}",
+                {"returncode": rc, "stdout": out[-2000:], "stderr": err[-2000:]},
+            )
+
+    if rc == 3:
+        overall = (payload or {}).get("overall", {})
+        sessions = overall.get("spy_provenance_warning_sessions", [])
+        return CheckResult(
+            "xgb-spy-provenance",
+            "fail",
+            f"SPY provenance warnings in {len(sessions)} session(s): "
+            f"{', '.join(str(s) for s in sessions) or 'unknown'}",
+            {"overall": overall},
+        )
+
+    if rc != 0:
+        return CheckResult(
+            "xgb-spy-provenance",
+            "warn",
+            f"trade-log analyzer failed rc={rc}: {err or out}",
+            {"returncode": rc, "stdout": out[-2000:], "stderr": err[-2000:]},
+        )
+
+    overall = (payload or {}).get("overall", {})
+    n_hashes = overall.get("n_spy_session_hashes", 0)
+    n_sessions = overall.get("n_sessions", 0)
+    return CheckResult(
+        "xgb-spy-provenance",
+        "ok",
+        f"no SPY provenance warnings across {n_sessions} analyzed session(s); "
+        f"{n_hashes} unique SPY session hash(es)",
+        {"overall": overall},
     )
 
 
@@ -559,6 +619,7 @@ def run_all_checks() -> list[CheckResult]:
         check_alpaca_api,
         check_portfolio_state,
         check_recent_activity,
+        check_xgb_spy_provenance,
         check_gpu_available,
         check_disk_space,
     ]
@@ -585,6 +646,10 @@ def main():
             # Re-run checks after fixes
             results = run_all_checks()
 
+    fails = sum(1 for r in results if r.status == "fail")
+    warns = sum(1 for r in results if r.status == "warn")
+    exit_code = 1 if fails > 0 else 0
+
     # Log results
     now = datetime.now(timezone.utc)
     log_entry = {
@@ -598,26 +663,23 @@ def main():
 
     if args.json:
         print(json.dumps(log_entry, indent=2))
-        return
+        sys.exit(exit_code)
 
     # Human-readable output
     status_icons = {"ok": "+", "warn": "!", "fail": "X"}
-    fails = 0
-    warns = 0
     for r in results:
         icon = status_icons.get(r.status, "?")
         print(f"  [{icon}] {r.name}: {r.message}")
-        if r.status == "fail":
-            fails += 1
-        elif r.status == "warn":
-            warns += 1
 
     if args.fix and actions:
         print(f"\nAuto-fix actions taken:")
         for a in actions:
             print(f"  -> {a}")
 
-    print(f"\n{'HEALTHY' if fails == 0 else 'UNHEALTHY'}: {len(results) - fails - warns} ok, {warns} warn, {fails} fail")
+    print(
+        f"\n{'HEALTHY' if fails == 0 else 'UNHEALTHY'}: "
+        f"{len(results) - fails - warns} ok, {warns} warn, {fails} fail"
+    )
     sys.exit(1 if fails > 0 else 0)
 
 

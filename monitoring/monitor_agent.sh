@@ -13,8 +13,10 @@ LOG_FILE="$LOG_DIR/monitor_${TIMESTAMP}.log"
 
 # First: run the health check
 echo "=== Health Check $(date -u -Iseconds) ===" | tee -a "$LOG_FILE"
+set +e
 python monitoring/health_check.py --json 2>&1 | tee -a "$LOG_FILE"
-HEALTH_EXIT=$?
+HEALTH_EXIT=${PIPESTATUS[0]}
+set -e
 
 # If unhealthy, invoke Claude to diagnose and fix
 if [ "$HEALTH_EXIT" -ne 0 ]; then

@@ -177,3 +177,36 @@ Phase 3 (research):
   No launch this hour: trading window 13:30-20:00 UTC still active; heavy training contraindicated.
 Phase 4 (redeploy): no deploy — no candidate clears gate. Deployed config remains live.
 Next hour should: re-confirm health (should be unchanged). If budget allows after 20:00 UTC close, queue a read-only cross-fold eval of the deploy cell on oos2025h1_ensemble_gpu_fresh as a second sanity check (estimated ~50 min, 98 cells, detach per fire-and-forget rules). Heavier architectural experiments (Chronos-2 head, PPO regime detector) require user decision — XGB family confirmed exhausted.
+
+=== Hourly Prod Check 2026-04-22T20:00Z ===
+Phase 1 (triage):
+  Health: HEALTHY (disk 83% warn both fs, below 85% threshold)
+  XGB: RUNNING (pid=3315287, uptime 1d 21h, same pid 3rd hour running — stable)
+  Singleton lock: ok (service=xgb_live_trader, pid 3315287 matches supervisor)
+  Alpaca: ok (equity=$28,678.98 flat, buying_power=$57,357.96, status=ACTIVE)
+  Positions: 0 stock (expected hold-cash under ms=0.85 gate); 5 crypto dust rows all <$0.01 mv
+  Fills last 10d: 2 (both DOGE/USD dust from 2026-04-18; zero stock fills = correct hold-cash)
+  Today's session 2026-04-22: top-1 LCID score=0.5542 / 668 candidates filtered, per-seed spread 0.032 = R9b healthy low-conviction regime
+  Score trajectory last 3 sessions: 0.7036 MSFT (2026-04-20) → 0.6005 DVN (04-21) → 0.5542 LCID (04-22) — varied symbols, varied scores, ensemble disagrees per-seed meaningfully
+  Trade log 2026-04-22.jsonl: events=session_start/scored/filtered/no_picks, 0 picks
+  Death-spiral: no markers (clean)
+  RL path: STOPPED confirmed (daily-rl-trader + trading-server both down, port :8050 empty, no trade_daily_stock_prod/trading_server procs)
+  Error log last hour: 0 actionable
+  GPU idle (0% util, 1.8GB/32.6GB — ready for post-close work)
+Phase 2 (fixes): none needed.
+Phase 3 (research):
+  Harvested prior-hour 98-cell leverage curve on oos2024_ensemble_gpu_fresh (15-seed): 0/98 pass strict 27%/mo+p10>0+0neg gate; deployed cell lev=2.0 ms=0.85 ht=1 vol=0.12 = 0 trades fire / 42 windows / 0% DD = structural hold-cash (correct LIVE behavior).
+  Late-subfold short-history 2024-start 15-seed sweep (168 cells on 8-window 2026-03-21→04-20 heldout) — already written up in project_xgb_short_history_2024start_refuted.md §Late-subfold check: top cell lev=2.0 ms=0.60 tn=1 ht=1 vol=0.12 deploy passes med/p10/neg/DD bars (+55.75/+18.68/0-8/4.49%) but stress36x fails (3/8 neg = 37.5% > 20% bar). 8-window n too small for bonferroni anyway; same 20d-recovery-rally artifact pattern as refuted MuonMLP retrain-through-0228.
+  RL family status: v7 11-model ensemble crash-val +2.5%/mo at lev=1 — positive p10 + low neg but 10× below 27%/mo HARD RULE target; v7 edge is composition-specific (D-15/D-30/AD-15/AD-25 all fail at 15-seed bonferroni per project_rl_d15_bonferroni_refutes_family.md + project_rl_aprcrash_retrain_through_refuted.md). Inference-time conviction gates REFUTED per project_rl_v7_conviction_gates_refuted.md. Both GBDT and RL families are exhausted at 15-seed bonferroni on current features.
+  Launched (detached, fire-and-forget PID=654033 — python -m xgbnew.sweep_ensemble_grid):
+    Cross-fold sanity on oos2025h1_ensemble_gpu_fresh (15-seed, train_end=2025-06-30, OOS 2025-07-01 → 2026-04-19).
+    98-cell grid: lev {1.0..3.0} × ms {0.55..0.85} × tn=1 × ht=on × vol=0.12 × dv=50M × fee_regimes {deploy, stress36x}.
+    Output: analysis/xgbnew_ensemble_sweep/leverage_curve_oos2025h1_fresh_20260422_2005/
+    Purpose: confirm hold-cash behavior reproduces on the SECOND fresh true-OOS fold (project_oos_ensembles_trained_pre_stale_fix memory predicted 0/192 pos-median on 192-cell earlier sweep, but this rerun is the 98-cell leverage-curve cut at 15-seed bonferroni).
+    Expected ETA: ~60 min (55min on 42-window fold × ~45-window scale ratio); next hour harvests.
+  No deploy candidate this hour.
+Phase 4 (redeploy): no deploy — no candidate clears four-bar gate; architectural pivot required.
+Next hour should:
+  1. Harvest PID=654033 oos2025h1 98-cell sweep — expect hold-cash confirmation (0/98 pos-med). If any cell passes stress36x too, write up + human-review.
+  2. Re-verify XGB health (should be unchanged: same pid, same equity, Thursday 2026-04-23 session should run between 13:20-13:30 ET).
+  3. Architectural pivot direction remains unresolved — memory candidates are Chronos-2 adapter / PufferLib PPO portfolio env (not yet built per memory) / regime-detector features. None are launchable in a single hour without user decision; flag in monitoring/current_algorithms.md §6.
