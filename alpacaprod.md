@@ -9,24 +9,26 @@
 
 ### Redeploying the single live writer
 
-**Always use `scripts/deploy_live_trader.sh <unit>`** — do NOT
+**Always use `scripts/deploy_live_trader.sh [options] <unit>`** — do NOT
 `supervisorctl restart` a live-writer unit directly. The script is the
 only path that enforces HARD RULE #2 (exactly one Alpaca live writer at
-a time) by stopping every other registered writer, starting the target,
-and refusing to report OK until the fcntl-lock holder PID matches the
-new supervisor PID (or its descendant).
+a time) and runs `scripts/alpaca_deploy_preflight.py` before any
+supervisor stop/start. It stops every other registered writer, starts
+the target, and refuses to report OK until the fcntl-lock holder PID
+matches the new supervisor PID (or its descendant).
 
 ```bash
 # Rotate between live writers — pick one of:
-scripts/deploy_live_trader.sh xgb-daily-trader-live     # current champion
-scripts/deploy_live_trader.sh trading-server            # broker-boundary server
-scripts/deploy_live_trader.sh daily-rl-trader           # legacy RL ensemble
-scripts/deploy_live_trader.sh none                      # stop ALL live writers
+scripts/deploy_live_trader.sh --allow-unmodeled-live-sidecars xgb-daily-trader-live  # current champion
+scripts/deploy_live_trader.sh trading-server                                        # broker-boundary server
+scripts/deploy_live_trader.sh daily-rl-trader                                       # legacy RL ensemble
+scripts/deploy_live_trader.sh none                                                 # stop ALL live writers
 ```
 
 Exit codes: `0` OK, `2` bad/missing unit name, `3` failed to stop a
 conflicting unit, `4` failed to start the requested unit, `5` started
-but something else owns the lock. Audit trail is appended to
+but something else owns the lock, `6` preflight rejected the deploy.
+Audit trail is appended to
 `deployments/live_trader_history.log` on every run.
 
 The registry `LIVE_WRITER_UNITS` inside the script is the source of
@@ -40,10 +42,323 @@ will leak the old writer.
 # 1. edit flags
 vim deployments/xgb-daily-trader-live/launch.sh
 # 2. redeploy (stops others, restarts target, verifies lock claim)
-scripts/deploy_live_trader.sh xgb-daily-trader-live
+scripts/deploy_live_trader.sh --allow-unmodeled-live-sidecars xgb-daily-trader-live
 # 3. tail logs to confirm new flags took effect
 sudo tail -n 40 /var/log/supervisor/xgb-daily-trader-live.log
 ```
+
+---
+
+### 🟢 2026-04-25 19:31 UTC — crypto sleeve market orders removed; future crypto orders use explicit limits
+
+**Operator concern**: the BTC weekend sleeve bought via a market order,
+but production policy is that every live order should carry an explicit
+price so spread/impact is bounded.
+
+**Root cause**:
+- Stock entries/exits had already been moved to explicit-priced limit orders.
+- The embedded `crypto_weekend.session` path still used
+  `MarketOrderRequest` for both weekend buys and Monday exits.
+- The BTC order `21ccf911-ff7a-46c5-85d0-8a911360e6c3` was therefore a
+  crypto sleeve market order. It was logical from the signal side
+  (BTC passed weekend trend/volatility filter), but execution type was
+  wrong for the current production rule.
+
+**Fix deployed**:
+- Replaced embedded crypto `MarketOrderRequest` with `LimitOrderRequest`.
+- Crypto buys now derive a limit from latest ask plus a 15 bps guard.
+- Crypto sells now derive a limit from latest bid minus a 15 bps guard.
+- If live quote data is unavailable, the code uses a bounded reference/current
+  price fallback; it never falls back to a market order.
+- Buy sizing now divides target notional by the actual limit price, so
+  submitted notional remains bounded by the explicit price.
+- Scheduled Codex prod checks now flag any future crypto market-order
+  submission as an incident.
+
+**Validation**:
+- `pytest -q tests/test_crypto_weekend_session.py tests/test_crypto_weekend_live_trader.py`
+  => `48 passed`.
+- `python -m py_compile crypto_weekend/session.py xgbnew/live_trader.py`
+- `git diff --check -- crypto_weekend/session.py tests/test_crypto_weekend_session.py`
+- Live quote helper readback before deploy:
+  BTC quote bid/ask around `77279.67/77296.50`; derived buy limit
+  `77412.44`, sell limit `77163.75`.
+
+**Deploy**:
+- Restarted through the required single-writer deploy path:
+  `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live`.
+- New production pid and lock holder: `3294379`.
+- `daily-rl-trader` remains STOPPED; `trading-server` remains non-live/FATAL.
+- Post-restart heartbeat: `tick_status n_positions=1 positions_ok=true action=none`.
+- Alpaca readback after deploy: account ACTIVE, open orders `0`, material
+  position BTCUSD only.
+
+**Decision**:
+- Existing BTC position remains managed by the same sleeve.
+- Future crypto entries and exits are explicit-priced limit orders only.
+- No model, stock threshold, leverage, or manual order change was made.
+
+---
+
+### 🟢 2026-04-25 15:00 UTC — prod crypto sleeve verified trading; fail-closed heartbeat deployed
+
+**Operator request**: verify production is actually trading and healthy.
+
+**Live verification before change**:
+- `xgb-daily-trader-live` was RUNNING and owned the singleton live-writer
+  lock; `daily-rl-trader` was STOPPED.
+- The stock champion remained the intended config:
+  `top_n=1`, `allocation=2.0`, `min_score=0.85`, `hold_through`,
+  `min_dollar_vol=50M`, `min_vol_20d=0.12`, embedded crypto weekend sleeve,
+  and embedded EOD deleverage.
+- The stock loop correctly held cash on Apr 21-24 because no candidate
+  cleared `min_score=0.85`.
+- The embedded crypto sleeve did trade: BTC passed the weekend signal at
+  2026-04-25 12:50 UTC and submitted order
+  `21ccf911-ff7a-46c5-85d0-8a911360e6c3`.
+- Alpaca readback after fill showed account ACTIVE, no open orders, BTCUSD
+  market value about `$14.37k`, and positive unrealized P/L at the read.
+
+**Operational hardening deployed**:
+- `crypto_weekend.session.run_crypto_tick` now fails closed when the crypto
+  position API read fails. It no longer treats an API error as "flat", which
+  avoids duplicate Saturday buys after a restart or transient Alpaca issue.
+- Added `tick_status` heartbeat logging for every embedded crypto poll so
+  the 5-minute weekend loop is visible even when it is simply holding the
+  existing BTC position.
+
+**Validation**:
+- `pytest -q tests/test_crypto_weekend_session.py tests/test_crypto_weekend_live_trader.py`
+  => `47 passed`.
+- `python -m py_compile crypto_weekend/session.py xgbnew/live_trader.py`
+- `git diff --check -- crypto_weekend/session.py tests/test_crypto_weekend_session.py`
+
+**Deploy**:
+- Restarted through the required single-writer deploy path:
+  `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live`.
+- New production pid and lock holder: `69886`.
+- `daily-rl-trader` remains STOPPED; `trading-server` remains non-live/FATAL.
+- First post-restart crypto heartbeat:
+  `tick_status n_positions=1 positions_ok=true buy_win=true sell_win=false action=none`.
+
+**Decision**:
+- Production remains the validated 2x stock champion plus capped
+  0.5-gross weekend BTC sleeve.
+- No model or stock-threshold change was made.
+
+---
+
+### 🟢 2026-04-25 12:50 UTC — prod health corrected; crypto weekend sleeve live again
+
+**Operator request**: keep the Alpaca stack bold but bounded, with up to
+2x gross on the validated stock champion, and make sure production is
+actually healthy.
+
+**Operational findings**:
+- `xgb-daily-trader-live` was already running the intended stock champion
+  flags: `top_n=1`, `allocation=2.0`, `min_score=0.85`, `hold_through`,
+  `min_dollar_vol=50M`, `min_vol_20d=0.12`, embedded crypto weekend sleeve,
+  and embedded EOD deleverage capped at 2.0 gross.
+- A legacy `daily-rl-trader` supervisor process was also RUNNING with
+  live Alpaca environment variables, despite the current ledger saying it
+  should be stopped. The xgb process owned the fcntl lock, so no second
+  writer was active, but the sidecar violated the intended production
+  posture.
+- The embedded crypto weekend sleeve was failing Alpaca crypto-data calls
+  with 401s because `crypto_weekend.session` looked for `ALP_SECRET`
+  and could prefer paper env names even in live mode.
+
+**Fixes applied**:
+- Stopped `daily-rl-trader`; it is now `STOPPED`.
+- Fixed embedded crypto data credentials to follow `ALP_PAPER`:
+  - live mode uses `ALP_KEY_ID_PROD` / `ALP_SECRET_KEY_PROD`
+  - paper mode uses `ALP_KEY_ID_PAPER` / `ALP_SECRET_KEY_PAPER`
+  - explicit `APCA_API_*` names still override.
+- Restarted through the required deploy path:
+  `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live`.
+
+**Validation**:
+- `python -m py_compile crypto_weekend/session.py xgbnew/live_trader.py xgbnew/sweep_ensemble_grid.py`
+- `bash -n deployments/xgb-daily-trader-live/launch.sh scripts/deploy_live_trader.sh`
+- `pytest -q tests/test_crypto_weekend_session.py tests/test_crypto_weekend_live_trader.py tests/test_xgbnew_backtest_packing.py tests/test_xgbnew_live_trader_helpers.py tests/test_xgbnew_live_trader_guard.py tests/test_xgbnew_no_picks_fallback.py tests/test_xgbnew_sweep_ensemble_grid.py::test_cells_to_rows_shapes tests/test_xgbnew_sweep_ensemble_grid.py::test_fallback_and_conviction_axes_match_grid_product tests/test_xgbnew_sweep_ensemble_grid.py::test_allocation_mode_axes_match_grid_product tests/test_xgbnew_sweep_ensemble_grid.py::test_run_sweep_resume_rows_skips_completed_cells`
+- Result: `157 passed`.
+
+**Post-restart verification**:
+- `xgb-daily-trader-live RUNNING pid 2699977`; lock holder pid `2699977`.
+- `daily-rl-trader STOPPED`; `trading-server FATAL`/not live.
+- Deploy history appended:
+  `2026-04-25T12:50:54Z ... status=ok supervisor_pid=2699977 lock_pid=2699977`.
+- Crypto data calls now work. BTC passed the weekend signal; ETH and SOL did not.
+- The embedded sleeve submitted and filled a BTC buy:
+  - Order `21ccf911-ff7a-46c5-85d0-8a911360e6c3`
+  - `BTC/USD` buy `0.185112`, status `FILLED`
+  - Account check after fill: equity about `$28.65k`, cash about `$14.31k`,
+    BTC market value about `$14.34k`.
+
+**Decision**:
+- Production remains the validated 2x stock champion plus the capped
+  0.5-gross weekend crypto sleeve.
+- No forced low-confidence stock packing was deployed. The latest 120d
+  realistic sweeps showed full forced packing and lower stock thresholds
+  breach the drawdown gate.
+
+---
+
+### 🟡 2026-04-24 10:45 UTC — XGB+Cat skew-gate stress audit; no deploy
+
+**Question tested**: whether the current best XGB+Cat research candidate is
+strong enough to replace the live hold-cash XGB champion.
+
+**Candidate**:
+- Models: 10-model XGB+Cat blend from
+  `analysis/xgbnew_daily/track1_oos120d_{xgb,cat}/alltrain_seed*.pkl`.
+- OOS slice: `2025-12-18` → `2026-04-20`.
+- Simulator: `xgbnew.sweep_ensemble_grid`, `window_days=30`,
+  denser `stride_days=3`, `top_n=2`, `min_score=0.62`, `hold_through`,
+  `min_dollar_vol=50M`, `min_vol_20d=0.12`, deploy and stress36x fee
+  regimes, fill buffers `5/10/15/20 bps`, fail-fast on any negative window.
+- Artifact: `analysis/xgbnew_daily/track1_oos120d_xgbcat/sweep_skewgate_stress_20260424_codex/`
+  (`sweep_20260424_102328.partial.json`, stopped after the production
+  decision was clear).
+
+**Result**:
+- Best surviving deploy-cost cells were `lev=2.0`, `regime_cs_skew_min=0.75`:
+  - `5 bps`: median `+30.90%/mo`, p10 `+5.03`, sortino `20.03`,
+    worst DD `10.02%`, intraday DD `10.42%`, `0/18` negative windows.
+  - `10 bps`: median `+30.27%/mo`, p10 `+4.59`, sortino `19.55`,
+    worst DD `10.02%`, intraday DD `10.42%`, `0/18` negative windows.
+  - `15 bps`: median `+29.65%/mo`, p10 `+4.16`, sortino `19.06`,
+    worst DD `10.02%`, intraday DD `10.42%`, `0/18` negative windows.
+- The same candidate failed the worst tested deploy fill (`20 bps`):
+  median `+29.03%/mo`, p10 `+3.73`, but `1/18` negative windows.
+- Under stress36x fees, even `5 bps` fill failed the negative-window gate:
+  median `+28.48%/mo`, p10 `+3.33`, `1/18` negative windows.
+- Stricter skew gates (`>=1.0`, `>=1.25`, `>=1.5`) failed earlier and/or
+  fell below target on the denser stride.
+
+**Decision**:
+- No production change. The candidate has real signal, but it is not robust
+  enough under the repo production gate once the 120d slice is densified and
+  stressed.
+- Live remains `xgb-daily-trader-live` with the 5-seed alltrain XGB ensemble
+  at `top_n=1`, `allocation=2.0`, `min_score=0.85`, `hold_through`,
+  embedded crypto weekend sleeve, and embedded EOD deleverage.
+
+---
+
+### 🟢 2026-04-23 21:13 UTC — xgb live redeployed; stock entries/exits now use explicit-priced limits
+
+**What changed**:
+- Restarted `xgb-daily-trader-live` via `bash scripts/deploy_live_trader.sh xgb-daily-trader-live`.
+- New supervisor/live-writer PID: `2173397`.
+- No strategy or sizing change. Same champion config remains live:
+  - `top_n=1`
+  - `allocation=2.0`
+  - `min_score=0.85`
+  - `hold_through`
+  - `min_dollar_vol=50M`
+  - `min_vol_20d=0.12`
+  - embedded crypto weekend sleeve on
+  - embedded EOD deleverage on
+
+**Execution behavior change**:
+- Stock order submission in `xgbnew.live_trader` no longer uses direct market orders for:
+  - morning stock entries
+  - stock exits / rotations
+  - embedded EOD deleverage
+- These paths now derive a live quote and submit explicit-priced near-market limit orders instead.
+- This was prompted by a cancelled `MSFT` market order and the standing requirement to avoid spread-blind stock fills.
+
+**Validation before restart**:
+- `pytest tests/test_xgbnew_live_trader_helpers.py tests/test_xgbnew_live_trader_guard.py tests/test_xgbnew_eval_live.py tests/test_xgbnew_model_device.py -q`
+- Result: `65 passed`
+- `python -m py_compile xgbnew/live_trader.py`
+- `git diff --check`
+
+**Post-restart verification**:
+- `xgb-daily-trader-live RUNNING pid 2173397`
+- `daily-rl-trader STOPPED`
+- `trading-server STOPPED`
+- `deployments/live_trader_history.log` appended:
+  - `2026-04-23T21:13:26Z  operator=administrator  unit=xgb-daily-trader-live  supervisor_pid=2173397  lock_pid=2173397`
+- Startup log shows same session state as before redeploy:
+  - `Conviction filter min_score=0.85: 0/673 candidates pass (top score=0.5480)`
+  - `No picks today — holding current positions (if any).`
+
+---
+
+### 🟡 2026-04-23 15:15 UTC — no-open-orders incident review; no unsafe forced-trade deploy
+
+**Account state**:
+- Alpaca live account is active, not trading-blocked, equity `$28,678.98`, cash `$28,678.98`, buying power `$57,357.96`.
+- Open orders: `0`.
+- Equity positions: none. Only sub-cent crypto dust positions remain.
+- Supervisor remains healthy: `xgb-daily-trader-live RUNNING pid 3190619`; `daily-rl-trader` and `trading-server` stopped.
+
+**Root cause**:
+- Production is not disconnected from Alpaca. It is holding cash because the validated stock champion's conviction gate is too strict for the current regime.
+- 2026-04-23 live stock pass: `min_score=0.85`, top score `0.5480`, `0/673` candidates pass.
+
+**Aggressive alternatives tested**:
+- `SPY` no-picks fallback: rejected. Fresh H1 OOS sweep was negative; best fallback cells were still below zero median or had many negative windows.
+- XGB+Cat skew-gated blend at the robust `min_score=0.62`: still strong in the 8-window 120d slice, but a live-style dry run for 2026-04-23 did not place picks. Top score was `0.5536`; strict skew `>=1.0` was closed with current `cs_skew_ret5=0.8059`.
+- Lowering XGB+Cat to `min_score=0.58/0.55`: rejected. The extended sweep shows stress36x p10 sharply negative and multiple negative windows.
+- Conviction-scaled XGB+Cat (`min_score=0.0`, alloc ramp `0.52→0.62`): rejected. Best deploy cell was only `+23.01%/mo` median with p10 `-8.15`, `3/8` negative windows; stress36x median was negative.
+
+**Code fix from the investigation**:
+- `xgbnew.model.XGBStockModel.predict_scores` now retries NumPy prediction when a cuda-tagged wrapper contains a model that rejects CuPy input, notably CatBoost. This fixes live-style XGB+Cat dry runs.
+- Test added in `tests/test_xgbnew_model_device.py`.
+
+**Decision**:
+- No production flag change. Forcing orders today would mean deploying an under-target policy. Current validated prod remains cash-holding until a candidate clears the repo gate.
+
+---
+
+### 🟢 2026-04-23 11:02 UTC — xgb live redeployed with embedded EOD deleverage and batched scoring
+
+**Live-state check**:
+- Supervisor: `xgb-daily-trader-live RUNNING pid 3190619`; `daily-rl-trader` and `trading-server` are stopped.
+- Singleton lock: `strategy_state/account_locks/alpaca_live_writer.lock` is held by pid `3190619`, matching supervisor.
+- Live cmdline includes the stock champion plus embedded services:
+  - Stock: 5-seed XGB alltrain, `--top-n 1`, `--allocation 2.0`, `--min-score 0.85`, `--hold-through`, `--min-dollar-vol 50000000`, `--min-vol-20d 0.12`.
+  - Crypto: `--crypto-weekend --crypto-poll-seconds 300 --crypto-max-gross 0.5`.
+  - EOD deleverage: `--eod-deleverage --eod-max-gross-leverage 2.0 --eod-deleverage-window-minutes 60 --eod-force-market-minutes 5`.
+
+**Operational fixes shipped**:
+- EOD deleverage now runs inside `xgbnew.live_trader` using the same already-locked Alpaca `TradingClient`, so it does not fight the stock trader or require `trading-server` to be started as a second live writer.
+- EOD deleverage only reduces equity gross exposure above the configured cap and skips crypto symbols so the weekend crypto sleeve is not flattened accidentally.
+- Live score logging now uses Eastern session dates, avoiding confusing UTC/ET session labels in premarket/night restarts.
+- `score_all_symbols` now batches model prediction across all scoreable symbols instead of calling each model once per symbol per seed. Feature construction is still the main latency item to improve next.
+
+**Latest observed live run**:
+- 2026-04-23 10:54 UTC redeploy completed with pid `3097874`; the pre-batch scoring pass ran from `10:54:13` to `10:57:54` UTC and scored 673 candidates.
+- 2026-04-23 11:02 UTC redeploy completed with pid `3190619`; the batched-scoring pass ran from `11:01:54` to `11:04:16` UTC and scored the same 673 candidates.
+- The system did not trade because the live champion's explicit conviction gate rejected all picks: `min_score=0.85`, top score `0.5480`.
+
+**Validation**:
+- `pytest tests/test_xgbnew_eval_live.py tests/test_xgbnew_live_trader_helpers.py tests/test_xgbnew_live_trader_guard.py tests/test_crypto_weekend_session.py tests/test_crypto_weekend_live_trader.py -q` => `99 passed`.
+- `python -m py_compile xgbnew/live_trader.py`, `git diff --check`, and launch-script `bash -n` all passed.
+
+**Research status**: xgb+cat skew-gate remains prepared but is still NOT deployed as the stock champion. It needs the formal 100+ day unseen/stress gate before replacing the currently live stock model.
+
+---
+
+### 🟡 2026-04-23 10:58 UTC — live Alpaca writer verified; xgb+cat skew-gate prepared but NOT deployed
+
+**Live-state check**:
+- Supervisor: `xgb-daily-trader-live RUNNING pid 4053500`; `daily-rl-trader` and `trading-server` are stopped.
+- Singleton lock: `strategy_state/account_locks/alpaca_live_writer.lock` is held by pid `4053500`, matching supervisor.
+- Live env on pid `4053500`: `ALP_PAPER=0`, `ALLOW_ALPACA_LIVE_TRADING=1`, `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`.
+- Live cmdline still matches the 2026-04-19 champion: 5-seed XGB alltrain, `--top-n 1`, `--allocation 2.0`, `--min-score 0.85`, `--hold-through`, `--min-dollar-vol 50000000`, `--min-vol-20d 0.12`, embedded `--crypto-weekend`.
+
+**New research candidate**:
+- XGB+Cat 10-model blend trained through `2025-12-17`, evaluated on `2025-12-18` → `2026-04-17`, `window_days=30`, `stride_days=7`, `top_n=2`, `min_score=0.62`.
+- Baseline no skew gate reproduced: best deploy `lev=3.0` median `+103.49%/mo`, p10 `+26.25`, `0/8` neg, but stress36x p10 `-13.21`, so not robust enough.
+- Cross-sectional skew gate `regime_cs_skew_min=1.0` materially improves the same slice: `lev=2.5` stress36x median `+218.92%/mo`, p10 `+33.43`, `0/8` neg; `lev=3.0` stress36x median `+306.21%/mo`, p10 `+41.57`, `0/8` neg.
+- Artifacts: `analysis/xgbnew_daily/track1_oos120d_xgbcat/sweep_fine_20260423/sweep_20260423_103622.json` and `analysis/xgbnew_daily/track1_oos120d_xgbcat/sweep_skewgate_20260423/sweep_20260423_104219.json`.
+- Repro script: `scripts/xgbcat_skewgate_120d.sh`.
+
+**Action**: no production redeploy. The candidate is only 8 rolling windows over one 120d slice and has not cleared the repo HARD RULE gate (`100+ day unseen`, worst slippage / stress, `decision_lag=2` binary fills, target median monthly ≥27%, monthly DD around 20%). `xgbnew.live_trader` now has disabled-by-default `--regime-cs-iqr-max` / `--regime-cs-skew-min` flags so a future deploy can match the simulator exactly after broader validation.
 
 ---
 
@@ -198,7 +513,7 @@ as auto-deploy inference floors but does NOT list `--min-score` (and lists
 **To deploy** (one-line edit + restart):
 ```bash
 sed -i 's/--min-score 0.85/--min-score 0.87/' deployments/xgb-daily-trader-live/launch.sh
-echo ilu | sudo -S supervisorctl restart xgb-daily-trader-live
+scripts/deploy_live_trader.sh --allow-unmodeled-live-sidecars xgb-daily-trader-live
 # Verify:
 echo ilu | sudo -S tail -30 /var/log/supervisor/xgb-daily-trader-live.log
 # Should show "--min-score 0.87" in the new session log + new pid in lock.
@@ -285,7 +600,8 @@ or the singleton check `cat strategy_state/account_locks/alpaca_live_writer.lock
 
 **Rollback to lev=1 bare**: edit `deployments/xgb-daily-trader-live/launch.sh`,
 drop `--allocation 2.0 --min-score 0.85 --hold-through`, restore
-`--allocation 0.25`, then `sudo supervisorctl restart xgb-daily-trader-live`.
+`--allocation 0.25`, then run
+`scripts/deploy_live_trader.sh --allow-unmodeled-live-sidecars xgb-daily-trader-live`.
 
 **Levers per-axis (isolated uplifts, all bonferroni-seed-validated)**:
 
