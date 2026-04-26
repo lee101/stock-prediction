@@ -6,7 +6,7 @@ source .venv313/bin/activate
 export CUDA_VISIBLE_DEVICES=""
 
 TRAIN_DATA="pufferlib_market/data/crypto6_margin_train.bin"
-VAL_DATA="pufferlib_market/data/crypto6_margin_val.bin"
+VAL_DATA="pufferlib_market/data/crypto6_margin_val_long.bin"
 CKPT_ROOT="pufferlib_market/checkpoints/crypto6_margin_p1"
 LOG="$CKPT_ROOT/leaderboard.csv"
 
@@ -28,9 +28,14 @@ run_config() {
   local name=$1; shift
   local seed=$1; shift
   local dir="$CKPT_ROOT/${name}_s${seed}"
-  mkdir -p "$dir"
-  echo "[$(date -u +%FT%TZ)] START $name s$seed $@"
-  python -u -m pufferlib_market.train \
+  # skip training if already has a checkpoint
+  if [ -f "$dir/best.pt" ] || [ -f "$dir/val_best.pt" ]; then
+    echo "[$(date -u +%FT%TZ)] SKIP $name s$seed (checkpoint exists)"
+    [ -f "$dir/eval_lag2.json" ] && return
+  else
+    mkdir -p "$dir"
+    echo "[$(date -u +%FT%TZ)] START $name s$seed $@"
+    python -u -m pufferlib_market.train \
       --data-path       "$TRAIN_DATA" \
       --val-data-path   "$VAL_DATA" \
       --total-timesteps "$TOTAL_TIMESTEPS" \
@@ -52,8 +57,9 @@ run_config() {
       --checkpoint-dir  "$dir" \
       "$@" \
       > "$dir/train.log" 2>&1
-  local rc=$?
-  echo "[$(date -u +%FT%TZ)] DONE $name s$seed exit=$rc"
+    local rc=$?
+    echo "[$(date -u +%FT%TZ)] DONE $name s$seed exit=$rc"
+  fi
 
   local ckpt="$dir/val_best.pt"
   [ -f "$ckpt" ] || ckpt="$dir/best.pt"

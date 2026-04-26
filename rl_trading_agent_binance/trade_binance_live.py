@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -585,8 +586,14 @@ def _evaluate_hybrid_account_guard(
             }
         )
 
+    tracked_base_asset_to_symbol = {cfg.base_asset.upper(): symbol for symbol, cfg in TRADING_SYMBOLS.items()}
+    allowed_base_assets = {
+        TRADING_SYMBOLS[symbol].base_asset.upper() for symbol in normalized_symbols if symbol in TRADING_SYMBOLS
+    }
+    seen_foreign_symbols: set[str] = set()
+
     for symbol, (qty, value_usd) in positions_valued.items():
-        if value_usd < MIN_TRADE_USD:
+        if abs(value_usd) < MIN_TRADE_USD:
             continue
         payload: JSONDict = {
             "symbol": str(symbol),
@@ -595,10 +602,57 @@ def _evaluate_hybrid_account_guard(
         }
         if normalized_symbols and symbol not in normalized_symbols:
             foreign_positions.append(payload)
+            seen_foreign_symbols.add(str(symbol))
             continue
-        if value_usd > gross_symbol_limit_usd:
+        if abs(value_usd) > gross_symbol_limit_usd:
             payload["limit_usd"] = float(gross_symbol_limit_usd)
             oversized_positions.append(payload)
+
+    for asset, qty in state.positions.items():
+        asset_upper = str(asset).strip().upper()
+        if not asset_upper or abs(float(qty)) <= 1e-12:
+            continue
+        tracked_symbol = tracked_base_asset_to_symbol.get(asset_upper)
+        if tracked_symbol is not None:
+            if tracked_symbol in seen_foreign_symbols:
+                continue
+            if tracked_symbol in positions_valued:
+                continue
+            if not normalized_symbols or tracked_symbol in normalized_symbols:
+                continue
+            price_usd = _estimate_asset_usd_price(asset_upper, execution_mode)
+            value_usd = abs(float(qty)) * float(price_usd) if price_usd is not None else None
+            if value_usd is not None and value_usd < MIN_TRADE_USD:
+                continue
+            foreign_positions.append(
+                {
+                    "symbol": tracked_symbol,
+                    "asset": asset_upper,
+                    "qty": float(qty),
+                    "value_usd": float(value_usd) if value_usd is not None else None,
+                }
+            )
+            seen_foreign_symbols.add(tracked_symbol)
+            continue
+        if asset_upper in seen_foreign_symbols:
+            continue
+        if asset_upper in allowed_base_assets or asset_upper in _ACCOUNT_CASH_ASSETS:
+            continue
+        price_usd = _estimate_asset_usd_price(asset_upper, execution_mode)
+        value_usd = abs(float(qty)) * float(price_usd) if price_usd is not None else None
+        if value_usd is not None and value_usd < MIN_TRADE_USD:
+            continue
+        if value_usd is None and abs(float(qty)) < 1e-6:
+            continue
+        foreign_positions.append(
+            {
+                "symbol": asset_upper,
+                "asset": asset_upper,
+                "qty": float(qty),
+                "value_usd": float(value_usd) if value_usd is not None else None,
+            }
+        )
+        seen_foreign_symbols.add(asset_upper)
 
     market_symbol_to_internal = {
         _execution_pair(cfg, execution_mode): symbol for symbol, cfg in TRADING_SYMBOLS.items()
@@ -640,7 +694,14 @@ def _evaluate_hybrid_account_guard(
     if foreign_positions:
         issues.append(
             "foreign positions detected: "
-            + ", ".join(f"{item['symbol']}=${cast(float, item['value_usd']):.2f}" for item in foreign_positions)
+            + ", ".join(
+                (
+                    f"{item['symbol']}=${cast(float, item['value_usd']):.2f}"
+                    if item.get("value_usd") is not None
+                    else f"{item['symbol']} qty={cast(float, item['qty']):.8f}"
+                )
+                for item in foreign_positions
+            )
         )
     if foreign_orders:
         issues.append(
@@ -686,6 +747,37 @@ def _evaluate_hybrid_account_guard(
 
 def _transfer_reserve(asset: str) -> float:
     return ACCOUNT_TRANSFER_RESERVES.get(asset.upper(), 1e-8)
+
+
+_ACCOUNT_CASH_ASSETS = {"USDT", "FDUSD", "USDC", "BUSD"}
+
+
+def _estimate_asset_usd_price(asset: str, execution_mode: str) -> float | None:
+    asset_upper = str(asset).strip().upper()
+    if not asset_upper:
+        return None
+    if asset_upper in _ACCOUNT_CASH_ASSETS:
+        return 1.0
+    quote_candidates = ["USDT"]
+    if execution_mode != "margin":
+        quote_candidates.insert(0, "FDUSD")
+    for quote in quote_candidates:
+        if asset_upper == quote:
+            return 1.0
+        pair = f"{asset_upper}{quote}"
+        try:
+            price = binance_wrapper.get_symbol_price(pair)
+        except Exception:
+            price = None
+        if price is None:
+            continue
+        try:
+            parsed = float(price)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0.0:
+            return parsed
+    return None
 
 
 def _transferable_balance(asset: str, free_balance: float) -> float:
@@ -917,13 +1009,13 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
         except Exception:
             state.total_value_usd = 0.0
 
-        for cfg in TRADING_SYMBOLS.values():
-            asset_entry = get_margin_asset_balance(cfg.base_asset)
-            if not asset_entry:
+        for asset_entry in margin_account.get("userAssets", []):
+            asset = str(asset_entry.get("asset", "") or "").upper()
+            if not asset or asset in _ACCOUNT_CASH_ASSETS:
                 continue
-            qty = float(asset_entry.get("netAsset", 0.0))
+            qty = float(asset_entry.get("netAsset", 0.0) or 0.0)
             if abs(qty) > 1e-12:
-                state.positions[cfg.base_asset] = qty
+                state.positions[asset] = qty
         return state
 
     state.fdusd_balance = binance_wrapper.get_asset_free_balance("FDUSD") or 0.0
@@ -940,25 +1032,179 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
     return state
 
 
+def _configured_max_hold_hours() -> float | None:
+    raw = str(os.getenv("BINANCE_HYBRID_MAX_HOLD_HOURS", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(f"Ignoring invalid BINANCE_HYBRID_MAX_HOLD_HOURS={raw!r}")
+        return None
+    if not np.isfinite(value) or value <= 0.0:
+        return None
+    return float(value)
+
+
+def _trade_timestamp_utc(value: object) -> datetime | None:
+    ts = _isoformat_utc(value)
+    if ts is None:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(UTC)
+    except Exception:
+        return None
+
+
+def _trade_qty(trade: dict[str, Any]) -> float:
+    qty = _safe_float(trade.get("qty"))
+    if qty is not None and qty > 0.0:
+        return float(qty)
+    quote_qty = _safe_float(trade.get("quoteQty", trade.get("quote_qty")))
+    price = _safe_float(trade.get("price"))
+    if quote_qty is None or price is None or price <= 0.0:
+        return 0.0
+    return max(0.0, float(quote_qty) / float(price))
+
+
+def _reconstruct_active_position_entry(
+    trades: list[dict[str, Any]],
+    position_qty: float,
+) -> tuple[float, datetime | None]:
+    target_qty = abs(float(position_qty))
+    if target_qty <= 1e-12 or not trades:
+        return 0.0, None
+
+    chronological = sorted(trades, key=lambda trade: _safe_int(trade.get("time")) or 0)
+    lots: list[tuple[float, float, datetime | None]] = []
+    opening_is_buy = float(position_qty) > 0.0
+
+    for trade in chronological:
+        qty = _trade_qty(trade)
+        price = _safe_float(trade.get("price"))
+        if qty <= 0.0 or price is None or price <= 0.0:
+            continue
+        trade_time = _trade_timestamp_utc(trade.get("time"))
+        is_buyer = bool(trade.get("isBuyer"))
+        is_opening_trade = is_buyer if opening_is_buy else not is_buyer
+        if is_opening_trade:
+            lots.append((qty, float(price), trade_time))
+            continue
+
+        remaining_close_qty = float(qty)
+        while remaining_close_qty > 1e-12 and lots:
+            lot_qty, lot_price, lot_time = lots[0]
+            consumed = min(lot_qty, remaining_close_qty)
+            lot_qty -= consumed
+            remaining_close_qty -= consumed
+            if lot_qty <= 1e-12:
+                lots.pop(0)
+            else:
+                lots[0] = (lot_qty, lot_price, lot_time)
+
+    open_qty = sum(lot_qty for lot_qty, _lot_price, _lot_time in lots)
+    if open_qty <= 1e-12:
+        return 0.0, None
+
+    if open_qty + 1e-9 < target_qty:
+        fallback_side_is_buy = opening_is_buy
+        for trade in reversed(chronological):
+            if bool(trade.get("isBuyer")) != fallback_side_is_buy:
+                continue
+            price = _safe_float(trade.get("price"))
+            if price is None or price <= 0.0:
+                continue
+            return float(price), _trade_timestamp_utc(trade.get("time"))
+        return 0.0, None
+
+    weighted_notional = 0.0
+    remaining_target = target_qty
+    selected_lots: list[tuple[float, float, datetime | None]] = []
+    for lot_qty, lot_price, lot_time in lots:
+        take_qty = min(float(lot_qty), remaining_target)
+        if take_qty <= 1e-12:
+            continue
+        selected_lots.append((take_qty, float(lot_price), lot_time))
+        weighted_notional += take_qty * float(lot_price)
+        remaining_target -= take_qty
+        if remaining_target <= 1e-12:
+            break
+
+    effective_qty = sum(lot_qty for lot_qty, _lot_price, _lot_time in selected_lots)
+    if effective_qty <= 1e-12:
+        return 0.0, None
+    oldest_time = next((lot_time for _lot_qty, _lot_price, lot_time in selected_lots if lot_time is not None), None)
+    return weighted_notional / effective_qty, oldest_time
+
+
+def _position_symbol_config(symbol: str, execution_mode: str) -> BinanceSymbolConfig | None:
+    normalized = str(symbol or "").strip().upper()
+    cfg = TRADING_SYMBOLS.get(normalized)
+    if cfg is not None:
+        return cfg
+    asset = normalized[:-3] if normalized.endswith("USD") and len(normalized) > 3 else normalized
+    if not asset or asset in _ACCOUNT_CASH_ASSETS:
+        return None
+    synthetic = BinanceSymbolConfig(
+        symbol=normalized,
+        binance_pair=f"{asset}USDT",
+        quote_asset="USDT",
+        base_asset=asset,
+        maker_fee=0.001,
+        max_position_pct=0.0,
+    )
+    market_symbol = _execution_pair(synthetic, execution_mode)
+    try:
+        price = binance_wrapper.get_symbol_price(market_symbol)
+    except Exception:
+        price = None
+    return synthetic if price is not None else None
+
+
+def _get_market_mid_price(market_symbol: str) -> float | None:
+    try:
+        client = binance_wrapper.get_client()
+    except Exception:
+        client = None
+    if client is not None and hasattr(client, "get_orderbook_ticker"):
+        try:
+            ticker = client.get_orderbook_ticker(symbol=market_symbol)
+        except Exception:
+            ticker = None
+        if isinstance(ticker, dict):
+            bid = _safe_float(ticker.get("bidPrice"))
+            ask = _safe_float(ticker.get("askPrice"))
+            if bid is not None and bid > 0.0 and ask is not None and ask > 0.0:
+                return (float(bid) + float(ask)) / 2.0
+    return _safe_float(binance_wrapper.get_symbol_price(market_symbol))
+
+
 def get_position_entry(
     sym_cfg: BinanceSymbolConfig,
     *,
     execution_mode: str = "spot",
+    position_qty: float | None = None,
 ) -> tuple[float, datetime | None]:
     """Get an approximate entry price/time for the active position from recent fills."""
     market_symbol = _execution_pair(sym_cfg, execution_mode)
     if execution_mode == "margin":
-        trades = get_margin_trades(market_symbol, limit=20)
+        trades = list(get_margin_trades(market_symbol, limit=200) or [])
     else:
-        trades = binance_wrapper.get_my_trades(market_symbol, limit=20)
+        trades = list(binance_wrapper.get_my_trades(market_symbol, limit=200) or [])
     if not trades:
         return 0.0, None
-    for t in reversed(trades):
-        if t.get("isBuyer"):
-            price = float(t.get("price", 0))
-            ts = t.get("time", 0)
-            open_time = datetime.fromtimestamp(ts / 1000, tz=UTC) if ts else None
-            return price, open_time
+    if position_qty is not None and abs(float(position_qty)) > 1e-12:
+        entry_price, open_time = _reconstruct_active_position_entry(trades, float(position_qty))
+        if entry_price > 0.0 or open_time is not None:
+            return entry_price, open_time
+    opening_is_buy = position_qty is None or float(position_qty) >= 0.0
+    for trade in sorted(trades, key=lambda row: _safe_int(row.get("time")) or 0, reverse=True):
+        if bool(trade.get("isBuyer")) != opening_is_buy:
+            continue
+        price = _safe_float(trade.get("price"))
+        if price is None or price <= 0.0:
+            continue
+        return float(price), _trade_timestamp_utc(trade.get("time"))
     return 0.0, None
 
 
@@ -1141,6 +1387,44 @@ def _binance_error_code(exc: Exception) -> int | None:
 
 
 _BINANCE_ORDER_GONE_CODES = {-2011, -2013}
+_ORDER_PRICE_REFRESH_TOLERANCE_BPS = 20.0
+
+
+def _order_limit_price(order: dict) -> float:
+    try:
+        return float(order.get("price", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _weighted_remaining_order_price(orders: list[dict]) -> float:
+    weighted_notional = 0.0
+    weighted_qty = 0.0
+    for order in orders:
+        remaining_qty = _order_remaining_qty(order)
+        price = _order_limit_price(order)
+        if remaining_qty <= 0.0 or price <= 0.0:
+            continue
+        weighted_notional += remaining_qty * price
+        weighted_qty += remaining_qty
+    if weighted_qty <= 0.0:
+        return 0.0
+    return weighted_notional / weighted_qty
+
+
+def _order_price_is_fresh(
+    *,
+    orders: list[dict],
+    desired_price: float | None,
+    tolerance_bps: float = _ORDER_PRICE_REFRESH_TOLERANCE_BPS,
+) -> bool:
+    if desired_price is None or desired_price <= 0.0:
+        return True
+    existing_price = _weighted_remaining_order_price(orders)
+    if existing_price <= 0.0:
+        return False
+    relative_gap = abs(existing_price - float(desired_price)) / max(float(desired_price), 1e-12)
+    return relative_gap <= max(0.0, float(tolerance_bps)) / 10000.0
 
 
 def _dedupe_side_orders(
@@ -1152,19 +1436,33 @@ def _dedupe_side_orders(
     dry_run: bool,
     desired_qty: float | None = None,
     desired_notional: float | None = None,
+    desired_price: float | None = None,
+    price_tolerance_bps: float = _ORDER_PRICE_REFRESH_TOLERANCE_BPS,
 ) -> tuple[list[dict], bool]:
     matches = _matching_open_orders(open_orders, symbol, side)
     if not matches:
         return open_orders, False
 
+    price_is_fresh = _order_price_is_fresh(
+        orders=matches,
+        desired_price=desired_price,
+        tolerance_bps=price_tolerance_bps,
+    )
+    if not price_is_fresh:
+        existing_price = _weighted_remaining_order_price(matches)
+        logger.info(
+            f"  Existing {side.upper()} order price on {symbol} is stale "
+            f"(existing={existing_price:.8f}, desired={float(desired_price):.8f}), replacing"
+        )
+
     if desired_qty is not None:
         remaining_qty = sum(_order_remaining_qty(order) for order in matches)
-        if remaining_qty >= max(0.0, desired_qty) * 0.98:
+        if remaining_qty >= max(0.0, desired_qty) * 0.98 and price_is_fresh:
             logger.info(f"  Existing {side.upper()} order already covers desired qty on {symbol}")
             return open_orders, True
     if desired_notional is not None:
         remaining_notional = sum(_order_remaining_notional(order) for order in matches)
-        if remaining_notional >= max(0.0, desired_notional) * 0.98:
+        if remaining_notional >= max(0.0, desired_notional) * 0.98 and price_is_fresh:
             logger.info(f"  Existing {side.upper()} order already covers desired notional on {symbol}")
             return open_orders, True
 
@@ -1223,6 +1521,313 @@ def _cleanup_open_orders(execution_mode: str, dry_run: bool) -> OpenOrderCleanup
     except Exception as e:
         logger.warning(f"  Failed to check open orders: {e}")
         return OpenOrderCleanupResult()
+
+
+def _cancel_matching_open_orders(
+    open_orders: list[dict[str, Any]],
+    *,
+    symbols: set[str],
+    side: str,
+    execution_mode: str,
+    dry_run: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not symbols:
+        return open_orders, []
+
+    side_upper = str(side).strip().upper()
+    remaining: list[dict[str, Any]] = []
+    cancelled: list[dict[str, Any]] = []
+    for order in open_orders:
+        symbol = str(order.get("symbol", "") or "").upper()
+        order_side = str(order.get("side", "") or "").upper()
+        if symbol not in symbols or order_side != side_upper:
+            remaining.append(order)
+            continue
+
+        order_id = order.get("orderId")
+        if order_id is None:
+            logger.warning(f"  No orderId on {symbol} {side_upper} order, treating as cancelled: {order}")
+            cancelled.append(order)
+            continue
+        if dry_run:
+            logger.info(f"    [DRY RUN] Would cancel {side_upper} order {order_id} on {symbol}")
+            cancelled.append(order)
+            continue
+        try:
+            _cancel_open_order(execution_mode, symbol, int(order_id))
+            cancelled.append(order)
+        except Exception as exc:
+            code = _binance_error_code(exc)
+            if code in _BINANCE_ORDER_GONE_CODES:
+                logger.info(f"  Order {order_id} on {symbol} already gone (code={code}), treating as cancelled")
+                cancelled.append(order)
+                continue
+            logger.warning(f"  Failed to cancel {side_upper} order {order_id} on {symbol}: {exc}")
+            remaining.append(order)
+    return remaining, cancelled
+
+
+def _resolve_position_exit_target(
+    sym_cfg: BinanceSymbolConfig,
+    *,
+    execution_mode: str,
+    current_price: float,
+    position_qty: float,
+    desired_exit_price: float | None = None,
+    max_hold_hours: float | None = None,
+) -> dict[str, object]:
+    live_entry_price, open_time = get_position_entry(
+        sym_cfg,
+        execution_mode=execution_mode,
+        position_qty=float(position_qty),
+    )
+    configured_max_hold_hours = max_hold_hours if max_hold_hours is not None else _configured_max_hold_hours()
+    held_hours = None
+    if open_time is not None:
+        held_hours = max(0.0, (datetime.now(UTC) - open_time).total_seconds() / 3600.0)
+
+    exit_basis = "forecast_or_breakeven"
+    max_hold_triggered = False
+    exit_price = _safe_float(desired_exit_price)
+    if (
+        configured_max_hold_hours is not None
+        and held_hours is not None
+        and held_hours >= float(configured_max_hold_hours)
+    ):
+        market_symbol = _execution_pair(sym_cfg, execution_mode)
+        exit_price = _safe_float(_get_market_mid_price(market_symbol)) or float(current_price)
+        exit_basis = "max_hold_midpoint"
+        max_hold_triggered = True
+    else:
+        min_exit_price = _minimum_live_exit_price(
+            sym_cfg,
+            current_price=float(current_price),
+            execution_mode=execution_mode,
+            entry_price=float(live_entry_price),
+        )
+        if exit_price is None or exit_price <= 0.0:
+            exit_price = float(min_exit_price)
+        else:
+            exit_price = max(float(exit_price), float(min_exit_price))
+
+    return {
+        "entry_price": float(live_entry_price) if live_entry_price > 0.0 else 0.0,
+        "open_time": open_time,
+        "hold_hours": float(held_hours) if held_hours is not None else None,
+        "max_hold_hours": float(configured_max_hold_hours) if configured_max_hold_hours is not None else None,
+        "max_hold_triggered": bool(max_hold_triggered),
+        "exit_price": float(exit_price) if exit_price is not None else 0.0,
+        "exit_basis": exit_basis,
+    }
+
+
+def _set_symbol_reentry_plan(
+    detail: JSONDict,
+    *,
+    entry_price: float | None,
+    target_value: float,
+    allocation_pct: float,
+    status: str | None = None,
+    reason: str | None = None,
+) -> None:
+    entry = _safe_float(entry_price)
+    target_value = max(0.0, float(target_value))
+    allocation_pct = max(0.0, float(allocation_pct))
+
+    resolved_status = status
+    if resolved_status is None:
+        if entry is not None and entry > 0.0 and (target_value >= MIN_TRADE_USD or allocation_pct > 0.0):
+            resolved_status = "ready"
+        elif target_value < MIN_TRADE_USD and allocation_pct <= 1e-9:
+            resolved_status = "stay_flat_after_exit"
+        else:
+            resolved_status = "missing_entry_price"
+
+    resolved_reason = reason
+    if not resolved_reason:
+        if resolved_status == "stay_flat_after_exit":
+            resolved_reason = "allocation plan exits to cash after this close"
+        elif resolved_status == "missing_entry_price":
+            resolved_reason = "allocation plan omitted a follow-on buy level"
+        elif resolved_status == "ready":
+            resolved_reason = "next entry level is prepared if this exit fills"
+
+    detail["next_entry_price"] = float(entry) if entry is not None and entry > 0.0 else None
+    detail["next_target_value"] = float(target_value)
+    detail["next_allocation_pct"] = float(allocation_pct)
+    detail["reentry_plan"] = {
+        "status": str(resolved_status),
+        "entry_price": float(entry) if entry is not None and entry > 0.0 else None,
+        "target_value": float(target_value),
+        "allocation_pct": float(allocation_pct),
+        "reason": str(resolved_reason) if resolved_reason else None,
+    }
+
+
+def _ensure_position_exit_coverage(
+    *,
+    cycle_snapshot: JSONDict,
+    symbol_details: dict[str, JSONDict],
+    positions_valued: dict[str, tuple[float, float]],
+    open_orders: list[dict[str, Any]],
+    orders_placed: list[dict[str, Any]],
+    execution_mode: str,
+    dry_run: bool,
+    exit_prices: dict[str, float] | None = None,
+    entry_prices: dict[str, float] | None = None,
+    target_values: dict[str, float] | None = None,
+    allocation_pcts: dict[str, float] | None = None,
+    eligible_symbols: set[str] | None = None,
+    reentry_status: str | None = None,
+    reentry_reason: str | None = None,
+    max_hold_hours: float | None = None,
+) -> list[dict[str, Any]]:
+    exit_prices = dict(exit_prices or {})
+    entry_prices = dict(entry_prices or {})
+    target_values = dict(target_values or {})
+    allocation_pcts = dict(allocation_pcts or {})
+    allowed = {str(sym).upper() for sym in eligible_symbols} if eligible_symbols is not None else None
+    configured_max_hold_hours = max_hold_hours if max_hold_hours is not None else _configured_max_hold_hours()
+
+    exit_coverage: JSONDict = {
+        "required_symbols": [],
+        "covered_symbols": [],
+        "missing_symbols": [],
+    }
+    for raw_sym, (qty, cur_value) in positions_valued.items():
+        sym = str(raw_sym).upper()
+        if allowed is not None and sym not in allowed:
+            continue
+        cfg = _position_symbol_config(sym, execution_mode)
+        if cfg is None or qty <= 0.0 or cur_value < MIN_TRADE_USD:
+            continue
+
+        detail = symbol_details.get(sym)
+        market_symbol = _execution_pair(cfg, execution_mode)
+        if detail is None:
+            detail = {
+                "symbol": sym,
+                "market_symbol": market_symbol,
+                "quote_asset": _execution_quote_asset(cfg, execution_mode),
+                "current_qty": float(qty),
+                "current_value": float(cur_value),
+                "target_value": float(target_values.get(sym, 0.0)),
+                "allocation_pct": float(allocation_pcts.get(sym, 0.0)),
+                "entry_price": _safe_float(entry_prices.get(sym)),
+                "exit_price": _safe_float(exit_prices.get(sym)),
+                "actions": [],
+            }
+            symbol_details[sym] = detail
+            _cycle_symbols_detail(cycle_snapshot).append(detail)
+        else:
+            detail["current_qty"] = float(qty)
+            detail["current_value"] = float(cur_value)
+            detail["target_value"] = float(target_values.get(sym, detail.get("target_value") or 0.0))
+            detail["allocation_pct"] = float(allocation_pcts.get(sym, detail.get("allocation_pct") or 0.0))
+            if _safe_float(detail.get("entry_price")) is None:
+                detail["entry_price"] = _safe_float(entry_prices.get(sym))
+
+        actions = _detail_actions(detail)
+        current_price = _safe_float(detail.get("current_price"))
+        if current_price is None or current_price <= 0.0:
+            current_price = (
+                float(cur_value) / float(qty)
+                if qty > 0.0 and cur_value > 0.0
+                else _get_market_price(cfg, execution_mode)
+            )
+        detail["current_price"] = float(current_price)
+
+        exit_target = _resolve_position_exit_target(
+            cfg,
+            execution_mode=execution_mode,
+            current_price=float(current_price),
+            position_qty=float(qty),
+            desired_exit_price=_safe_float(exit_prices.get(sym)),
+            max_hold_hours=configured_max_hold_hours,
+        )
+        live_entry_price = float(exit_target.get("entry_price") or 0.0)
+        open_time = cast(datetime | None, exit_target.get("open_time"))
+        exit_price = float(exit_target.get("exit_price") or 0.0)
+        exit_basis = str(exit_target.get("exit_basis") or "forecast_or_breakeven")
+        if _safe_float(detail.get("entry_price")) is None and live_entry_price > 0.0:
+            detail["entry_price"] = float(live_entry_price)
+        detail["position_entry_time"] = open_time.isoformat() if open_time is not None else None
+        detail["hold_hours"] = _safe_float(exit_target.get("hold_hours"))
+        detail["max_hold_hours"] = _safe_float(exit_target.get("max_hold_hours"))
+        detail["max_hold_triggered"] = bool(exit_target.get("max_hold_triggered"))
+        detail["exit_price"] = float(exit_price)
+        detail["exit_basis"] = exit_basis
+        _set_symbol_reentry_plan(
+            detail,
+            entry_price=_safe_float(entry_prices.get(sym)),
+            target_value=float(target_values.get(sym, 0.0)),
+            allocation_pct=float(allocation_pcts.get(sym, 0.0)),
+            status=reentry_status,
+            reason=reentry_reason,
+        )
+        cast(list[str], exit_coverage["required_symbols"]).append(sym)
+
+        coverage_action: dict[str, object] = {
+            "kind": "position_exit_coverage",
+            "side": "SELL",
+            "status": "already_covered",
+            "desired_qty": float(qty),
+            "desired_price": float(exit_price),
+            "exit_basis": exit_basis,
+            "matched_open_orders": _serialize_orders(_matching_open_orders(open_orders, market_symbol, "SELL")),
+            "placed_order": None,
+        }
+        open_orders, skip_exit_sell = _dedupe_side_orders(
+            open_orders,
+            symbol=market_symbol,
+            side="SELL",
+            execution_mode=execution_mode,
+            dry_run=dry_run,
+            desired_qty=float(qty),
+            desired_price=float(exit_price),
+        )
+        if skip_exit_sell:
+            actions.append(coverage_action)
+            cast(list[str], exit_coverage["covered_symbols"]).append(sym)
+            continue
+
+        covered_qty_after = _remaining_side_qty(open_orders, market_symbol, "SELL")
+        uncovered_qty = max(0.0, float(qty) - covered_qty_after)
+        uncovered_value = uncovered_qty * float(current_price)
+        coverage_action["desired_qty"] = float(uncovered_qty)
+        if uncovered_value >= MIN_TRADE_USD:
+            tp_order = place_limit_sell(
+                cfg,
+                float(exit_price),
+                float(uncovered_qty),
+                execution_mode=execution_mode,
+                dry_run=dry_run,
+            )
+            if tp_order:
+                orders_placed.append(tp_order)
+                open_orders.append(tp_order)
+                tp_serialized = _serialize_order(tp_order)
+                coverage_action["status"] = "placed"
+                coverage_action["placed_order"] = tp_serialized
+                if tp_serialized is not None:
+                    _cycle_order_bucket(cycle_snapshot, "placed").append(tp_serialized)
+            else:
+                coverage_action["status"] = "failed"
+                coverage_action["reason"] = "order_not_placed"
+        elif uncovered_qty > 0.0:
+            coverage_action["status"] = "residual_below_min_trade"
+        actions.append(coverage_action)
+
+        covered_qty_after = _remaining_side_qty(open_orders, market_symbol, "SELL")
+        uncovered_qty_after = max(0.0, float(qty) - covered_qty_after)
+        uncovered_value_after = uncovered_qty_after * float(current_price)
+        if uncovered_value_after >= MIN_TRADE_USD and uncovered_qty_after > float(qty) * 0.02:
+            cast(list[str], exit_coverage["missing_symbols"]).append(sym)
+        else:
+            cast(list[str], exit_coverage["covered_symbols"]).append(sym)
+
+    cycle_snapshot["exit_order_coverage"] = exit_coverage
+    return open_orders
 
 
 def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
@@ -1791,6 +2396,7 @@ def run_trading_cycle(
             "open_before_cleanup": [],
             "open_after_cleanup": [],
             "cancelled_stale": [],
+            "cancelled_for_account_guard": [],
             "placed": [],
         },
         "symbols_detail": [],
@@ -1852,7 +2458,9 @@ def run_trading_cycle(
             pos_val = pos_qty * cur_price
             if pos_val < MIN_TRADE_USD:
                 continue
-            _, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
+            _, open_time = get_position_entry(
+                sym_cfg, execution_mode=resolved_execution_mode, position_qty=float(pos_qty)
+            )
             if not open_time:
                 continue
             held_h = (datetime.now(UTC) - open_time).total_seconds() / 3600.0
@@ -1949,7 +2557,9 @@ def run_trading_cycle(
             entry_price, open_time = 0.0, None
             if position_qty > 0:
                 try:
-                    entry_price, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
+                    entry_price, open_time = get_position_entry(
+                        sym_cfg, execution_mode=resolved_execution_mode, position_qty=float(pos_qty)
+                    )
                 except Exception:
                     pass
             symbol_detail["entry_price"] = float(entry_price)
@@ -1996,6 +2606,7 @@ def run_trading_cycle(
                     execution_mode=resolved_execution_mode,
                     dry_run=dry_run,
                     desired_qty=position_qty,
+                    desired_price=sell_price,
                 )
                 sell_action: dict[str, object] = {
                     "kind": "sell_take_profit",
@@ -2112,6 +2723,7 @@ def run_trading_cycle(
                     execution_mode=resolved_execution_mode,
                     dry_run=dry_run,
                     desired_notional=trade_size,
+                    desired_price=buy_price,
                 )
                 buy_action["matched_open_orders"] = existing_buy_orders
                 if skip_buy:
@@ -2386,20 +2998,30 @@ def _get_current_positions_valued(
     state: PortfolioState,
     execution_mode: str,
 ) -> dict[str, tuple[float, float]]:
-    """Get {symbol: (qty, value_usd)} for all tradeable symbols with positions."""
-    result = {}
-    for sym, cfg in TRADING_SYMBOLS.items():
-        qty = state.positions.get(cfg.base_asset, 0.0)
-        if abs(qty) <= 1e-12:
+    """Get {symbol: (qty, value_usd)} for all meaningful account positions."""
+    result: dict[str, tuple[float, float]] = {}
+    tracked_base_to_symbol = {cfg.base_asset.upper(): sym for sym, cfg in TRADING_SYMBOLS.items()}
+    for asset, raw_qty in state.positions.items():
+        asset_upper = str(asset or "").strip().upper()
+        qty = float(raw_qty or 0.0)
+        if not asset_upper or asset_upper in _ACCOUNT_CASH_ASSETS or abs(qty) <= 1e-12:
             continue
+        internal_symbol = tracked_base_to_symbol.get(asset_upper, asset_upper)
+        cfg = TRADING_SYMBOLS.get(internal_symbol)
         try:
-            price = _get_market_price(cfg, execution_mode)
-            value_usd = qty * price
+            if cfg is not None:
+                price = _get_market_price(cfg, execution_mode)
+            else:
+                estimated_price = _estimate_asset_usd_price(asset_upper, execution_mode)
+                if estimated_price is None or estimated_price <= 0.0:
+                    continue
+                price = float(estimated_price)
+            value_usd = qty * float(price)
             if abs(value_usd) < MIN_TRADE_USD:
                 continue
-            result[sym] = (qty, value_usd)
+            result[internal_symbol] = (qty, value_usd)
         except Exception:
-            pass
+            continue
     return result
 
 
@@ -2491,6 +3113,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             "open_before_cleanup": _serialize_orders(cleanup.before),
             "open_after_cleanup": _serialize_orders(cleanup.active),
             "cancelled_stale": _serialize_orders(cleanup.cancelled),
+            "cancelled_for_account_guard": [],
             "placed": [],
         }
         guard_symbols = _normalize_symbol_list(tradable_symbols) or _normalize_symbol_list(
@@ -2511,10 +3134,50 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
         if bool(account_guard.get("blocked")):
             reason = str(account_guard.get("reason") or "account_guard_blocked")
             logger.error("Hybrid account guard blocked live trading: {}", reason)
+            short_cover_market_symbols = {
+                _execution_pair(TRADING_SYMBOLS[sym], resolved_execution_mode)
+                for sym, (qty, _value) in positions_valued.items()
+                if sym in TRADING_SYMBOLS and float(qty) < -1e-12
+            }
+            open_buy_symbols = {
+                str(order.get("symbol", "") or "").upper()
+                for order in open_orders
+                if str(order.get("side", "") or "").upper() == "BUY"
+            }
+            cancellable_buy_symbols = open_buy_symbols - short_cover_market_symbols
+            open_orders, cancelled_for_guard = _cancel_matching_open_orders(
+                open_orders,
+                symbols=cancellable_buy_symbols,
+                side="BUY",
+                execution_mode=resolved_execution_mode,
+                dry_run=dry_run,
+            )
+            if cancelled_for_guard:
+                _cycle_order_bucket(cycle_snapshot, "cancelled_for_account_guard").extend(
+                    _serialize_orders(cancelled_for_guard)
+                )
+            symbol_details: dict[str, JSONDict] = {}
+            open_orders = _ensure_position_exit_coverage(
+                cycle_snapshot=cycle_snapshot,
+                symbol_details=symbol_details,
+                positions_valued=positions_valued,
+                open_orders=open_orders,
+                orders_placed=orders_placed,
+                execution_mode=resolved_execution_mode,
+                dry_run=dry_run,
+                eligible_symbols={str(sym).upper() for sym in positions_valued},
+                reentry_status="deferred_account_guard",
+                reentry_reason=reason,
+            )
+            cycle_snapshot["orders"]["open_after_cleanup"] = _serialize_orders(open_orders)
             cycle_snapshot["status"] = "account_guard_blocked"
-            cycle_snapshot["allocation_source"] = "account_guard_noop"
+            cycle_snapshot["allocation_source"] = (
+                "account_guard_protective_exit_only"
+                if cancelled_for_guard or orders_placed or cycle_snapshot.get("symbols_detail")
+                else "account_guard_noop"
+            )
             cycle_snapshot["error"] = reason
-            return []
+            return orders_placed
 
         cache_root = Path(forecast_cache_root)
         all_crypto_syms = tuple(s for s in rl_gen.symbols if s in SYMBOL_TO_BINANCE_PAIR)
@@ -2724,6 +3387,12 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                 "actions": [],
             }
             symbol_details[sym] = detail
+            _set_symbol_reentry_plan(
+                detail,
+                entry_price=_safe_float(plan.entry_prices.get(sym)),
+                target_value=float(target_values.get(sym, 0.0)),
+                allocation_pct=float(plan.allocations.get(sym, 0.0)),
+            )
             _cycle_symbols_detail(cycle_snapshot).append(detail)
 
         for sym, (qty, cur_value) in positions_valued.items():
@@ -2747,9 +3416,29 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                 price = _get_market_price(cfg, resolved_execution_mode)
                 sell_value = cur_value - target_val
                 sell_qty = min(sell_value / price, qty)
-                exit_price = plan.exit_prices.get(sym, price * 1.001)
-                if exit_price <= 0:
-                    exit_price = price * 1.001
+                exit_target = _resolve_position_exit_target(
+                    cfg,
+                    execution_mode=resolved_execution_mode,
+                    current_price=float(price),
+                    position_qty=float(qty),
+                    desired_exit_price=_safe_float(plan.exit_prices.get(sym)),
+                )
+                exit_price = float(exit_target.get("exit_price") or 0.0)
+                if (
+                    _safe_float(detail.get("entry_price")) is None
+                    and float(exit_target.get("entry_price") or 0.0) > 0.0
+                ):
+                    detail["entry_price"] = float(exit_target.get("entry_price") or 0.0)
+                rebalance_open_time = cast(datetime | None, exit_target.get("open_time"))
+                detail["position_entry_time"] = (
+                    rebalance_open_time.isoformat()
+                    if rebalance_open_time is not None
+                    else detail.get("position_entry_time")
+                )
+                detail["hold_hours"] = _safe_float(exit_target.get("hold_hours"))
+                detail["max_hold_hours"] = _safe_float(exit_target.get("max_hold_hours"))
+                detail["max_hold_triggered"] = bool(exit_target.get("max_hold_triggered"))
+                detail["exit_basis"] = str(exit_target.get("exit_basis") or "forecast_or_breakeven")
                 market_symbol = _execution_pair(cfg, resolved_execution_mode)
                 sell_action: dict[str, object] = {
                     "kind": "rebalance_sell",
@@ -2758,6 +3447,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                     "desired_qty": float(sell_qty),
                     "desired_notional": float(sell_value),
                     "desired_price": float(exit_price),
+                    "exit_basis": str(exit_target.get("exit_basis") or "forecast_or_breakeven"),
                     "matched_open_orders": _serialize_orders(_matching_open_orders(open_orders, market_symbol, "SELL")),
                     "placed_order": None,
                 }
@@ -2768,6 +3458,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                     execution_mode=resolved_execution_mode,
                     dry_run=dry_run,
                     desired_qty=sell_qty,
+                    desired_price=exit_price,
                 )
                 if skip_sell:
                     logger.info(f"  Existing sell order already working for {market_symbol}")
@@ -2879,6 +3570,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                     execution_mode=resolved_execution_mode,
                     dry_run=dry_run,
                     desired_notional=buy_needed,
+                    desired_price=entry_price,
                 )
                 if skip_buy:
                     logger.info(f"  Existing buy order already working for {market_symbol}")
@@ -2944,80 +3636,21 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                 buy_action["status"] = "failed"
                 buy_action["reason"] = str(exc)
 
-        exit_coverage: JSONDict = {
-            "required_symbols": [],
-            "covered_symbols": [],
-            "missing_symbols": [],
-        }
-        for sym, (qty, cur_value) in positions_valued.items():
-            cfg = TRADING_SYMBOLS.get(sym)
-            if cfg is None or qty <= 0.0 or cur_value < MIN_TRADE_USD:
-                continue
-            detail: JSONDict | None = symbol_details.get(sym)
-            if detail is None:
-                continue
-            actions = _detail_actions(detail)
-            market_symbol = _execution_pair(cfg, resolved_execution_mode)
-            current_price = _safe_float(detail.get("current_price")) or _get_market_price(cfg, resolved_execution_mode)
-            entry_price, _open_time = get_position_entry(cfg, execution_mode=resolved_execution_mode)
-            exit_price = _safe_float(plan.exit_prices.get(sym))
-            min_exit_price = _minimum_live_exit_price(
-                cfg,
-                current_price=float(current_price),
-                execution_mode=resolved_execution_mode,
-                entry_price=float(entry_price),
-            )
-            if exit_price is None or exit_price <= 0.0:
-                exit_price = float(min_exit_price)
-            else:
-                exit_price = max(float(exit_price), float(min_exit_price))
-            detail["exit_price"] = float(exit_price)
-            cast(list[str], exit_coverage["required_symbols"]).append(sym)
-
-            covered_qty_before = _remaining_side_qty(open_orders, market_symbol, "SELL")
-            uncovered_qty = max(0.0, float(qty) - covered_qty_before)
-            uncovered_value = uncovered_qty * float(current_price)
-            coverage_action: dict[str, object] = {
-                "kind": "position_exit_coverage",
-                "side": "SELL",
-                "status": "already_covered",
-                "desired_qty": float(uncovered_qty),
-                "desired_price": float(exit_price),
-                "matched_open_orders": _serialize_orders(_matching_open_orders(open_orders, market_symbol, "SELL")),
-                "placed_order": None,
-            }
-            if uncovered_value >= MIN_TRADE_USD:
-                tp_order = place_limit_sell(
-                    cfg,
-                    float(exit_price),
-                    float(uncovered_qty),
-                    execution_mode=resolved_execution_mode,
-                    dry_run=dry_run,
-                )
-                if tp_order:
-                    orders_placed.append(tp_order)
-                    open_orders.append(tp_order)
-                    tp_serialized = _serialize_order(tp_order)
-                    coverage_action["status"] = "placed"
-                    coverage_action["placed_order"] = tp_serialized
-                    if tp_serialized is not None:
-                        _cycle_order_bucket(cycle_snapshot, "placed").append(tp_serialized)
-                else:
-                    coverage_action["status"] = "failed"
-                    coverage_action["reason"] = "order_not_placed"
-            elif uncovered_qty > 0.0:
-                coverage_action["status"] = "residual_below_min_trade"
-            actions.append(coverage_action)
-
-            covered_qty_after = _remaining_side_qty(open_orders, market_symbol, "SELL")
-            uncovered_qty_after = max(0.0, float(qty) - covered_qty_after)
-            uncovered_value_after = uncovered_qty_after * float(current_price)
-            if uncovered_value_after >= MIN_TRADE_USD and uncovered_qty_after > float(qty) * 0.02:
-                cast(list[str], exit_coverage["missing_symbols"]).append(sym)
-            else:
-                cast(list[str], exit_coverage["covered_symbols"]).append(sym)
-
-        cycle_snapshot["exit_order_coverage"] = exit_coverage
+        open_orders = _ensure_position_exit_coverage(
+            cycle_snapshot=cycle_snapshot,
+            symbol_details=symbol_details,
+            positions_valued=positions_valued,
+            open_orders=open_orders,
+            orders_placed=orders_placed,
+            execution_mode=resolved_execution_mode,
+            dry_run=dry_run,
+            exit_prices=plan.exit_prices,
+            entry_prices=plan.entry_prices,
+            target_values=target_values,
+            allocation_pcts=plan.allocations,
+            eligible_symbols=set(active_tradable_symbols),
+        )
+        cycle_snapshot["orders"]["open_after_cleanup"] = _serialize_orders(open_orders)
 
         _prev_plan = plan
         _prev_portfolio_value = state.total_value_usd

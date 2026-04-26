@@ -270,3 +270,13 @@ After any deployment touching Binance pair routing:
 3. Confirm the watcher metadata carries the intended `exchange_symbol`
 4. Confirm stablecoin conversions only occur when quote funding is actually short
 5. Confirm the intended production runner, not just a checked-in paper service, is the process being restarted
+
+  - live order dedupe is now price-aware; existing working orders are only reused when both size and price remain close to the current target
+  - hybrid rebalance sell pricing now uses the same minimum live exit floor as the exit-coverage pass, eliminating same-cycle double-sell churn during flattening
+
+  - margin portfolio snapshots now include all nonzero exchange assets so the account guard can catch untracked foreign holdings instead of only strategy symbols
+  - account-guard blocking is no longer a pure no-op: tracked entry buys are canceled, tracked long exits are still maintained, and the snapshot must expose the resulting `reentry_plan` metadata
+  - `eval_100d` should now complete even when CUDA is oversubscribed because the fp4/pufferlib slippage sweep falls back to CPU on OOM before reporting the checkpoint result
+  - live position basis now comes from fill reconstruction over recent trades, so exit floors and max-hold checks use the active lot instead of the latest buy fill
+  - blocked Binance cycles must now cancel all non-cover BUY orders and maintain closing SELL coverage for every meaningful long visible on the account, even if the symbol is outside the configured hybrid universe
+  - `BINANCE_HYBRID_MAX_HOLD_HOURS` remains opt-in; if enabled, verify snapshots show `position_entry_time`, `hold_hours`, and `exit_basis=max_hold_midpoint` before trusting the timed-exit path in prod

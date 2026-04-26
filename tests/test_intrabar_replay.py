@@ -228,6 +228,7 @@ def test_marketsim_trace_adapter() -> None:
 
 def test_render_mp4_smoke(tmp_path: Path) -> None:
     pytest.importorskip("imageio")
+    pytest.importorskip("imageio_ffmpeg")
     pytest.importorskip("matplotlib")
     from src.marketsim_video import render_mp4
 

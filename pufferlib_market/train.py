@@ -1332,6 +1332,9 @@ def train(args):
                 "hyperparams/fee_rate": args.fee_rate,
             }, step=0)
 
+    # Short-mask index: actions [_short_mask_idx:] are sell/short actions to mask
+    _short_mask_idx = 1 + (num_actions - 1) // 2 if args.disable_shorts else 0
+
     # ── Estimate GPU memory ──
     rollout_mem = num_envs * args.rollout_len * (obs_size * 4 + 4 * 4) / 1e6
     print(f"  Estimated rollout buffer: {rollout_mem:.1f} MB")
@@ -1348,9 +1351,6 @@ def train(args):
         # Outputs computed from logits inside graph
         _static_action = torch.zeros(num_envs, dtype=torch.long, device=device)
         _static_logprob = torch.zeros(num_envs, device=device)
-
-        # Short-mask tensor (baked into graph)
-        _short_mask_idx = 1 + (num_actions - 1) // 2 if args.disable_shorts else 0
 
         def _graph_forward():
             """Forward + sample inside CUDA graph (no Categorical, no Python control flow)."""
@@ -1424,6 +1424,9 @@ def train(args):
         new_value = new_value.float()
         # Clamp logits to prevent numerical explosion in softmax/log_softmax
         logits = logits.clamp(-20.0, 20.0)
+        # Mask short/sell actions so entropy + logprob only cover valid actions
+        if _short_mask_idx > 0:
+            logits[:, _short_mask_idx:] = torch.finfo(logits.dtype).min
         # Manual log_prob and entropy (avoids Categorical Python control flow for fullgraph)
         log_probs_all = torch.log_softmax(logits, dim=-1)
         new_logprob = log_probs_all.gather(1, act.unsqueeze(1)).squeeze(1)

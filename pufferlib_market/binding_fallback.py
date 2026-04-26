@@ -67,6 +67,10 @@ class _VecHandle:
     short_borrow_apr: float
     periods_per_year: float
     fill_slippage_bps: float
+    reward_scale: float
+    reward_clip: float
+    trade_penalty: float
+    decision_lag: int
     forced_offset: int
     action_allocation_bins: int
     action_level_bins: int
@@ -268,6 +272,10 @@ def vec_init(
         short_borrow_apr=float(kwargs.get("short_borrow_apr", 0.0)),
         periods_per_year=float(kwargs.get("periods_per_year", 252.0)),
         fill_slippage_bps=float(kwargs.get("fill_slippage_bps", 0.0)),
+        reward_scale=float(kwargs.get("reward_scale", 1.0)),
+        reward_clip=float(kwargs.get("reward_clip", 0.0)),
+        trade_penalty=float(kwargs.get("trade_penalty", 0.0)),
+        decision_lag=int(kwargs.get("decision_lag", 1)),
         forced_offset=forced_offset,
         action_allocation_bins=alloc_bins,
         action_level_bins=level_bins,
@@ -366,6 +374,9 @@ def vec_step(handle: _VecHandle) -> None:
             env.current_action = 0
             env.current_trade_return = 0.0
 
+        if action != env.current_action and handle.trade_penalty > 0.0:
+            reward -= handle.trade_penalty
+
         env.rewards.append(float(reward))
         env.equity *= 1.0 + float(reward)
         env.peak_equity = max(env.peak_equity, env.equity)
@@ -375,7 +386,10 @@ def vec_step(handle: _VecHandle) -> None:
 
         env.timestep += 1
         env.step_count += 1
-        handle.rew_bufs[idx] = float(reward)
+        scaled_reward = float(reward) * handle.reward_scale
+        if handle.reward_clip > 0.0:
+            scaled_reward = max(-handle.reward_clip, min(handle.reward_clip, scaled_reward))
+        handle.rew_bufs[idx] = scaled_reward
 
         if env.timestep >= data.num_timesteps - 1 or env.step_count >= handle.max_steps:
             handle.term_bufs[idx] = 1
