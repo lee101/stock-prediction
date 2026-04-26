@@ -31,6 +31,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import math
 import sys
@@ -56,8 +57,14 @@ from xgbnew.features import (
     add_cross_sectional_dispersion,
     add_cross_sectional_ranks,
     build_features_for_symbol,
+    evaluate_cross_sectional_regime_gate,
 )
-from xgbnew.backtest import _allocation_weights
+from xgbnew.backtest import (
+    _allocation_weights,
+    _build_regime_flags,
+    _build_vol_scale,
+    _inv_vol_pick_scale,
+)
 from xgbnew.model import XGBStockModel
 from xgbnew.trade_log import TradeLogger, slippage_bps
 
@@ -318,6 +325,18 @@ def _expected_latest_daily_bar_date(now: datetime | None = None) -> date:
     return _previous_trading_day(now_et.date())
 
 
+def _expected_latest_completed_daily_bar_date(now: datetime | None = None) -> date:
+    """Return the latest completed daily close expected to be available for live gates."""
+    now_et = (now or datetime.now(timezone.utc)).astimezone(ET)
+    today = now_et.date()
+    if today.weekday() >= 5:
+        return _previous_trading_day(today)
+    close_ready = now_et.replace(hour=17, minute=0, second=0, microsecond=0)
+    if now_et >= close_ready:
+        return today
+    return _previous_trading_day(today)
+
+
 def _latest_daily_bar_is_fresh(df: pd.DataFrame, *, now: datetime | None = None) -> bool:
     if df is None or len(df) == 0 or "timestamp" not in df.columns:
         return False
@@ -442,6 +461,7 @@ def score_all_symbols(
     model: XGBStockModel | list[XGBStockModel],
     live_bars: dict[str, pd.DataFrame] | None = None,
     min_dollar_vol: float = 5e6,
+    max_spread_bps: float = 30.0,
     min_vol_20d: float = 0.0,
     max_vol_20d: float = 0.0,
     max_ret_20d_rank_pct: float = 1.0,
@@ -511,7 +531,10 @@ def score_all_symbols(
             if "spread_bps" in row.index and pd.notna(row["spread_bps"])
             else 25.0
         )
-        keep = dolvol >= np.log1p(min_dollar_vol) and spread <= 30.0
+        spread_cap = float(max_spread_bps or 0.0)
+        keep = dolvol >= np.log1p(min_dollar_vol)
+        if keep and spread_cap > 0.0:
+            keep = spread <= spread_cap
         # Realised-vol floor/ceiling — matches BacktestConfig inference filters.
         if keep and min_vol_20d > 0.0 and "vol_20d" in row.index:
             v20 = float(row["vol_20d"])
@@ -632,21 +655,11 @@ def _apply_cross_sectional_regime_gate(
         logger.warning("Cross-sectional regime gate requested but ret_5d is missing")
         return scores_df
 
-    ret5 = pd.to_numeric(scores_df["ret_5d"], errors="coerce").dropna()
-    if len(ret5) == 0:
-        cs_iqr = 0.0
-        cs_skew = 0.0
-    else:
-        cs_iqr = float(ret5.quantile(0.75) - ret5.quantile(0.25))
-        cs_skew = float(ret5.skew())
-        if not np.isfinite(cs_skew):
-            cs_skew = 0.0
-
-    keep = True
-    if iqr_active:
-        keep = keep and cs_iqr <= float(regime_cs_iqr_max)
-    if skew_active:
-        keep = keep and cs_skew >= float(regime_cs_skew_min)
+    keep, cs_iqr, cs_skew = evaluate_cross_sectional_regime_gate(
+        scores_df["ret_5d"],
+        regime_cs_iqr_max=float(regime_cs_iqr_max),
+        regime_cs_skew_min=float(regime_cs_skew_min),
+    )
 
     if trade_logger is not None:
         trade_logger.log(
@@ -669,6 +682,226 @@ def _apply_cross_sectional_regime_gate(
         flush=True,
     )
     return scores_df.iloc[0:0].copy()
+
+
+def _load_spy_close_by_date(spy_csv: Path) -> pd.Series:
+    """Load SPY closes indexed by ET date for live vol targeting."""
+    if not spy_csv.exists():
+        return pd.Series(dtype="float64")
+    try:
+        df = pd.read_csv(spy_csv)
+    except Exception as exc:
+        logger.warning("Failed to read SPY CSV %s: %s", spy_csv, exc)
+        return pd.Series(dtype="float64")
+    if "close" not in df.columns:
+        logger.warning("SPY CSV %s is missing close column", spy_csv)
+        return pd.Series(dtype="float64")
+    if "timestamp" in df.columns:
+        ts = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        dates = ts.dt.tz_convert(ET).dt.date
+    elif "date" in df.columns:
+        dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+    else:
+        logger.warning("SPY CSV %s is missing timestamp/date column", spy_csv)
+        return pd.Series(dtype="float64")
+    out = (
+        pd.DataFrame({"date": dates, "close": pd.to_numeric(df["close"], errors="coerce")})
+        .dropna(subset=["date", "close"])
+        .drop_duplicates(subset=["date"], keep="last")
+        .sort_values("date")
+    )
+    if len(out) == 0:
+        return pd.Series(dtype="float64")
+    return pd.Series(out["close"].astype(float).to_numpy(), index=pd.Index(out["date"]))
+
+
+def _resolved_spy_csv_for_args(args: argparse.Namespace) -> Path | None:
+    if (
+        float(getattr(args, "vol_target_ann", 0.0) or 0.0) <= 0.0
+        and int(getattr(args, "regime_gate_window", 0) or 0) <= 0
+    ):
+        return None
+    raw_spy_csv = getattr(args, "spy_csv", None)
+    if raw_spy_csv:
+        return Path(raw_spy_csv).resolve(strict=False)
+    raw_data_root = getattr(args, "data_root", None)
+    if raw_data_root is None:
+        return None
+    return (Path(raw_data_root) / "SPY.csv").resolve(strict=False)
+
+
+def _optional_file_sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _live_spy_vol_target_scale(
+    data_root: Path,
+    args: argparse.Namespace,
+    *,
+    trade_logger: TradeLogger | None = None,
+) -> float:
+    """Return today's SPY vol-target scale in [0, 1], fail-closed on missing SPY data."""
+    target_ann = float(getattr(args, "vol_target_ann", 0.0) or 0.0)
+    if target_ann <= 0.0:
+        return 1.0
+
+    spy_csv = Path(getattr(args, "spy_csv", "") or (Path(data_root) / "SPY.csv")).resolve(strict=False)
+    spy_csv_sha256 = _optional_file_sha256(spy_csv)
+    spy_close = _load_spy_close_by_date(spy_csv)
+    expected_latest = _expected_latest_completed_daily_bar_date()
+    eligible = spy_close[spy_close.index <= expected_latest]
+    if len(eligible) == 0:
+        print(
+            "[xgb-live] SPY vol-target requested but no SPY close history is "
+            "available; holding cash.",
+            file=sys.stderr,
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log(
+                "spy_vol_target",
+                target_ann=target_ann,
+                scale=0.0,
+                reason="missing_spy_history",
+                spy_csv=str(spy_csv),
+                spy_csv_sha256=spy_csv_sha256,
+            )
+        return 0.0
+
+    latest_date = max(eligible.index)
+    if latest_date < expected_latest:
+        print(
+            "[xgb-live] SPY vol-target requested but SPY close history is stale "
+            f"(latest={latest_date}, expected={expected_latest}); holding cash.",
+            file=sys.stderr,
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log(
+                "spy_vol_target",
+                target_ann=target_ann,
+                scale=0.0,
+                reason="stale_spy_history",
+                spy_date=str(latest_date),
+                expected_spy_date=str(expected_latest),
+                spy_csv=str(spy_csv),
+                spy_csv_sha256=spy_csv_sha256,
+            )
+        return 0.0
+    scale_series = _build_vol_scale(
+        eligible,
+        pd.Index([latest_date]),
+        target_ann=target_ann,
+    )
+    scale = float(scale_series.iloc[0]) if len(scale_series) else 1.0
+    if not np.isfinite(scale):
+        scale = 0.0
+    scale = float(np.clip(scale, 0.0, 1.0))
+    if trade_logger is not None:
+        trade_logger.log(
+            "spy_vol_target",
+            target_ann=target_ann,
+            scale=scale,
+            spy_date=str(latest_date),
+            spy_csv=str(spy_csv),
+            spy_csv_sha256=spy_csv_sha256,
+        )
+    if scale < 1.0:
+        print(
+            f"[xgb-live] SPY vol-target scale={scale:.3f} "
+            f"(target_ann={target_ann:.3f}, spy_date={latest_date})",
+            flush=True,
+        )
+    return scale
+
+
+def _live_spy_regime_gate_closed(
+    data_root: Path,
+    args: argparse.Namespace,
+    *,
+    trade_logger: TradeLogger | None = None,
+) -> bool:
+    """Return True when the SPY MA regime gate says today's session should stay cash."""
+    window = int(getattr(args, "regime_gate_window", 0) or 0)
+    if window <= 0:
+        return False
+
+    spy_csv = Path(getattr(args, "spy_csv", "") or (Path(data_root) / "SPY.csv")).resolve(strict=False)
+    spy_csv_sha256 = _optional_file_sha256(spy_csv)
+    spy_close = _load_spy_close_by_date(spy_csv)
+    expected_latest = _expected_latest_completed_daily_bar_date()
+    eligible = spy_close[spy_close.index <= expected_latest]
+    if len(eligible) < window:
+        print(
+            "[xgb-live] SPY regime gate requested but insufficient SPY close "
+            f"history is available ({len(eligible)}/{window}); holding cash.",
+            file=sys.stderr,
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log(
+                "spy_regime_gate",
+                window=window,
+                closed=True,
+                reason="insufficient_spy_history",
+                n_spy_days=int(len(eligible)),
+                spy_csv=str(spy_csv),
+                spy_csv_sha256=spy_csv_sha256,
+            )
+        return True
+
+    latest_date = max(eligible.index)
+    if latest_date < expected_latest:
+        print(
+            "[xgb-live] SPY regime gate requested but SPY close history is stale "
+            f"(latest={latest_date}, expected={expected_latest}); holding cash.",
+            file=sys.stderr,
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log(
+                "spy_regime_gate",
+                window=window,
+                closed=True,
+                reason="stale_spy_history",
+                spy_date=str(latest_date),
+                expected_spy_date=str(expected_latest),
+                spy_csv=str(spy_csv),
+                spy_csv_sha256=spy_csv_sha256,
+            )
+        return True
+    closed_series = _build_regime_flags(
+        eligible,
+        pd.Index([latest_date]),
+        window=window,
+        available_at_open=False,
+    )
+    closed = bool(closed_series.iloc[0]) if len(closed_series) else True
+    if trade_logger is not None:
+        trade_logger.log(
+            "spy_regime_gate",
+            window=window,
+            closed=closed,
+            spy_date=str(latest_date),
+            spy_csv=str(spy_csv),
+            spy_csv_sha256=spy_csv_sha256,
+        )
+    if closed:
+        print(
+            f"[xgb-live] SPY regime gate closed: window={window} "
+            f"spy_date={latest_date}; holding cash.",
+            flush=True,
+        )
+    return closed
 
 
 # ── Main trading loop ─────────────────────────────────────────────────────────
@@ -706,6 +939,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--top-n must be >= 1")
     if int(args.min_picks) < 0:
         parser.error("--min-picks must be >= 0")
+    if int(args.min_picks) > int(args.top_n):
+        parser.error("--min-picks must be <= --top-n")
+    if int(args.regime_gate_window) < 0:
+        parser.error("--regime-gate-window must be >= 0")
     if finite("allocation") <= 0.0:
         parser.error("--allocation must be > 0")
     if finite("allocation_temp") <= 0.0:
@@ -716,14 +953,21 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     for name in (
         "commission_bps",
         "min_dollar_vol",
+        "max_spread_bps",
         "min_vol_20d",
         "max_vol_20d",
         "regime_cs_iqr_max",
+        "vol_target_ann",
         "crypto_max_gross",
         "score_uncertainty_penalty",
+        "inv_vol_target_ann",
     ):
         if finite(name) < 0.0:
             parser.error(f"--{name.replace('_', '-')} must be >= 0")
+    if finite("inv_vol_floor") <= 0.0:
+        parser.error("--inv-vol-floor must be > 0")
+    if finite("inv_vol_cap") < 1.0:
+        parser.error("--inv-vol-cap must be >= 1")
     for name in ("max_ret_20d_rank_pct", "min_ret_5d_rank_pct"):
         value = finite(name)
         if not 0.0 <= value <= 1.0:
@@ -752,6 +996,9 @@ def parse_args(argv=None):
     p.add_argument("--symbols-file", type=Path,
                    default=REPO / "symbol_lists/stocks_wide_1000_v1.txt")
     p.add_argument("--data-root",    type=Path, default=REPO / "trainingdata")
+    p.add_argument("--spy-csv",      type=Path, default=None,
+                   help="Optional explicit SPY daily CSV for --vol-target-ann "
+                        "and --regime-gate-window. Defaults to data-root/SPY.csv.")
     p.add_argument("--model-path",   type=Path, default=DEFAULT_MODEL_PATH,
                    help="Pre-trained XGBStockModel pickle (ignored when --model-paths is set)")
     p.add_argument("--model-paths",  type=str, default="",
@@ -782,8 +1029,19 @@ def parse_args(argv=None):
                    help="Rank and gate by mean_score - penalty * std(score "
                         "across ensemble seeds). 0 disables. This implements "
                         "uncertainty-adjusted sorting for the live ensemble.")
+    p.add_argument("--inv-vol-target-ann", type=float, default=0.0,
+                   help="Per-pick inverse-volatility exposure target. 0 "
+                        "disables. Matches BacktestConfig.inv_vol_target_ann.")
+    p.add_argument("--inv-vol-floor", type=float, default=0.05,
+                   help="Minimum vol_20d denominator for --inv-vol-target-ann.")
+    p.add_argument("--inv-vol-cap", type=float, default=3.0,
+                   help="Symmetric cap for per-pick inverse-vol multiplier.")
     p.add_argument("--commission-bps", type=float, default=10.0)
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
+    p.add_argument("--max-spread-bps", type=float, default=30.0,
+                   help="Maximum volume-estimated spread allowed in the "
+                        "live pick pool. 30 matches BacktestConfig default; "
+                        "0 disables the spread filter.")
     p.add_argument("--min-vol-20d", type=float, default=0.0,
                    help="Realised 20d annualised vol floor (e.g. 0.10). 0 "
                         "disables. Drops dead-zone symbols that LOBO flagged; "
@@ -804,6 +1062,14 @@ def parse_args(argv=None):
                    help="Cross-sectional ret_5d skew day gate. Values above "
                         "-1e8 enable the gate. Matches "
                         "BacktestConfig.regime_cs_skew_min.")
+    p.add_argument("--vol-target-ann", type=float, default=0.0,
+                   help="SPY realised-vol target for day-level exposure "
+                        "scaling. 0 disables. Uses data-root/SPY.csv and "
+                        "matches BacktestConfig.vol_target_ann.")
+    p.add_argument("--regime-gate-window", type=int, default=0,
+                   help="SPY moving-average regime window. 0 disables. When "
+                        "enabled, the live session holds cash if the latest "
+                        "available SPY close is below its moving average.")
     p.add_argument("--hold-through", action="store_true",
                    help="If tomorrow's picks match today's held positions, skip the "
                         "sell-at-close + buy-at-open round-trip. Rotation now happens "
@@ -900,6 +1166,7 @@ def _score_and_pick(
     scores_df = score_all_symbols(
         symbols, data_root, model, live_bars,
         min_dollar_vol=args.min_dollar_vol,
+        max_spread_bps=float(getattr(args, "max_spread_bps", 30.0) or 0.0),
         min_vol_20d=float(getattr(args, "min_vol_20d", 0.0) or 0.0),
         max_vol_20d=float(getattr(args, "max_vol_20d", 0.0) or 0.0),
         max_ret_20d_rank_pct=float(getattr(args, "max_ret_20d_rank_pct", 1.0)),
@@ -978,6 +1245,7 @@ def _emit_session_start(
             equity_pre = float(getattr(_get_account(client), "equity", 0.0) or 0.0)
         except Exception:
             equity_pre = None
+    spy_csv = _resolved_spy_csv_for_args(args)
     tlog.log(
         "session_start",
         mode=mode,
@@ -988,6 +1256,9 @@ def _emit_session_start(
         allocation=float(args.allocation),
         allocation_mode=str(getattr(args, "allocation_mode", "equal") or "equal"),
         allocation_temp=float(getattr(args, "allocation_temp", 1.0) or 1.0),
+        inv_vol_target_ann=float(getattr(args, "inv_vol_target_ann", 0.0) or 0.0),
+        inv_vol_floor=float(getattr(args, "inv_vol_floor", 0.05) or 0.05),
+        inv_vol_cap=float(getattr(args, "inv_vol_cap", 3.0) or 3.0),
         score_uncertainty_penalty=float(
             getattr(args, "score_uncertainty_penalty", 0.0) or 0.0
         ),
@@ -1006,6 +1277,10 @@ def _emit_session_start(
         max_vol_20d=float(getattr(args, "max_vol_20d", 0.0) or 0.0),
         max_ret_20d_rank_pct=float(getattr(args, "max_ret_20d_rank_pct", 1.0)),
         min_ret_5d_rank_pct=float(getattr(args, "min_ret_5d_rank_pct", 0.0) or 0.0),
+        regime_gate_window=int(getattr(args, "regime_gate_window", 0) or 0),
+        vol_target_ann=float(getattr(args, "vol_target_ann", 0.0) or 0.0),
+        spy_csv=str(spy_csv) if spy_csv is not None else None,
+        spy_csv_sha256=_optional_file_sha256(spy_csv),
         equity_pre=equity_pre,
     )
     return equity_pre
@@ -1082,14 +1357,92 @@ def _conviction_allocation_scale(
     return picks, scale
 
 
+def _apply_no_picks_fallback(
+    picks: pd.DataFrame,
+    all_scores: pd.DataFrame,
+    args: argparse.Namespace,
+    *,
+    today_str: str,
+    trade_logger: TradeLogger | None = None,
+) -> tuple[pd.DataFrame, bool]:
+    """Return fallback pick when the scored model emits no selected names.
+
+    This mirrors ``BacktestConfig.no_picks_fallback_*`` for both live session
+    modes. The fallback is only used on clean no-pick days; callers still keep
+    their existing hold/rotation semantics after this function returns.
+    """
+    if len(picks) > 0:
+        return picks, False
+
+    fb_sym = str(getattr(args, "no_picks_fallback", "") or "").strip().upper()
+    fb_alloc_frac = float(getattr(args, "no_picks_fallback_alloc", 0.0) or 0.0)
+    min_score = float(getattr(args, "min_score", 0.0) or 0.0)
+    if not (fb_sym and fb_alloc_frac > 0.0):
+        print(
+            f"[xgb-live] No picks today — holding current positions (if any).",
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log("no_picks")
+        return picks, False
+
+    if len(all_scores) == 0 or "symbol" not in all_scores.columns:
+        print(
+            f"[xgb-live] NO pick meets min_score={min_score:.2f} AND fallback "
+            f"{fb_sym} has no scored universe — holding cash/positions for {today_str}.",
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log(
+                "no_picks",
+                reason="min_score_fallback_missing",
+                fallback_symbol=fb_sym,
+            )
+        return picks, False
+
+    fb_row = all_scores[all_scores["symbol"].astype(str).str.upper() == fb_sym]
+    if len(fb_row) == 0:
+        print(
+            f"[xgb-live] NO pick meets min_score={min_score:.2f} AND fallback "
+            f"{fb_sym} missing from scored universe — holding cash/positions "
+            f"for {today_str}.",
+            flush=True,
+        )
+        if trade_logger is not None:
+            trade_logger.log(
+                "no_picks",
+                reason="min_score_fallback_missing",
+                fallback_symbol=fb_sym,
+            )
+        return picks, False
+
+    out = fb_row.head(1).reset_index(drop=True).copy()
+    print(
+        f"[xgb-live] NO pick meets min_score={min_score:.2f} — falling back "
+        f"to {fb_sym} @ {fb_alloc_frac:.0%} of --allocation.",
+        flush=True,
+    )
+    if trade_logger is not None:
+        trade_logger.log(
+            "no_picks_fallback",
+            reason="min_score",
+            fallback_symbol=fb_sym,
+            fallback_alloc_frac=fb_alloc_frac,
+        )
+    return out, True
+
+
 def _buy_notional_by_symbol(
     picks: pd.DataFrame,
     *,
     total_notional: float,
     allocation_mode: str = "equal",
     allocation_temp: float = 1.0,
+    inv_vol_target_ann: float = 0.0,
+    inv_vol_floor: float = 0.05,
+    inv_vol_cap: float = 3.0,
 ) -> dict[str, float]:
-    """Allocate total BUY notional across picks using simulator weights."""
+    """Allocate BUY notional across picks using simulator-matched weights."""
     if len(picks) == 0 or not np.isfinite(total_notional) or total_notional <= 0:
         return {}
     scores = pd.to_numeric(picks["score"], errors="coerce").fillna(0.0).to_numpy()
@@ -1101,7 +1454,20 @@ def _buy_notional_by_symbol(
     out: dict[str, float] = {}
     for weight, (_, row) in zip(weights, picks.iterrows(), strict=False):
         sym = str(row["symbol"])
-        out[sym] = out.get(sym, 0.0) + float(total_notional) * float(weight)
+        try:
+            pick_vol = float(row.get("vol_20d", 0.0))
+        except (TypeError, ValueError):
+            pick_vol = 0.0
+        pick_scale = _inv_vol_pick_scale(
+            pick_vol,
+            target_ann=float(inv_vol_target_ann or 0.0),
+            floor=float(inv_vol_floor or 0.05),
+            cap=float(inv_vol_cap or 3.0),
+        )
+        out[sym] = (
+            out.get(sym, 0.0)
+            + float(total_notional) * float(weight) * float(pick_scale)
+        )
     return out
 
 
@@ -1459,6 +1825,33 @@ def run_session_hold_through(
 
     tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
     equity_pre = _emit_session_start(tlog, args, client, mode="hold_through")
+    if _live_spy_regime_gate_closed(data_root, args, trade_logger=tlog):
+        tlog.log("session_skipped", reason="spy_regime_gate_closed")
+        if client is None or args.dry_run:
+            return
+        is_trading, reason = _is_today_trading_day(client)
+        if not is_trading:
+            print(f"[xgb-live] {today_str} is NOT a trading day ({reason}) — "
+                  f"skipping regime-gate liquidation.", flush=True)
+            tlog.log("session_skipped", reason=reason)
+            return
+        _wait_for_market_open()
+        position_details = _get_position_details(client)
+        held_syms = {s for s, det in position_details.items() if det["qty"] > 0}
+        if held_syms:
+            print(
+                "[xgb-live/hold-through] SPY regime gate closed — "
+                f"selling held stock positions {sorted(held_syms)}.",
+                flush=True,
+            )
+            tlog.log("regime_gate_liquidate", to_sell=sorted(held_syms))
+            _execute_sells(client, position_details, held_syms, tlog)
+        _log_session_end(tlog, client, equity_pre)
+        return
+    spy_vol_scale = _live_spy_vol_target_scale(data_root, args, trade_logger=tlog)
+    if spy_vol_scale <= 0.0:
+        tlog.log("session_skipped", reason="spy_vol_target_unavailable")
+        return
 
     if client is not None and not args.dry_run:
         is_trading, reason = _is_today_trading_day(client)
@@ -1473,10 +1866,14 @@ def run_session_hold_through(
     picks, conviction_scale = _conviction_allocation_scale(
         picks, _all_scores, args, trade_logger=tlog
     )
+    picks, used_fallback = _apply_no_picks_fallback(
+        picks,
+        _all_scores,
+        args,
+        today_str=today_str,
+        trade_logger=tlog,
+    )
     if len(picks) == 0:
-        print(f"[xgb-live] No picks today — holding current positions (if any).",
-              flush=True)
-        tlog.log("no_picks")
         return
 
     _announce_picks(picks, today_str, args.top_n, tlog, tag="xgb-live/hold-through")
@@ -1511,14 +1908,24 @@ def run_session_hold_through(
 
     account = _get_account(client)
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
-    total_notional = portfolio_value * float(args.allocation) * conviction_scale
+    fb_alloc_frac = float(getattr(args, "no_picks_fallback_alloc", 0.0) or 0.0)
+    alloc = float(args.allocation) * (fb_alloc_frac if used_fallback else 1.0)
+    total_notional = (
+        portfolio_value * alloc * (1.0 if used_fallback else conviction_scale) * spy_vol_scale
+    )
     notionals = _buy_notional_by_symbol(
         picks,
         total_notional=total_notional,
         allocation_mode=getattr(args, "allocation_mode", "equal"),
         allocation_temp=getattr(args, "allocation_temp", 1.0),
+        inv_vol_target_ann=(
+            0.0 if used_fallback else getattr(args, "inv_vol_target_ann", 0.0)
+        ),
+        inv_vol_floor=getattr(args, "inv_vol_floor", 0.05),
+        inv_vol_cap=getattr(args, "inv_vol_cap", 3.0),
     )
     print(f"[xgb-live/hold-through] BUY total=${total_notional:,.0f} "
+          f"alloc={alloc:.2%} "
           f"mode={getattr(args, 'allocation_mode', 'equal')} "
           f"(portfolio=${portfolio_value:,.0f})", flush=True)
     _execute_buys(
@@ -1577,6 +1984,13 @@ def run_session(
 
     tlog: TradeLogger = getattr(args, "_trade_logger", None) or TradeLogger(disabled=True)
     equity_pre = _emit_session_start(tlog, args, client, mode="open_to_close")
+    if _live_spy_regime_gate_closed(data_root, args, trade_logger=tlog):
+        tlog.log("session_skipped", reason="spy_regime_gate_closed")
+        return
+    spy_vol_scale = _live_spy_vol_target_scale(data_root, args, trade_logger=tlog)
+    if spy_vol_scale <= 0.0:
+        tlog.log("session_skipped", reason="spy_vol_target_unavailable")
+        return
 
     # Trading-day gate: Alpaca queues DAY orders placed outside RTH to the
     # next open — fill would run on stale data. Always gate on /v2/clock.
@@ -1597,43 +2011,15 @@ def run_session(
     picks, conviction_scale = _conviction_allocation_scale(
         picks, all_scores, args, trade_logger=tlog
     )
-    # Fallback sizing — only used when we fall through to no_picks.
-    fb_sym = str(getattr(args, "no_picks_fallback", "") or "").strip().upper()
-    fb_alloc_frac = float(getattr(args, "no_picks_fallback_alloc", 0.0) or 0.0)
-    used_fallback = False
+    picks, used_fallback = _apply_no_picks_fallback(
+        picks,
+        all_scores,
+        args,
+        today_str=today_str,
+        trade_logger=tlog,
+    )
     if len(picks) == 0:
-        min_score = float(getattr(args, "min_score", 0.0) or 0.0)
-        if fb_sym and fb_alloc_frac > 0.0:
-            # Look up the fallback symbol's pre-filter score row (it may
-            # have been filtered by min_score; that's fine — the fallback
-            # ignores min_score on no-pick days by design).
-            fb_row = all_scores[all_scores["symbol"].astype(str).str.upper() == fb_sym]
-            if len(fb_row) > 0:
-                picks = fb_row.head(1).reset_index(drop=True).copy()
-                used_fallback = True
-                print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
-                      f"falling back to {fb_sym} @ {fb_alloc_frac:.0%} of "
-                      f"--allocation.", flush=True)
-                tlog.log(
-                    "no_picks_fallback",
-                    reason="min_score",
-                    fallback_symbol=fb_sym,
-                    fallback_alloc_frac=fb_alloc_frac,
-                )
-            else:
-                print(f"[xgb-live] NO pick meets min_score={min_score:.2f} AND "
-                      f"fallback {fb_sym} missing from scored universe — "
-                      f"holding cash for {today_str}.", flush=True)
-                tlog.log(
-                    "no_picks", reason="min_score_fallback_missing",
-                    fallback_symbol=fb_sym,
-                )
-                return
-        else:
-            print(f"[xgb-live] NO pick meets min_score={min_score:.2f} — "
-                  f"holding cash for {today_str}.", flush=True)
-            tlog.log("no_picks", reason="min_score")
-            return
+        return
 
     _announce_picks(picks, today_str, args.top_n, tlog, tag="xgb-live")
 
@@ -1647,13 +2033,21 @@ def run_session(
     account = _get_account(client)
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
     # Fallback path scales allocation by fb_alloc_frac.
+    fb_alloc_frac = float(getattr(args, "no_picks_fallback_alloc", 0.0) or 0.0)
     alloc = float(args.allocation) * (fb_alloc_frac if used_fallback else 1.0)
-    total_notional = portfolio_value * alloc * (1.0 if used_fallback else conviction_scale)
+    total_notional = (
+        portfolio_value * alloc * (1.0 if used_fallback else conviction_scale) * spy_vol_scale
+    )
     notionals = _buy_notional_by_symbol(
         picks,
         total_notional=total_notional,
         allocation_mode=getattr(args, "allocation_mode", "equal"),
         allocation_temp=getattr(args, "allocation_temp", 1.0),
+        inv_vol_target_ann=(
+            0.0 if used_fallback else getattr(args, "inv_vol_target_ann", 0.0)
+        ),
+        inv_vol_floor=getattr(args, "inv_vol_floor", 0.05),
+        inv_vol_cap=getattr(args, "inv_vol_cap", 3.0),
     )
     print(f"\n[xgb-live] Placing BUY orders  portfolio=${portfolio_value:,.0f}  "
           f"alloc={alloc:.2%}  total=${total_notional:,.0f}  "
@@ -1871,6 +2265,19 @@ def _make_trade_logger(args: argparse.Namespace, session_date: date) -> TradeLog
     return tlog
 
 
+def _enforce_live_startup_guards():
+    """Fail closed before any live Alpaca client can place orders."""
+    from src.alpaca_account_lock import require_explicit_live_trading_enable
+    from src.alpaca_singleton import enforce_live_singleton
+
+    require_explicit_live_trading_enable("xgb_live_trader")
+    return enforce_live_singleton(
+        service_name="xgb_live_trader",
+        account_name="alpaca_live_writer",
+        force_live=True,
+    )
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -1881,11 +2288,7 @@ def main(argv=None) -> int:
     paper = not args.live
 
     if not paper and not args.dry_run:
-        from src.alpaca_singleton import enforce_live_singleton
-        _lock = enforce_live_singleton(
-            service_name="xgb_live_trader",
-            account_name="alpaca_live_writer",
-        )
+        _lock = _enforce_live_startup_guards()
 
     model = _load_models(args)
     if model is None:

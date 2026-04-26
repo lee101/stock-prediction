@@ -15,11 +15,14 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
+import xgbnew.backtest as backtest
 from xgbnew.backtest import (
     BacktestConfig,
     _build_regime_flags,
     _build_vol_scale,
+    simulate,
 )
+from xgbnew.features import cross_sectional_regime_keep_by_date
 
 
 def _spy_updown(n: int = 120, seed: int = 7) -> pd.Series:
@@ -60,6 +63,29 @@ def test_regime_gate_missing_dates_default_open():
     assert closed.loc[date(2099, 1, 1)] is np.False_ or bool(closed.loc[date(2099, 1, 1)]) is False
 
 
+def test_regime_gate_available_at_open_uses_prior_close():
+    """A same-day SPY breakdown must not close the gate before the open."""
+    start = date(2024, 1, 2)
+    dates = pd.Index([start + timedelta(days=int(i)) for i in range(4)])
+    sp = pd.Series([100.0, 100.0, 100.0, 50.0], index=dates)
+
+    as_of_close = _build_regime_flags(
+        sp,
+        dates,
+        window=2,
+        available_at_open=False,
+    )
+    available_at_open = _build_regime_flags(
+        sp,
+        dates,
+        window=2,
+        available_at_open=True,
+    )
+
+    assert bool(as_of_close.iloc[-1]) is True
+    assert bool(available_at_open.iloc[-1]) is False
+
+
 def test_vol_scale_disabled_returns_one():
     sp = _spy_updown()
     dates = pd.Index(sp.index)
@@ -94,6 +120,34 @@ def test_vol_scale_down_scales_in_high_vol():
     # Everything should be strictly < 1 (we're well above target) and roughly near 0.3.
     assert (tail < 1.0).all()
     assert 0.15 < float(tail.median()) < 0.55
+
+
+def test_vol_scale_available_at_open_uses_prior_close():
+    """A same-day SPY shock must not alter exposure already set at the open."""
+    n = 30
+    start = date(2024, 1, 2)
+    dates = pd.Index([start + timedelta(days=int(i)) for i in range(n)])
+    prices = np.full(n, 100.0)
+    prices[-1] = 50.0
+    sp = pd.Series(prices, index=dates)
+
+    as_of_close = _build_vol_scale(
+        sp,
+        dates,
+        target_ann=0.10,
+        lookback_days=2,
+        available_at_open=False,
+    )
+    available_at_open = _build_vol_scale(
+        sp,
+        dates,
+        target_ann=0.10,
+        lookback_days=2,
+        available_at_open=True,
+    )
+
+    assert as_of_close.iloc[-1] < 1.0
+    assert available_at_open.iloc[-1] == 1.0
 
 
 def test_regime_gate_tolerates_duplicate_spy_dates():
@@ -136,3 +190,125 @@ def test_backtest_config_knobs_settable():
     cfg = BacktestConfig(regime_gate_window=50, vol_target_ann=0.15)
     assert cfg.regime_gate_window == 50
     assert cfg.vol_target_ann == 0.15
+
+
+def test_simulate_vol_target_uses_open_available_spy_scale(monkeypatch):
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    df = pd.DataFrame([
+        {
+            "date": d1,
+            "symbol": "A",
+            "actual_open": 100.0,
+            "actual_close": 102.0,
+            "spread_bps": 2.0,
+            "dolvol_20d_log": 20.0,
+        },
+        {
+            "date": d2,
+            "symbol": "A",
+            "actual_open": 100.0,
+            "actual_close": 102.0,
+            "spread_bps": 2.0,
+            "dolvol_20d_log": 20.0,
+        },
+    ])
+    seen: dict[str, bool] = {}
+
+    def fake_build_vol_scale(_spy_close, all_dates, **kwargs):
+        seen["available_at_open"] = bool(kwargs.get("available_at_open"))
+        return pd.Series(1.0, index=all_dates)
+
+    monkeypatch.setattr(backtest, "_build_vol_scale", fake_build_vol_scale)
+    backtest.simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            vol_target_ann=0.10,
+        ),
+        precomputed_scores=pd.Series([0.9, 0.9], index=df.index),
+        spy_close_by_date=pd.Series([100.0, 101.0], index=pd.Index([d1, d2])),
+    )
+
+    assert seen == {"available_at_open": True}
+
+
+def test_simulate_regime_gate_uses_open_available_spy_flags(monkeypatch):
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    df = pd.DataFrame([
+        {
+            "date": d1,
+            "symbol": "A",
+            "actual_open": 100.0,
+            "actual_close": 102.0,
+            "spread_bps": 2.0,
+            "dolvol_20d_log": 20.0,
+        },
+        {
+            "date": d2,
+            "symbol": "A",
+            "actual_open": 100.0,
+            "actual_close": 102.0,
+            "spread_bps": 2.0,
+            "dolvol_20d_log": 20.0,
+        },
+    ])
+    seen: dict[str, bool] = {}
+
+    def fake_build_regime_flags(_spy_close, all_dates, **kwargs):
+        seen["available_at_open"] = bool(kwargs.get("available_at_open"))
+        return pd.Series(False, index=all_dates)
+
+    monkeypatch.setattr(backtest, "_build_regime_flags", fake_build_regime_flags)
+    backtest.simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            regime_gate_window=2,
+        ),
+        precomputed_scores=pd.Series([0.9, 0.9], index=df.index),
+        spy_close_by_date=pd.Series([100.0, 101.0], index=pd.Index([d1, d2])),
+    )
+
+    assert seen == {"available_at_open": True}
+
+
+def test_cross_sectional_regime_gate_drops_wide_dispersion_days():
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    df = pd.DataFrame([
+        {"date": d1, "symbol": "A", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": -0.01},
+        {"date": d1, "symbol": "B", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": 0.01},
+        {"date": d2, "symbol": "A", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": -0.30},
+        {"date": d2, "symbol": "B", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": 0.30},
+    ])
+    keep_by_date = cross_sectional_regime_keep_by_date(
+        df,
+        regime_cs_iqr_max=0.05,
+    )
+    assert keep_by_date.to_dict() == {d1: True, d2: False}
+
+    result = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            regime_cs_iqr_max=0.05,
+        ),
+        precomputed_scores=pd.Series([0.9, 0.8, 0.9, 0.8], index=df.index),
+    )
+
+    assert [day.day for day in result.day_results] == [d1]

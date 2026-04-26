@@ -187,12 +187,19 @@ def test_min_score_flag_defaults_to_zero_and_parses():
     ("extra_args", "message"),
     [
         (["--top-n", "0"], "--top-n must be >= 1"),
+        (["--top-n", "2", "--min-picks", "3"], "--min-picks must be <= --top-n"),
         (["--allocation", "nan"], "--allocation must be finite"),
         (["--allocation", "0"], "--allocation must be > 0"),
         (["--allocation-temp", "0"], "--allocation-temp must be > 0"),
         (["--min-score", "1.5"], "--min-score must be between 0 and 1"),
         (["--commission-bps", "-1"], "--commission-bps must be >= 0"),
         (["--min-dollar-vol", "-1"], "--min-dollar-vol must be >= 0"),
+        (["--max-spread-bps", "-1"], "--max-spread-bps must be >= 0"),
+        (["--regime-gate-window", "-1"], "--regime-gate-window must be >= 0"),
+        (["--vol-target-ann", "-0.1"], "--vol-target-ann must be >= 0"),
+        (["--inv-vol-target-ann", "-0.1"], "--inv-vol-target-ann must be >= 0"),
+        (["--inv-vol-floor", "0"], "--inv-vol-floor must be > 0"),
+        (["--inv-vol-cap", "0.5"], "--inv-vol-cap must be >= 1"),
         (["--max-ret-20d-rank-pct", "1.5"], "--max-ret-20d-rank-pct must be between 0 and 1"),
         (["--no-picks-fallback-alloc", "-0.1"], "--no-picks-fallback-alloc must be >= 0"),
         (["--crypto-poll-seconds", "0"], "--crypto-poll-seconds must be >= 1"),
@@ -222,6 +229,60 @@ def test_live_trader_parse_args_rejects_invalid_portfolio_domains(
 
     assert excinfo.value.code == 2
     assert message in capsys.readouterr().err
+
+
+def test_live_trader_parse_args_accepts_explicit_spy_csv(tmp_path):
+    from xgbnew.live_trader import parse_args
+
+    args = parse_args([
+        "--symbols-file", "x",
+        "--model-paths", "a.pkl",
+        "--spy-csv", str(tmp_path / "spy_daily.csv"),
+    ])
+
+    assert args.spy_csv == tmp_path / "spy_daily.csv"
+
+
+def test_live_startup_guard_requires_explicit_live_enable(monkeypatch):
+    from xgbnew import live_trader
+
+    monkeypatch.delenv("ALLOW_ALPACA_LIVE_TRADING", raising=False)
+
+    with pytest.raises(RuntimeError, match="ALLOW_ALPACA_LIVE_TRADING=1 is required"):
+        live_trader._enforce_live_startup_guards()
+
+
+def test_live_startup_guard_forces_singleton_live_path(monkeypatch):
+    from xgbnew import live_trader
+
+    calls: list[tuple[str, dict]] = []
+
+    def _require(service_name):
+        calls.append(("require", {"service_name": service_name}))
+
+    def _enforce(**kwargs):
+        calls.append(("enforce", kwargs))
+        return object()
+
+    import src.alpaca_account_lock as account_lock
+    import src.alpaca_singleton as singleton
+
+    monkeypatch.setenv("ALLOW_ALPACA_LIVE_TRADING", "1")
+    monkeypatch.setattr(account_lock, "require_explicit_live_trading_enable", _require)
+    monkeypatch.setattr(singleton, "enforce_live_singleton", _enforce)
+
+    assert live_trader._enforce_live_startup_guards() is not None
+    assert calls == [
+        ("require", {"service_name": "xgb_live_trader"}),
+        (
+            "enforce",
+            {
+                "service_name": "xgb_live_trader",
+                "account_name": "alpaca_live_writer",
+                "force_live": True,
+            },
+        ),
+    ]
 
 
 def test_cross_sectional_regime_gate_flags_default_disabled_and_parse():

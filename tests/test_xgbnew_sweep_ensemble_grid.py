@@ -163,6 +163,101 @@ def test_run_sweep_progress_callback_receives_partial_cells(monkeypatch, tmp_pat
     assert events == [(1, 1, 4), (2, 2, 4), (3, 3, 4), (4, 4, 4)]
 
 
+def test_run_sweep_includes_opportunistic_grid_in_cell_identity(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    calls: list[tuple[int, float]] = []
+
+    def _fake_run_cell(**kwargs):
+        calls.append((
+            int(kwargs["opportunistic_watch_n"]),
+            float(kwargs["opportunistic_entry_discount_bps"]),
+        ))
+        return sweep.CellResult(
+            leverage=float(kwargs["leverage"]),
+            min_score=float(kwargs["min_score"]),
+            hold_through=bool(kwargs["hold_through"]),
+            top_n=int(kwargs["top_n"]),
+            min_picks=int(kwargs["min_picks"]),
+            opportunistic_watch_n=int(kwargs["opportunistic_watch_n"]),
+            opportunistic_entry_discount_bps=float(kwargs["opportunistic_entry_discount_bps"]),
+            fee_regime=str(kwargs["fee_regime"]),
+            n_windows=5,
+            median_monthly_pct=1.0,
+            p10_monthly_pct=1.0,
+            median_sortino=1.0,
+            worst_dd_pct=1.0,
+            n_neg=0,
+        )
+
+    monkeypatch.setattr(sweep, "_run_cell", _fake_run_cell)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+        opportunistic_watch_n_grid=[0, 5],
+        opportunistic_entry_discount_bps_grid=[0.0, 30.0],
+    )
+
+    assert calls == [(0, 0.0), (0, 30.0), (5, 0.0), (5, 30.0)]
+    rows = sweep._cells_to_rows(cells)
+    assert rows[-1]["opportunistic_watch_n"] == 5
+    assert rows[-1]["opportunistic_entry_discount_bps"] == 30.0
+
+
+def test_run_sweep_includes_max_spread_grid_in_cell_identity(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    calls: list[float] = []
+
+    def _fake_run_cell(**kwargs):
+        calls.append(float(kwargs["inference_max_spread_bps"]))
+        return sweep.CellResult(
+            leverage=float(kwargs["leverage"]),
+            min_score=float(kwargs["min_score"]),
+            hold_through=bool(kwargs["hold_through"]),
+            top_n=int(kwargs["top_n"]),
+            fee_regime=str(kwargs["fee_regime"]),
+            n_windows=5,
+            median_monthly_pct=1.0,
+            p10_monthly_pct=1.0,
+            median_sortino=1.0,
+            worst_dd_pct=1.0,
+            n_neg=0,
+            inference_max_spread_bps=float(kwargs["inference_max_spread_bps"]),
+        )
+
+    monkeypatch.setattr(sweep, "_run_cell", _fake_run_cell)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+        inference_max_spread_bps_grid=[12.0, 30.0],
+    )
+
+    assert calls == [12.0, 30.0]
+    rows = sweep._cells_to_rows(cells)
+    assert [row["inference_max_spread_bps"] for row in rows] == [12.0, 30.0]
+
+
 def test_run_sweep_resume_rows_skips_completed_cells(monkeypatch, tmp_path):
     _install_fakes(monkeypatch)
     paths = _fake_paths(tmp_path, 2)
@@ -382,6 +477,60 @@ def test_run_sweep_rejects_malformed_alltrain_seed_path(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"window_days": 0}, "window_days must be >= 1"),
+        ({"stride_days": 0}, "stride_days must be >= 1"),
+        ({"leverage_grid": [float("nan")]}, "leverage_grid values must be finite"),
+        ({"leverage_grid": [0.0]}, "leverage_grid values must be > 0"),
+        ({"min_score_grid": [1.5]}, "min_score_grid values must be between 0 and 1"),
+        ({"top_n_grid": [0]}, "top_n_grid values must be >= 1"),
+        ({"min_picks_grid": [-1]}, "min_picks_grid values must be >= 0"),
+        (
+            {"top_n_grid": [2], "min_picks_grid": [3]},
+            "min_picks_grid values must be <= top_n_grid values",
+        ),
+        ({"skip_prob_grid": [1.5]}, "skip_prob_grid values must be between 0 and 1"),
+        ({"fill_buffer_bps_grid": [-0.5]}, "fill_buffer_bps_grid values must be -1 or >= 0"),
+        ({"inference_max_spread_bps_grid": [-1.0]}, "inference_max_spread_bps_grid values"),
+        ({"allocation_temp_grid": [0.0]}, "allocation_temp_grid values must be > 0"),
+        ({"max_ret_20d_rank_pct_grid": [1.5]}, "max_ret_20d_rank_pct_grid values"),
+        ({"inv_vol_floor": float("nan")}, "inv_vol_floor must be finite and > 0"),
+        ({"inv_vol_cap": 0.5}, "inv_vol_cap must be finite and >= 1"),
+        ({"conviction_alloc_low": 0.7, "conviction_alloc_high": 0.7}, "conviction_alloc_high"),
+        ({"fail_fast_max_dd_pct": float("inf")}, "fail_fast_max_dd_pct must be finite"),
+    ],
+)
+def test_run_sweep_rejects_invalid_grid_domains_before_model_load(
+    tmp_path,
+    overrides,
+    message,
+):
+    path = tmp_path / "alltrain_seed0.pkl"
+    path.write_bytes(b"not-a-real-model")
+    kwargs = {
+        "symbols": ["SYM0"],
+        "data_root": Path("/tmp"),
+        "model_paths": [path],
+        "train_start": date(2020, 1, 1),
+        "train_end": date(2024, 12, 31),
+        "oos_start": date(2025, 1, 2),
+        "oos_end": date(2025, 12, 31),
+        "window_days": 10,
+        "stride_days": 5,
+        "leverage_grid": [1.0],
+        "min_score_grid": [0.0],
+        "hold_through_grid": [False],
+        "top_n_grid": [1],
+        "fee_regimes": ["deploy"],
+    }
+    kwargs.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        sweep.run_sweep(**kwargs)
+
+
 def test_unknown_fee_regime_raises(monkeypatch, tmp_path):
     _install_fakes(monkeypatch)
     paths = _fake_paths(tmp_path, 2)
@@ -464,6 +613,7 @@ def test_cells_to_rows_shapes():
     assert r["min_picks"] == 0
     assert r["score_uncertainty_penalty"] == 0.75
     assert r["goodness_score"] == 84.0
+    assert r["inference_max_spread_bps"] == 30.0
     assert r["no_picks_fallback_symbol"] == "SPY"
     assert r["no_picks_fallback_alloc_scale"] == 0.5
     assert r["conviction_scaled_alloc"] is True
@@ -530,6 +680,10 @@ def test_sweep_json_payload_and_atomic_write(tmp_path):
         "ensemble_needs_dispersion": True,
     }]
     payload = sweep._sweep_json_payload(
+        symbols_file=Path("symbol_lists/test_universe.txt"),
+        data_root=Path("trainingdata_test"),
+        spy_csv_path=Path("trainingdata_test/SPY.csv"),
+        blend_mode="mean",
         model_paths=[Path("model_a.pkl")],
         oos_start="2025-01-02",
         oos_end=date(2025, 4, 1),
@@ -547,6 +701,10 @@ def test_sweep_json_payload_and_atomic_write(tmp_path):
 
     loaded = json.loads(out.read_text())
     assert loaded["complete"] is False
+    assert loaded["symbols_file"] == "symbol_lists/test_universe.txt"
+    assert loaded["data_root"] == "trainingdata_test"
+    assert loaded["spy_csv"] == "trainingdata_test/SPY.csv"
+    assert loaded["blend_mode"] == "mean"
     assert loaded["n_cells"] == 1
     assert loaded["cells"] == rows
     assert loaded["fail_fast"]["max_dd_pct"] == 40.0
@@ -593,6 +751,57 @@ def test_sweep_json_payload_records_model_hashes_when_files_exist(tmp_path):
         hashlib.sha256(b"model-a").hexdigest(),
         hashlib.sha256(b"model-b").hexdigest(),
     ]
+
+
+def test_sweep_json_payload_records_spy_csv_hash_when_file_exists(tmp_path):
+    spy_csv = tmp_path / "SPY.csv"
+    spy_csv.write_text("timestamp,close\n2026-01-02T21:00:00Z,100\n", encoding="utf-8")
+
+    payload = sweep._sweep_json_payload(
+        spy_csv_path=spy_csv,
+        model_paths=[Path("model.pkl")],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["spy_csv"] == str(spy_csv)
+    assert payload["spy_csv_sha256"] == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+
+
+def test_sweep_json_payload_reuses_supplied_spy_csv_hash(monkeypatch, tmp_path):
+    spy_csv = tmp_path / "SPY.csv"
+    spy_csv.write_text("timestamp,close\n2026-01-02T21:00:00Z,100\n", encoding="utf-8")
+
+    def _fail_if_rehashed(_path):
+        raise AssertionError("checkpoint payload should reuse precomputed SPY hash")
+
+    monkeypatch.setattr(sweep, "_optional_file_sha256", _fail_if_rehashed)
+
+    payload = sweep._sweep_json_payload(
+        spy_csv_path=spy_csv,
+        spy_csv_sha256="precomputed",
+        model_paths=[Path("model.pkl")],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["spy_csv_sha256"] == "precomputed"
 
 
 def test_sweep_json_payload_reuses_supplied_model_hashes(monkeypatch, tmp_path):
@@ -920,12 +1129,85 @@ def test_friction_robust_strategy_rows_take_worst_fee_cell():
     assert summary["n_friction_cells"] == 2
     assert summary["fee_regimes"] == ["deploy", "stress36x"]
     assert summary["fill_buffer_bps_values"] == [5.0, 15.0]
+    assert summary["skip_prob_values"] == [0.0]
+    assert summary["skip_seed_values"] == [0]
     assert summary["worst_median_monthly_pct"] == 24.0
     assert summary["max_worst_dd_pct"] == 28.0
     assert summary["max_time_under_water_pct"] == 55.0
     assert summary["max_n_neg"] == 2
     assert summary["worst_pain_adjusted_goodness_score"] == -8.0
     assert summary["worst_fee_regime_by_pain"] == "stress36x"
+    assert summary["production_target_pass"] is False
+
+
+def test_friction_robust_strategy_rows_treat_skip_as_stress_axis():
+    base = {
+        "leverage": 2.0,
+        "min_score": 0.85,
+        "hold_through": True,
+        "top_n": 1,
+        "n_windows": 8,
+        "expected_n_windows": 8,
+        "p10_monthly_pct": 30.0,
+        "median_sortino": 3.0,
+        "n_neg": 0,
+        "goodness_score": 15.0,
+        "robust_goodness_score": 13.0,
+        "pain_adjusted_goodness_score": 11.0,
+        "worst_intraday_dd_pct": 18.0,
+        "avg_intraday_dd_pct": 4.0,
+        "time_under_water_pct": 20.0,
+        "ulcer_index": 3.0,
+        "fee_regime": "stress36x",
+        "fill_buffer_bps": 15.0,
+        "inference_min_dolvol": 5_000_000.0,
+        "inference_min_vol_20d": 0.0,
+        "inference_max_vol_20d": 0.0,
+        "regime_gate_window": 0,
+        "vol_target_ann": 0.0,
+        "inv_vol_target_ann": 0.0,
+        "inv_vol_floor": 0.05,
+        "inv_vol_cap": 3.0,
+        "max_ret_20d_rank_pct": 1.0,
+        "min_ret_5d_rank_pct": 0.0,
+        "regime_cs_iqr_max": 0.0,
+        "regime_cs_skew_min": -1e9,
+        "no_picks_fallback_symbol": "",
+        "no_picks_fallback_alloc_scale": 0.0,
+        "conviction_scaled_alloc": False,
+        "conviction_alloc_low": 0.55,
+        "conviction_alloc_high": 0.85,
+        "allocation_mode": "equal",
+        "allocation_temp": 1.0,
+        "fail_fast_triggered": False,
+    }
+    live_like = {
+        **base,
+        "skip_prob": 0.0,
+        "skip_seed": 0,
+        "median_monthly_pct": 33.0,
+        "worst_dd_pct": 10.0,
+    }
+    missed_order_stress = {
+        **base,
+        "skip_prob": 0.25,
+        "skip_seed": 7,
+        "median_monthly_pct": 23.0,
+        "worst_dd_pct": 27.0,
+        "n_neg": 1,
+        "pain_adjusted_goodness_score": -5.0,
+    }
+
+    summaries = sweep._friction_robust_strategy_rows([live_like, missed_order_stress])
+
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["n_friction_cells"] == 2
+    assert summary["skip_prob_values"] == [0.0, 0.25]
+    assert summary["skip_seed_values"] == [0, 7]
+    assert summary["worst_median_monthly_pct"] == 23.0
+    assert summary["max_worst_dd_pct"] == 27.0
+    assert summary["max_n_neg"] == 1
     assert summary["production_target_pass"] is False
 
 

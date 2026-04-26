@@ -131,6 +131,57 @@ LIVE_SUPPORTED_FEATURE_COLS = frozenset(
 )
 
 
+def cross_sectional_regime_stats(ret_5d_values: pd.Series | np.ndarray | list[float]) -> tuple[float, float]:
+    """Return ``(iqr, skew)`` for a day-level cross-sectional ``ret_5d`` sample."""
+    ret5 = pd.to_numeric(pd.Series(ret_5d_values), errors="coerce").dropna()
+    if len(ret5) == 0:
+        return 0.0, 0.0
+    cs_iqr = float(ret5.quantile(0.75) - ret5.quantile(0.25))
+    cs_skew = float(ret5.skew())
+    if not np.isfinite(cs_iqr):
+        cs_iqr = 0.0
+    if not np.isfinite(cs_skew):
+        cs_skew = 0.0
+    return cs_iqr, cs_skew
+
+
+def evaluate_cross_sectional_regime_gate(
+    ret_5d_values: pd.Series | np.ndarray | list[float],
+    *,
+    regime_cs_iqr_max: float = 0.0,
+    regime_cs_skew_min: float = -1e9,
+) -> tuple[bool, float, float]:
+    """Evaluate the shared live/backtest cross-sectional ret_5d day gate."""
+    cs_iqr, cs_skew = cross_sectional_regime_stats(ret_5d_values)
+    keep = True
+    if float(regime_cs_iqr_max) > 0.0:
+        keep = keep and cs_iqr <= float(regime_cs_iqr_max)
+    if float(regime_cs_skew_min) > -1e8:
+        keep = keep and cs_skew >= float(regime_cs_skew_min)
+    return bool(keep), cs_iqr, cs_skew
+
+
+def cross_sectional_regime_keep_by_date(
+    frame: pd.DataFrame,
+    *,
+    date_col: str = "date",
+    ret_col: str = "ret_5d",
+    regime_cs_iqr_max: float = 0.0,
+    regime_cs_skew_min: float = -1e9,
+) -> pd.Series:
+    """Return a boolean keep mask indexed by date for the shared regime gate."""
+    if date_col not in frame.columns or ret_col not in frame.columns:
+        return pd.Series(dtype=bool)
+    decisions = frame.groupby(date_col, sort=True)[ret_col].apply(
+        lambda values: evaluate_cross_sectional_regime_gate(
+            values,
+            regime_cs_iqr_max=regime_cs_iqr_max,
+            regime_cs_skew_min=regime_cs_skew_min,
+        )[0]
+    )
+    return decisions.astype(bool)
+
+
 def build_features_for_symbol(
     df: pd.DataFrame,
     symbol: str | None = None,

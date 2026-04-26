@@ -134,6 +134,52 @@ def test_crypto_positions_are_not_rotated_by_stock_hold_through(monkeypatch):
     submit.assert_not_called()
 
 
+def test_regime_gate_closed_liquidates_stock_hold_through_positions(monkeypatch):
+    """SPY regime gate closed → hold-through exits stock positions and does not score."""
+    client = MagicMock()
+    client.get_clock.return_value = _clock_open()
+    client.get_all_positions.return_value = [
+        _mk_pos("AAA", 10, 101.0),
+        _mk_pos("BTC/USD", 0.1, 90_000.0),
+    ]
+
+    monkeypatch.setattr(live_trader, "_live_spy_regime_gate_closed", lambda *a, **k: True)
+    monkeypatch.setattr(
+        live_trader,
+        "_score_and_pick",
+        lambda *a, **k: pytest.fail("regime gate should skip scoring"),
+    )
+    monkeypatch.setattr(live_trader, "_wait_until", lambda *a, **k: None)
+    monkeypatch.setattr(live_trader, "_latest_stock_bid_ask", lambda *a, **k: (100.0, 102.0))
+
+    submitted = []
+
+    def _submit(client_arg, *, symbol, qty, side, limit_price):
+        submitted.append((symbol, qty, side, limit_price))
+        return SimpleNamespace(id=f"id-{symbol}-{side}", filled_avg_price=None)
+
+    monkeypatch.setattr(live_trader, "_submit_limit_order", _submit)
+
+    import src.alpaca_singleton as singleton
+    guard_calls = []
+    monkeypatch.setattr(
+        singleton,
+        "guard_sell_against_death_spiral",
+        lambda sym, side, price: guard_calls.append((sym, side, price)),
+    )
+
+    live_trader.run_session_hold_through(
+        symbols=["AAA"],
+        data_root=Path("/tmp"),
+        model=MagicMock(),
+        client=client,
+        args=_mk_args(top_n=1, regime_gate_window=20),
+    )
+
+    assert [(s, side) for s, _, side, _ in submitted] == [("AAA", "sell")]
+    assert guard_calls == [("AAA", "sell", 101.0)]
+
+
 def test_rotation_sells_dropped_and_buys_new(monkeypatch):
     """held={AAA}, picks={BBB} → SELL AAA (with guard), BUY BBB."""
     picks = pd.DataFrame([{"symbol": "BBB", "score": 0.9,
@@ -295,6 +341,54 @@ def test_fresh_entry_from_flat_buys_but_no_sell(monkeypatch):
     )
 
     assert submitted == [("AAA", pytest.approx(100.0), "buy", pytest.approx(100.0))], submitted
+
+
+def test_hold_through_no_picks_fallback_rotates_with_scaled_notional(monkeypatch):
+    """hold-through live path must match simulator no-picks fallback sizing."""
+    all_scores = pd.DataFrame([
+        {"symbol": "SPY", "score": 0.40, "last_close": 500.0, "spread_bps": 1.0},
+    ])
+    monkeypatch.setattr(
+        live_trader,
+        "_score_and_pick",
+        lambda *a, **k: (all_scores.iloc[0:0].copy(), all_scores),
+    )
+
+    client = MagicMock()
+    client.get_clock.return_value = _clock_open()
+    client.get_all_positions.return_value = []
+    monkeypatch.setattr(live_trader, "_wait_for_market_open", lambda: None)
+    monkeypatch.setattr(
+        live_trader,
+        "_get_account",
+        lambda _client: SimpleNamespace(portfolio_value="100000"),
+    )
+
+    captured: dict[str, float] = {}
+
+    def _capture_buys(client, picks, buy_notional, tlog, *, notional_by_symbol=None, **kwargs):
+        captured.update(notional_by_symbol or {})
+
+    monkeypatch.setattr(live_trader, "_execute_buys", _capture_buys)
+    monkeypatch.setattr(live_trader, "_execute_sells", lambda *a, **k: None)
+
+    live_trader.run_session_hold_through(
+        symbols=["SPY"],
+        data_root=Path("/tmp"),
+        model=MagicMock(),
+        client=client,
+        args=_mk_args(
+            top_n=4,
+            allocation=2.0,
+            allocation_mode="equal",
+            allocation_temp=1.0,
+            min_score=0.95,
+            no_picks_fallback="SPY",
+            no_picks_fallback_alloc=0.25,
+        ),
+    )
+
+    assert captured == {"SPY": pytest.approx(50_000.0)}
 
 
 def test_gate_skips_non_trading_day(monkeypatch):

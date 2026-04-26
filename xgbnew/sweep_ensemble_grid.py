@@ -81,6 +81,10 @@ class CellResult:
     n_neg: int
     # Aggressive packing floor. 0 means classic min_score-gated behavior.
     min_picks: int = 0
+    # Opportunistic work-stealing entries: watch more names than top_n and
+    # enter only when a posted buy limit below the open is penetrated.
+    opportunistic_watch_n: int = 0
+    opportunistic_entry_discount_bps: float = 0.0
     # Uncertainty-adjusted sorting penalty. Scores used for selection are
     # ensemble_mean - penalty * ensemble_std across seed models. 0 disables.
     score_uncertainty_penalty: float = 0.0
@@ -117,6 +121,9 @@ class CellResult:
     # Inference-side liquidity floor applied to the pick pool — stays at
     # 5M$ unless explicitly swept via --inference-min-dolvol-grid.
     inference_min_dolvol: float = 5_000_000.0
+    # Inference-side volume-estimated spread ceiling. 30 matches live and
+    # BacktestConfig defaults; 0 disables the spread filter.
+    inference_max_spread_bps: float = 30.0
     # Inference-side realised-vol floor on vol_20d (annualised). 0 disables.
     # Swept via --inference-min-vol-grid.
     inference_min_vol_20d: float = 0.0
@@ -237,12 +244,13 @@ STRATEGY_PARAM_FIELDS = (
     "hold_through",
     "top_n",
     "min_picks",
+    "opportunistic_watch_n",
+    "opportunistic_entry_discount_bps",
     "score_uncertainty_penalty",
     "inference_min_dolvol",
+    "inference_max_spread_bps",
     "inference_min_vol_20d",
     "inference_max_vol_20d",
-    "skip_prob",
-    "skip_seed",
     "regime_gate_window",
     "vol_target_ann",
     "inv_vol_target_ann",
@@ -494,9 +502,12 @@ def _cell_key_from_mapping(row: dict) -> tuple:
         bool(row.get("hold_through", False)),
         int(row.get("top_n", 0)),
         int(row.get("min_picks", 0)),
+        int(row.get("opportunistic_watch_n", 0)),
+        _key_float(row.get("opportunistic_entry_discount_bps", 0.0)),
         _key_float(row.get("score_uncertainty_penalty", 0.0)),
         fee_regime,
         _key_float(row.get("inference_min_dolvol", 5_000_000.0)),
+        _key_float(row.get("inference_max_spread_bps", 30.0)),
         _key_float(row.get("inference_min_vol_20d", 0.0)),
         _key_float(row.get("inference_max_vol_20d", 0.0)),
         _key_float(row.get("skip_prob", 0.0)),
@@ -522,7 +533,7 @@ def _cell_key_from_mapping(row: dict) -> tuple:
 
 
 def _strategy_key_from_mapping(row: dict) -> tuple:
-    """Stable identity for a strategy, excluding fee/slippage stress axes."""
+    """Stable identity for deployable strategy knobs, excluding stress axes."""
     out = []
     for field in STRATEGY_PARAM_FIELDS:
         value = row.get(field, 0 if field == "min_picks" else None)
@@ -540,9 +551,12 @@ def _cell_key_from_values(
     hold_through: bool,
     top_n: int,
     min_picks: int,
+    opportunistic_watch_n: int,
+    opportunistic_entry_discount_bps: float,
     score_uncertainty_penalty: float,
     fee_regime: str,
     inference_min_dolvol: float,
+    inference_max_spread_bps: float,
     inference_min_vol_20d: float,
     inference_max_vol_20d: float,
     skip_prob: float,
@@ -572,9 +586,12 @@ def _cell_key_from_values(
             "hold_through": hold_through,
             "top_n": top_n,
             "min_picks": min_picks,
+            "opportunistic_watch_n": opportunistic_watch_n,
+            "opportunistic_entry_discount_bps": opportunistic_entry_discount_bps,
             "score_uncertainty_penalty": score_uncertainty_penalty,
             "fee_regime": fee_regime,
             "inference_min_dolvol": inference_min_dolvol,
+            "inference_max_spread_bps": inference_max_spread_bps,
             "inference_min_vol_20d": inference_min_vol_20d,
             "inference_max_vol_20d": inference_max_vol_20d,
             "skip_prob": skip_prob,
@@ -631,8 +648,11 @@ def _run_cell(
     top_n: int,
     fee_regime: str,
     min_picks: int = 0,
+    opportunistic_watch_n: int = 0,
+    opportunistic_entry_discount_bps: float = 0.0,
     score_uncertainty_penalty: float = 0.0,
     inference_min_dolvol: float = 5_000_000.0,
+    inference_max_spread_bps: float = 30.0,
     inference_min_vol_20d: float = 0.0,
     inference_max_vol_20d: float = 0.0,
     skip_prob: float = 0.0,
@@ -670,12 +690,15 @@ def _run_cell(
     cfg = BacktestConfig(
         top_n=int(top_n),
         min_picks=int(min_picks),
+        opportunistic_watch_n=int(opportunistic_watch_n),
+        opportunistic_entry_discount_bps=float(opportunistic_entry_discount_bps),
         leverage=float(leverage),
         xgb_weight=1.0,
         fee_rate=float(fees["fee_rate"]),
         fill_buffer_bps=fb_resolved,
         commission_bps=float(fees["commission_bps"]),
         min_dollar_vol=float(inference_min_dolvol),
+        max_spread_bps=float(inference_max_spread_bps),
         min_vol_20d=float(inference_min_vol_20d),
         max_vol_20d=float(inference_max_vol_20d),
         hold_through=bool(hold_through),
@@ -753,7 +776,13 @@ def _run_cell(
         empty = CellResult(leverage, min_score, hold_through, top_n, fee_regime,
                            0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
         empty.min_picks = int(min_picks)
+        empty.opportunistic_watch_n = int(opportunistic_watch_n)
+        empty.opportunistic_entry_discount_bps = float(opportunistic_entry_discount_bps)
         empty.score_uncertainty_penalty = float(score_uncertainty_penalty)
+        empty.inference_min_dolvol = float(inference_min_dolvol)
+        empty.inference_max_spread_bps = float(inference_max_spread_bps)
+        empty.inference_min_vol_20d = float(inference_min_vol_20d)
+        empty.inference_max_vol_20d = float(inference_max_vol_20d)
         empty.fill_buffer_bps = fb_resolved
         empty.allocation_mode = str(allocation_mode or "equal")
         empty.allocation_temp = float(allocation_temp)
@@ -795,6 +824,8 @@ def _run_cell(
         worst_dd_pct=worst_dd,
         n_neg=n_neg,
         min_picks=int(min_picks),
+        opportunistic_watch_n=int(opportunistic_watch_n),
+        opportunistic_entry_discount_bps=float(opportunistic_entry_discount_bps),
         score_uncertainty_penalty=float(score_uncertainty_penalty),
         goodness_score=goodness,
         robust_goodness_score=robust_goodness,
@@ -808,6 +839,7 @@ def _run_cell(
         median_active_day_pct=active_med,
         min_active_day_pct=active_min,
         inference_min_dolvol=float(inference_min_dolvol),
+        inference_max_spread_bps=float(inference_max_spread_bps),
         inference_min_vol_20d=float(inference_min_vol_20d),
         inference_max_vol_20d=float(inference_max_vol_20d),
         skip_prob=float(skip_prob),
@@ -865,6 +897,187 @@ def _validate_model_paths_for_sweep(model_paths: list[Path]) -> None:
         seen_seeds[seed] = path
 
 
+def _float_grid(name: str, values: list[float] | None, default: list[float]) -> list[float]:
+    try:
+        vals = [float(x) for x in (values or default)]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} values must be numeric") from exc
+    if any(not np.isfinite(x) for x in vals):
+        raise ValueError(f"{name} values must be finite")
+    return vals
+
+
+def _int_grid(name: str, values: list[int] | None, default: list[int]) -> list[int]:
+    vals: list[int] = []
+    for raw in values or default:
+        if isinstance(raw, bool):
+            raise ValueError(f"{name} values must be integer-like")
+        try:
+            num = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} values must be integer-like") from exc
+        if not np.isfinite(num) or not num.is_integer():
+            raise ValueError(f"{name} values must be integer-like")
+        vals.append(int(num))
+    return vals
+
+
+def _validate_sweep_grid_domains(
+    *,
+    window_days: int,
+    stride_days: int,
+    leverage_grid: list[float],
+    min_score_grid: list[float],
+    top_n_grid: list[int],
+    min_picks_grid: list[int] | None,
+    opportunistic_watch_n_grid: list[int] | None,
+    opportunistic_entry_discount_bps_grid: list[float] | None,
+    min_dollar_vol: float,
+    inference_min_dolvol_grid: list[float] | None,
+    inference_max_spread_bps_grid: list[float] | None,
+    inference_min_vol_grid: list[float] | None,
+    inference_max_vol_grid: list[float] | None,
+    skip_prob_grid: list[float] | None,
+    fill_buffer_bps_grid: list[float] | None,
+    regime_gate_window_grid: list[int] | None,
+    vol_target_ann_grid: list[float] | None,
+    inv_vol_target_grid: list[float] | None,
+    max_ret_20d_rank_pct_grid: list[float] | None,
+    min_ret_5d_rank_pct_grid: list[float] | None,
+    regime_cs_iqr_max_grid: list[float] | None,
+    regime_cs_skew_min_grid: list[float] | None,
+    no_picks_fallback_symbol: str,
+    no_picks_fallback_alloc_grid: list[float] | None,
+    inv_vol_floor: float,
+    inv_vol_cap: float,
+    conviction_alloc_low: float,
+    conviction_alloc_high: float,
+    allocation_temp_grid: list[float] | None,
+    score_uncertainty_penalty_grid: list[float] | None,
+    fail_fast_max_dd_pct: float,
+    fail_fast_max_intraday_dd_pct: float,
+    fail_fast_neg_windows: int,
+) -> None:
+    window_count = _int_grid("window_days", [window_days], [30])[0]
+    if window_count < 1:
+        raise ValueError("window_days must be >= 1")
+    stride_count = _int_grid("stride_days", [stride_days], [7])[0]
+    if stride_count < 1:
+        raise ValueError("stride_days must be >= 1")
+
+    lev = _float_grid("leverage_grid", leverage_grid, [1.0])
+    if any(x <= 0.0 for x in lev):
+        raise ValueError("leverage_grid values must be > 0")
+    min_scores = _float_grid("min_score_grid", min_score_grid, [0.0])
+    if any(x < 0.0 or x > 1.0 for x in min_scores):
+        raise ValueError("min_score_grid values must be between 0 and 1")
+    topn = _int_grid("top_n_grid", top_n_grid, [1])
+    if any(x < 1 for x in topn):
+        raise ValueError("top_n_grid values must be >= 1")
+    minp = _int_grid("min_picks_grid", min_picks_grid, [0])
+    if any(x < 0 for x in minp):
+        raise ValueError("min_picks_grid values must be >= 0")
+    if any(min_picks > top_n for min_picks, top_n in product(minp, topn)):
+        raise ValueError("min_picks_grid values must be <= top_n_grid values")
+    opp_watch = _int_grid("opportunistic_watch_n_grid", opportunistic_watch_n_grid, [0])
+    if any(x < 0 for x in opp_watch):
+        raise ValueError("opportunistic_watch_n_grid values must be >= 0")
+    if any(w > 0 and w < top_n for w, top_n in product(opp_watch, topn)):
+        raise ValueError("positive opportunistic_watch_n_grid values must be >= top_n_grid values")
+
+    base_min_dollar_vol = float(min_dollar_vol)
+    if not np.isfinite(base_min_dollar_vol) or base_min_dollar_vol < 0.0:
+        raise ValueError("min_dollar_vol must be finite and >= 0")
+    nonnegative_grids = {
+        "inference_min_dolvol_grid": _float_grid(
+            "inference_min_dolvol_grid",
+            inference_min_dolvol_grid,
+            [base_min_dollar_vol],
+        ),
+        "inference_max_spread_bps_grid": _float_grid(
+            "inference_max_spread_bps_grid",
+            inference_max_spread_bps_grid,
+            [30.0],
+        ),
+        "inference_min_vol_grid": _float_grid("inference_min_vol_grid", inference_min_vol_grid, [0.0]),
+        "inference_max_vol_grid": _float_grid("inference_max_vol_grid", inference_max_vol_grid, [0.0]),
+        "vol_target_ann_grid": _float_grid("vol_target_ann_grid", vol_target_ann_grid, [0.0]),
+        "inv_vol_target_grid": _float_grid("inv_vol_target_grid", inv_vol_target_grid, [0.0]),
+        "regime_cs_iqr_max_grid": _float_grid("regime_cs_iqr_max_grid", regime_cs_iqr_max_grid, [0.0]),
+        "allocation_temp_grid": _float_grid("allocation_temp_grid", allocation_temp_grid, [1.0]),
+        "score_uncertainty_penalty_grid": _float_grid(
+            "score_uncertainty_penalty_grid",
+            score_uncertainty_penalty_grid,
+            [0.0],
+        ),
+        "opportunistic_entry_discount_bps_grid": _float_grid(
+            "opportunistic_entry_discount_bps_grid",
+            opportunistic_entry_discount_bps_grid,
+            [0.0],
+        ),
+    }
+    fb_sym = str(no_picks_fallback_symbol or "").strip()
+    if fb_sym:
+        nonnegative_grids["no_picks_fallback_alloc_grid"] = _float_grid(
+            "no_picks_fallback_alloc_grid",
+            no_picks_fallback_alloc_grid,
+            [0.0],
+        )
+    for name, vals in nonnegative_grids.items():
+        if any(x < 0.0 for x in vals):
+            raise ValueError(f"{name} values must be >= 0")
+    if any(x <= 0.0 for x in nonnegative_grids["allocation_temp_grid"]):
+        raise ValueError("allocation_temp_grid values must be > 0")
+
+    skip_probs = _float_grid("skip_prob_grid", skip_prob_grid, [0.0])
+    if any(x < 0.0 or x > 1.0 for x in skip_probs):
+        raise ValueError("skip_prob_grid values must be between 0 and 1")
+    fill_buffers = _float_grid("fill_buffer_bps_grid", fill_buffer_bps_grid, [-1.0])
+    if any(x != -1.0 and x < 0.0 for x in fill_buffers):
+        raise ValueError("fill_buffer_bps_grid values must be -1 or >= 0")
+    rgw = _int_grid("regime_gate_window_grid", regime_gate_window_grid, [0])
+    if any(x < 0 for x in rgw):
+        raise ValueError("regime_gate_window_grid values must be >= 0")
+    for name, vals in {
+        "max_ret_20d_rank_pct_grid": _float_grid(
+            "max_ret_20d_rank_pct_grid",
+            max_ret_20d_rank_pct_grid,
+            [1.0],
+        ),
+        "min_ret_5d_rank_pct_grid": _float_grid(
+            "min_ret_5d_rank_pct_grid",
+            min_ret_5d_rank_pct_grid,
+            [0.0],
+        ),
+    }.items():
+        if any(x < 0.0 or x > 1.0 for x in vals):
+            raise ValueError(f"{name} values must be between 0 and 1")
+    _float_grid("regime_cs_skew_min_grid", regime_cs_skew_min_grid, [-1e9])
+
+    inv_floor = float(inv_vol_floor)
+    inv_cap = float(inv_vol_cap)
+    if not np.isfinite(inv_floor) or inv_floor <= 0.0:
+        raise ValueError("inv_vol_floor must be finite and > 0")
+    if not np.isfinite(inv_cap) or inv_cap < 1.0:
+        raise ValueError("inv_vol_cap must be finite and >= 1")
+
+    lo = float(conviction_alloc_low)
+    hi = float(conviction_alloc_high)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        raise ValueError("conviction allocation bounds must be finite")
+    if hi <= lo:
+        raise ValueError("conviction_alloc_high must be > conviction_alloc_low")
+    for name, val in {
+        "fail_fast_max_dd_pct": float(fail_fast_max_dd_pct),
+        "fail_fast_max_intraday_dd_pct": float(fail_fast_max_intraday_dd_pct),
+    }.items():
+        if not np.isfinite(val) or val < 0.0:
+            raise ValueError(f"{name} must be finite and >= 0")
+    ff_neg = _int_grid("fail_fast_neg_windows", [fail_fast_neg_windows], [0])[0]
+    if ff_neg < 0:
+        raise ValueError("fail_fast_neg_windows must be >= 0")
+
+
 def run_sweep(
     *,
     symbols: list[str],
@@ -882,10 +1095,13 @@ def run_sweep(
     top_n_grid: list[int],
     fee_regimes: list[str],
     min_picks_grid: list[int] | None = None,
+    opportunistic_watch_n_grid: list[int] | None = None,
+    opportunistic_entry_discount_bps_grid: list[float] | None = None,
     blend_mode: str = "mean",
     chronos_cache_path: Path | None = None,
     min_dollar_vol: float = 5_000_000.0,
     inference_min_dolvol_grid: list[float] | None = None,
+    inference_max_spread_bps_grid: list[float] | None = None,
     inference_min_vol_grid: list[float] | None = None,
     inference_max_vol_grid: list[float] | None = None,
     skip_prob_grid: list[float] | None = None,
@@ -926,6 +1142,41 @@ def run_sweep(
         if reg not in FEE_REGIMES:
             raise ValueError(f"unknown fee regime: {reg}. "
                              f"Known: {list(FEE_REGIMES)}")
+    _validate_sweep_grid_domains(
+        window_days=window_days,
+        stride_days=stride_days,
+        leverage_grid=leverage_grid,
+        min_score_grid=min_score_grid,
+        top_n_grid=top_n_grid,
+        min_picks_grid=min_picks_grid,
+        opportunistic_watch_n_grid=opportunistic_watch_n_grid,
+        opportunistic_entry_discount_bps_grid=opportunistic_entry_discount_bps_grid,
+        min_dollar_vol=min_dollar_vol,
+        inference_min_dolvol_grid=inference_min_dolvol_grid,
+        inference_max_spread_bps_grid=inference_max_spread_bps_grid,
+        inference_min_vol_grid=inference_min_vol_grid,
+        inference_max_vol_grid=inference_max_vol_grid,
+        skip_prob_grid=skip_prob_grid,
+        fill_buffer_bps_grid=fill_buffer_bps_grid,
+        regime_gate_window_grid=regime_gate_window_grid,
+        vol_target_ann_grid=vol_target_ann_grid,
+        inv_vol_target_grid=inv_vol_target_grid,
+        max_ret_20d_rank_pct_grid=max_ret_20d_rank_pct_grid,
+        min_ret_5d_rank_pct_grid=min_ret_5d_rank_pct_grid,
+        regime_cs_iqr_max_grid=regime_cs_iqr_max_grid,
+        regime_cs_skew_min_grid=regime_cs_skew_min_grid,
+        no_picks_fallback_symbol=no_picks_fallback_symbol,
+        no_picks_fallback_alloc_grid=no_picks_fallback_alloc_grid,
+        inv_vol_floor=inv_vol_floor,
+        inv_vol_cap=inv_vol_cap,
+        conviction_alloc_low=conviction_alloc_low,
+        conviction_alloc_high=conviction_alloc_high,
+        allocation_temp_grid=allocation_temp_grid,
+        score_uncertainty_penalty_grid=score_uncertainty_penalty_grid,
+        fail_fast_max_dd_pct=fail_fast_max_dd_pct,
+        fail_fast_max_intraday_dd_pct=fail_fast_max_intraday_dd_pct,
+        fail_fast_neg_windows=fail_fast_neg_windows,
+    )
 
     chronos_cache = {}
     if chronos_cache_path is not None and chronos_cache_path.exists():
@@ -1004,12 +1255,20 @@ def run_sweep(
         raise RuntimeError("no eval windows — check OOS date range")
 
     inf_grid = list(inference_min_dolvol_grid) if inference_min_dolvol_grid else [float(min_dollar_vol)]
+    spread_grid = (
+        list(inference_max_spread_bps_grid)
+        if inference_max_spread_bps_grid else [30.0]
+    )
     vol_grid = list(inference_min_vol_grid) if inference_min_vol_grid else [0.0]
     maxvol_grid = list(inference_max_vol_grid) if inference_max_vol_grid else [0.0]
     sp_grid  = [float(x) for x in (skip_prob_grid or [0.0])]
     ss_list  = [int(x) for x in (skip_seeds or [0])]
     # -1.0 sentinel = "use regime default fill_buffer_bps".
     fb_grid  = [float(x) for x in (fill_buffer_bps_grid or [-1.0])]
+    opp_watch_grid = [int(x) for x in (opportunistic_watch_n_grid or [0])]
+    opp_discount_grid = [
+        float(x) for x in (opportunistic_entry_discount_bps_grid or [0.0])
+    ]
     rgw_grid = [int(x) for x in (regime_gate_window_grid or [0])]
     vta_grid = [float(x) for x in (vol_target_ann_grid or [0.0])]
     ivt_grid = [float(x) for x in (inv_vol_target_grid or [0.0])]
@@ -1082,7 +1341,8 @@ def run_sweep(
     total = (
         len(leverage_grid) * len(min_score_grid)
         * len(hold_through_grid) * len(top_n_grid) * len(minp_grid) * len(fee_regimes)
-        * len(inf_grid) * len(vol_grid) * len(maxvol_grid)
+        * len(opp_watch_grid) * len(opp_discount_grid)
+        * len(inf_grid) * len(spread_grid) * len(vol_grid) * len(maxvol_grid)
         * len(skip_pairs) * len(fb_grid)
         * len(rgw_grid) * len(vta_grid) * len(ivt_grid)
         * len(r20g_grid) * len(r5g_grid)
@@ -1092,14 +1352,16 @@ def run_sweep(
     )
     i = 0
     for (
-        lev, ms, ht, tn, minp, reg, inf_dv, inf_vol, inf_maxvol, skip_pair,
-        fb, rgw, vta, ivt, r20g, r5g, rgiqr, rgskew, fb_alloc, conv,
-        alloc_pair, sup,
+        lev, ms, ht, tn, minp, opp_watch, opp_disc, reg, inf_dv,
+        inf_spread, inf_vol, inf_maxvol, skip_pair, fb, rgw, vta, ivt,
+        r20g, r5g, rgiqr, rgskew,
+        fb_alloc, conv, alloc_pair, sup,
     ) in product(
-        leverage_grid, min_score_grid, hold_through_grid, top_n_grid, minp_grid, fee_regimes,
-        inf_grid, vol_grid, maxvol_grid, skip_pairs, fb_grid, rgw_grid, vta_grid,
-        ivt_grid, r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid, fb_alloc_grid,
-        conv_grid, alloc_pairs, sup_grid,
+        leverage_grid, min_score_grid, hold_through_grid, top_n_grid, minp_grid,
+        opp_watch_grid, opp_discount_grid, fee_regimes, inf_grid, spread_grid,
+        vol_grid, maxvol_grid, skip_pairs, fb_grid, rgw_grid, vta_grid, ivt_grid,
+        r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid, fb_alloc_grid, conv_grid,
+        alloc_pairs, sup_grid,
     ):
         alloc_mode, alloc_temp = alloc_pair
         sp, sseed = skip_pair
@@ -1111,9 +1373,12 @@ def run_sweep(
             hold_through=ht,
             top_n=tn,
             min_picks=minp,
+            opportunistic_watch_n=opp_watch,
+            opportunistic_entry_discount_bps=opp_disc,
             score_uncertainty_penalty=sup,
             fee_regime=reg,
             inference_min_dolvol=inf_dv,
+            inference_max_spread_bps=inf_spread,
             inference_min_vol_20d=inf_vol,
             inference_max_vol_20d=inf_maxvol,
             skip_prob=sp,
@@ -1141,9 +1406,11 @@ def run_sweep(
             resumed_cell.ensemble_needs_ranks = bool(needs_ranks)
             resumed_cell.ensemble_needs_dispersion = bool(needs_disp)
             logger.info(
-                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d up=%.2f reg=%s "
+                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d "
+                "opp=%d/%.1fbps up=%.2f reg=%s "
                 "alloc=%s/%.2f resumed from checkpoint",
-                i, total, lev, ms, ht, tn, minp, sup, reg, alloc_mode, alloc_temp,
+                i, total, lev, ms, ht, tn, minp, opp_watch, opp_disc, sup, reg,
+                alloc_mode, alloc_temp,
             )
             cells.append(resumed_cell)
             if progress_callback is not None:
@@ -1153,9 +1420,12 @@ def run_sweep(
             oos_df=oos_df, scores=cell_scores, windows=windows,
             leverage=lev, min_score=ms, hold_through=ht,
             top_n=tn, min_picks=minp,
+            opportunistic_watch_n=opp_watch,
+            opportunistic_entry_discount_bps=opp_disc,
             score_uncertainty_penalty=sup,
             fee_regime=reg,
             inference_min_dolvol=inf_dv,
+            inference_max_spread_bps=inf_spread,
             inference_min_vol_20d=inf_vol,
             inference_max_vol_20d=inf_maxvol,
             skip_prob=sp, skip_seed=sseed,
@@ -1184,15 +1454,18 @@ def run_sweep(
         cell.ensemble_needs_ranks = bool(needs_ranks)
         cell.ensemble_needs_dispersion = bool(needs_disp)
         logger.info(
-            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d up=%.2f reg=%s "
+            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d "
+            "opp=%d/%.1fbps up=%.2f reg=%s "
             "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
+            "spread<=%.1f "
             "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
             "rgiqr=%.3f rgskew=%+.2f "
             "fb_sym=%s fb_alloc=%.2f conv=%s alloc=%s/%.2f "
             "med=%+.2f%% p10=%+.2f%% neg=%d/%d%s",
-            i, total, lev, ms, ht, tn, minp, sup, reg,
+            i, total, lev, ms, ht, tn, minp, opp_watch, opp_disc, sup, reg,
             inf_dv, inf_vol, inf_maxvol, sp, sseed,
             cell.fill_buffer_bps,
+            inf_spread,
             rgw, vta, ivt, r20g, r5g,
             rgiqr, rgskew,
             fb_sym if fb_alloc != 0.0 else "",
@@ -1213,6 +1486,8 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "leverage": c.leverage, "min_score": c.min_score,
             "hold_through": c.hold_through, "top_n": c.top_n,
             "min_picks": c.min_picks,
+            "opportunistic_watch_n": c.opportunistic_watch_n,
+            "opportunistic_entry_discount_bps": c.opportunistic_entry_discount_bps,
             "score_uncertainty_penalty": c.score_uncertainty_penalty,
             "fee_regime": c.fee_regime,
             "n_windows": c.n_windows,
@@ -1233,6 +1508,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "median_active_day_pct": c.median_active_day_pct,
             "min_active_day_pct":    c.min_active_day_pct,
             "inference_min_dolvol":  c.inference_min_dolvol,
+            "inference_max_spread_bps": c.inference_max_spread_bps,
             "inference_min_vol_20d": c.inference_min_vol_20d,
             "inference_max_vol_20d": c.inference_max_vol_20d,
             "skip_prob":             c.skip_prob,
@@ -1263,13 +1539,13 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
 
 
 def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
-    """Aggregate sweep rows across fee/slippage cells by strategy params.
+    """Aggregate sweep rows across stress cells by deployable strategy params.
 
-    The production rule is evaluated on the worst friction cell, not the
-    easiest row. This summary groups identical strategy knobs while treating
-    fee_regime and fill_buffer_bps as stress axes. Higher-is-better metrics
-    use the minimum across the group; lower-is-better pain/risk metrics use
-    the maximum.
+    The production rule is evaluated on the worst stress cell, not the
+    easiest row. This summary groups identical deployable strategy knobs while
+    treating fee_regime, fill_buffer_bps, skip_prob, and skip_seed as stress
+    axes. Higher-is-better metrics use the minimum across the group;
+    lower-is-better pain/risk metrics use the maximum.
     """
     grouped: dict[tuple, list[dict]] = {}
     for row in rows:
@@ -1316,6 +1592,12 @@ def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
         summary["fee_regimes"] = sorted({str(r.get("fee_regime", "")) for r in group_rows})
         summary["fill_buffer_bps_values"] = sorted(
             {float(r.get("fill_buffer_bps", 0.0)) for r in group_rows}
+        )
+        summary["skip_prob_values"] = sorted(
+            {float(r.get("skip_prob", 0.0)) for r in group_rows}
+        )
+        summary["skip_seed_values"] = sorted(
+            {int(r.get("skip_seed", 0)) for r in group_rows}
         )
         worst_row = min(
             group_rows,
@@ -1364,6 +1646,11 @@ def _production_target_exit_code(rows: list[dict], *, required: bool) -> int:
 
 def _sweep_json_payload(
     *,
+    symbols_file: Path | None = None,
+    data_root: Path | None = None,
+    spy_csv_path: Path | None = None,
+    spy_csv_sha256: str | None = None,
+    blend_mode: str | None = None,
     model_paths: list[Path],
     model_sha256: list[str] | None = None,
     ensemble_manifest: dict | None = None,
@@ -1384,6 +1671,10 @@ def _sweep_json_payload(
         if bool(r.get("production_target_pass", False))
     ]
     payload = {
+        **({"symbols_file": str(symbols_file)} if symbols_file is not None else {}),
+        **({"data_root": str(data_root)} if data_root is not None else {}),
+        **({"spy_csv": str(spy_csv_path)} if spy_csv_path is not None else {}),
+        **({"blend_mode": str(blend_mode)} if blend_mode is not None else {}),
         "model_paths": [str(p) for p in model_paths],
         "oos_start": oos_start,
         "oos_end": str(oos_end),
@@ -1405,7 +1696,10 @@ def _sweep_json_payload(
             "max_neg_windows": PRODUCTION_TARGET_MAX_NEG_WINDOWS,
             "min_windows": PRODUCTION_TARGET_MIN_WINDOWS,
             "expected_windows_required": True,
-            "basis": "worst fee_regime/fill_buffer_bps cell per strategy",
+            "basis": (
+                "worst fee_regime/fill_buffer_bps/skip_prob/skip_seed "
+                "cell per strategy"
+            ),
         },
         "fail_fast": {
             "max_dd_pct": float(fail_fast_max_dd_pct),
@@ -1424,6 +1718,9 @@ def _sweep_json_payload(
     hashes = _model_sha256(model_paths) if model_sha256 is None else list(model_sha256)
     if hashes is not None:
         payload["model_sha256"] = hashes
+    spy_hash = _optional_file_sha256(spy_csv_path) if spy_csv_sha256 is None else spy_csv_sha256
+    if spy_hash is not None:
+        payload["spy_csv_sha256"] = spy_hash
     manifest = _ensemble_manifest_metadata(model_paths) if ensemble_manifest is None else ensemble_manifest
     if manifest is not None:
         payload["ensemble_manifest"] = manifest
@@ -1446,6 +1743,12 @@ def _model_sha256(model_paths: list[Path]) -> list[str] | None:
             return None
         hashes.append(_file_sha256(path))
     return hashes
+
+
+def _optional_file_sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    return _file_sha256(path)
 
 
 def _ensemble_manifest_metadata(model_paths: list[Path]) -> dict | None:
@@ -1535,10 +1838,22 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--top-n-grid", type=str, default="1")
     p.add_argument("--min-picks-grid", type=str, default="",
                    help="Aggressive packing floor grid. Comma-separated "
-                        "integers bounded by top_n inside the simulator. "
+                        "integers; values greater than top_n are rejected. "
                         "0 or empty preserves classic min_score-gated "
                         "behavior; positive values force at least that many "
                         "best-ranked picks after live-replicable filters.")
+    p.add_argument("--opportunistic-watch-n-grid", type=str, default="",
+                   help="Work-stealing watchlist size grid. 0 or empty "
+                        "disables. Positive values rank this many candidates "
+                        "per day, post buy limits below the open, and enter "
+                        "only triggered names up to top_n. Positive values "
+                        "must be >= top_n.")
+    p.add_argument("--opportunistic-entry-discount-bps-grid", type=str, default="",
+                   help="Buy-limit discount below the day's open, in bps, "
+                        "for opportunistic watchlist entries. Example: 30 "
+                        "means buy at open*0.997 only if the bar low "
+                        "penetrates that limit by fill_buffer_bps. 0 or "
+                        "empty disables with watch_n=0.")
     p.add_argument("--hold-through", action="store_true",
                    help="Include hold_through=True in sweep.")
     p.add_argument("--no-hold-through", action="store_true",
@@ -1555,6 +1870,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "pick pool AFTER model scoring — lets us sweep "
                         "'train broad, trade narrow'. Empty = single cell "
                         "at --min-dollar-vol.")
+    p.add_argument("--inference-max-spread-bps-grid", type=str, default="",
+                   help="Optional comma-separated inference-time spread "
+                        "ceilings in bps. 30 matches the live/default "
+                        "BacktestConfig filter; 0 disables the spread filter. "
+                        "Lets sweeps test tighter liquidity filters without "
+                        "changing training data.")
     p.add_argument("--inference-min-vol-grid", type=str, default="",
                    help="Optional comma-separated inference-time vol_20d "
                         "(annualised realised-vol) floors. 0 or empty "
@@ -1763,6 +2084,7 @@ def main(argv=None) -> int:
         return 2
     model_sha256 = _model_sha256(model_paths)
     ensemble_manifest = _ensemble_manifest_metadata(model_paths)
+    spy_csv_sha256 = _optional_file_sha256(args.spy_csv)
     ht_grid: list[bool] = []
     if args.hold_through:
         ht_grid.append(True)
@@ -1810,6 +2132,11 @@ def main(argv=None) -> int:
         _write_json_atomic(
             checkpoint_path,
             _sweep_json_payload(
+                symbols_file=args.symbols_file,
+                data_root=args.data_root,
+                spy_csv_path=args.spy_csv,
+                spy_csv_sha256=spy_csv_sha256,
+                blend_mode=args.blend_mode,
                 model_paths=model_paths,
                 model_sha256=model_sha256,
                 ensemble_manifest=ensemble_manifest,
@@ -1849,12 +2176,24 @@ def main(argv=None) -> int:
             _parse_int_list(args.min_picks_grid)
             if args.min_picks_grid else None
         ),
+        opportunistic_watch_n_grid=(
+            _parse_int_list(args.opportunistic_watch_n_grid)
+            if args.opportunistic_watch_n_grid else None
+        ),
+        opportunistic_entry_discount_bps_grid=(
+            _parse_float_list(args.opportunistic_entry_discount_bps_grid)
+            if args.opportunistic_entry_discount_bps_grid else None
+        ),
         blend_mode=args.blend_mode,
         chronos_cache_path=args.chronos_cache,
         min_dollar_vol=float(args.min_dollar_vol),
         inference_min_dolvol_grid=(
             _parse_float_list(args.inference_min_dolvol_grid)
             if args.inference_min_dolvol_grid else None
+        ),
+        inference_max_spread_bps_grid=(
+            _parse_float_list(args.inference_max_spread_bps_grid)
+            if args.inference_max_spread_bps_grid else None
         ),
         inference_min_vol_grid=(
             _parse_float_list(args.inference_min_vol_grid)
@@ -1940,6 +2279,11 @@ def main(argv=None) -> int:
     _write_json_atomic(
         out,
         _sweep_json_payload(
+            symbols_file=args.symbols_file,
+            data_root=args.data_root,
+            spy_csv_path=args.spy_csv,
+            spy_csv_sha256=spy_csv_sha256,
+            blend_mode=args.blend_mode,
             model_paths=model_paths,
             model_sha256=model_sha256,
             ensemble_manifest=ensemble_manifest,
@@ -2038,7 +2382,7 @@ def main(argv=None) -> int:
             f"\nFriction-robust strategy ranking "
             f"(target: med>={PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT:g}%, "
             f"dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}%, "
-            f"neg<={PRODUCTION_TARGET_MAX_NEG_WINDOWS} on worst fee/fill cell)\n"
+            f"neg<={PRODUCTION_TARGET_MAX_NEG_WINDOWS} on worst stress cell)\n"
             f"{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} "
             f"{'medW':>8} {'p10W':>8} {'ddMax':>6} {'tuwMax':>7} "
             f"{'actMin':>7} {'negMax':>6} {'painW':>8} {'pass':>4} "

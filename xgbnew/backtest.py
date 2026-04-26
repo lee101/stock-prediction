@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from src.fees import get_fee_for_symbol
+from .features import cross_sectional_regime_keep_by_date
 from .model import XGBStockModel, combined_scores
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,14 @@ class BacktestConfig:
     chronos_col: str = "chronos_oc_return"
     fee_rate: float | None = None       # per-side fee fraction; defaults by symbol
     fill_buffer_bps: float = 5.0        # adverse entry/exit fill buffer around bar
+    # Opportunistic work-stealing entry mode. When enabled, the model ranks a
+    # larger daily watchlist, posts explicit buy limits below the open, and
+    # only enters symbols whose observed low penetrates that limit by the
+    # configured fill buffer. This approximates a live process that keeps
+    # watching planned near-misses every few minutes without pretending that a
+    # mere touch always fills. 0 disables and preserves open-to-close entries.
+    opportunistic_watch_n: int = 0
+    opportunistic_entry_discount_bps: float = 0.0
     regime_gate_window: int = 0         # 0 disables; 20/50/200 = SPY MA lookback
     vol_target_ann: float = 0.0         # 0 disables; else scale daily allocation by
                                         # min(1, vol_target_ann / realised_20d_ann_vol)
@@ -335,6 +344,38 @@ def _fill_prices(open_price: float, close_price: float, *, fill_buffer_bps: floa
     return entry_fill, exit_fill
 
 
+def _limit_entry_fill_price(
+    row: pd.Series,
+    *,
+    discount_bps: float,
+    fill_buffer_bps: float,
+) -> float | None:
+    """Return a conservative explicit-limit entry fill, or None if unfilled.
+
+    The limit is placed at ``open * (1 - discount_bps)``. To avoid the common
+    OHLC look-ahead optimism where a one-tick touch is treated as certain
+    execution, the bar low must move through the limit by ``fill_buffer_bps``.
+    If it does, the fill price is the posted limit price, not a better low.
+    """
+    try:
+        open_price = float(row.get("actual_open", 0.0) or 0.0)
+        low_price = float(row.get("actual_low", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(open_price) and np.isfinite(low_price)):
+        return None
+    if open_price <= 0.0 or low_price <= 0.0:
+        return None
+
+    discount = max(float(discount_bps), 0.0) / 10_000.0
+    buffer_frac = max(float(fill_buffer_bps), 0.0) / 10_000.0
+    limit_price = open_price * (1.0 - discount)
+    required_low = limit_price * (1.0 - buffer_frac)
+    if low_price <= required_low:
+        return float(limit_price)
+    return None
+
+
 def _intraday_excursion_pct(
     row: pd.Series,
     entry_ref: float,
@@ -370,13 +411,15 @@ def _build_regime_flags(
     all_dates: pd.Index,
     *,
     window: int,
+    available_at_open: bool = False,
 ) -> pd.Series:
     """Return a bool Series indexed by ``all_dates`` — True = gate CLOSED (skip day).
 
-    Gate closed when SPY's same-date close is strictly below its ``window``-day
-    simple moving average (computed on SPY history up to and including that
-    date — no look-ahead). Dates missing from SPY coverage are treated as
-    open (do not gate) so we never silently skip a trading day for data reasons.
+    Gate closed when SPY is strictly below its ``window``-day simple moving
+    average. When ``available_at_open`` is true, the flag for date D uses SPY
+    history through D-1's close so daily backtests do not look ahead to D's
+    close. Dates missing from SPY coverage are treated as open (do not gate) so
+    we never silently skip a trading day for data reasons.
     """
     closed = pd.Series(False, index=all_dates)
     if spy_close_by_date is None or window <= 0:
@@ -390,6 +433,8 @@ def _build_regime_flags(
     ma = sp.rolling(window=int(window), min_periods=int(window)).mean()
     ratio = sp / ma
     below = ratio < 1.0
+    if available_at_open:
+        below = below.shift(1)
     # Align to all_dates — unknown dates stay False (open).
     aligned = below.reindex(all_dates).astype("boolean").fillna(False).astype(bool)
     return aligned
@@ -402,10 +447,13 @@ def _build_vol_scale(
     target_ann: float,
     lookback_days: int = 20,
     trading_days_per_year: int = TRADING_DAYS_PER_YEAR,
+    available_at_open: bool = False,
 ) -> pd.Series:
     """Return a scalar Series (in [0, 1]) by date — min(1, target / realised).
 
     Uses SPY as the regime-vol proxy because the XGB signal is market-wide.
+    When ``available_at_open`` is true, the scalar for date D uses SPY history
+    through D-1's close so daily backtests do not look ahead to D's close.
     Dates with insufficient SPY history fall through to 1.0 (no scaling).
     """
     scale = pd.Series(1.0, index=all_dates)
@@ -420,6 +468,8 @@ def _build_vol_scale(
         * np.sqrt(trading_days_per_year)
     )
     ratio = (float(target_ann) / realised_ann).clip(upper=1.0)
+    if available_at_open:
+        ratio = ratio.shift(1)
     aligned = ratio.reindex(all_dates).fillna(1.0).astype(float)
     return aligned
 
@@ -580,23 +630,16 @@ def simulate(
         r5 = test_df.groupby("date")["ret_5d"].rank(pct=True, method="average")
         test_df = test_df[r5 >= float(config.min_ret_5d_rank_pct)]
 
-    # Cross-sectional regime gate — compute per-day stats BEFORE
-    # per-pick filters would bias them (needs the full universe for
-    # a faithful dispersion signal). We compute from the already-
-    # scored ``test_df`` because by this point we've only applied
-    # liquidity / vol / spread filters that a live deployer can also
-    # replicate; the day-level IQR is stable under those masks.
+    # Cross-sectional regime gate — shared with live so a swept day-level
+    # dispersion/skew gate evaluates the same keep/drop decision at deploy.
     iqr_active  = float(config.regime_cs_iqr_max) > 0.0
     skew_active = float(config.regime_cs_skew_min) > -1e8
     if (iqr_active or skew_active) and "ret_5d" in test_df.columns:
-        daily = test_df.groupby("date")["ret_5d"]
-        day_iqr  = daily.quantile(0.75) - daily.quantile(0.25)
-        day_skew = daily.agg(lambda s: float(pd.Series(s).skew()))
-        day_keep = pd.Series(True, index=day_iqr.index)
-        if iqr_active:
-            day_keep &= day_iqr <= float(config.regime_cs_iqr_max)
-        if skew_active:
-            day_keep &= day_skew.fillna(0.0) >= float(config.regime_cs_skew_min)
+        day_keep = cross_sectional_regime_keep_by_date(
+            test_df,
+            regime_cs_iqr_max=float(config.regime_cs_iqr_max),
+            regime_cs_skew_min=float(config.regime_cs_skew_min),
+        )
         keep_dates = set(day_keep[day_keep].index)
         test_df = test_df[test_df["date"].isin(keep_dates)]
 
@@ -615,10 +658,16 @@ def simulate(
     if fallback_lookup is not None:
         unique_dates = pd.Index(sorted(set(unique_dates).union(fallback_lookup.keys())))
     regime_closed = _build_regime_flags(
-        spy_close_by_date, unique_dates, window=config.regime_gate_window
+        spy_close_by_date,
+        unique_dates,
+        window=config.regime_gate_window,
+        available_at_open=True,
     )
     vol_scale = _build_vol_scale(
-        spy_close_by_date, unique_dates, target_ann=config.vol_target_ann
+        spy_close_by_date,
+        unique_dates,
+        target_ann=config.vol_target_ann,
+        available_at_open=True,
     )
 
     equity = config.initial_cash
@@ -665,18 +714,50 @@ def simulate(
 
         # Materialize today's pick rows up to top_n (skipping invalid prices).
         pick_rows: list[pd.Series] = []
+        opportunistic_entries: dict[str, float] = {}
         min_pick_floor = min(max(int(config.min_picks), 0), int(config.top_n))
-        for _, row in day_df.iterrows():
-            if len(pick_rows) >= config.top_n:
-                break
-            score = float(row.get("_score", 0.0) or 0.0)
-            if score < config.min_score and len(pick_rows) >= min_pick_floor:
-                continue
-            o = float(row["actual_open"])
-            c = float(row["actual_close"])
-            if o <= 0 or c <= 0:
-                continue
-            pick_rows.append(row)
+        opportunistic_watch_n = max(int(config.opportunistic_watch_n), 0)
+        opportunistic_discount_bps = max(
+            float(config.opportunistic_entry_discount_bps), 0.0
+        )
+        if opportunistic_watch_n > 0 and opportunistic_discount_bps > 0.0:
+            watch_rows: list[pd.Series] = []
+            for _, row in day_df.iterrows():
+                if len(watch_rows) >= opportunistic_watch_n:
+                    break
+                score = float(row.get("_score", 0.0) or 0.0)
+                if score < config.min_score and len(watch_rows) >= min_pick_floor:
+                    continue
+                o = float(row["actual_open"])
+                c = float(row["actual_close"])
+                if o <= 0 or c <= 0:
+                    continue
+                watch_rows.append(row)
+
+            for row in watch_rows:
+                if len(pick_rows) >= config.top_n:
+                    break
+                entry_limit = _limit_entry_fill_price(
+                    row,
+                    discount_bps=opportunistic_discount_bps,
+                    fill_buffer_bps=config.fill_buffer_bps,
+                )
+                if entry_limit is None:
+                    continue
+                pick_rows.append(row)
+                opportunistic_entries[str(row["symbol"])] = entry_limit
+        else:
+            for _, row in day_df.iterrows():
+                if len(pick_rows) >= config.top_n:
+                    break
+                score = float(row.get("_score", 0.0) or 0.0)
+                if score < config.min_score and len(pick_rows) >= min_pick_floor:
+                    continue
+                o = float(row["actual_open"])
+                c = float(row["actual_close"])
+                if o <= 0 or c <= 0:
+                    continue
+                pick_rows.append(row)
 
         today_sym_list = [str(r["symbol"]) for r in pick_rows]
         today_pick_set = frozenset(today_sym_list)
@@ -808,7 +889,15 @@ def simulate(
 
             # Churn day — full open-to-close round-trip with fees + buffer.
             fee_rate = symbol_fee_rates.get(symbol, _resolve_fee_rate(symbol, config))
-            entry_fill, exit_fill = _fill_prices(o, c, fill_buffer_bps=config.fill_buffer_bps)
+            entry_fill = opportunistic_entries.get(symbol)
+            if entry_fill is None:
+                entry_fill, exit_fill = _fill_prices(
+                    o, c, fill_buffer_bps=config.fill_buffer_bps
+                )
+            else:
+                exit_fill = c * (
+                    1.0 - max(float(config.fill_buffer_bps), 0.0) / 10_000.0
+                )
             if entry_fill <= 0 or exit_fill <= 0:
                 continue
 

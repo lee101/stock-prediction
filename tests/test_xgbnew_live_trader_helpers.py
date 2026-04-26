@@ -13,6 +13,7 @@ change trade semantics. In particular:
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from xgbnew import live_trader
+from xgbnew.features import evaluate_cross_sectional_regime_gate
 from xgbnew.trade_log import TradeLogger
 
 
@@ -86,6 +88,13 @@ def test_cross_sectional_regime_skew_gate_keeps_right_skew_day():
     assert tlog.events[-1][0] == "regime_cs_gate"
     assert tlog.events[-1][1]["kept"] is True
     assert tlog.events[-1][1]["cs_skew_ret5"] >= 1.0
+    keep, cs_iqr, cs_skew = evaluate_cross_sectional_regime_gate(
+        scores_df["ret_5d"],
+        regime_cs_skew_min=1.0,
+    )
+    assert keep is True
+    assert tlog.events[-1][1]["cs_iqr_ret5"] == pytest.approx(cs_iqr)
+    assert tlog.events[-1][1]["cs_skew_ret5"] == pytest.approx(cs_skew)
 
 
 def test_cross_sectional_regime_skew_gate_closes_left_skew_day():
@@ -179,6 +188,205 @@ def test_score_all_symbols_can_penalize_ensemble_disagreement(monkeypatch, tmp_p
     assert a_row["raw_score_mean"] == pytest.approx(0.70)
     assert a_row["score_std"] == pytest.approx(0.29)
     assert a_row["score"] == pytest.approx(0.41)
+
+
+def test_score_all_symbols_honors_max_spread_bps(monkeypatch, tmp_path):
+    local_df = pd.DataFrame({"close": [100.0] * 80})
+
+    def _fake_features(_df, *, symbol):
+        row = {col: 1.0 for col in live_trader.DAILY_FEATURE_COLS}
+        row.update({
+            "symbol": symbol,
+            "actual_close": 100.0,
+            "dolvol_20d_log": float(live_trader.np.log1p(20_000_000.0)),
+            "spread_bps": {"TIGHT": 5.0, "WIDE": 35.0}[symbol],
+            "ret_5d": 0.0,
+            "ret_20d": 0.0,
+            "vol_20d": 0.20,
+        })
+        return pd.DataFrame([row])
+
+    class _Model:
+        feature_cols: list[str] = []
+
+        def predict_scores(self, frame):
+            return [0.9 if sym == "WIDE" else 0.7 for sym in frame["symbol"]]
+
+    monkeypatch.setattr(live_trader, "_load_symbol_csv", lambda _sym, _root: local_df)
+    monkeypatch.setattr(live_trader, "_extend_with_live_bars", lambda df, *_args: df)
+    monkeypatch.setattr(live_trader, "_latest_daily_bar_is_fresh", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(live_trader, "build_features_for_symbol", _fake_features)
+
+    capped = live_trader.score_all_symbols(
+        ["TIGHT", "WIDE"],
+        tmp_path,
+        _Model(),
+        max_spread_bps=30.0,
+    )
+    uncapped = live_trader.score_all_symbols(
+        ["TIGHT", "WIDE"],
+        tmp_path,
+        _Model(),
+        max_spread_bps=0.0,
+    )
+
+    assert list(capped["symbol"]) == ["TIGHT"]
+    assert list(uncapped["symbol"]) == ["WIDE", "TIGHT"]
+
+
+def test_live_spy_vol_target_scale_uses_latest_available_spy_close(monkeypatch, tmp_path):
+    dates = pd.bdate_range("2026-03-02", periods=30).date
+    closes = [100.0 * (1.04 if i % 2 else 0.96) ** i for i in range(len(dates))]
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    spy_csv = data_root / "SPY.csv"
+    pd.DataFrame({
+        "timestamp": [f"{day.isoformat()}T21:00:00Z" for day in dates],
+        "close": closes,
+    }).to_csv(spy_csv, index=False)
+    tlog = _CapturingTlog()
+
+    monkeypatch.setattr(
+        live_trader,
+        "_expected_latest_completed_daily_bar_date",
+        lambda now=None: dates[-1],
+    )
+
+    scale = live_trader._live_spy_vol_target_scale(
+        data_root,
+        SimpleNamespace(vol_target_ann=0.10),
+        trade_logger=tlog,
+    )
+
+    assert 0.0 < scale < 1.0
+    event_type, fields = tlog.events[-1]
+    assert event_type == "spy_vol_target"
+    assert fields["target_ann"] == pytest.approx(0.10)
+    assert fields["scale"] == pytest.approx(scale)
+    assert fields["spy_date"] == str(dates[-1])
+    assert fields["spy_csv"] == str(spy_csv.resolve(strict=False))
+    assert fields["spy_csv_sha256"] == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+
+
+def test_live_spy_vol_target_scale_missing_spy_fails_closed(tmp_path):
+    tlog = _CapturingTlog()
+
+    scale = live_trader._live_spy_vol_target_scale(
+        tmp_path,
+        SimpleNamespace(vol_target_ann=0.10),
+        trade_logger=tlog,
+    )
+
+    assert scale == 0.0
+    assert tlog.events[-1][0] == "spy_vol_target"
+    assert tlog.events[-1][1]["reason"] == "missing_spy_history"
+
+
+def test_live_spy_vol_target_scale_stale_spy_fails_closed(monkeypatch, tmp_path):
+    dates = pd.bdate_range("2026-03-02", periods=30).date
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    spy_csv = data_root / "SPY.csv"
+    pd.DataFrame({
+        "timestamp": [f"{day.isoformat()}T21:00:00Z" for day in dates[:-1]],
+        "close": [100.0] * (len(dates) - 1),
+    }).to_csv(spy_csv, index=False)
+    tlog = _CapturingTlog()
+
+    monkeypatch.setattr(
+        live_trader,
+        "_expected_latest_completed_daily_bar_date",
+        lambda now=None: dates[-1],
+    )
+
+    scale = live_trader._live_spy_vol_target_scale(
+        data_root,
+        SimpleNamespace(vol_target_ann=0.10),
+        trade_logger=tlog,
+    )
+
+    assert scale == 0.0
+    assert tlog.events[-1][0] == "spy_vol_target"
+    assert tlog.events[-1][1]["reason"] == "stale_spy_history"
+    assert tlog.events[-1][1]["expected_spy_date"] == str(dates[-1])
+    assert tlog.events[-1][1]["spy_csv_sha256"] == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+
+
+def test_live_spy_regime_gate_uses_latest_available_spy_close(monkeypatch, tmp_path):
+    dates = pd.bdate_range("2026-03-02", periods=30).date
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    spy_csv = data_root / "SPY.csv"
+    pd.DataFrame({
+        "timestamp": [f"{day.isoformat()}T21:00:00Z" for day in dates],
+        "close": [100.0] * 29 + [50.0],
+    }).to_csv(spy_csv, index=False)
+    tlog = _CapturingTlog()
+
+    monkeypatch.setattr(
+        live_trader,
+        "_expected_latest_completed_daily_bar_date",
+        lambda now=None: dates[-1],
+    )
+
+    closed = live_trader._live_spy_regime_gate_closed(
+        data_root,
+        SimpleNamespace(regime_gate_window=2),
+        trade_logger=tlog,
+    )
+
+    assert closed is True
+    event_type, fields = tlog.events[-1]
+    assert event_type == "spy_regime_gate"
+    assert fields["window"] == 2
+    assert fields["closed"] is True
+    assert fields["spy_date"] == str(dates[-1])
+    assert fields["spy_csv"] == str(spy_csv.resolve(strict=False))
+    assert fields["spy_csv_sha256"] == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+
+
+def test_live_spy_regime_gate_missing_spy_fails_closed(tmp_path):
+    tlog = _CapturingTlog()
+
+    closed = live_trader._live_spy_regime_gate_closed(
+        tmp_path,
+        SimpleNamespace(regime_gate_window=20),
+        trade_logger=tlog,
+    )
+
+    assert closed is True
+    assert tlog.events[-1][0] == "spy_regime_gate"
+    assert tlog.events[-1][1]["reason"] == "insufficient_spy_history"
+
+
+def test_live_spy_regime_gate_stale_spy_fails_closed(monkeypatch, tmp_path):
+    dates = pd.bdate_range("2026-03-02", periods=30).date
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    spy_csv = data_root / "SPY.csv"
+    pd.DataFrame({
+        "timestamp": [f"{day.isoformat()}T21:00:00Z" for day in dates[:-1]],
+        "close": [100.0] * (len(dates) - 1),
+    }).to_csv(spy_csv, index=False)
+    tlog = _CapturingTlog()
+
+    monkeypatch.setattr(
+        live_trader,
+        "_expected_latest_completed_daily_bar_date",
+        lambda now=None: dates[-1],
+    )
+
+    closed = live_trader._live_spy_regime_gate_closed(
+        data_root,
+        SimpleNamespace(regime_gate_window=2),
+        trade_logger=tlog,
+    )
+
+    assert closed is True
+    assert tlog.events[-1][0] == "spy_regime_gate"
+    assert tlog.events[-1][1]["reason"] == "stale_spy_history"
+    assert tlog.events[-1][1]["expected_spy_date"] == str(dates[-1])
+    assert tlog.events[-1][1]["spy_csv_sha256"] == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
 
 
 # ── embedded EOD deleverage ───────────────────────────────────────────────────
@@ -439,6 +647,39 @@ def test_buy_notional_by_symbol_uses_softmax_weights():
     assert sum(notionals.values()) == pytest.approx(10_000)
     assert notionals["AAA"] > notionals["BBB"]
     assert notionals["AAA"] == pytest.approx(9525.741, rel=1e-5)
+
+
+def test_buy_notional_by_symbol_applies_inverse_vol_pick_scale():
+    picks = pd.DataFrame([
+        {"symbol": "LOWVOL", "score": 0.90, "vol_20d": 0.10},
+        {"symbol": "HIGHVOL", "score": 0.80, "vol_20d": 0.40},
+    ])
+
+    notionals = live_trader._buy_notional_by_symbol(
+        picks,
+        total_notional=10_000,
+        allocation_mode="equal",
+        inv_vol_target_ann=0.20,
+        inv_vol_floor=0.05,
+        inv_vol_cap=3.0,
+    )
+
+    assert notionals["LOWVOL"] == pytest.approx(10_000.0)
+    assert notionals["HIGHVOL"] == pytest.approx(2_500.0)
+
+
+def test_buy_notional_by_symbol_bad_vol_uses_identity_scale():
+    picks = pd.DataFrame([
+        {"symbol": "MISSING", "score": 0.90, "vol_20d": pd.NA},
+    ])
+
+    notionals = live_trader._buy_notional_by_symbol(
+        picks,
+        total_notional=10_000,
+        inv_vol_target_ann=0.20,
+    )
+
+    assert notionals["MISSING"] == pytest.approx(10_000.0)
 
 
 def test_execute_buys_uses_per_symbol_notional_map(monkeypatch):
@@ -884,6 +1125,55 @@ def test_emit_session_start_captures_equity_pre(monkeypatch):
     assert fields["min_score"] == 0.85
     assert fields["min_dollar_vol"] == 50_000_000.0
     assert fields["min_vol_20d"] == 0.12
+
+
+def test_emit_session_start_records_spy_csv_provenance(tmp_path):
+    spy_csv = tmp_path / "SPY.csv"
+    spy_csv.write_text("timestamp,close\n2026-01-02T21:00:00Z,100\n", encoding="utf-8")
+    tlog = _CapturingTlog()
+    args = SimpleNamespace(
+        live=False,
+        dry_run=True,
+        top_n=1,
+        allocation=1.0,
+        min_score=0.0,
+        min_dollar_vol=0.0,
+        min_vol_20d=0.0,
+        data_root=tmp_path / "trainingdata",
+        spy_csv=spy_csv,
+        vol_target_ann=0.15,
+        regime_gate_window=0,
+    )
+
+    eq_pre = live_trader._emit_session_start(tlog, args, client=None, mode="open_to_close")
+
+    assert eq_pre is None
+    fields = tlog.events[0][1]
+    assert fields["spy_csv"] == str(spy_csv.resolve(strict=False))
+    assert fields["spy_csv_sha256"] == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+
+
+def test_emit_session_start_omits_spy_provenance_when_spy_controls_disabled(tmp_path):
+    tlog = _CapturingTlog()
+    args = SimpleNamespace(
+        live=False,
+        dry_run=True,
+        top_n=1,
+        allocation=1.0,
+        min_score=0.0,
+        min_dollar_vol=0.0,
+        min_vol_20d=0.0,
+        data_root=tmp_path,
+        spy_csv=tmp_path / "SPY.csv",
+        vol_target_ann=0.0,
+        regime_gate_window=0,
+    )
+
+    live_trader._emit_session_start(tlog, args, client=None, mode="open_to_close")
+
+    fields = tlog.events[0][1]
+    assert fields["spy_csv"] is None
+    assert fields["spy_csv_sha256"] is None
 
 
 def test_emit_session_start_dry_run_skips_equity(monkeypatch):
