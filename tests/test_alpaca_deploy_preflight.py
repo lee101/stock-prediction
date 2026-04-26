@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
-import sys
 import subprocess
+import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -134,6 +135,31 @@ def test_build_service_report_marks_restart_reasons_and_apply_blockers(monkeypat
     assert report.safe_to_apply is False
 
 
+def test_build_service_report_marks_stopped_service_restart_needed(monkeypatch) -> None:
+    mod = _load_module()
+    spec = mod.ServiceSpec(
+        name="unit-test-svc",
+        manager="supervisor",
+        actual_name="unit-test-svc",
+        config_path=Path("/tmp/unit-test-svc.conf"),
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: None)
+    monkeypatch.setattr(mod, "read_supervisor_command", lambda _path: "python bot.py")
+    monkeypatch.setattr(mod, "read_repo_configured_command", lambda _spec: "python bot.py")
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+
+    assert report.running is False
+    assert report.restart_reasons == ["service_not_running"]
+    assert report.apply_blockers == []
+    assert report.safe_to_apply is True
+
+
 def test_runtime_matches_configured_command_via_launch_script_wrapper(tmp_path) -> None:
     mod = _load_module()
     launch = tmp_path / "launch.sh"
@@ -190,6 +216,232 @@ def test_unmodeled_live_sidecars_from_launch_script_wrapper(tmp_path) -> None:
         configured,
         ("--crypto-weekend", "--eod-deleverage"),
     ) == ["--crypto-weekend", "--eod-deleverage"]
+
+
+def test_live_launch_env_mismatches_from_launch_script_wrapper(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=1\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.live_launch_env_mismatches_from_command(
+        configured,
+        (("ALP_PAPER", "0"), ("ALLOW_ALPACA_LIVE_TRADING", "1")),
+    ) == ["ALP_PAPER='1'!='0'", "ALLOW_ALPACA_LIVE_TRADING=missing"]
+
+
+def test_live_launch_env_mismatches_empty_when_required_env_matches(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=0\n"
+        "export ALLOW_ALPACA_LIVE_TRADING=1\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.live_launch_env_mismatches_from_command(
+        configured,
+        (("ALP_PAPER", "0"), ("ALLOW_ALPACA_LIVE_TRADING", "1")),
+    ) == []
+
+
+def test_live_launch_env_mismatches_respects_unset(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=0\n"
+        "export ALLOW_ALPACA_LIVE_TRADING=1\n"
+        "unset ALP_PAPER\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.live_launch_env_mismatches_from_command(
+        configured,
+        (("ALP_PAPER", "0"), ("ALLOW_ALPACA_LIVE_TRADING", "1")),
+    ) == ["ALP_PAPER=missing"]
+
+
+def test_live_launch_env_mismatches_respects_exec_env_unset(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=0\n"
+        "export ALLOW_ALPACA_LIVE_TRADING=1\n"
+        "exec env -u ALP_PAPER python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.live_launch_env_mismatches_from_command(
+        configured,
+        (("ALP_PAPER", "0"), ("ALLOW_ALPACA_LIVE_TRADING", "1")),
+    ) == ["ALP_PAPER=missing"]
+
+
+def test_live_launch_env_mismatches_accepts_exec_env_assignment(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec env ALP_PAPER=0 ALLOW_ALPACA_LIVE_TRADING=1 "
+        "python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.live_launch_env_mismatches_from_command(
+        configured,
+        (("ALP_PAPER", "0"), ("ALLOW_ALPACA_LIVE_TRADING", "1")),
+    ) == []
+
+
+def test_forbidden_live_launch_env_from_launch_script_wrapper(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALPACA_SINGLETON_OVERRIDE=1\n"
+        "export ALPACA_DEATH_SPIRAL_OVERRIDE=0\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.forbidden_live_launch_env_from_command(
+        configured,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == ["ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"]
+
+
+def test_forbidden_live_launch_env_respects_unset(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALPACA_SINGLETON_OVERRIDE=1\n"
+        "export ALPACA_DEATH_SPIRAL_OVERRIDE=1\n"
+        "unset ALPACA_SINGLETON_OVERRIDE ALPACA_DEATH_SPIRAL_OVERRIDE\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.forbidden_live_launch_env_from_command(
+        configured,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == []
+
+
+def test_forbidden_live_launch_env_detects_exec_env_assignment(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "source \"$HOME/.secretbashrc\"\n"
+        "unset ALPACA_SINGLETON_OVERRIDE ALPACA_DEATH_SPIRAL_OVERRIDE\n"
+        "exec env ALPACA_SINGLETON_OVERRIDE=1 "
+        "python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.forbidden_live_launch_env_from_command(
+        configured,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == ["ALPACA_SINGLETON_OVERRIDE"]
+
+
+def test_required_live_launch_unsets_missing_from_launch_script_wrapper(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "source \"$HOME/.secretbashrc\"\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.required_live_launch_unsets_missing_from_command(
+        configured,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == ["ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"]
+
+
+def test_required_live_launch_unsets_must_follow_secret_source(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "unset ALPACA_SINGLETON_OVERRIDE ALPACA_DEATH_SPIRAL_OVERRIDE\n"
+        "source \"$HOME/.secretbashrc\"\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.required_live_launch_unsets_missing_from_command(
+        configured,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == ["ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"]
+
+
+def test_required_live_launch_unsets_accepts_unset_after_secret_source(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "source \"$HOME/.secretbashrc\"\n"
+        "unset ALPACA_SINGLETON_OVERRIDE ALPACA_DEATH_SPIRAL_OVERRIDE\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    assert mod.required_live_launch_unsets_missing_from_command(
+        configured,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == []
+
+
+def test_xgb_model_paths_extraction_respects_unset(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "MODEL_PATHS=\"analysis/xgbnew_daily/custom/alltrain_seed0.pkl\"\n"
+        "unset MODEL_PATHS\n"
+        "exec python -u -m xgbnew.live_trader --model-paths \"${MODEL_PATHS}\" --live\n"
+    )
+    configured = f"/bin/bash -lc 'cd /repo && exec {launch}'"
+
+    model_paths, parse_error = mod.extract_xgb_model_paths_from_command(configured)
+
+    assert parse_error is None
+    assert model_paths == []
+
+
+def test_runtime_live_env_helpers_detect_running_process_drift(monkeypatch) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(
+        mod,
+        "_read_runtime_env",
+        lambda _pid: {
+            "ALP_PAPER": "1",
+            "ALLOW_ALPACA_LIVE_TRADING": "1",
+            "ALPACA_SINGLETON_OVERRIDE": "1",
+        },
+    )
+
+    assert mod.runtime_live_env_mismatches_from_pid(
+        123,
+        (("ALP_PAPER", "0"), ("ALLOW_ALPACA_LIVE_TRADING", "1")),
+    ) == ["ALP_PAPER='1'!='0'"]
+    assert mod.forbidden_runtime_live_env_from_pid(
+        123,
+        ("ALPACA_SINGLETON_OVERRIDE", "ALPACA_DEATH_SPIRAL_OVERRIDE"),
+    ) == ["ALPACA_SINGLETON_OVERRIDE"]
 
 
 def test_scan_unmodeled_live_sidecars_reports_parse_errors() -> None:
@@ -255,6 +507,18 @@ def test_xgb_daily_trader_live_spec_tracks_launch_and_parity_files() -> None:
     assert "xgbnew/backtest.py" in spec.watched_repo_files
     assert "src/alpaca_singleton.py" in spec.watched_repo_files
     assert spec.unmodeled_live_sidecar_flags == ("--crypto-weekend", "--eod-deleverage")
+    assert spec.required_launch_env == (
+        ("ALP_PAPER", "0"),
+        ("ALLOW_ALPACA_LIVE_TRADING", "1"),
+    )
+    assert spec.forbidden_launch_env == (
+        "ALPACA_SINGLETON_OVERRIDE",
+        "ALPACA_DEATH_SPIRAL_OVERRIDE",
+    )
+    assert spec.required_launch_unsets == (
+        "ALPACA_SINGLETON_OVERRIDE",
+        "ALPACA_DEATH_SPIRAL_OVERRIDE",
+    )
     assert spec.xgb_ensemble_dir == REPO / "analysis" / "xgbnew_daily" / "alltrain_ensemble_gpu"
     assert spec.xgb_ensemble_seeds == (0, 7, 42, 73, 197)
 
@@ -497,6 +761,180 @@ def test_validate_xgb_ensemble_for_spec_rejects_launch_without_model_paths(monke
     assert report.model_paths_missing is True
 
 
+def test_validate_xgb_spy_data_from_command_blocks_missing_spy_for_regime_gate(tmp_path) -> None:
+    mod = _load_module()
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--regime-gate-window 20 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path == str((data_root / "SPY.csv").resolve(strict=False))
+    assert error == f"missing:{data_root / 'SPY.csv'}"
+
+
+def test_validate_xgb_spy_data_from_command_accepts_spy_for_vol_target(tmp_path) -> None:
+    mod = _load_module()
+    expected_date = "2026-01-02"
+    mod._expected_latest_completed_daily_bar_date = lambda now=None: mod.date.fromisoformat(expected_date)
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    spy_csv = data_root / "SPY.csv"
+    spy_csv.write_text(
+        "timestamp,close\n"
+        f"{expected_date}T21:00:00Z,100\n",
+        encoding="utf-8",
+    )
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--vol-target-ann 0.15 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path == str((data_root / "SPY.csv").resolve(strict=False))
+    assert error is None
+
+    report = mod.inspect_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+    assert report.path == str(spy_csv.resolve(strict=False))
+    assert report.error is None
+    assert report.sha256 == hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+    assert report.latest_date == expected_date
+    assert report.usable_rows == 1
+
+
+def test_validate_xgb_spy_data_from_command_honors_explicit_spy_csv(tmp_path) -> None:
+    mod = _load_module()
+    expected_date = "2026-01-02"
+    mod._expected_latest_completed_daily_bar_date = lambda now=None: mod.date.fromisoformat(expected_date)
+    data_root = tmp_path / "missing_trainingdata"
+    custom_spy = tmp_path / "market_inputs" / "custom_spy.csv"
+    custom_spy.parent.mkdir()
+    custom_spy.write_text(
+        "timestamp,close\n"
+        f"{expected_date}T21:00:00Z,100\n",
+        encoding="utf-8",
+    )
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        f"--spy-csv {custom_spy} --vol-target-ann 0.15 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path == str(custom_spy.resolve(strict=False))
+    assert error is None
+
+
+def test_validate_xgb_spy_data_rejects_empty_explicit_spy_csv(tmp_path) -> None:
+    mod = _load_module()
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    (data_root / "SPY.csv").write_text(
+        "timestamp,close\n"
+        "2026-01-02T21:00:00Z,100\n",
+        encoding="utf-8",
+    )
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "SPY_CSV=\"\"\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--spy-csv \"${SPY_CSV}\" --vol-target-ann 0.15 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path is None
+    assert error == "--spy-csv must not be empty"
+
+
+def test_validate_xgb_spy_data_rejects_empty_explicit_data_root(tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "DATA_ROOT=\"\"\n"
+        "exec python -u -m xgbnew.live_trader --data-root \"${DATA_ROOT}\" "
+        "--vol-target-ann 0.15 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path is None
+    assert error == "--data-root must not be empty"
+
+
+def test_validate_xgb_spy_data_rejects_stale_spy_csv(tmp_path) -> None:
+    mod = _load_module()
+    mod._expected_latest_completed_daily_bar_date = lambda now=None: mod.date.fromisoformat("2026-01-05")
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    (data_root / "SPY.csv").write_text(
+        "timestamp,close\n"
+        "2026-01-02T21:00:00Z,100\n",
+        encoding="utf-8",
+    )
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--vol-target-ann 0.15 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path == str((data_root / "SPY.csv").resolve(strict=False))
+    assert error == f"stale_latest_date:2026-01-02/2026-01-05:{data_root / 'SPY.csv'}"
+
+
+def test_validate_xgb_spy_data_rejects_non_numeric_closes(tmp_path) -> None:
+    mod = _load_module()
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    (data_root / "SPY.csv").write_text(
+        "timestamp,close\n"
+        "2026-01-02T21:00:00Z,not-a-number\n",
+        encoding="utf-8",
+    )
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--vol-target-ann 0.15 --live\n"
+    )
+
+    path, error = mod.validate_xgb_spy_data_from_command(
+        f"/bin/bash -lc 'cd /repo && exec {launch}'"
+    )
+
+    assert path == str((data_root / "SPY.csv").resolve(strict=False))
+    assert error == f"insufficient_rows:0/1:{data_root / 'SPY.csv'}"
+
+
 def test_build_service_report_blocks_unmodeled_live_sidecars(monkeypatch, tmp_path) -> None:
     mod = _load_module()
     launch = tmp_path / "launch.sh"
@@ -540,6 +978,108 @@ def test_build_service_report_blocks_unmodeled_live_sidecars(monkeypatch, tmp_pa
         "unmodeled_live_sidecars:--crypto-weekend,--eod-deleverage"
     ]
     assert report.safe_to_apply is False
+
+
+def test_build_service_report_blocks_invalid_xgb_spy_data(monkeypatch, tmp_path) -> None:
+    mod = _load_module()
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--regime-gate-window 20 --live\n"
+    )
+    spec = mod.ServiceSpec(
+        name="xgb-unit",
+        manager="supervisor",
+        actual_name="xgb-unit",
+        config_path=Path("/tmp/xgb-unit.conf"),
+        repo_config_path=tmp_path / "supervisor.conf",
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: None)
+    monkeypatch.setattr(
+        mod,
+        "read_supervisor_command",
+        lambda _path: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_repo_configured_command",
+        lambda _spec: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+
+    assert report.xgb_spy_data_path == str((data_root / "SPY.csv").resolve(strict=False))
+    assert report.xgb_spy_data_error == f"missing:{data_root / 'SPY.csv'}"
+    assert "xgb_spy_data_invalid" in report.apply_blockers
+    assert report.safe_to_apply is False
+
+
+def test_build_service_report_records_xgb_spy_data_provenance(monkeypatch, tmp_path) -> None:
+    mod = _load_module()
+    expected_date = "2026-01-02"
+    monkeypatch.setattr(
+        mod,
+        "_expected_latest_completed_daily_bar_date",
+        lambda now=None: mod.date.fromisoformat(expected_date),
+    )
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    spy_csv = data_root / "SPY.csv"
+    spy_csv.write_text(
+        "timestamp,close\n"
+        f"{expected_date}T21:00:00Z,100\n",
+        encoding="utf-8",
+    )
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u -m xgbnew.live_trader --data-root {data_root} "
+        "--vol-target-ann 0.15 --live\n"
+    )
+    spec = mod.ServiceSpec(
+        name="xgb-unit",
+        manager="supervisor",
+        actual_name="xgb-unit",
+        config_path=Path("/tmp/xgb-unit.conf"),
+        repo_config_path=tmp_path / "supervisor.conf",
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: None)
+    monkeypatch.setattr(
+        mod,
+        "read_supervisor_command",
+        lambda _path: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_repo_configured_command",
+        lambda _spec: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+    text = mod.render_text(git_status, [report])
+    expected_sha = hashlib.sha256(spy_csv.read_bytes()).hexdigest()
+
+    assert report.xgb_spy_data_path == str(spy_csv.resolve(strict=False))
+    assert report.xgb_spy_data_sha256 == expected_sha
+    assert report.xgb_spy_data_latest_date == expected_date
+    assert report.xgb_spy_data_usable_rows == 1
+    assert report.xgb_spy_data_error is None
+    assert "xgb_spy_data_sha256: " + expected_sha in text
+    assert f"xgb_spy_data_latest_date: {expected_date}" in text
+    assert "xgb_spy_data_usable_rows: 1" in text
 
 
 def test_build_service_report_blocks_invalid_xgb_ensemble(monkeypatch, tmp_path) -> None:
@@ -703,6 +1243,228 @@ def test_build_service_report_blocks_live_sidecar_parse_errors(monkeypatch) -> N
     assert report.live_sidecar_parse_error is not None
     assert report.apply_blockers == ["live_sidecar_parse_error"]
     assert report.safe_to_apply is False
+
+
+def test_build_service_report_blocks_bad_live_launch_env(monkeypatch, tmp_path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=1\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    spec = mod.ServiceSpec(
+        name="xgb-unit",
+        manager="supervisor",
+        actual_name="xgb-unit",
+        config_path=Path("/tmp/xgb-unit.conf"),
+        repo_config_path=tmp_path / "supervisor.conf",
+        required_launch_env=(
+            ("ALP_PAPER", "0"),
+            ("ALLOW_ALPACA_LIVE_TRADING", "1"),
+        ),
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: None)
+    monkeypatch.setattr(
+        mod,
+        "read_supervisor_command",
+        lambda _path: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_repo_configured_command",
+        lambda _spec: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+    text = mod.render_text(git_status, [report])
+
+    assert report.live_launch_env_mismatches == [
+        "ALP_PAPER='1'!='0'",
+        "ALLOW_ALPACA_LIVE_TRADING=missing",
+    ]
+    assert report.apply_blockers == [
+        "live_launch_env_mismatch:ALP_PAPER='1'!='0',ALLOW_ALPACA_LIVE_TRADING=missing"
+    ]
+    assert "live_launch_env_mismatches: ALP_PAPER='1'!='0'" in text
+    assert report.safe_to_apply is False
+
+
+def test_build_service_report_blocks_forbidden_live_launch_env(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=0\n"
+        "export ALLOW_ALPACA_LIVE_TRADING=1\n"
+        "export ALPACA_SINGLETON_OVERRIDE=1\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    spec = mod.ServiceSpec(
+        name="xgb-unit",
+        manager="supervisor",
+        actual_name="xgb-unit",
+        config_path=Path("/tmp/xgb-unit.conf"),
+        repo_config_path=tmp_path / "supervisor.conf",
+        required_launch_env=(
+            ("ALP_PAPER", "0"),
+            ("ALLOW_ALPACA_LIVE_TRADING", "1"),
+        ),
+        forbidden_launch_env=("ALPACA_SINGLETON_OVERRIDE",),
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: None)
+    monkeypatch.setattr(
+        mod,
+        "read_supervisor_command",
+        lambda _path: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_repo_configured_command",
+        lambda _spec: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+    text = mod.render_text(git_status, [report])
+
+    assert report.live_launch_env_mismatches == []
+    assert report.forbidden_live_launch_env == ["ALPACA_SINGLETON_OVERRIDE"]
+    assert report.apply_blockers == [
+        "forbidden_live_launch_env:ALPACA_SINGLETON_OVERRIDE"
+    ]
+    assert "forbidden_live_launch_env: ALPACA_SINGLETON_OVERRIDE" in text
+    assert report.safe_to_apply is False
+
+
+def test_build_service_report_blocks_missing_required_live_launch_unsets(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "source \"$HOME/.secretbashrc\"\n"
+        "export ALP_PAPER=0\n"
+        "export ALLOW_ALPACA_LIVE_TRADING=1\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    spec = mod.ServiceSpec(
+        name="xgb-unit",
+        manager="supervisor",
+        actual_name="xgb-unit",
+        config_path=Path("/tmp/xgb-unit.conf"),
+        repo_config_path=tmp_path / "supervisor.conf",
+        required_launch_env=(
+            ("ALP_PAPER", "0"),
+            ("ALLOW_ALPACA_LIVE_TRADING", "1"),
+        ),
+        required_launch_unsets=("ALPACA_SINGLETON_OVERRIDE",),
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: None)
+    monkeypatch.setattr(
+        mod,
+        "read_supervisor_command",
+        lambda _path: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_repo_configured_command",
+        lambda _spec: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+    text = mod.render_text(git_status, [report])
+
+    assert report.required_live_launch_unsets_missing == ["ALPACA_SINGLETON_OVERRIDE"]
+    assert report.apply_blockers == [
+        "required_live_launch_unsets_missing:ALPACA_SINGLETON_OVERRIDE"
+    ]
+    assert "required_live_launch_unsets_missing: ALPACA_SINGLETON_OVERRIDE" in text
+    assert report.safe_to_apply is False
+
+
+def test_build_service_report_flags_runtime_live_env_drift_without_blocking_apply(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "export ALP_PAPER=0\n"
+        "export ALLOW_ALPACA_LIVE_TRADING=1\n"
+        "exec python -u -m xgbnew.live_trader --live\n"
+    )
+    spec = mod.ServiceSpec(
+        name="xgb-unit",
+        manager="supervisor",
+        actual_name="xgb-unit",
+        config_path=Path("/tmp/xgb-unit.conf"),
+        repo_config_path=tmp_path / "supervisor.conf",
+        required_launch_env=(
+            ("ALP_PAPER", "0"),
+            ("ALLOW_ALPACA_LIVE_TRADING", "1"),
+        ),
+        forbidden_launch_env=("ALPACA_SINGLETON_OVERRIDE",),
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_supervisor_pid", lambda _program: 123)
+    monkeypatch.setattr(
+        mod,
+        "read_supervisor_command",
+        lambda _path: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_repo_configured_command",
+        lambda _spec: f"/bin/bash -lc 'cd /repo && exec {launch}'",
+    )
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(
+        mod,
+        "_read_runtime_env",
+        lambda _pid: {
+            "ALP_PAPER": "1",
+            "ALLOW_ALPACA_LIVE_TRADING": "1",
+            "ALPACA_SINGLETON_OVERRIDE": "1",
+        },
+    )
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+    text = mod.render_text(git_status, [report])
+
+    assert report.live_launch_env_mismatches == []
+    assert report.forbidden_live_launch_env == []
+    assert report.runtime_live_env_mismatches == ["ALP_PAPER='1'!='0'"]
+    assert report.forbidden_runtime_live_env == ["ALPACA_SINGLETON_OVERRIDE"]
+    assert "runtime_live_env_mismatch" in report.restart_reasons
+    assert "forbidden_runtime_live_env" in report.restart_reasons
+    assert report.apply_blockers == []
+    assert report.safe_to_apply is True
+    assert "runtime_live_env_mismatches: ALP_PAPER='1'!='0'" in text
+    assert "forbidden_runtime_live_env: ALPACA_SINGLETON_OVERRIDE" in text
 
 
 def test_main_allow_unmodeled_live_sidecars_unblocks_apply(monkeypatch) -> None:
@@ -906,7 +1668,10 @@ def test_build_service_report_flags_installed_config_drift_from_repo(monkeypatch
     report = mod.build_service_report(spec, git_status)
 
     assert report.repo_configured_cmd == "python live.py --paper"
-    assert report.restart_reasons == ["installed_config_differs_from_repo"]
+    assert report.restart_reasons == [
+        "service_not_running",
+        "installed_config_differs_from_repo",
+    ]
 
 
 def test_llm_stock_trader_spec_exists_and_tracks_symbol_ownership() -> None:

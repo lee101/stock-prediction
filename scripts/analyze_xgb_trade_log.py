@@ -20,6 +20,8 @@ Interpretation rule (see ``project_xgb_prod_trade_log.md``):
 
 The output is informational — it does NOT gate deploy. Use it to decide
 whether to bump ``fill_buffer_bps`` in the next sweep.
+Use ``--fail-on-spy-provenance-warning`` in monitoring jobs that should fail
+when SPY risk-control decision events cannot be tied to exact SPY data bytes.
 
 Usage
 -----
@@ -39,6 +41,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_LOG_DIR = REPO / "analysis" / "xgb_live_trade_log"
 DEFAULT_FILL_BUFFER_BPS = 5.0
+SPY_PROVENANCE_EVENTS = {"spy_vol_target", "spy_regime_gate"}
 
 
 def _parse_args():
@@ -54,6 +57,9 @@ def _parse_args():
     p.add_argument("--min-sessions", type=int, default=1,
                    help="Suppress overall slippage verdict until at least "
                         "this many sessions have fills. Default 1.")
+    p.add_argument("--fail-on-spy-provenance-warning", action="store_true",
+                   help="Exit 3 if any session has SPY provenance warnings. "
+                        "Default stays informational.")
     return p.parse_args()
 
 
@@ -112,6 +118,14 @@ def _summarise_session(path: Path) -> dict:
         "session_skipped": False,
         "skip_reason": None,
         "no_picks": False,
+        "spy_csv": None,
+        "spy_csv_sha256": None,
+        "spy_decision_event_count": 0,
+        "spy_decision_missing_csv_count": 0,
+        "spy_decision_missing_sha256_count": 0,
+        "spy_decision_csv_values": [],
+        "spy_decision_sha256_values": [],
+        "spy_provenance_warnings": [],
     }
     for ev in events:
         name = ev.get("event")
@@ -119,6 +133,8 @@ def _summarise_session(path: Path) -> dict:
             summary["mode"] = ev.get("mode")
             summary["paper"] = ev.get("paper")
             summary["equity_pre"] = ev.get("equity_pre")
+            summary["spy_csv"] = ev.get("spy_csv")
+            summary["spy_csv_sha256"] = ev.get("spy_csv_sha256")
         elif name == "pick":
             summary["n_picks"] += 1
         elif name == "buy_submitted":
@@ -146,6 +162,18 @@ def _summarise_session(path: Path) -> dict:
             summary["skip_reason"] = ev.get("reason")
         elif name == "no_picks":
             summary["no_picks"] = True
+        elif name in SPY_PROVENANCE_EVENTS:
+            summary["spy_decision_event_count"] += 1
+            spy_csv = ev.get("spy_csv")
+            spy_hash = ev.get("spy_csv_sha256")
+            if spy_csv:
+                summary["spy_decision_csv_values"].append(str(spy_csv))
+            else:
+                summary["spy_decision_missing_csv_count"] += 1
+            if spy_hash:
+                summary["spy_decision_sha256_values"].append(str(spy_hash))
+            else:
+                summary["spy_decision_missing_sha256_count"] += 1
     slips = summary["slippages_bps"]
     if slips:
         summary["mean_slip_bps"] = statistics.fmean(slips)
@@ -153,6 +181,32 @@ def _summarise_session(path: Path) -> dict:
         summary["p95_slip_bps"] = _percentile(slips, 0.95)
         summary["max_slip_bps"] = max(slips)
         summary["min_slip_bps"] = min(slips)
+    summary["spy_decision_csv_values"] = sorted(set(summary["spy_decision_csv_values"]))
+    summary["spy_decision_sha256_values"] = sorted(set(summary["spy_decision_sha256_values"]))
+    session_spy_hash = summary["spy_csv_sha256"]
+    decision_hashes = summary["spy_decision_sha256_values"]
+    if summary["spy_decision_event_count"] and not session_spy_hash:
+        summary["spy_provenance_warnings"].append(
+            "spy_session_hash_missing"
+        )
+    if summary["spy_decision_missing_csv_count"]:
+        summary["spy_provenance_warnings"].append(
+            "spy_decision_csv_missing"
+        )
+    if summary["spy_decision_missing_sha256_count"]:
+        summary["spy_provenance_warnings"].append(
+            "spy_decision_hash_missing"
+        )
+    if session_spy_hash is not None and decision_hashes:
+        mismatches = [h for h in decision_hashes if h != session_spy_hash]
+        if mismatches:
+            summary["spy_provenance_warnings"].append(
+                "spy_decision_hash_mismatch"
+            )
+    if len(decision_hashes) > 1:
+        summary["spy_provenance_warnings"].append(
+            "multiple_spy_decision_hashes"
+        )
     return summary
 
 
@@ -163,6 +217,8 @@ def _overall(summaries: list[dict], fill_buffer_bps: float) -> dict:
     total_failed = 0
     sessions_with_fills = 0
     pnl_pcts: list[float] = []
+    spy_session_hashes: set[str] = set()
+    spy_warning_sessions: list[str] = []
     for s in summaries:
         if s["slippages_bps"]:
             all_slips.extend(s["slippages_bps"])
@@ -175,6 +231,10 @@ def _overall(summaries: list[dict], fill_buffer_bps: float) -> dict:
                 pnl_pcts.append(float(s["session_pnl_pct"]))
             except (TypeError, ValueError):
                 pass
+        if s.get("spy_csv_sha256"):
+            spy_session_hashes.add(str(s["spy_csv_sha256"]))
+        if s.get("spy_provenance_warnings"):
+            spy_warning_sessions.append(str(s["session_date"]))
     overall = {
         "n_sessions": len(summaries),
         "n_sessions_with_fills": sessions_with_fills,
@@ -192,6 +252,10 @@ def _overall(summaries: list[dict], fill_buffer_bps: float) -> dict:
                            if len(all_slips) >= 2 else None),
         "mean_session_pnl_pct": (statistics.fmean(pnl_pcts)
                                  if pnl_pcts else None),
+        "n_spy_session_hashes": len(spy_session_hashes),
+        "spy_session_sha256_values": sorted(spy_session_hashes),
+        "n_spy_provenance_warning_sessions": len(spy_warning_sessions),
+        "spy_provenance_warning_sessions": spy_warning_sessions,
     }
     if all_slips and overall["mean_slip_bps"] is not None:
         delta = overall["mean_slip_bps"] - fill_buffer_bps
@@ -238,6 +302,8 @@ def _render_human(summaries: list[dict], overall: dict,
             notes.append("no_picks")
         if s["n_buy_failed"] or s["n_sell_failed"]:
             notes.append(f"fail({s['n_buy_failed']}+{s['n_sell_failed']})")
+        if s["spy_provenance_warnings"]:
+            notes.append("spy_provenance_warning")
 
         def _fmt(x, w=8, p=2):
             return "     -- " if x is None else f"{x:>{w}.{p}f}"
@@ -275,6 +341,21 @@ def _render_human(summaries: list[dict], overall: dict,
     if overall["mean_session_pnl_pct"] is not None:
         lines.append(f"  mean session pnl% = "
                      f"{overall['mean_session_pnl_pct']:+.3f}")
+    if overall["n_spy_session_hashes"]:
+        preview = ", ".join(
+            h[:12] for h in overall["spy_session_sha256_values"][:3]
+        )
+        extra = "" if overall["n_spy_session_hashes"] <= 3 else ", ..."
+        lines.append(
+            "  SPY session hashes = "
+            f"{overall['n_spy_session_hashes']} unique ({preview}{extra})"
+        )
+    if overall["n_spy_provenance_warning_sessions"]:
+        lines.append(
+            "  SPY provenance warnings = "
+            f"{overall['n_spy_provenance_warning_sessions']} session(s): "
+            f"{', '.join(overall['spy_provenance_warning_sessions'])}"
+        )
     lines.append("=" * 78)
     return "\n".join(lines)
 
@@ -302,6 +383,9 @@ def main() -> int:
     else:
         print(_render_human(summaries, overall,
                             args.fill_buffer_bps, args.min_sessions))
+    if args.fail_on_spy_provenance_warning and \
+            overall["n_spy_provenance_warning_sessions"]:
+        return 3
     return 0
 
 

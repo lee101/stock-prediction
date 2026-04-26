@@ -49,13 +49,13 @@ def _single_session(slips: list[float], day: str = "2026-04-21") -> list[dict]:
 def test_empty_log_dir_exits_zero(tmp_path: Path):
     log_dir = tmp_path / "xgb_logs"
     log_dir.mkdir()
-    rc, out, err = _run(log_dir)
+    rc, _out, err = _run(log_dir)
     assert rc == 0
     assert "no *.jsonl" in err
 
 
 def test_missing_log_dir_exits_nonzero(tmp_path: Path):
-    rc, out, err = _run(tmp_path / "does_not_exist")
+    rc, _out, err = _run(tmp_path / "does_not_exist")
     assert rc == 2
     assert "not found" in err
 
@@ -152,6 +152,175 @@ def test_json_output_is_machine_readable(tmp_path: Path):
     # per-session slippages list is stripped from json output
     for s in payload["sessions"]:
         assert "slippages_bps" not in s
+
+
+def test_spy_provenance_is_reported_in_json(tmp_path: Path):
+    log_dir = tmp_path / "xgb_logs"
+    _write_jsonl(
+        log_dir / "2026-04-21.jsonl",
+        [
+            {
+                "event": "session_start",
+                "mode": "live",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+            },
+            {
+                "event": "spy_vol_target",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+                "scale": 0.75,
+            },
+        ],
+    )
+
+    rc, out, err = _run(log_dir, "--json")
+
+    assert rc == 0, err
+    payload = json.loads(out)
+    assert payload["overall"]["n_spy_session_hashes"] == 1
+    assert payload["overall"]["spy_session_sha256_values"] == ["a" * 64]
+    assert payload["overall"]["n_spy_provenance_warning_sessions"] == 0
+    session = payload["sessions"][0]
+    assert session["spy_csv"] == "/repo/trainingdata/SPY.csv"
+    assert session["spy_csv_sha256"] == "a" * 64
+    assert session["spy_decision_event_count"] == 1
+    assert session["spy_decision_missing_csv_count"] == 0
+    assert session["spy_decision_missing_sha256_count"] == 0
+    assert session["spy_decision_sha256_values"] == ["a" * 64]
+    assert session["spy_provenance_warnings"] == []
+
+
+def test_spy_provenance_mismatch_is_flagged(tmp_path: Path):
+    log_dir = tmp_path / "xgb_logs"
+    _write_jsonl(
+        log_dir / "2026-04-21.jsonl",
+        [
+            {
+                "event": "session_start",
+                "mode": "live",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+            },
+            {
+                "event": "spy_regime_gate",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "b" * 64,
+                "closed": False,
+            },
+        ],
+    )
+
+    rc, out, err = _run(log_dir)
+
+    assert rc == 0, err
+    assert "spy_provenance_warning" in out
+    assert "SPY provenance warnings = 1 session(s): 2026-04-21" in out
+
+
+def test_spy_provenance_missing_decision_hash_is_flagged(tmp_path: Path):
+    log_dir = tmp_path / "xgb_logs"
+    _write_jsonl(
+        log_dir / "2026-04-21.jsonl",
+        [
+            {
+                "event": "session_start",
+                "mode": "live",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+            },
+            {
+                "event": "spy_vol_target",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "scale": 0.75,
+            },
+        ],
+    )
+
+    rc, out, err = _run(log_dir, "--json")
+
+    assert rc == 0, err
+    payload = json.loads(out)
+    session = payload["sessions"][0]
+    assert session["spy_decision_missing_sha256_count"] == 1
+    assert session["spy_provenance_warnings"] == ["spy_decision_hash_missing"]
+    assert payload["overall"]["spy_provenance_warning_sessions"] == ["2026-04-21"]
+
+
+def test_spy_provenance_missing_session_hash_is_flagged(tmp_path: Path):
+    log_dir = tmp_path / "xgb_logs"
+    _write_jsonl(
+        log_dir / "2026-04-21.jsonl",
+        [
+            {"event": "session_start", "mode": "live"},
+            {
+                "event": "spy_regime_gate",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+                "closed": False,
+            },
+        ],
+    )
+
+    rc, out, err = _run(log_dir, "--json")
+
+    assert rc == 0, err
+    payload = json.loads(out)
+    session = payload["sessions"][0]
+    assert session["spy_provenance_warnings"] == ["spy_session_hash_missing"]
+
+
+def test_fail_on_spy_provenance_warning_exits_nonzero(tmp_path: Path):
+    log_dir = tmp_path / "xgb_logs"
+    _write_jsonl(
+        log_dir / "2026-04-21.jsonl",
+        [
+            {
+                "event": "session_start",
+                "mode": "live",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+            },
+            {
+                "event": "spy_regime_gate",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "b" * 64,
+                "closed": False,
+            },
+        ],
+    )
+
+    rc, out, err = _run(log_dir, "--fail-on-spy-provenance-warning")
+
+    assert rc == 3
+    assert err == ""
+    assert "SPY provenance warnings = 1 session(s): 2026-04-21" in out
+
+
+def test_fail_on_spy_provenance_warning_clean_session_exits_zero(tmp_path: Path):
+    log_dir = tmp_path / "xgb_logs"
+    _write_jsonl(
+        log_dir / "2026-04-21.jsonl",
+        [
+            {
+                "event": "session_start",
+                "mode": "live",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+            },
+            {
+                "event": "spy_vol_target",
+                "spy_csv": "/repo/trainingdata/SPY.csv",
+                "spy_csv_sha256": "a" * 64,
+                "scale": 0.75,
+            },
+        ],
+    )
+
+    rc, out, err = _run(log_dir, "--fail-on-spy-provenance-warning")
+
+    assert rc == 0, err
+    assert "SPY provenance warnings" not in out
 
 
 def test_tolerates_partial_line(tmp_path: Path):

@@ -14,18 +14,23 @@ to apply.
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
+import math
 import re
 import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVICE_CONFIG_PATH = REPO_ROOT / "unified_orchestrator" / "service_config.json"
+ET = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,9 @@ class ServiceSpec:
     symbols_flag: str | None = None
     ownership_service_name: str | None = None
     unmodeled_live_sidecar_flags: tuple[str, ...] = ()
+    required_launch_env: tuple[tuple[str, str], ...] = ()
+    forbidden_launch_env: tuple[str, ...] = ()
+    required_launch_unsets: tuple[str, ...] = ()
     xgb_ensemble_dir: Path | None = None
     xgb_ensemble_seeds: tuple[int, ...] = ()
     xgb_ensemble_min_pkl_bytes: int = 100 * 1024
@@ -63,6 +71,15 @@ class XGBEnsembleValidationReport:
 
 
 @dataclass
+class XGBSpyDataValidationReport:
+    path: str | None = None
+    error: str | None = None
+    sha256: str | None = None
+    latest_date: str | None = None
+    usable_rows: int = 0
+
+
+@dataclass
 class ServiceReport:
     service: str
     manager: str
@@ -79,12 +96,22 @@ class ServiceReport:
     configured_symbols_outside_ownership: list[str] = field(default_factory=list)
     unmodeled_live_sidecars: list[str] = field(default_factory=list)
     live_sidecar_parse_error: str | None = None
+    live_launch_env_mismatches: list[str] = field(default_factory=list)
+    forbidden_live_launch_env: list[str] = field(default_factory=list)
+    required_live_launch_unsets_missing: list[str] = field(default_factory=list)
+    runtime_live_env_mismatches: list[str] = field(default_factory=list)
+    forbidden_runtime_live_env: list[str] = field(default_factory=list)
     xgb_model_paths: list[str] = field(default_factory=list)
     xgb_model_sha256: list[str] = field(default_factory=list)
     xgb_ensemble_train_end: str | None = None
     xgb_model_paths_parse_error: str | None = None
     xgb_model_paths_missing: bool = False
     xgb_ensemble_validation_error: str | None = None
+    xgb_spy_data_path: str | None = None
+    xgb_spy_data_sha256: str | None = None
+    xgb_spy_data_latest_date: str | None = None
+    xgb_spy_data_usable_rows: int = 0
+    xgb_spy_data_error: str | None = None
     stale_files: list[str] = field(default_factory=list)
     restart_reasons: list[str] = field(default_factory=list)
     apply_blockers: list[str] = field(default_factory=list)
@@ -166,6 +193,18 @@ SPECS: dict[str, ServiceSpec] = {
             "deployments/xgb-daily-trader-live/supervisor.conf",
         ),
         unmodeled_live_sidecar_flags=("--crypto-weekend", "--eod-deleverage"),
+        required_launch_env=(
+            ("ALP_PAPER", "0"),
+            ("ALLOW_ALPACA_LIVE_TRADING", "1"),
+        ),
+        forbidden_launch_env=(
+            "ALPACA_SINGLETON_OVERRIDE",
+            "ALPACA_DEATH_SPIRAL_OVERRIDE",
+        ),
+        required_launch_unsets=(
+            "ALPACA_SINGLETON_OVERRIDE",
+            "ALPACA_DEATH_SPIRAL_OVERRIDE",
+        ),
         xgb_ensemble_dir=REPO_ROOT / "analysis" / "xgbnew_daily" / "alltrain_ensemble_gpu",
         xgb_ensemble_seeds=(0, 7, 42, 73, 197),
     ),
@@ -211,6 +250,8 @@ def _repo_python() -> str:
 
 
 _SHELL_ASSIGN_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_SHELL_ENV_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_SHELL_UNSET_RE = re.compile(r"^\s*unset\s+(.+)$")
 _SHELL_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -251,7 +292,7 @@ def _expand_shell_vars(value: str, variables: dict[str, str]) -> str:
     expanded = value
     for _ in range(8):
         next_value = _SHELL_VAR_RE.sub(
-            lambda match: variables.get(match.group(1) or match.group(2), match.group(0)),
+            lambda match: variables.get(match.group(1) or match.group(2), ""),
             expanded,
         )
         if next_value == expanded:
@@ -266,6 +307,15 @@ def _read_launch_script_assignments(script_path: Path | None) -> dict[str, str]:
         stripped = _strip_inline_shell_comment(line)
         if not stripped or stripped.startswith(("if ", "fi", "then", "else", "exec ")):
             continue
+        unset_match = _SHELL_UNSET_RE.match(stripped)
+        if unset_match:
+            try:
+                names = shlex.split(unset_match.group(1), posix=True)
+            except ValueError:
+                continue
+            for name in names:
+                variables.pop(name, None)
+            continue
         match = _SHELL_ASSIGN_RE.match(stripped)
         if not match:
             continue
@@ -278,6 +328,100 @@ def _read_launch_script_assignments(script_path: Path | None) -> dict[str, str]:
             continue
         variables[name] = _expand_shell_vars(parts[0], variables)
     return variables
+
+
+def _line_sources_secret_env(stripped: str) -> bool:
+    try:
+        tokens = shlex.split(stripped, posix=True)
+    except ValueError:
+        return False
+    return len(tokens) >= 2 and tokens[0] in {"source", "."} and ".secretbashrc" in tokens[1]
+
+
+def _read_launch_script_unsets_after_secret_sources(script_path: Path | None) -> set[str]:
+    unsets: set[str] = set()
+    for line in _read_launch_script_lines(script_path):
+        stripped = _strip_inline_shell_comment(line)
+        if not stripped or stripped.startswith(("if ", "fi", "then", "else", "exec ")):
+            continue
+        if _line_sources_secret_env(stripped):
+            # A later secrets source can reintroduce break-glass variables.
+            unsets.clear()
+            continue
+        unset_match = _SHELL_UNSET_RE.match(stripped)
+        if not unset_match:
+            continue
+        try:
+            names = shlex.split(unset_match.group(1), posix=True)
+        except ValueError:
+            continue
+        unsets.update(names)
+    return unsets
+
+
+def _apply_exec_env_tokens(
+    variables: dict[str, str],
+    tokens: list[str],
+) -> dict[str, str]:
+    env = dict(variables)
+    if not tokens:
+        return env
+
+    idx = 0
+    saw_prefix_assignment = False
+    while idx < len(tokens):
+        match = _SHELL_ENV_ASSIGN_RE.match(tokens[idx])
+        if not match:
+            break
+        name, value = match.groups()
+        env[name] = value
+        saw_prefix_assignment = True
+        idx += 1
+    if saw_prefix_assignment:
+        return env
+
+    if tokens[0] != "env":
+        return env
+
+    idx = 1
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token in {"-i", "--ignore-environment"}:
+            env.clear()
+            idx += 1
+            continue
+        if token == "-u" and idx + 1 < len(tokens):
+            env.pop(tokens[idx + 1], None)
+            idx += 2
+            continue
+        if token.startswith("-u") and len(token) > 2:
+            env.pop(token[2:], None)
+            idx += 1
+            continue
+        if token.startswith("--unset="):
+            env.pop(token.split("=", 1)[1], None)
+            idx += 1
+            continue
+        match = _SHELL_ENV_ASSIGN_RE.match(token)
+        if not match:
+            break
+        name, value = match.groups()
+        env[name] = value
+        idx += 1
+    return env
+
+
+def _read_launch_process_env(script_path: Path | None) -> dict[str, str]:
+    variables = _read_launch_script_assignments(script_path)
+    command = _read_launch_script_exec_command(script_path)
+    if not command:
+        return variables
+    command = _expand_shell_vars(command, variables)
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return variables
+    return _apply_exec_env_tokens(variables, tokens)
 
 
 def _resolve_repo_path(value: str) -> Path:
@@ -311,6 +455,194 @@ def extract_xgb_model_paths_from_command(command: str | None) -> tuple[list[Path
 
     paths = [_resolve_repo_path(value.strip()) for value in raw_values if value.strip()]
     return paths, None
+
+
+def _launch_command_tokens(command: str | None) -> tuple[list[str], str | None]:
+    launch_path = _extract_launch_script_path(command)
+    command_to_parse = _read_launch_script_exec_command(launch_path) or command
+    if not command_to_parse:
+        return [], None
+    variables = _read_launch_script_assignments(launch_path)
+    command_to_parse = _expand_shell_vars(command_to_parse, variables)
+    try:
+        return shlex.split(command_to_parse), None
+    except ValueError as exc:
+        return [], str(exc)
+
+
+def _token_flag_value(tokens: list[str], flag: str, default: str | None = None) -> str | None:
+    value = default
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token == flag and idx + 1 < len(tokens):
+            value = tokens[idx + 1]
+            idx += 2
+            continue
+        if token.startswith(flag + "="):
+            value = token.split("=", 1)[1]
+        idx += 1
+    return value
+
+
+def _token_flag_float(tokens: list[str], flag: str, default: float) -> tuple[float, str | None]:
+    value = _token_flag_value(tokens, flag, str(default))
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default, f"{flag} invalid: {value!r}"
+    if not math.isfinite(parsed):
+        return default, f"{flag} must be finite"
+    if not parsed >= 0.0:
+        return default, f"{flag} must be >= 0"
+    return parsed, None
+
+
+def _token_flag_int(tokens: list[str], flag: str, default: int) -> tuple[int, str | None]:
+    value = _token_flag_value(tokens, flag, str(default))
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default, f"{flag} invalid: {value!r}"
+    if parsed < 0:
+        return default, f"{flag} must be >= 0"
+    return parsed, None
+
+
+def _looks_like_xgb_live_command(tokens: list[str]) -> bool:
+    for idx, token in enumerate(tokens):
+        if token == "-m" and idx + 1 < len(tokens) and tokens[idx + 1] == "xgbnew.live_trader":
+            return True
+        if token.endswith("xgbnew/live_trader.py") or token.endswith("xgbnew.live_trader"):
+            return True
+    return False
+
+
+def _previous_weekday(day: date) -> date:
+    previous = day - timedelta(days=1)
+    while previous.weekday() >= 5:
+        previous -= timedelta(days=1)
+    return previous
+
+
+def _expected_latest_completed_daily_bar_date(now: datetime | None = None) -> date:
+    now_et = (now or datetime.now(UTC)).astimezone(ET)
+    today = now_et.date()
+    if today.weekday() >= 5:
+        return _previous_weekday(today)
+    close_ready = now_et.replace(hour=17, minute=0, second=0, microsecond=0)
+    if now_et >= close_ready:
+        return today
+    return _previous_weekday(today)
+
+
+def _parse_spy_csv_date(row: dict[str, str]) -> date | None:
+    raw = (row.get("timestamp") or row.get("date") or "").strip()
+    if not raw:
+        return None
+    try:
+        if "T" in raw or raw.endswith("Z") or "+" in raw:
+            parsed_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is None:
+                parsed_dt = parsed_dt.replace(tzinfo=ET)
+            return parsed_dt.astimezone(ET).date()
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_spy_csv(path: Path, *, min_rows: int) -> XGBSpyDataValidationReport:
+    report = XGBSpyDataValidationReport(path=str(path))
+    if not path.exists():
+        report.error = f"missing:{path}"
+        return report
+    try:
+        with path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = set(reader.fieldnames or [])
+            if "close" not in fieldnames:
+                report.error = f"missing_close_column:{path}"
+                return report
+            if "timestamp" not in fieldnames and "date" not in fieldnames:
+                report.error = f"missing_timestamp_or_date_column:{path}"
+                return report
+            usable_rows = 0
+            latest_date: date | None = None
+            for row in reader:
+                row_date = _parse_spy_csv_date(row)
+                if row_date is None:
+                    continue
+                try:
+                    close = float(row.get("close") or "")
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(close):
+                    usable_rows += 1
+                    latest_date = max(latest_date, row_date) if latest_date else row_date
+    except Exception as exc:
+        report.error = f"read_error:{path}:{exc}"
+        return report
+    report.usable_rows = usable_rows
+    report.latest_date = str(latest_date) if latest_date is not None else None
+    try:
+        report.sha256 = _file_sha256(path)
+    except OSError as exc:
+        report.error = f"read_error:{path}:{exc}"
+        return report
+    if usable_rows < min_rows:
+        report.error = f"insufficient_rows:{usable_rows}/{min_rows}:{path}"
+        return report
+    expected_latest = _expected_latest_completed_daily_bar_date()
+    if latest_date is None or latest_date < expected_latest:
+        report.error = f"stale_latest_date:{latest_date}/{expected_latest}:{path}"
+        return report
+    return report
+
+
+def inspect_xgb_spy_data_from_command(command: str | None) -> XGBSpyDataValidationReport:
+    tokens, parse_error = _launch_command_tokens(command)
+    if parse_error is not None:
+        return XGBSpyDataValidationReport()
+    if not tokens or not _looks_like_xgb_live_command(tokens):
+        return XGBSpyDataValidationReport()
+
+    regime_window, regime_error = _token_flag_int(tokens, "--regime-gate-window", 0)
+    if regime_error is not None:
+        return XGBSpyDataValidationReport(error=regime_error)
+    vol_target_ann, vol_error = _token_flag_float(tokens, "--vol-target-ann", 0.0)
+    if vol_error is not None:
+        return XGBSpyDataValidationReport(error=vol_error)
+    if regime_window <= 0 and vol_target_ann <= 0.0:
+        return XGBSpyDataValidationReport()
+
+    raw_spy_csv = _token_flag_value(tokens, "--spy-csv", None)
+    if raw_spy_csv is not None:
+        if not str(raw_spy_csv).strip():
+            return XGBSpyDataValidationReport(error="--spy-csv must not be empty")
+        spy_csv = _resolve_repo_path(str(raw_spy_csv).strip()).resolve(strict=False)
+    else:
+        raw_data_root = _token_flag_value(tokens, "--data-root", None)
+        if raw_data_root is not None and not str(raw_data_root).strip():
+            return XGBSpyDataValidationReport(error="--data-root must not be empty")
+        data_root = _resolve_repo_path(
+            str(raw_data_root).strip() if raw_data_root is not None else str(REPO_ROOT / "trainingdata")
+        )
+        spy_csv = (data_root / "SPY.csv").resolve(strict=False)
+    min_rows = max(int(regime_window), 1)
+    return _validate_spy_csv(spy_csv, min_rows=min_rows)
+
+
+def validate_xgb_spy_data_from_command(command: str | None) -> tuple[str | None, str | None]:
+    report = inspect_xgb_spy_data_from_command(command)
+    return report.path, report.error
 
 
 def _validator_json_details(stdout: str) -> tuple[list[str], list[str], str | None]:
@@ -496,6 +828,28 @@ def _read_runtime_cmd(pid: int | None) -> str | None:
     return raw or None
 
 
+def _read_runtime_env(pid: int | None) -> dict[str, str]:
+    if not pid:
+        return {}
+    path = Path("/proc") / str(pid) / "environ"
+    if not path.exists():
+        return {}
+    try:
+        entries = path.read_bytes().split(b"\x00")
+    except Exception:
+        return {}
+    env: dict[str, str] = {}
+    for raw in entries:
+        if not raw or b"=" not in raw:
+            continue
+        name, value = raw.split(b"=", 1)
+        env[name.decode("utf-8", errors="replace")] = value.decode(
+            "utf-8",
+            errors="replace",
+        )
+    return env
+
+
 def _read_process_start_utc(pid: int | None) -> str | None:
     if not pid:
         return None
@@ -641,6 +995,78 @@ def unmodeled_live_sidecars_from_command(
     return sidecars
 
 
+def _env_mismatches(
+    env: dict[str, str],
+    required_env: tuple[tuple[str, str], ...],
+) -> list[str]:
+    mismatches: list[str] = []
+    for name, expected in required_env:
+        actual = env.get(name)
+        if actual is None:
+            mismatches.append(f"{name}=missing")
+        elif str(actual) != str(expected):
+            mismatches.append(f"{name}={actual!r}!={expected!r}")
+    return mismatches
+
+
+def live_launch_env_mismatches_from_command(
+    command: str | None,
+    required_env: tuple[tuple[str, str], ...],
+) -> list[str]:
+    if not required_env:
+        return []
+    launch_path = _extract_launch_script_path(command)
+    if launch_path is None:
+        return ["launch_script_missing"]
+    launch_env = _read_launch_process_env(launch_path)
+    return _env_mismatches(launch_env, required_env)
+
+
+def forbidden_live_launch_env_from_command(
+    command: str | None,
+    forbidden_env: tuple[str, ...],
+) -> list[str]:
+    if not forbidden_env:
+        return []
+    launch_path = _extract_launch_script_path(command)
+    if launch_path is None:
+        return []
+    launch_env = _read_launch_process_env(launch_path)
+    return [name for name in forbidden_env if name in launch_env]
+
+
+def required_live_launch_unsets_missing_from_command(
+    command: str | None,
+    required_unsets: tuple[str, ...],
+) -> list[str]:
+    if not required_unsets:
+        return []
+    launch_path = _extract_launch_script_path(command)
+    if launch_path is None:
+        return list(required_unsets)
+    unsets = _read_launch_script_unsets_after_secret_sources(launch_path)
+    return [name for name in required_unsets if name not in unsets]
+
+
+def runtime_live_env_mismatches_from_pid(
+    pid: int | None,
+    required_env: tuple[tuple[str, str], ...],
+) -> list[str]:
+    if not pid or not required_env:
+        return []
+    return _env_mismatches(_read_runtime_env(pid), required_env)
+
+
+def forbidden_runtime_live_env_from_pid(
+    pid: int | None,
+    forbidden_env: tuple[str, ...],
+) -> list[str]:
+    if not pid or not forbidden_env:
+        return []
+    env = _read_runtime_env(pid)
+    return [name for name in forbidden_env if name in env]
+
+
 def runtime_matches_configured_command(runtime_cmd: str | None, configured_cmd: str | None) -> bool:
     if not runtime_cmd or not configured_cmd:
         return False
@@ -692,9 +1118,34 @@ def build_service_report(spec: ServiceSpec, git_status: GitStatusSummary) -> Ser
         repo_configured_cmd or configured_cmd,
         spec.unmodeled_live_sidecar_flags,
     )
+    live_launch_env_mismatches = live_launch_env_mismatches_from_command(
+        repo_configured_cmd or configured_cmd,
+        spec.required_launch_env,
+    )
+    forbidden_live_launch_env = forbidden_live_launch_env_from_command(
+        repo_configured_cmd or configured_cmd,
+        spec.forbidden_launch_env,
+    )
+    required_live_launch_unsets_missing = required_live_launch_unsets_missing_from_command(
+        repo_configured_cmd or configured_cmd,
+        spec.required_launch_unsets,
+    )
+    runtime_live_env_mismatches = runtime_live_env_mismatches_from_pid(
+        pid,
+        spec.required_launch_env,
+    )
+    forbidden_runtime_live_env = forbidden_runtime_live_env_from_pid(
+        pid,
+        spec.forbidden_launch_env,
+    )
     xgb_validation = validate_xgb_ensemble_for_spec(spec, repo_configured_cmd or configured_cmd)
+    xgb_spy_data = inspect_xgb_spy_data_from_command(
+        repo_configured_cmd or configured_cmd
+    )
 
     restart_reasons: list[str] = []
+    if pid is None:
+        restart_reasons.append("service_not_running")
     if stale_files:
         restart_reasons.append("watched_files_newer_than_process")
     if runtime_cmd and configured_cmd and not runtime_matches_configured_command(
@@ -708,6 +1159,10 @@ def build_service_report(spec: ServiceSpec, git_status: GitStatusSummary) -> Ser
         restart_reasons.append("configured_symbols_do_not_match_service_ownership")
     if runtime_symbols_outside_ownership:
         restart_reasons.append("runtime_symbols_do_not_match_service_ownership")
+    if runtime_live_env_mismatches:
+        restart_reasons.append("runtime_live_env_mismatch")
+    if forbidden_runtime_live_env:
+        restart_reasons.append("forbidden_runtime_live_env")
 
     apply_blockers: list[str] = []
     dirty_outside_watchlist = repo_relative_dirty_paths_outside_watchlist(
@@ -726,12 +1181,27 @@ def build_service_report(spec: ServiceSpec, git_status: GitStatusSummary) -> Ser
         )
     if live_sidecar_parse_error is not None:
         apply_blockers.append("live_sidecar_parse_error")
+    if live_launch_env_mismatches:
+        apply_blockers.append(
+            "live_launch_env_mismatch:" + ",".join(live_launch_env_mismatches)
+        )
+    if forbidden_live_launch_env:
+        apply_blockers.append(
+            "forbidden_live_launch_env:" + ",".join(forbidden_live_launch_env)
+        )
+    if required_live_launch_unsets_missing:
+        apply_blockers.append(
+            "required_live_launch_unsets_missing:"
+            + ",".join(required_live_launch_unsets_missing)
+        )
     if xgb_validation.model_paths_parse_error is not None:
         apply_blockers.append("xgb_model_paths_parse_error")
     if xgb_validation.model_paths_missing:
         apply_blockers.append("xgb_model_paths_missing")
     if xgb_validation.validation_error is not None:
         apply_blockers.append("xgb_ensemble_validation_failed")
+    if xgb_spy_data.error is not None:
+        apply_blockers.append("xgb_spy_data_invalid")
 
     return ServiceReport(
         service=spec.name,
@@ -749,12 +1219,22 @@ def build_service_report(spec: ServiceSpec, git_status: GitStatusSummary) -> Ser
         configured_symbols_outside_ownership=configured_symbols_outside_ownership,
         unmodeled_live_sidecars=unmodeled_live_sidecars,
         live_sidecar_parse_error=live_sidecar_parse_error,
+        live_launch_env_mismatches=live_launch_env_mismatches,
+        forbidden_live_launch_env=forbidden_live_launch_env,
+        required_live_launch_unsets_missing=required_live_launch_unsets_missing,
+        runtime_live_env_mismatches=runtime_live_env_mismatches,
+        forbidden_runtime_live_env=forbidden_runtime_live_env,
         xgb_model_paths=xgb_validation.model_paths,
         xgb_model_sha256=xgb_validation.model_sha256,
         xgb_ensemble_train_end=xgb_validation.train_end,
         xgb_model_paths_parse_error=xgb_validation.model_paths_parse_error,
         xgb_model_paths_missing=xgb_validation.model_paths_missing,
         xgb_ensemble_validation_error=xgb_validation.validation_error,
+        xgb_spy_data_path=xgb_spy_data.path,
+        xgb_spy_data_sha256=xgb_spy_data.sha256,
+        xgb_spy_data_latest_date=xgb_spy_data.latest_date,
+        xgb_spy_data_usable_rows=xgb_spy_data.usable_rows,
+        xgb_spy_data_error=xgb_spy_data.error,
         stale_files=stale_files,
         restart_reasons=restart_reasons,
         apply_blockers=apply_blockers,
@@ -849,6 +1329,31 @@ def render_text(git_status: GitStatusSummary, reports: list[ServiceReport]) -> s
             )
         if report.live_sidecar_parse_error:
             lines.append(f"live_sidecar_parse_error: {report.live_sidecar_parse_error}")
+        if report.live_launch_env_mismatches:
+            lines.append(
+                "live_launch_env_mismatches: "
+                + ",".join(report.live_launch_env_mismatches)
+            )
+        if report.forbidden_live_launch_env:
+            lines.append(
+                "forbidden_live_launch_env: "
+                + ",".join(report.forbidden_live_launch_env)
+            )
+        if report.required_live_launch_unsets_missing:
+            lines.append(
+                "required_live_launch_unsets_missing: "
+                + ",".join(report.required_live_launch_unsets_missing)
+            )
+        if report.runtime_live_env_mismatches:
+            lines.append(
+                "runtime_live_env_mismatches: "
+                + ",".join(report.runtime_live_env_mismatches)
+            )
+        if report.forbidden_runtime_live_env:
+            lines.append(
+                "forbidden_runtime_live_env: "
+                + ",".join(report.forbidden_runtime_live_env)
+            )
         if report.xgb_model_paths:
             lines.append(f"xgb_model_paths: {','.join(report.xgb_model_paths)}")
         if report.xgb_model_sha256:
@@ -864,6 +1369,16 @@ def render_text(git_status: GitStatusSummary, reports: list[ServiceReport]) -> s
                 "xgb_ensemble_validation_error: "
                 + report.xgb_ensemble_validation_error.replace("\n", " | ")
             )
+        if report.xgb_spy_data_path:
+            lines.append(f"xgb_spy_data_path: {report.xgb_spy_data_path}")
+        if report.xgb_spy_data_sha256:
+            lines.append(f"xgb_spy_data_sha256: {report.xgb_spy_data_sha256}")
+        if report.xgb_spy_data_latest_date:
+            lines.append(f"xgb_spy_data_latest_date: {report.xgb_spy_data_latest_date}")
+        if report.xgb_spy_data_usable_rows:
+            lines.append(f"xgb_spy_data_usable_rows: {report.xgb_spy_data_usable_rows}")
+        if report.xgb_spy_data_error:
+            lines.append(f"xgb_spy_data_error: {report.xgb_spy_data_error}")
         lines.append(
             "restart_reasons: "
             + (", ".join(report.restart_reasons) if report.restart_reasons else "none")

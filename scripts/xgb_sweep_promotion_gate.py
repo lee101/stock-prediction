@@ -35,10 +35,15 @@ class GateConfig:
     min_p10_monthly_pct: float | None
     min_fill_buffer_bps: float | None = None
     reject_fail_fast: bool = True
+    reject_skip_stress: bool = True
     require_complete: bool = True
     require_expected_windows: bool = True
     live_config: dict[str, Any] | None = None
     live_model_paths: tuple[str, ...] | None = None
+    live_symbols_file: str | None = None
+    live_data_root: str | None = None
+    live_spy_csv: str | None = None
+    live_blend_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -53,16 +58,27 @@ class GateResult:
 
 LIVE_CONFIG_DEFAULTS: dict[str, Any] = {
     "top_n": 2,
+    "min_picks": 0,
+    "opportunistic_watch_n": 0,
+    "opportunistic_entry_discount_bps": 0.0,
     "leverage": 0.25,
     "min_score": 0.0,
     "hold_through": False,
     "inference_min_dolvol": 5e6,
+    "inference_max_spread_bps": 30.0,
     "inference_min_vol_20d": 0.0,
     "inference_max_vol_20d": 0.0,
     "max_ret_20d_rank_pct": 1.0,
     "min_ret_5d_rank_pct": 0.0,
     "regime_cs_iqr_max": 0.0,
     "regime_cs_skew_min": -1e9,
+    "skip_prob": 0.0,
+    "skip_seed": 0,
+    "regime_gate_window": 0,
+    "vol_target_ann": 0.0,
+    "inv_vol_target_ann": 0.0,
+    "inv_vol_floor": 0.05,
+    "inv_vol_cap": 3.0,
     "no_picks_fallback_symbol": "",
     "no_picks_fallback_alloc_scale": 0.0,
     "conviction_scaled_alloc": False,
@@ -77,7 +93,8 @@ LIVE_CONFIG_DEFAULTS: dict[str, Any] = {
 _MISSING = object()
 _ALLOCATION_MODES = {"equal", "score_norm", "softmax"}
 _UNMODELED_LIVE_SIDECAR_FLAGS = ("--crypto-weekend", "--eod-deleverage")
-_SHELL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_SHELL_ASSIGN_RE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_SHELL_UNSET_RE = re.compile(r"^unset\s+(.+)$")
 _SHELL_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -172,6 +189,37 @@ def _flag_nonnegative_float(tokens: list[str], flag: str, default: float) -> flo
     return parsed
 
 
+def _flag_positive_float(tokens: list[str], flag: str, default: float) -> float:
+    parsed = _flag_float(tokens, flag, default)
+    if parsed <= 0.0:
+        raise ValueError(f"{flag} must be > 0, got {parsed!r}")
+    return parsed
+
+
+def _flag_at_least_float(tokens: list[str], flag: str, default: float, minimum: float) -> float:
+    parsed = _flag_float(tokens, flag, default)
+    if parsed < float(minimum):
+        raise ValueError(f"{flag} must be >= {float(minimum):g}, got {parsed!r}")
+    return parsed
+
+
+def _flag_bounded_float(
+    tokens: list[str],
+    flag: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    parsed = _flag_float(tokens, flag, default)
+    if not float(minimum) <= parsed <= float(maximum):
+        raise ValueError(
+            f"{flag} must be between {float(minimum):g} and {float(maximum):g}, "
+            f"got {parsed!r}"
+        )
+    return parsed
+
+
 def _flag_int(tokens: list[str], flag: str, default: int) -> int:
     value = _flag_raw_value(tokens, flag)
     if value is _MISSING:
@@ -180,6 +228,20 @@ def _flag_int(tokens: list[str], flag: str, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         raise ValueError(f"{flag} must be an integer, got {value!r}")
+
+
+def _flag_positive_int(tokens: list[str], flag: str, default: int) -> int:
+    parsed = _flag_int(tokens, flag, default)
+    if parsed < 1:
+        raise ValueError(f"{flag} must be >= 1, got {parsed!r}")
+    return parsed
+
+
+def _flag_nonnegative_int(tokens: list[str], flag: str, default: int) -> int:
+    parsed = _flag_int(tokens, flag, default)
+    if parsed < 0:
+        raise ValueError(f"{flag} must be >= 0, got {parsed!r}")
+    return parsed
 
 
 def _flag_choice(tokens: list[str], flag: str, default: str, choices: set[str]) -> str:
@@ -224,7 +286,7 @@ def _expand_shell_vars(value: str, variables: dict[str, str]) -> str:
     expanded = value
     for _ in range(8):
         next_value = _SHELL_VAR_RE.sub(
-            lambda match: variables.get(match.group(1) or match.group(2), match.group(0)),
+            lambda match: variables.get(match.group(1) or match.group(2), ""),
             expanded,
         )
         if next_value == expanded:
@@ -238,6 +300,15 @@ def _read_launch_assignments(path: Path) -> dict[str, str]:
     for line in path.read_text().splitlines():
         stripped = _strip_inline_shell_comment(line)
         if not stripped or stripped.startswith(("if ", "fi", "then", "else", "exec ")):
+            continue
+        unset_match = _SHELL_UNSET_RE.match(stripped)
+        if unset_match:
+            try:
+                names = shlex.split(unset_match.group(1), posix=True)
+            except ValueError:
+                continue
+            for name in names:
+                variables.pop(name, None)
             continue
         match = _SHELL_ASSIGN_RE.match(stripped)
         if not match:
@@ -261,11 +332,15 @@ def _read_launch_tokens(path: Path) -> list[str]:
     return shlex.split(_read_launch_exec_command_expanded(path))
 
 
-def _normal_model_path(value: Any) -> str:
+def _normal_repo_path(value: Any) -> str:
     path = Path(str(value))
     if not path.is_absolute():
         path = REPO_ROOT / path
     return str(path.resolve(strict=False))
+
+
+def _normal_model_path(value: Any) -> str:
+    return _normal_repo_path(value)
 
 
 def _file_sha256(path: str) -> str:
@@ -302,58 +377,169 @@ def extract_model_paths_from_launch(path: Path) -> tuple[str, ...]:
     return tuple(_normal_model_path(value.strip()) for value in raw_values if value.strip())
 
 
+def extract_symbols_file_from_launch(path: Path) -> str:
+    tokens = _read_launch_tokens(path)
+    value = _flag_value(tokens, "--symbols-file", "symbol_lists/stocks_wide_1000_v1.txt")
+    if value is None or not str(value).strip():
+        raise ValueError("--symbols-file must not be empty")
+    return _normal_repo_path(str(value).strip())
+
+
+def extract_data_root_from_launch(path: Path) -> str:
+    tokens = _read_launch_tokens(path)
+    value = _flag_value(tokens, "--data-root", "trainingdata")
+    if value is None or not str(value).strip():
+        raise ValueError("--data-root must not be empty")
+    return _normal_repo_path(str(value).strip())
+
+
+def extract_spy_csv_from_launch(path: Path) -> str:
+    tokens = _read_launch_tokens(path)
+    value = _flag_value(tokens, "--spy-csv", None)
+    if value is not None:
+        if not str(value).strip():
+            raise ValueError("--spy-csv must not be empty")
+        return _normal_repo_path(str(value).strip())
+    data_root = extract_data_root_from_launch(path)
+    return str((Path(data_root) / "SPY.csv").resolve(strict=False))
+
+
 def unmodeled_live_sidecars_from_launch(path: Path) -> list[str]:
     tokens = _read_launch_tokens(path)
     return [flag for flag in _UNMODELED_LIVE_SIDECAR_FLAGS if flag in tokens]
 
 
+def _tokens_invoke_xgb_live_trader(tokens: list[str]) -> bool:
+    for idx, token in enumerate(tokens):
+        if token == "-m" and idx + 1 < len(tokens) and tokens[idx + 1] == "xgbnew.live_trader":
+            return True
+        token_path = token.replace("\\", "/")
+        if token_path.endswith("/xgbnew/live_trader.py") or token_path == "xgbnew/live_trader.py":
+            return True
+    return False
+
+
+def validate_live_launch_mode(path: Path) -> str | None:
+    tokens = _read_launch_tokens(path)
+    if not _tokens_invoke_xgb_live_trader(tokens):
+        return (
+            "launch-script does not invoke xgbnew.live_trader; "
+            "cannot audit live trading behavior"
+        )
+    if "--dry-run" in tokens:
+        return "launch-script enables --dry-run; production promotion requires live orders"
+    if "--live" not in tokens:
+        return "launch-script omits --live; production promotion requires live mode"
+    return None
+
+
 def extract_live_config_from_launch(path: Path) -> dict[str, Any]:
     tokens = _read_launch_tokens(path)
+    top_n = _flag_positive_int(tokens, "--top-n", int(LIVE_CONFIG_DEFAULTS["top_n"]))
+    min_picks = _flag_nonnegative_int(
+        tokens,
+        "--min-picks",
+        int(LIVE_CONFIG_DEFAULTS["min_picks"]),
+    )
+    if min_picks > top_n:
+        raise ValueError(f"--min-picks must be <= --top-n, got {min_picks!r} > {top_n!r}")
+    conviction_alloc_low = _flag_float(
+        tokens, "--conviction-alloc-low", float(LIVE_CONFIG_DEFAULTS["conviction_alloc_low"])
+    )
+    conviction_alloc_high = _flag_float(
+        tokens, "--conviction-alloc-high", float(LIVE_CONFIG_DEFAULTS["conviction_alloc_high"])
+    )
+    if conviction_alloc_high <= conviction_alloc_low:
+        raise ValueError("--conviction-alloc-high must be > --conviction-alloc-low")
     return {
-        "top_n": _flag_int(tokens, "--top-n", int(LIVE_CONFIG_DEFAULTS["top_n"])),
-        "leverage": _flag_float(tokens, "--allocation", float(LIVE_CONFIG_DEFAULTS["leverage"])),
-        "min_score": _flag_float(tokens, "--min-score", float(LIVE_CONFIG_DEFAULTS["min_score"])),
+        "top_n": top_n,
+        "min_picks": min_picks,
+        "opportunistic_watch_n": int(LIVE_CONFIG_DEFAULTS["opportunistic_watch_n"]),
+        "opportunistic_entry_discount_bps": float(
+            LIVE_CONFIG_DEFAULTS["opportunistic_entry_discount_bps"]
+        ),
+        "leverage": _flag_positive_float(
+            tokens, "--allocation", float(LIVE_CONFIG_DEFAULTS["leverage"])
+        ),
+        "min_score": _flag_bounded_float(
+            tokens,
+            "--min-score",
+            float(LIVE_CONFIG_DEFAULTS["min_score"]),
+            minimum=0.0,
+            maximum=1.0,
+        ),
         "hold_through": "--hold-through" in tokens,
-        "inference_min_dolvol": _flag_float(
+        "inference_min_dolvol": _flag_nonnegative_float(
             tokens, "--min-dollar-vol", float(LIVE_CONFIG_DEFAULTS["inference_min_dolvol"])
         ),
-        "inference_min_vol_20d": _flag_float(
+        "inference_max_spread_bps": _flag_nonnegative_float(
+            tokens, "--max-spread-bps", float(LIVE_CONFIG_DEFAULTS["inference_max_spread_bps"])
+        ),
+        "inference_min_vol_20d": _flag_nonnegative_float(
             tokens, "--min-vol-20d", float(LIVE_CONFIG_DEFAULTS["inference_min_vol_20d"])
         ),
-        "inference_max_vol_20d": _flag_float(
+        "inference_max_vol_20d": _flag_nonnegative_float(
             tokens, "--max-vol-20d", float(LIVE_CONFIG_DEFAULTS["inference_max_vol_20d"])
         ),
-        "max_ret_20d_rank_pct": _flag_float(
-            tokens, "--max-ret-20d-rank-pct", float(LIVE_CONFIG_DEFAULTS["max_ret_20d_rank_pct"])
+        "max_ret_20d_rank_pct": _flag_bounded_float(
+            tokens,
+            "--max-ret-20d-rank-pct",
+            float(LIVE_CONFIG_DEFAULTS["max_ret_20d_rank_pct"]),
+            minimum=0.0,
+            maximum=1.0,
         ),
-        "min_ret_5d_rank_pct": _flag_float(
-            tokens, "--min-ret-5d-rank-pct", float(LIVE_CONFIG_DEFAULTS["min_ret_5d_rank_pct"])
+        "min_ret_5d_rank_pct": _flag_bounded_float(
+            tokens,
+            "--min-ret-5d-rank-pct",
+            float(LIVE_CONFIG_DEFAULTS["min_ret_5d_rank_pct"]),
+            minimum=0.0,
+            maximum=1.0,
         ),
-        "regime_cs_iqr_max": _flag_float(
+        "regime_cs_iqr_max": _flag_nonnegative_float(
             tokens, "--regime-cs-iqr-max", float(LIVE_CONFIG_DEFAULTS["regime_cs_iqr_max"])
         ),
         "regime_cs_skew_min": _flag_float(
             tokens, "--regime-cs-skew-min", float(LIVE_CONFIG_DEFAULTS["regime_cs_skew_min"])
         ),
+        "skip_prob": float(LIVE_CONFIG_DEFAULTS["skip_prob"]),
+        "skip_seed": int(LIVE_CONFIG_DEFAULTS["skip_seed"]),
+        "regime_gate_window": _flag_nonnegative_int(
+            tokens,
+            "--regime-gate-window",
+            int(LIVE_CONFIG_DEFAULTS["regime_gate_window"]),
+        ),
+        "vol_target_ann": _flag_nonnegative_float(
+            tokens, "--vol-target-ann", float(LIVE_CONFIG_DEFAULTS["vol_target_ann"])
+        ),
+        "inv_vol_target_ann": _flag_nonnegative_float(
+            tokens,
+            "--inv-vol-target-ann",
+            float(LIVE_CONFIG_DEFAULTS["inv_vol_target_ann"]),
+        ),
+        "inv_vol_floor": _flag_positive_float(
+            tokens, "--inv-vol-floor", float(LIVE_CONFIG_DEFAULTS["inv_vol_floor"])
+        ),
+        "inv_vol_cap": _flag_at_least_float(
+            tokens,
+            "--inv-vol-cap",
+            float(LIVE_CONFIG_DEFAULTS["inv_vol_cap"]),
+            1.0,
+        ),
         "no_picks_fallback_symbol": str(_flag_value(tokens, "--no-picks-fallback", "") or "").upper(),
         "no_picks_fallback_alloc_scale": (
-            _flag_float(tokens, "--no-picks-fallback-alloc", 0.5)
+            _flag_nonnegative_float(tokens, "--no-picks-fallback-alloc", 0.5)
             if _flag_value(tokens, "--no-picks-fallback", "") else 0.0
         ),
         "conviction_scaled_alloc": "--conviction-scaled-alloc" in tokens,
-        "conviction_alloc_low": _flag_float(
-            tokens, "--conviction-alloc-low", float(LIVE_CONFIG_DEFAULTS["conviction_alloc_low"])
-        ),
-        "conviction_alloc_high": _flag_float(
-            tokens, "--conviction-alloc-high", float(LIVE_CONFIG_DEFAULTS["conviction_alloc_high"])
-        ),
+        "conviction_alloc_low": conviction_alloc_low,
+        "conviction_alloc_high": conviction_alloc_high,
         "allocation_mode": _flag_choice(
             tokens,
             "--allocation-mode",
             str(LIVE_CONFIG_DEFAULTS["allocation_mode"]),
             _ALLOCATION_MODES,
         ),
-        "allocation_temp": _flag_float(
+        "allocation_temp": _flag_positive_float(
             tokens, "--allocation-temp", float(LIVE_CONFIG_DEFAULTS["allocation_temp"])
         ),
         "score_uncertainty_penalty": _flag_nonnegative_float(
@@ -432,6 +618,13 @@ def _passes_cell(cell: dict[str, Any], config: GateConfig) -> tuple[bool, str]:
     if config.reject_fail_fast and fail_fast_triggered:
         reason = str(cell.get("fail_fast_reason", "") or "cell was pruned")
         return False, f"fail_fast_triggered: {reason}"
+
+    if config.reject_skip_stress and "skip_prob" in cell:
+        skip_prob, reason = _required_metric(cell, "skip_prob")
+        if reason is not None or skip_prob is None:
+            return False, reason or "skip_prob non-finite"
+        if skip_prob != 0.0:
+            return False, f"skip_prob {skip_prob:.4f} != 0.0"
 
     if config.min_fill_buffer_bps is not None:
         fill_buffer, reason = _required_metric(cell, "fill_buffer_bps")
@@ -649,6 +842,131 @@ def evaluate_sweep(path: Path, config: GateConfig) -> GateResult:
                     n_cells_considered=0,
                     best_cell=None,
                 )
+    if config.live_symbols_file is not None:
+        raw_symbols_file = payload.get("symbols_file")
+        if not isinstance(raw_symbols_file, str) or not raw_symbols_file.strip():
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="sweep symbols_file missing",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+        sweep_symbols_file = _normal_repo_path(raw_symbols_file.strip())
+        if sweep_symbols_file != config.live_symbols_file:
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="launch symbols_file does not match sweep symbols_file",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+    if config.live_data_root is not None:
+        raw_data_root = payload.get("data_root")
+        if not isinstance(raw_data_root, str) or not raw_data_root.strip():
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="sweep data_root missing",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+        sweep_data_root = _normal_repo_path(raw_data_root.strip())
+        if sweep_data_root != config.live_data_root:
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="launch data_root does not match sweep data_root",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+    if (
+        config.live_spy_csv is not None
+        and config.live_config is not None
+        and (
+            float(config.live_config.get("vol_target_ann", 0.0) or 0.0) > 0.0
+            or int(config.live_config.get("regime_gate_window", 0) or 0) > 0
+        )
+    ):
+        raw_spy_csv = payload.get("spy_csv")
+        if not isinstance(raw_spy_csv, str) or not raw_spy_csv.strip():
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="sweep spy_csv missing",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+        sweep_spy_csv = _normal_repo_path(raw_spy_csv.strip())
+        if sweep_spy_csv != config.live_spy_csv:
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="launch spy_csv does not match sweep spy_csv",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+        raw_spy_sha256 = payload.get("spy_csv_sha256")
+        if raw_spy_sha256 is not None:
+            if (
+                not isinstance(raw_spy_sha256, str)
+                or not _SHA256_RE.fullmatch(raw_spy_sha256.strip().lower())
+            ):
+                return GateResult(
+                    path=str(path),
+                    passed=False,
+                    reason="sweep spy_csv_sha256 invalid",
+                    oos_days=oos_days,
+                    n_cells_considered=0,
+                    best_cell=None,
+                )
+            try:
+                live_spy_sha256 = _file_sha256(config.live_spy_csv)
+            except OSError as exc:
+                return GateResult(
+                    path=str(path),
+                    passed=False,
+                    reason=f"launch spy_csv hash read failed: {exc}",
+                    oos_days=oos_days,
+                    n_cells_considered=0,
+                    best_cell=None,
+                )
+            if raw_spy_sha256.strip().lower() != live_spy_sha256:
+                return GateResult(
+                    path=str(path),
+                    passed=False,
+                    reason="launch spy_csv_sha256 does not match sweep spy_csv_sha256",
+                    oos_days=oos_days,
+                    n_cells_considered=0,
+                    best_cell=None,
+                )
+    if config.live_blend_mode is not None:
+        raw_blend_mode = payload.get("blend_mode")
+        if not isinstance(raw_blend_mode, str) or not raw_blend_mode.strip():
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="sweep blend_mode missing",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
+        sweep_blend_mode = raw_blend_mode.strip().lower()
+        if sweep_blend_mode != config.live_blend_mode:
+            return GateResult(
+                path=str(path),
+                passed=False,
+                reason="launch blend_mode does not match sweep blend_mode",
+                oos_days=oos_days,
+                n_cells_considered=0,
+                best_cell=None,
+            )
 
     candidates = [
         cell for cell in cells
@@ -742,6 +1060,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "them because their metrics may be partial-window artifacts.",
     )
     parser.add_argument(
+        "--allow-skip-stress-cells",
+        action="store_true",
+        help="Allow cells with skip_prob > 0 to pass. Default rejects them "
+             "because missed-order stress is not intentional live behavior "
+             "and can accidentally skip bad trades.",
+    )
+    parser.add_argument(
         "--allow-partial-sweep",
         action="store_true",
         help="Allow sweep JSONs with complete=false or missing complete flag. "
@@ -777,6 +1102,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         if args.launch_script is not None:
+            mode_reason = validate_live_launch_mode(args.launch_script)
+            if mode_reason is not None:
+                print(mode_reason, file=sys.stderr)
+                return 3
             sidecars = unmodeled_live_sidecars_from_launch(args.launch_script)
             if sidecars and not bool(args.allow_unmodeled_live_sidecars):
                 joined = ", ".join(sidecars)
@@ -792,7 +1121,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.launch_script is not None else None
         )
         live_model_paths = None
+        live_symbols_file = None
+        live_data_root = None
+        live_spy_csv = None
+        live_blend_mode = None
         if args.launch_script is not None:
+            live_symbols_file = extract_symbols_file_from_launch(args.launch_script)
+            live_data_root = extract_data_root_from_launch(args.launch_script)
+            live_spy_csv = extract_spy_csv_from_launch(args.launch_script)
+            live_blend_mode = "mean"
             parsed_model_paths = extract_model_paths_from_launch(args.launch_script)
             if not parsed_model_paths:
                 print(
@@ -820,10 +1157,15 @@ def main(argv: list[str] | None = None) -> int:
             else float(args.min_fill_buffer_bps)
         ),
         reject_fail_fast=not bool(args.allow_fail_fast_cells),
+        reject_skip_stress=not bool(args.allow_skip_stress_cells),
         require_complete=not bool(args.allow_partial_sweep),
         require_expected_windows=not bool(args.ignore_expected_windows),
         live_config=live_config,
         live_model_paths=live_model_paths,
+        live_symbols_file=live_symbols_file,
+        live_data_root=live_data_root,
+        live_spy_csv=live_spy_csv,
+        live_blend_mode=live_blend_mode,
     )
     paths = _expand_paths(list(args.sweep_json))
     results = [evaluate_sweep(path, config) for path in paths]

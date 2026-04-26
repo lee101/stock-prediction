@@ -42,6 +42,7 @@
 #   4  start failed for the requested unit
 #   5  lock-holder mismatch (started but something else owns the lock)
 #   6  preflight failed
+#   7  post-restart preflight still reports unsafe or restart-needed state
 
 set -euo pipefail
 
@@ -51,6 +52,7 @@ HISTORY_LOG="${HISTORY_LOG:-${REPO}/deployments/live_trader_history.log}"
 PREFLIGHT="${PREFLIGHT:-${REPO}/scripts/alpaca_deploy_preflight.py}"
 PREFLIGHT_REPORT_DIR="${PREFLIGHT_REPORT_DIR:-${REPO}/deployments/preflight_reports}"
 PREFLIGHT_REPORT_PATH=""
+POST_PREFLIGHT_REPORT_PATH=""
 
 # Registry of live-capable units. If a new bot is introduced that
 # imports alpaca_wrapper in LIVE mode, it MUST be added here.
@@ -67,8 +69,57 @@ _append_history() {
   local supervisor_pid="${2:-}"
   local lock_pid="${3:-}"
   mkdir -p "$(dirname "$HISTORY_LOG")"
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  operator=${USER:-$(id -un)}  unit=$TARGET  status=$status  supervisor_pid=${supervisor_pid:-none}  lock_pid=${lock_pid:-none}  preflight_report=${PREFLIGHT_REPORT_PATH:-none}" \
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ)  operator=${USER:-$(id -un)}  unit=$TARGET  status=$status  supervisor_pid=${supervisor_pid:-none}  lock_pid=${lock_pid:-none}  preflight_report=${PREFLIGHT_REPORT_PATH:-none}  post_preflight_report=${POST_PREFLIGHT_REPORT_PATH:-none}" \
     >> "$HISTORY_LOG"
+}
+
+_show_report_file() {
+  local path="$1"
+  [ -s "$path" ] && sed 's/^/  preflight> /' "$path"
+  [ -s "${path}.stderr" ] && sed 's/^/  preflight> /' "${path}.stderr"
+  [ -s "${path}.stderr" ] || rm -f "${path}.stderr"
+}
+
+_post_preflight_has_unresolved_findings() {
+  local path="$1"
+  local expected_service="$2"
+  python3 - "$path" "$expected_service" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+expected_service = sys.argv[2]
+reports = payload.get("reports")
+if not isinstance(reports, list) or not reports:
+    print("preflight report missing non-empty reports list")
+    raise SystemExit(1)
+bad = []
+seen_expected = False
+for report in reports:
+    if not isinstance(report, dict):
+        bad.append(f"malformed report entry: {type(report).__name__}")
+        continue
+    service = report.get("service", "unknown")
+    if service != expected_service:
+        bad.append(f"unexpected service in preflight report: {service!r}")
+        continue
+    seen_expected = True
+    blockers = report.get("apply_blockers") or []
+    reasons = report.get("restart_reasons") or []
+    safe_to_apply = report.get("safe_to_apply")
+    if safe_to_apply is not True:
+        bad.append(f"{service}: safe_to_apply={safe_to_apply!r}")
+    if blockers or reasons:
+        bad.append(
+            f"{service}: apply_blockers={blockers or 'none'} "
+            f"restart_reasons={reasons or 'none'}"
+        )
+if not seen_expected:
+    bad.append(f"missing expected service in preflight report: {expected_service}")
+if bad:
+    print("\n".join(bad))
+    raise SystemExit(1)
+PY
 }
 
 _unit_in_registry() {
@@ -227,17 +278,13 @@ if [ "$TARGET" != "none" ]; then
 
   log "running preflight: ${preflight_args[*]}"
   if ! "${preflight_args[@]}" > "$PREFLIGHT_REPORT_PATH" 2> "${PREFLIGHT_REPORT_PATH}.stderr"; then
-    [ -s "$PREFLIGHT_REPORT_PATH" ] && sed 's/^/  preflight> /' "$PREFLIGHT_REPORT_PATH"
-    [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] && sed 's/^/  preflight> /' "${PREFLIGHT_REPORT_PATH}.stderr"
-    [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] || rm -f "${PREFLIGHT_REPORT_PATH}.stderr"
+    _show_report_file "$PREFLIGHT_REPORT_PATH"
     log "preflight report: $PREFLIGHT_REPORT_PATH"
     log "FAIL: alpaca deploy preflight rejected $TARGET"
     _append_history "preflight_failed" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
     exit 6
   fi
-  sed 's/^/  preflight> /' "$PREFLIGHT_REPORT_PATH"
-  [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] && sed 's/^/  preflight> /' "${PREFLIGHT_REPORT_PATH}.stderr"
-  [ -s "${PREFLIGHT_REPORT_PATH}.stderr" ] || rm -f "${PREFLIGHT_REPORT_PATH}.stderr"
+  _show_report_file "$PREFLIGHT_REPORT_PATH"
   log "preflight report: $PREFLIGHT_REPORT_PATH"
 fi
 
@@ -334,6 +381,25 @@ fi
 final_pid=$(_unit_pid "$TARGET")
 final_lock_pid=$(_lock_pid)
 log "OK: $TARGET RUNNING  supervisor_pid=$final_pid  lock_holder_pid=$final_lock_pid"
+
+POST_PREFLIGHT_REPORT_PATH="${PREFLIGHT_REPORT_PATH%.json}_post.json"
+log "running post-restart preflight: ${preflight_args[*]}"
+if ! "${preflight_args[@]}" > "$POST_PREFLIGHT_REPORT_PATH" 2> "${POST_PREFLIGHT_REPORT_PATH}.stderr"; then
+  _show_report_file "$POST_PREFLIGHT_REPORT_PATH"
+  log "post-restart preflight report: $POST_PREFLIGHT_REPORT_PATH"
+  log "FAIL: post-restart preflight rejected $TARGET"
+  _append_history "post_preflight_failed" "$final_pid" "$final_lock_pid"
+  exit 7
+fi
+_show_report_file "$POST_PREFLIGHT_REPORT_PATH"
+log "post-restart preflight report: $POST_PREFLIGHT_REPORT_PATH"
+if ! unresolved="$(_post_preflight_has_unresolved_findings "$POST_PREFLIGHT_REPORT_PATH" "$TARGET")"; then
+  printf '%s\n' "$unresolved" | sed 's/^/  preflight> /'
+  log "FAIL: post-restart preflight still reports unresolved findings"
+  _append_history "post_preflight_unresolved" "$final_pid" "$final_lock_pid"
+  exit 7
+fi
+
 for unit in "${LIVE_WRITER_UNITS[@]}"; do
   if [ "$unit" = "$TARGET" ]; then continue; fi
   log "  $unit state=$(_unit_state "$unit")"

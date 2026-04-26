@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+
+import pytest
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -31,6 +34,11 @@ def _write_sweep(
     model_paths: list[str] | None = None,
     model_sha256: list[str] | None = None,
     ensemble_manifest: dict | None = None,
+    symbols_file: str | None = None,
+    data_root: str | None = None,
+    spy_csv: str | None = None,
+    spy_csv_sha256: str | None = None,
+    blend_mode: str | None = None,
 ) -> Path:
     path = tmp_path / "sweep.json"
     payload = {
@@ -46,6 +54,16 @@ def _write_sweep(
         payload["model_sha256"] = model_sha256
     if ensemble_manifest is not None:
         payload["ensemble_manifest"] = ensemble_manifest
+    if symbols_file is not None:
+        payload["symbols_file"] = symbols_file
+    if data_root is not None:
+        payload["data_root"] = data_root
+    if spy_csv is not None:
+        payload["spy_csv"] = spy_csv
+    if spy_csv_sha256 is not None:
+        payload["spy_csv_sha256"] = spy_csv_sha256
+    if blend_mode is not None:
+        payload["blend_mode"] = blend_mode
     path.write_text(json.dumps(payload))
     return path
 
@@ -365,6 +383,58 @@ def test_evaluate_sweep_can_allow_fail_fast_cells_for_legacy_inspection(tmp_path
     assert result.passed is True
 
 
+def test_evaluate_sweep_rejects_skip_stress_cells_by_default(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "skip_prob": 0.25,
+        "skip_seed": 7,
+    }])
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+    ))
+
+    assert result.passed is False
+    assert result.reason == "skip_prob 0.2500 != 0.0"
+
+
+def test_evaluate_sweep_can_allow_skip_stress_cells_for_research_inspection(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "skip_prob": 0.25,
+        "skip_seed": 7,
+    }])
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        reject_skip_stress=False,
+    ))
+
+    assert result.passed is True
+
+
 def test_evaluate_sweep_rejects_low_fill_buffer_when_required(tmp_path: Path) -> None:
     mod = _load_module()
     path = _write_sweep(tmp_path, cells=[{
@@ -509,6 +579,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
         "  --symbols-file symbols.txt \\\n"
         "  --model-paths a.pkl,b.pkl \\\n"
         "  --top-n 2 \\\n"
+        "  --min-picks 1 \\\n"
         "  --allocation 2.5 \\\n"
         "  --allocation-mode softmax \\\n"
         "  --allocation-temp 0.25 \\\n"
@@ -516,10 +587,16 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
         "  --min-score 0.62 \\\n"
         "  --hold-through \\\n"
         "  --min-dollar-vol 50000000 \\\n"
+        "  --max-spread-bps 12 \\\n"
         "  --min-vol-20d 0.12 \\\n"
         "  --max-vol-20d 0.55 \\\n"
         "  --max-ret-20d-rank-pct 0.80 \\\n"
         "  --min-ret-5d-rank-pct 0.20 \\\n"
+        "  --regime-gate-window 20 \\\n"
+        "  --inv-vol-target-ann 0.20 \\\n"
+        "  --inv-vol-floor 0.08 \\\n"
+        "  --inv-vol-cap 2.0 \\\n"
+        "  --vol-target-ann 0.15 \\\n"
         "  --no-picks-fallback SPY \\\n"
         "  --no-picks-fallback-alloc 0.25 \\\n"
         "  --conviction-scaled-alloc \\\n"
@@ -530,13 +607,24 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
     )
     live_config = mod.extract_live_config_from_launch(launch)
     assert live_config["top_n"] == 2
+    assert live_config["min_picks"] == 1
+    assert live_config["opportunistic_watch_n"] == 0
+    assert live_config["opportunistic_entry_discount_bps"] == 0.0
     assert live_config["leverage"] == 2.5
     assert live_config["hold_through"] is True
     assert live_config["no_picks_fallback_symbol"] == "SPY"
     assert live_config["no_picks_fallback_alloc_scale"] == 0.25
+    assert live_config["inference_max_spread_bps"] == 12.0
     assert live_config["inference_max_vol_20d"] == 0.55
     assert live_config["max_ret_20d_rank_pct"] == 0.80
     assert live_config["min_ret_5d_rank_pct"] == 0.20
+    assert live_config["skip_prob"] == 0.0
+    assert live_config["skip_seed"] == 0
+    assert live_config["regime_gate_window"] == 20
+    assert live_config["vol_target_ann"] == 0.15
+    assert live_config["inv_vol_target_ann"] == 0.20
+    assert live_config["inv_vol_floor"] == 0.08
+    assert live_config["inv_vol_cap"] == 2.0
     assert live_config["conviction_scaled_alloc"] is True
     assert live_config["conviction_alloc_low"] == 0.52
     assert live_config["conviction_alloc_high"] == 0.72
@@ -549,15 +637,20 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "fee_regime": "stress36x",
             "leverage": 2.5,
             "top_n": 1,
+            "min_picks": 1,
             "min_score": 0.62,
             "hold_through": True,
             "inference_min_dolvol": 50000000,
+            "inference_max_spread_bps": 12.0,
             "inference_min_vol_20d": 0.12,
             "inference_max_vol_20d": 0.0,
             "max_ret_20d_rank_pct": 1.0,
             "min_ret_5d_rank_pct": 0.0,
             "regime_cs_iqr_max": 0.0,
             "regime_cs_skew_min": 1.0,
+            "inv_vol_target_ann": 0.0,
+            "inv_vol_floor": 0.05,
+            "inv_vol_cap": 3.0,
             "no_picks_fallback_symbol": "",
             "no_picks_fallback_alloc_scale": 0.0,
             "allocation_mode": "equal",
@@ -572,15 +665,21 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "fee_regime": "stress36x",
             "leverage": 2.5,
             "top_n": 2,
+            "min_picks": 0,
             "min_score": 0.62,
             "hold_through": True,
             "inference_min_dolvol": 50000000,
+            "inference_max_spread_bps": 12.0,
             "inference_min_vol_20d": 0.12,
             "inference_max_vol_20d": 0.55,
             "max_ret_20d_rank_pct": 0.80,
             "min_ret_5d_rank_pct": 0.20,
+            "regime_gate_window": 20,
             "regime_cs_iqr_max": 0.0,
             "regime_cs_skew_min": 1.0,
+            "inv_vol_target_ann": 0.0,
+            "inv_vol_floor": 0.05,
+            "inv_vol_cap": 3.0,
             "no_picks_fallback_symbol": "",
             "no_picks_fallback_alloc_scale": 0.0,
             "allocation_mode": "equal",
@@ -595,15 +694,20 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "fee_regime": "stress36x",
             "leverage": 2.5,
             "top_n": 2,
+            "min_picks": 0,
             "min_score": 0.62,
             "hold_through": True,
             "inference_min_dolvol": 50000000,
+            "inference_max_spread_bps": 12.0,
             "inference_min_vol_20d": 0.12,
             "inference_max_vol_20d": 0.0,
             "max_ret_20d_rank_pct": 1.0,
             "min_ret_5d_rank_pct": 0.0,
             "regime_cs_iqr_max": 0.0,
             "regime_cs_skew_min": 1.0,
+            "inv_vol_target_ann": 0.0,
+            "inv_vol_floor": 0.05,
+            "inv_vol_cap": 3.0,
             "no_picks_fallback_symbol": "SPY",
             "no_picks_fallback_alloc_scale": 0.25,
             "conviction_scaled_alloc": True,
@@ -622,6 +726,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "fee_regime": "stress36x",
             "leverage": 2.5,
             "top_n": 2,
+            "min_picks": 0,
             "min_score": 0.62,
             "hold_through": True,
             "inference_min_dolvol": 50000000,
@@ -629,8 +734,12 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "inference_max_vol_20d": 0.55,
             "max_ret_20d_rank_pct": 0.80,
             "min_ret_5d_rank_pct": 0.20,
+            "regime_gate_window": 20,
             "regime_cs_iqr_max": 0.0,
             "regime_cs_skew_min": 1.0,
+            "inv_vol_target_ann": 0.0,
+            "inv_vol_floor": 0.05,
+            "inv_vol_cap": 3.0,
             "no_picks_fallback_symbol": "SPY",
             "no_picks_fallback_alloc_scale": 0.25,
             "conviction_scaled_alloc": False,
@@ -649,6 +758,7 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "fee_regime": "stress36x",
             "leverage": 2.5,
             "top_n": 2,
+            "min_picks": 0,
             "min_score": 0.62,
             "hold_through": True,
             "inference_min_dolvol": 50000000,
@@ -656,8 +766,12 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "inference_max_vol_20d": 0.55,
             "max_ret_20d_rank_pct": 0.80,
             "min_ret_5d_rank_pct": 0.20,
+            "regime_gate_window": 20,
             "regime_cs_iqr_max": 0.0,
             "regime_cs_skew_min": 1.0,
+            "inv_vol_target_ann": 0.0,
+            "inv_vol_floor": 0.05,
+            "inv_vol_cap": 3.0,
             "no_picks_fallback_symbol": "SPY",
             "no_picks_fallback_alloc_scale": 0.25,
             "conviction_scaled_alloc": False,
@@ -676,15 +790,22 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
             "fee_regime": "stress36x",
             "leverage": 2.5,
             "top_n": 2,
+            "min_picks": 1,
             "min_score": 0.62,
             "hold_through": True,
             "inference_min_dolvol": 50000000,
+            "inference_max_spread_bps": 12.0,
             "inference_min_vol_20d": 0.12,
             "inference_max_vol_20d": 0.55,
             "max_ret_20d_rank_pct": 0.80,
             "min_ret_5d_rank_pct": 0.20,
+            "regime_gate_window": 20,
             "regime_cs_iqr_max": 0.0,
             "regime_cs_skew_min": 1.0,
+            "vol_target_ann": 0.15,
+            "inv_vol_target_ann": 0.20,
+            "inv_vol_floor": 0.08,
+            "inv_vol_cap": 2.0,
             "no_picks_fallback_symbol": "SPY",
             "no_picks_fallback_alloc_scale": 0.25,
             "conviction_scaled_alloc": True,
@@ -714,11 +835,215 @@ def test_launch_script_filter_requires_exact_live_knob_match(tmp_path: Path) -> 
 
     assert result.passed is True
     assert result.best_cell["top_n"] == 2
+    assert result.best_cell["min_picks"] == 1
     assert result.best_cell["no_picks_fallback_symbol"] == "SPY"
     assert result.best_cell["conviction_scaled_alloc"] is True
     assert result.best_cell["allocation_mode"] == "softmax"
     assert result.best_cell["score_uncertainty_penalty"] == 0.40
+    assert result.best_cell["inference_max_spread_bps"] == 12.0
+    assert result.best_cell["regime_gate_window"] == 20
+    assert result.best_cell["vol_target_ann"] == 0.15
+    assert result.best_cell["inv_vol_target_ann"] == 0.20
+    assert result.best_cell["inv_vol_floor"] == 0.08
+    assert result.best_cell["inv_vol_cap"] == 2.0
     assert result.best_cell["median_monthly_pct"] == 40.0
+
+
+def test_live_config_rejects_opportunistic_sweep_cells(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        "  --top-n 2 \\\n"
+        "  --allocation 2.0 \\\n"
+        "  --live\n"
+    )
+    live_config = mod.extract_live_config_from_launch(launch)
+    assert live_config["opportunistic_watch_n"] == 0
+    assert live_config["opportunistic_entry_discount_bps"] == 0.0
+
+    path = _write_sweep(tmp_path, cells=[
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "min_picks": 0,
+            "opportunistic_watch_n": 5,
+            "opportunistic_entry_discount_bps": 30.0,
+            "min_score": 0.0,
+            "hold_through": False,
+            "median_monthly_pct": 80.0,
+            "p10_monthly_pct": 20.0,
+            "worst_dd_pct": 5.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "min_picks": 0,
+            "opportunistic_watch_n": 0,
+            "opportunistic_entry_discount_bps": 0.0,
+            "min_score": 0.0,
+            "hold_through": False,
+            "median_monthly_pct": 40.0,
+            "p10_monthly_pct": 12.0,
+            "worst_dd_pct": 6.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+    ])
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config=live_config,
+    ))
+
+    assert result.passed is True
+    assert result.best_cell["median_monthly_pct"] == 40.0
+    assert result.best_cell["opportunistic_watch_n"] == 0
+    assert result.best_cell["opportunistic_entry_discount_bps"] == 0.0
+
+
+def test_live_config_matches_spy_regime_and_vol_target_cells(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        "  --top-n 2 \\\n"
+        "  --allocation 2.0 \\\n"
+        "  --regime-gate-window 20 \\\n"
+        "  --vol-target-ann 0.15 \\\n"
+        "  --live\n"
+    )
+    live_config = mod.extract_live_config_from_launch(launch)
+    assert live_config["regime_gate_window"] == 20
+    assert live_config["vol_target_ann"] == 0.15
+
+    path = _write_sweep(tmp_path, cells=[
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "regime_gate_window": 20,
+            "vol_target_ann": 0.15,
+            "median_monthly_pct": 80.0,
+            "p10_monthly_pct": 20.0,
+            "worst_dd_pct": 5.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "regime_gate_window": 0,
+            "vol_target_ann": 0.15,
+            "median_monthly_pct": 70.0,
+            "p10_monthly_pct": 18.0,
+            "worst_dd_pct": 5.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "regime_gate_window": 0,
+            "vol_target_ann": 0.0,
+            "median_monthly_pct": 40.0,
+            "p10_monthly_pct": 12.0,
+            "worst_dd_pct": 6.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+    ])
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config=live_config,
+    ))
+
+    assert result.passed is True
+    assert result.best_cell["median_monthly_pct"] == 80.0
+    assert result.best_cell["regime_gate_window"] == 20
+    assert result.best_cell["vol_target_ann"] == 0.15
+
+
+def test_live_config_rejects_missed_order_stress_cells(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        "  --top-n 2 \\\n"
+        "  --allocation 2.0 \\\n"
+        "  --live\n"
+    )
+    live_config = mod.extract_live_config_from_launch(launch)
+    assert live_config["skip_prob"] == 0.0
+    assert live_config["skip_seed"] == 0
+
+    path = _write_sweep(tmp_path, cells=[
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "skip_prob": 0.25,
+            "skip_seed": 7,
+            "median_monthly_pct": 90.0,
+            "p10_monthly_pct": 25.0,
+            "worst_dd_pct": 4.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+        {
+            "fee_regime": "stress36x",
+            "leverage": 2.0,
+            "top_n": 2,
+            "skip_prob": 0.0,
+            "skip_seed": 0,
+            "median_monthly_pct": 40.0,
+            "p10_monthly_pct": 12.0,
+            "worst_dd_pct": 6.0,
+            "n_neg": 0,
+            "n_windows": 8,
+        },
+    ])
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config=live_config,
+    ))
+
+    assert result.passed is True
+    assert result.best_cell["median_monthly_pct"] == 40.0
+    assert result.best_cell["skip_prob"] == 0.0
+    assert result.best_cell["skip_seed"] == 0
 
 
 def test_launch_script_model_paths_resolve_shell_vars(tmp_path: Path) -> None:
@@ -737,6 +1062,474 @@ def test_launch_script_model_paths_resolve_shell_vars(tmp_path: Path) -> None:
         str((REPO / "analysis/xgbnew_daily/custom/alltrain_seed0.pkl").resolve(strict=False)),
         str((REPO / "analysis/xgbnew_daily/custom/alltrain_seed7.pkl").resolve(strict=False)),
     )
+
+
+def test_launch_script_model_paths_respect_unset(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "MODEL_DIR=\"analysis/xgbnew_daily/custom\"\n"
+        "MODEL_PATHS=\"${MODEL_DIR}/alltrain_seed0.pkl\"\n"
+        "unset MODEL_PATHS\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths \"${MODEL_PATHS}\" \\\n"
+        "  --live\n"
+    )
+
+    assert mod.extract_model_paths_from_launch(launch) == ()
+
+
+def test_launch_script_symbols_file_resolves_shell_vars(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "SYMBOL_DIR=\"symbol_lists\"\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --symbols-file \"${SYMBOL_DIR}/custom.txt\" \\\n"
+        "  --model-paths a.pkl \\\n"
+        "  --live\n"
+    )
+
+    assert mod.extract_symbols_file_from_launch(launch) == str(
+        (REPO / "symbol_lists/custom.txt").resolve(strict=False)
+    )
+
+
+def test_launch_script_data_root_resolves_shell_vars(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "DATA_ROOT=\"trainingdata_custom\"\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --symbols-file symbol_lists/custom.txt \\\n"
+        "  --data-root \"${DATA_ROOT}\" \\\n"
+        "  --model-paths a.pkl \\\n"
+        "  --live\n"
+    )
+
+    assert mod.extract_data_root_from_launch(launch) == str(
+        (REPO / "trainingdata_custom").resolve(strict=False)
+    )
+
+
+def test_launch_script_spy_csv_resolves_shell_vars(tmp_path: Path) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "SPY_CSV=\"market_inputs/custom_spy.csv\"\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --data-root trainingdata_ignored \\\n"
+        "  --spy-csv \"${SPY_CSV}\" \\\n"
+        "  --model-paths a.pkl \\\n"
+        "  --live\n"
+    )
+
+    assert mod.extract_spy_csv_from_launch(launch) == str(
+        (REPO / "market_inputs/custom_spy.csv").resolve(strict=False)
+    )
+
+
+def test_launch_audit_requires_symbols_file_match(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        symbols_file="symbol_lists/sweep_universe.txt",
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_symbols_file=str((REPO / "symbol_lists/live_universe.txt").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "launch symbols_file does not match sweep symbols_file"
+
+
+def test_launch_audit_requires_data_root_match(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        data_root="trainingdata_sweep",
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_data_root=str((REPO / "trainingdata_live").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "launch data_root does not match sweep data_root"
+
+
+def test_launch_audit_rejects_missing_sweep_symbols_file(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_symbols_file=str((REPO / "symbol_lists/live_universe.txt").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "sweep symbols_file missing"
+
+
+def test_launch_audit_rejects_missing_sweep_data_root(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_data_root=str((REPO / "trainingdata").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "sweep data_root missing"
+
+
+def test_launch_audit_requires_spy_csv_match_when_vol_target_enabled(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        spy_csv="trainingdata_sweep/SPY.csv",
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "vol_target_ann": 0.15,
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config={"vol_target_ann": 0.15},
+        live_spy_csv=str((REPO / "trainingdata_live/SPY.csv").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "launch spy_csv does not match sweep spy_csv"
+
+
+def test_launch_audit_rejects_invalid_spy_csv_hash_metadata(tmp_path: Path) -> None:
+    mod = _load_module()
+    spy_csv = tmp_path / "SPY.csv"
+    spy_csv.write_text("timestamp,close\n2026-01-02T21:00:00Z,100\n", encoding="utf-8")
+    path = _write_sweep(
+        tmp_path,
+        spy_csv=str(spy_csv),
+        spy_csv_sha256="not-a-sha",
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "vol_target_ann": 0.15,
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config={"vol_target_ann": 0.15},
+        live_spy_csv=str(spy_csv.resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "sweep spy_csv_sha256 invalid"
+
+
+def test_launch_audit_rejects_spy_csv_hash_mismatch(tmp_path: Path) -> None:
+    mod = _load_module()
+    spy_csv = tmp_path / "SPY.csv"
+    spy_csv.write_text("timestamp,close\n2026-01-02T21:00:00Z,100\n", encoding="utf-8")
+    path = _write_sweep(
+        tmp_path,
+        spy_csv=str(spy_csv),
+        spy_csv_sha256=hashlib.sha256(b"different spy data").hexdigest(),
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "vol_target_ann": 0.15,
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config={"vol_target_ann": 0.15},
+        live_spy_csv=str(spy_csv.resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "launch spy_csv_sha256 does not match sweep spy_csv_sha256"
+
+
+def test_launch_audit_accepts_matching_spy_csv_hash(tmp_path: Path) -> None:
+    mod = _load_module()
+    spy_csv = tmp_path / "SPY.csv"
+    spy_csv.write_text("timestamp,close\n2026-01-02T21:00:00Z,100\n", encoding="utf-8")
+    path = _write_sweep(
+        tmp_path,
+        spy_csv=str(spy_csv),
+        spy_csv_sha256=_sha256(spy_csv),
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "vol_target_ann": 0.15,
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config={"vol_target_ann": 0.15},
+        live_spy_csv=str(spy_csv.resolve(strict=False)),
+    ))
+
+    assert result.passed is True
+
+
+def test_launch_audit_rejects_missing_sweep_spy_csv_when_vol_target_enabled(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "vol_target_ann": 0.15,
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config={"vol_target_ann": 0.15},
+        live_spy_csv=str((REPO / "trainingdata/SPY.csv").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "sweep spy_csv missing"
+
+
+def test_launch_audit_rejects_missing_sweep_spy_csv_when_regime_gate_enabled(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "regime_gate_window": 20,
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_config={"regime_gate_window": 20},
+        live_spy_csv=str((REPO / "trainingdata/SPY.csv").resolve(strict=False)),
+    ))
+
+    assert result.passed is False
+    assert result.reason == "sweep spy_csv missing"
+
+
+def test_launch_audit_requires_live_mean_blend_mode(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        blend_mode="median",
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_blend_mode="mean",
+    ))
+
+    assert result.passed is False
+    assert result.reason == "launch blend_mode does not match sweep blend_mode"
+
+
+def test_launch_audit_rejects_missing_sweep_blend_mode(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(
+        tmp_path,
+        cells=[
+            {
+                "fee_regime": "stress36x",
+                "median_monthly_pct": 35.0,
+                "p10_monthly_pct": 12.0,
+                "worst_dd_pct": 10.0,
+                "n_neg": 0,
+                "n_windows": 8,
+            },
+        ],
+    )
+
+    result = mod.evaluate_sweep(path, mod.GateConfig(
+        fee_regime="stress36x",
+        min_median_monthly_pct=27.0,
+        max_worst_dd_pct=25.0,
+        max_neg_windows=0,
+        min_oos_days=100,
+        min_windows=1,
+        min_p10_monthly_pct=None,
+        live_blend_mode="mean",
+    ))
+
+    assert result.passed is False
+    assert result.reason == "sweep blend_mode missing"
 
 
 def test_launch_script_gate_requires_matching_sweep_model_paths(tmp_path: Path) -> None:
@@ -1079,10 +1872,120 @@ def test_main_launch_script_rejects_missing_model_paths(tmp_path: Path, capsys) 
             "fill_buffer_bps": 15.0,
         }],
         model_paths=["analysis/xgbnew_daily/custom/alltrain_seed0.pkl"],
+        symbols_file="symbol_lists/stocks_wide_1000_v1.txt",
+        data_root="trainingdata",
+        blend_mode="mean",
     )
 
     assert mod.main([str(path), "--launch-script", str(launch)]) == 3
     assert "launch-script omits --model-paths" in capsys.readouterr().err
+
+
+def test_main_launch_script_rejects_paper_mode(tmp_path: Path, capsys) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths a.pkl,b.pkl\n"
+    )
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "fill_buffer_bps": 15.0,
+    }])
+
+    assert mod.main([str(path), "--launch-script", str(launch)]) == 3
+    assert "launch-script omits --live" in capsys.readouterr().err
+
+
+def test_main_launch_script_rejects_dry_run(tmp_path: Path, capsys) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        "  --live \\\n"
+        "  --dry-run\n"
+    )
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "fill_buffer_bps": 15.0,
+    }])
+
+    assert mod.main([str(path), "--launch-script", str(launch)]) == 3
+    assert "launch-script enables --dry-run" in capsys.readouterr().err
+
+
+def test_main_launch_script_rejects_non_live_trader_command(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m other.trader \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        "  --live\n"
+    )
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "fill_buffer_bps": 15.0,
+    }])
+
+    assert mod.main([str(path), "--launch-script", str(launch)]) == 3
+    assert "does not invoke xgbnew.live_trader" in capsys.readouterr().err
+
+
+def test_main_launch_script_allows_live_trader_script_path(tmp_path: Path) -> None:
+    mod = _load_module()
+    model = tmp_path / "alltrain_seed0.pkl"
+    model.write_bytes(b"model")
+    symbols = tmp_path / "symbols.txt"
+    symbols.write_text("AAPL\n")
+    data_root = tmp_path / "trainingdata"
+    data_root.mkdir()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec python -u xgbnew/live_trader.py --model-paths {model} "
+        f"--symbols-file {symbols} --data-root {data_root} --live\n"
+    )
+    path = _write_sweep(
+        tmp_path,
+        cells=[{
+            "fee_regime": "stress36x",
+            "median_monthly_pct": 80.0,
+            "p10_monthly_pct": 40.0,
+            "worst_dd_pct": 5.0,
+            "n_neg": 0,
+            "n_windows": 8,
+            "fill_buffer_bps": 15.0,
+        }],
+        model_paths=[str(model)],
+        model_sha256=[_sha256(model)],
+        symbols_file=str(symbols),
+        data_root=str(data_root),
+        blend_mode="mean",
+    )
+
+    assert mod.main([str(path), "--launch-script", str(launch)]) == 0
 
 
 def test_launch_script_filter_uses_defaults_for_legacy_cells(tmp_path: Path) -> None:
@@ -1202,6 +2105,120 @@ def test_launch_script_parse_rejects_malformed_numeric_flags(tmp_path: Path) -> 
         assert "--top-n must be an integer" in str(exc)
     else:
         raise AssertionError("expected malformed launch numeric flag to fail")
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--inv-vol-target-ann", "-0.1", "--inv-vol-target-ann must be >= 0"),
+        ("--inv-vol-floor", "0", "--inv-vol-floor must be > 0"),
+        ("--inv-vol-cap", "0.5", "--inv-vol-cap must be >= 1"),
+    ],
+)
+def test_launch_script_parse_rejects_invalid_inv_vol_flags(
+    tmp_path: Path,
+    flag: str,
+    value: str,
+    message: str,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        f"  {flag} {value} \\\n"
+        "  --live\n"
+    )
+
+    with pytest.raises(ValueError, match=message):
+        mod.extract_live_config_from_launch(launch)
+
+
+@pytest.mark.parametrize(
+    ("flag_lines", "message"),
+    [
+        ("  --top-n 0 \\\n", "--top-n must be >= 1"),
+        ("  --top-n 2 \\\n  --min-picks -1 \\\n", "--min-picks must be >= 0"),
+        (
+            "  --top-n 2 \\\n  --min-picks 3 \\\n",
+            "--min-picks must be <= --top-n",
+        ),
+    ],
+)
+def test_launch_script_parse_rejects_invalid_pick_counts(
+    tmp_path: Path,
+    flag_lines: str,
+    message: str,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --symbols-file symbols.txt \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        f"{flag_lines}"
+        "  --live\n"
+    )
+
+    try:
+        mod.extract_live_config_from_launch(launch)
+    except ValueError as exc:
+        assert message in str(exc)
+    else:
+        raise AssertionError("expected invalid pick count to fail")
+
+
+@pytest.mark.parametrize(
+    ("flag_lines", "message"),
+    [
+        ("  --allocation 0 \\\n", "--allocation must be > 0"),
+        ("  --allocation-temp 0 \\\n", "--allocation-temp must be > 0"),
+        ("  --min-score 1.5 \\\n", "--min-score must be between 0 and 1"),
+        ("  --min-dollar-vol -1 \\\n", "--min-dollar-vol must be >= 0"),
+        ("  --max-spread-bps -1 \\\n", "--max-spread-bps must be >= 0"),
+        ("  --min-vol-20d -0.1 \\\n", "--min-vol-20d must be >= 0"),
+        ("  --max-vol-20d -0.1 \\\n", "--max-vol-20d must be >= 0"),
+        (
+            "  --max-ret-20d-rank-pct 1.5 \\\n",
+            "--max-ret-20d-rank-pct must be between 0 and 1",
+        ),
+        (
+            "  --min-ret-5d-rank-pct -0.1 \\\n",
+            "--min-ret-5d-rank-pct must be between 0 and 1",
+        ),
+        ("  --regime-cs-iqr-max -0.1 \\\n", "--regime-cs-iqr-max must be >= 0"),
+        ("  --regime-gate-window -1 \\\n", "--regime-gate-window must be >= 0"),
+        ("  --vol-target-ann -0.1 \\\n", "--vol-target-ann must be >= 0"),
+        (
+            "  --no-picks-fallback SPY \\\n  --no-picks-fallback-alloc -0.1 \\\n",
+            "--no-picks-fallback-alloc must be >= 0",
+        ),
+        (
+            "  --conviction-alloc-low 0.9 \\\n  --conviction-alloc-high 0.8 \\\n",
+            "--conviction-alloc-high must be > --conviction-alloc-low",
+        ),
+    ],
+)
+def test_launch_script_parse_rejects_invalid_live_numeric_domains(
+    tmp_path: Path,
+    flag_lines: str,
+    message: str,
+) -> None:
+    mod = _load_module()
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "#!/usr/bin/env bash\n"
+        "exec python -u -m xgbnew.live_trader \\\n"
+        "  --symbols-file symbols.txt \\\n"
+        "  --model-paths a.pkl,b.pkl \\\n"
+        f"{flag_lines}"
+        "  --live\n"
+    )
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        mod.extract_live_config_from_launch(launch)
 
 
 def test_launch_script_parse_rejects_negative_uncertainty_penalty(tmp_path: Path) -> None:
@@ -1367,6 +2384,9 @@ def test_main_can_allow_unmodeled_live_sidecars_for_ops_inspection(
             "fill_buffer_bps": 15.0,
         }],
         model_paths=["analysis/xgbnew_daily/custom/alltrain_seed0.pkl"],
+        symbols_file="symbol_lists/stocks_wide_1000_v1.txt",
+        data_root="trainingdata",
+        blend_mode="mean",
     )
 
     assert mod.main([
@@ -1565,6 +2585,41 @@ def test_main_can_disable_fill_buffer_gate_for_legacy_inspection(tmp_path: Path)
     }])
 
     assert mod.main([str(path), "--min-fill-buffer-bps", "-1"]) == 0
+
+
+def test_main_default_rejects_skip_stress_cells(tmp_path: Path, capsys) -> None:
+    mod = _load_module()
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "fill_buffer_bps": 15.0,
+        "skip_prob": 0.25,
+        "skip_seed": 7,
+    }])
+
+    assert mod.main([str(path)]) == 3
+    assert "skip_prob 0.2500 != 0.0" in capsys.readouterr().out
+
+
+def test_main_can_allow_skip_stress_cells_for_research_inspection(tmp_path: Path) -> None:
+    mod = _load_module()
+    path = _write_sweep(tmp_path, cells=[{
+        "fee_regime": "stress36x",
+        "median_monthly_pct": 80.0,
+        "p10_monthly_pct": 40.0,
+        "worst_dd_pct": 5.0,
+        "n_neg": 0,
+        "n_windows": 8,
+        "fill_buffer_bps": 15.0,
+        "skip_prob": 0.25,
+        "skip_seed": 7,
+    }])
+
+    assert mod.main([str(path), "--allow-skip-stress-cells"]) == 0
 
 
 def test_main_deploy_fee_regime_does_not_inherit_stress_fill_buffer(tmp_path: Path) -> None:
