@@ -38,8 +38,9 @@ Updated: 2026-04-27
 
 - Added `scripts/binance_margin_exit_coverage.py`, a read-only cross-margin audit that compares positive non-stable positions above the minimum trade value with open SELL quantities.
   - It aggregates coverage across USDT/FDUSD/BUSD/USDC quote routes so BTC/ETH FDUSD exits are not false positives.
-  - Latest live read-only audit: `positions=5 covered=4 partial=0 missing=1`; LINK, ETH, AAVE, and DOGE are covered, while BTC (`~0.00390923`, about `$307`) has no open SELL coverage.
-  - The apparent `14 positions / 5 sells` mismatch is mostly dust/low-value assets below minimum trade size, but the BTC gap is real and should be covered by the worksteal fix below after the live process is restarted or rerun.
+  - During the fix, the live audit caught a real BTC gap: `~0.00390923` BTC, about `$307`, had no open SELL coverage.
+  - Final read-only audit after the live process ran again: `positions=5 covered=5 partial=0 missing=0`; LINK, ETH, AAVE, DOGE, and BTC all have SELL coverage.
+  - The apparent `14 positions / 5 sells` mismatch is mostly dust/low-value assets below minimum trade size, plus the now-resolved BTC coverage gap.
 - Fixed `binance_worksteal.trade_live` so filled/reconciled live positions without an `exit_order_id` get an immediate target SELL coverage order through the existing worksteal margin order path.
   - The coverage hook runs after pending-entry reconciliation, after exchange-position sync and normal exit evaluation, and in daemon heartbeat reconciliation.
   - Daemon heartbeat now also syncs exchange positions using live ticker prices when local bars are unavailable, so a filled exchange position that is missing from `live_state.json` can still be discovered and covered.
