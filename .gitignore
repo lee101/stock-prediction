@@ -493,8 +493,6 @@ src/models/__pycache__/**
 /backtest_pure_functions.py
 /bar_aggregation.py
 /binance_symbol_utils.py
-/cache.py
-/cache_utils.py
 /chronos2_params.py
 /comparisons.py
 /conversion_utils.py
@@ -693,3 +691,9 @@ trainingdata_nvme_backup/
 AGENTS.local.md
 CLAUDE.local.md
 alpaca_go/alpaca_go
+.claude/
+.tmp*
+.coverage*
+.chronos2*
+error_log.txt
+ctrader/.build.lock
