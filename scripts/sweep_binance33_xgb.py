@@ -6,6 +6,7 @@ symbol, then sends the ranked symbol into the same lag-2 daily simulator used
 for PPO checkpoints. It is intentionally compact so we can quickly try many
 tree variants before doing any leverage sweep.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,6 +70,31 @@ def _candidate_starts(data: MktdData, steps: int, *, stride: int) -> list[int]:
     if window_len > data.num_timesteps:
         raise ValueError(f"data too short for {steps}d windows: {data.num_timesteps} timesteps")
     return list(range(0, data.num_timesteps - window_len + 1, max(1, int(stride))))
+
+
+def _monthly_equivalent_return(total_return: float, days: int) -> float:
+    if int(days) <= 0:
+        raise ValueError(f"days must be positive, got {days}")
+    value = float(total_return)
+    if not np.isfinite(value):
+        return float("nan")
+    base = max(1e-9, 1.0 + value)
+    return float(base ** (30.0 / float(days)) - 1.0)
+
+
+def _passes_production_target(
+    row: dict[str, float | int | str],
+    *,
+    target_monthly_pct: float,
+    max_dd_pct: float,
+) -> bool:
+    return (
+        int(row.get("failed_fast", 0)) == 0
+        and float(row["median_monthly_pct"]) >= float(target_monthly_pct)
+        and float(row["p10_monthly_pct"]) >= 0.0
+        and int(row["neg_windows"]) == 0
+        and float(row["p90_dd_pct"]) <= float(max_dd_pct)
+    )
 
 
 def _feature_matrix(data: MktdData, t: int) -> np.ndarray:
@@ -168,10 +194,9 @@ def _predict_scores(model, features: np.ndarray) -> np.ndarray:
 
 
 def _precompute_scores(data: MktdData, model) -> np.ndarray:
-    return np.vstack([
-        _predict_scores(model, _feature_matrix(data, t))
-        for t in range(data.num_timesteps)
-    ]).astype(np.float64, copy=False)
+    return np.vstack([_predict_scores(model, _feature_matrix(data, t)) for t in range(data.num_timesteps)]).astype(
+        np.float64, copy=False
+    )
 
 
 def _make_policy(
@@ -340,6 +365,8 @@ def _eval_model(
     action_allocation_bins: int = 1,
     action_level_bins: int = 1,
     action_max_offset_bps: float = 0.0,
+    fail_fast_neg_windows: int = -1,
+    fail_fast_max_dd_pct: float = 0.0,
 ) -> dict[str, float | int | str]:
     returns: list[float] = []
     sortinos: list[float] = []
@@ -347,6 +374,8 @@ def _eval_model(
     smooths: list[float] = []
     ulcers: list[float] = []
     trades: list[int] = []
+    failed_fast = False
+    fail_reason = ""
     for start in _candidate_starts(data, eval_days, stride=stride):
         window = _slice_window(data, start, eval_days)
         window_scores = None
@@ -383,7 +412,19 @@ def _eval_model(
         ulcers.append(float(compute_ulcer_index(curve)))
         trades.append(int(result.num_trades))
 
+        if int(fail_fast_neg_windows) >= 0 and int(np.sum(np.asarray(returns) < 0.0)) > int(fail_fast_neg_windows):
+            failed_fast = True
+            fail_reason = f"neg_windows>{int(fail_fast_neg_windows)}"
+            break
+        if float(fail_fast_max_dd_pct) > 0.0 and float(result.max_drawdown) > float(fail_fast_max_dd_pct) / 100.0:
+            failed_fast = True
+            fail_reason = f"max_dd>{float(fail_fast_max_dd_pct):g}%"
+            break
+
     arr = np.asarray(returns, dtype=np.float64)
+    monthly = np.asarray(
+        [_monthly_equivalent_return(float(total_return), int(eval_days)) for total_return in arr], dtype=np.float64
+    )
     return {
         "experiment": exp.name,
         "horizon": exp.horizon,
@@ -403,6 +444,10 @@ def _eval_model(
         "median_pct": float(100.0 * np.percentile(arr, 50)),
         "p10_pct": float(100.0 * np.percentile(arr, 10)),
         "p90_pct": float(100.0 * np.percentile(arr, 90)),
+        "median_monthly_pct": float(100.0 * np.percentile(monthly, 50)),
+        "p10_monthly_pct": float(100.0 * np.percentile(monthly, 10)),
+        "worst_monthly_pct": float(100.0 * np.min(monthly)),
+        "best_monthly_pct": float(100.0 * np.max(monthly)),
         "neg_windows": int(np.sum(arr < 0.0)),
         "windows": int(arr.size),
         "p90_dd_pct": float(100.0 * np.percentile(np.asarray(maxdds), 90)),
@@ -410,6 +455,8 @@ def _eval_model(
         "median_ulcer": float(np.percentile(np.asarray(ulcers), 50)),
         "median_sortino": float(np.percentile(np.asarray(sortinos), 50)),
         "median_trades": float(np.percentile(np.asarray(trades), 50)),
+        "failed_fast": int(failed_fast),
+        "fail_reason": fail_reason,
     }
 
 
@@ -466,8 +513,14 @@ def main() -> int:
     parser.add_argument("--slippage-bps", default="20")
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--max-leverage", default="1.0", help="Single leverage or comma list, e.g. 1,1.5,2")
-    parser.add_argument("--experiment-names", default="", help="Comma list of experiment names to run, e.g. xgb08,xgb14")
-    parser.add_argument("--size-modes", default="full", help="Comma list: full,score_linear,score_sqrt,score_gap,voltarget,voltarget_score")
+    parser.add_argument(
+        "--experiment-names", default="", help="Comma list of experiment names to run, e.g. xgb08,xgb14"
+    )
+    parser.add_argument(
+        "--size-modes",
+        default="full",
+        help="Comma list: full,score_linear,score_sqrt,score_gap,voltarget,voltarget_score",
+    )
     parser.add_argument("--level-modes", default="mid", help="Comma list: mid,passive,aggressive,confidence_passive")
     parser.add_argument("--allocation-bins", type=int, default=1)
     parser.add_argument("--level-bins", type=int, default=1)
@@ -477,6 +530,15 @@ def main() -> int:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--decision-lag", type=int, default=2)
+    parser.add_argument("--target-monthly-pct", type=float, default=27.0)
+    parser.add_argument("--target-max-dd-pct", type=float, default=20.0)
+    parser.add_argument("--fail-fast-neg-windows", type=int, default=-1)
+    parser.add_argument("--fail-fast-max-dd-pct", type=float, default=0.0)
+    parser.add_argument(
+        "--require-production-target",
+        action="store_true",
+        help="Exit non-zero unless a worst-slippage max-window row passes the production target.",
+    )
     args = parser.parse_args()
 
     train_data = read_mktd(args.train_data)
@@ -537,6 +599,10 @@ def main() -> int:
         "median_pct",
         "p10_pct",
         "p90_pct",
+        "median_monthly_pct",
+        "p10_monthly_pct",
+        "worst_monthly_pct",
+        "best_monthly_pct",
         "neg_windows",
         "windows",
         "p90_dd_pct",
@@ -544,6 +610,11 @@ def main() -> int:
         "median_ulcer",
         "median_sortino",
         "median_trades",
+        "failed_fast",
+        "fail_reason",
+        "target_monthly_pct",
+        "target_max_dd_pct",
+        "passes_target",
     ]
     rows: list[dict[str, float | int | str]] = []
     with args.out.open("w", newline="") as fh:
@@ -571,6 +642,17 @@ def main() -> int:
                             action_allocation_bins=int(args.allocation_bins),
                             action_level_bins=int(args.level_bins),
                             action_max_offset_bps=float(args.max_offset_bps),
+                            fail_fast_neg_windows=int(args.fail_fast_neg_windows),
+                            fail_fast_max_dd_pct=float(args.fail_fast_max_dd_pct),
+                        )
+                        row["target_monthly_pct"] = float(args.target_monthly_pct)
+                        row["target_max_dd_pct"] = float(args.target_max_dd_pct)
+                        row["passes_target"] = int(
+                            _passes_production_target(
+                                row,
+                                target_monthly_pct=float(args.target_monthly_pct),
+                                max_dd_pct=float(args.target_max_dd_pct),
+                            )
                         )
                         rows.append(row)
                         writer.writerow(row)
@@ -579,20 +661,46 @@ def main() -> int:
 
     for days in eval_days:
         subset = [
-            row for row in rows
-            if int(row["eval_days"]) == int(days) and float(row["slip_bps"]) == max(slippages)
+            row for row in rows if int(row["eval_days"]) == int(days) and float(row["slip_bps"]) == max(slippages)
         ]
         subset.sort(key=lambda row: float(row["median_pct"]), reverse=True)
         print(f"\n=== Best XGB {days}d slip{max(slippages):g} ===")
         for row in subset[:10]:
             print(
-                f"{row['median_pct']:+7.2f}% p10={row['p10_pct']:+7.2f}% "
-                f"neg={row['neg_windows']}/{row['windows']} dd90={row['p90_dd_pct']:.2f}% "
+                f"{row['median_monthly_pct']:+7.2f}%/mo "
+                f"p10/mo={row['p10_monthly_pct']:+7.2f}% "
+                f"total={row['median_pct']:+7.2f}% neg={row['neg_windows']}/{row['windows']} "
+                f"dd90={row['p90_dd_pct']:.2f}% pass={row['passes_target']} "
                 f"{row['experiment']} lev={row['max_leverage']} h={row['horizon']} "
                 f"{row['label']} {row['mode']} size={row['size_mode']} level={row['level_mode']} "
                 f"rb={row['rebalance_days']}"
             )
+    promotion_days = max(eval_days)
+    promotion_slip = max(slippages)
+    promoted = [
+        row
+        for row in rows
+        if int(row["eval_days"]) == int(promotion_days)
+        and float(row["slip_bps"]) == float(promotion_slip)
+        and int(row["passes_target"]) == 1
+    ]
+    promoted.sort(key=lambda row: float(row["median_monthly_pct"]), reverse=True)
+    print(
+        f"\n=== Production target candidates {promotion_days}d slip{promotion_slip:g} "
+        f"target={float(args.target_monthly_pct):g}%/mo ==="
+    )
+    if promoted:
+        for row in promoted[:10]:
+            print(
+                f"{row['median_monthly_pct']:+7.2f}%/mo "
+                f"p10/mo={row['p10_monthly_pct']:+7.2f}% "
+                f"dd90={row['p90_dd_pct']:.2f}% {row['experiment']} lev={row['max_leverage']}"
+            )
+    else:
+        print("none")
     print(f"\nwrote {args.out}")
+    if args.require_production_target and not promoted:
+        return 2
     return 0
 
 
