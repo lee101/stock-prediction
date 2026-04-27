@@ -82,8 +82,10 @@ class PortfolioConfig:
     entry_allocator_reserve_fraction: float = 0.1
     max_pending_entries: Optional[int] = None
     apply_leverage_to_crypto: bool = False
+    allow_crypto_shorts: bool = False
     sim_backend: str = "auto"  # auto prefers native when safe, else falls back to python
     drawdown_profit_early_exit: bool = True
+    force_exit_hours_utc: Sequence[int] = field(default_factory=tuple)
 
 
 @dataclass
@@ -147,6 +149,9 @@ def _build_portfolio_result(
     wins = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "target")
     timeouts = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "timeout")
     eods = sum(1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "eod")
+    forced_hour_exits = sum(
+        1 for t in trades if t.side in ("sell", "buy_cover") and t.reason == "forced_hour"
+    )
 
     max_drawdown = 0.0
     if len(equity_curve) > 0:
@@ -183,6 +188,7 @@ def _build_portfolio_result(
         "target_exits": wins,
         "timeout_exits": timeouts,
         "eod_exits": eods,
+        "forced_hour_exits": forced_hour_exits,
     }
     return PortfolioResult(equity_curve=equity_curve, trades=trades, metrics=metrics)
 
@@ -194,6 +200,18 @@ def _normalize_backend(value: str | None) -> str:
     if raw in {"auto", "native", "python"}:
         return raw
     return "python"
+
+
+def _normalized_force_exit_hours(hours: Sequence[int] | None) -> set[int]:
+    if not hours:
+        return set()
+    normalized: set[int] = set()
+    for hour in hours:
+        hour_int = int(hour)
+        if hour_int < 0 or hour_int > 23:
+            raise ValueError(f"force_exit_hours_utc entries must be in [0, 23], got {hour!r}")
+        normalized.add(hour_int)
+    return normalized
 
 
 def _get_numeric_column(frame: pd.DataFrame, name: str, *, default: float) -> np.ndarray:
@@ -486,7 +504,7 @@ def run_portfolio_simulation(
     short_only = cfg.short_only_symbols if cfg.short_only_symbols is not None else SHORT_ONLY_DEFAULT
 
     def _direction(sym):
-        if is_crypto_symbol(sym):
+        if is_crypto_symbol(sym) and not bool(cfg.allow_crypto_shorts):
             return "long"
         if sym in short_only:
             return "short"
@@ -502,6 +520,8 @@ def run_portfolio_simulation(
         and not bool(cfg.market_order_entry_uses_signal_price_for_qty)
         and cfg.max_pending_entries is None
         and not bool(cfg.apply_leverage_to_crypto)
+        and not bool(cfg.allow_crypto_shorts)
+        and not bool(cfg.force_exit_hours_utc)
     )
     if backend in {"native", "auto"} and native_allowed:
         native_result = _run_portfolio_simulation_native(
@@ -527,6 +547,7 @@ def run_portfolio_simulation(
     last_close: Dict[str, float] = {}
     equity_values: List[Tuple[pd.Timestamp, float]] = []
     trades: List[UnifiedTradeRecord] = []
+    force_exit_hours = _normalized_force_exit_hours(cfg.force_exit_hours_utc)
 
     def _mtm():
         total = 0
@@ -586,6 +607,33 @@ def run_portfolio_simulation(
             margin_used = max(0, position_value - max(0, equity_before))
             if margin_used > 0:
                 cash -= margin_used * cfg.margin_annual_rate / 8760
+
+        # 0. Optional UTC-hour inventory cleanup. This ports the Poloniex
+        # market-exit pattern to 24/7 crypto research without enabling it by
+        # default.
+        if force_exit_hours and int(ts.hour) in force_exit_hours and positions:
+            closed_forced = []
+            for sym, pos in positions.items():
+                row_df = group[group["symbol"] == sym]
+                if row_df.empty:
+                    continue
+                price = _as_valid_positive(row_df.iloc[0].get("close"))
+                if price is None:
+                    price = last_close.get(sym, pos.entry_price)
+                fee = symbol_fee.get(sym, 0.001)
+                slip = cfg.force_close_slippage
+                if pos.direction == "short":
+                    exit_price = float(price) * (1 + slip)
+                    cash += pos.qty * (2 * pos.entry_price - exit_price * (1 + fee))
+                    trades.append(UnifiedTradeRecord(ts, sym, "buy_cover", exit_price, pos.qty, cash, 0, "forced_hour"))
+                else:
+                    exit_price = float(price) * (1 - slip)
+                    proceeds = pos.qty * exit_price * (1 - fee)
+                    cash += proceeds
+                    trades.append(UnifiedTradeRecord(ts, sym, "sell", exit_price, pos.qty, cash, 0, "forced_hour"))
+                closed_forced.append(sym)
+            for sym in closed_forced:
+                del positions[sym]
 
         # 1. Check exit targets (sell for longs, buy-to-cover for shorts)
         closed = []

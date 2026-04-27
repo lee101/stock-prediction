@@ -11,6 +11,7 @@ from scripts.sweep_binance_hourly_portfolio_pack import (
     compute_pack_selection_score,
     iter_pack_configs,
     sample_pack_configs,
+    sample_pack_configs_from_args,
 )
 
 
@@ -254,6 +255,97 @@ def test_build_actions_and_bars_can_gate_bad_cross_sectional_regime():
     assert actions["buy_amount"].eq(0.0).all()
 
 
+def test_build_actions_and_bars_can_block_entries_by_utc_hour():
+    ts = pd.Timestamp("2026-03-03T15:00:00Z")
+    scored = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "BTCUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.08,
+                "pred_low_ret_xgb": -0.005,
+                "pred_close_ret_xgb": 0.02,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": 0.01,
+                "ret_72h": 0.04,
+                "vol_72h": 0.01,
+            }
+        ]
+    )
+
+    _, actions = build_actions_and_bars(
+        scored,
+        cfg=_pack_config(),
+        label_horizon=24,
+        min_take_profit_bps=35.0,
+        max_entry_gap_bps=120.0,
+        max_exit_gap_bps=250.0,
+        fee_rate=0.001,
+        top_candidates_per_hour=10,
+        entry_block_hours_utc="15",
+    )
+
+    action = actions.iloc[0]
+    assert action["xgb_edge"] > 0.0
+    assert action["entry_blocked_utc_hour"] == 1.0
+    assert action["buy_amount"] == 0.0
+
+
+def test_build_actions_and_bars_supports_short_side_mode():
+    scored = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-03T12:00:00Z"),
+                "symbol": "BTCUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.003,
+                "pred_low_ret_xgb": -0.04,
+                "pred_close_ret_xgb": -0.02,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": -0.01,
+                "ret_72h": -0.02,
+                "vol_72h": 0.01,
+            }
+        ]
+    )
+
+    _, actions = build_actions_and_bars(
+        scored,
+        cfg=_pack_config(
+            risk_penalty=0.2,
+            cvar_weight=0.0,
+            entry_gap_bps=50.0,
+            edge_threshold=0.001,
+            min_close_ret=0.001,
+            close_edge_weight=0.25,
+        ),
+        label_horizon=24,
+        min_take_profit_bps=35.0,
+        max_entry_gap_bps=120.0,
+        max_exit_gap_bps=250.0,
+        fee_rate=0.001,
+        top_candidates_per_hour=10,
+        side_mode="short",
+    )
+
+    action = actions.iloc[0]
+    assert action["side_mode"] == "short"
+    assert action["sell_price"] > 100.0
+    assert action["buy_price"] < action["sell_price"]
+    assert action["sell_amount"] > 0.0
+    assert action["buy_amount"] == 0.0
+
+
 def test_build_actions_and_bars_applies_inverse_vol_sizing_scale():
     ts = pd.Timestamp("2026-03-03T15:00:00Z")
     scored = pd.DataFrame(
@@ -367,6 +459,43 @@ def test_sample_pack_configs_keeps_randomized_order():
     sampled_indices = [configs.index(cfg) for cfg in sampled]
 
     assert sampled_indices != sorted(sampled_indices)
+
+
+def test_sample_pack_configs_from_args_matches_materialized_sampler():
+    args = argparse.Namespace(
+        risk_penalties="0.2,0.5",
+        cvar_weights="0.0",
+        entry_gap_bps_grid="25,50,75",
+        entry_alpha_grid="0.5",
+        exit_alpha_grid="0.8",
+        edge_threshold_grid="0.003,0.006",
+        edge_to_full_size_grid="0.02",
+        min_close_ret_grid="0.0",
+        close_edge_weight_grid="0.0",
+        min_upside_downside_ratio_grid="0.0",
+        min_recent_ret_24h_grid="-1.0",
+        min_recent_ret_72h_grid="-1.0",
+        max_recent_vol_72h_grid="0.0",
+        regime_cs_skew_min_grid="-1000000000.0",
+        vol_target_ann_grid="0.0",
+        inv_vol_target_ann_grid="0.0",
+        inv_vol_floor_grid="0.05",
+        inv_vol_cap_grid="3.0",
+        max_positions_grid="5,8",
+        max_pending_entries_grid="12",
+        entry_ttl_hours_grid="3",
+        max_hold_hours_grid="24",
+        max_leverage_grid="1.0",
+        entry_selection_modes="edge_rank",
+        entry_allocator_modes="concentrated",
+        entry_allocator_edge_power_grid="2.0",
+    )
+
+    materialized = iter_pack_configs(args)
+    lazy_sample, total = sample_pack_configs_from_args(args, limit=10, seed=20260427)
+
+    assert total == len(materialized)
+    assert lazy_sample == sample_pack_configs(materialized, limit=10, seed=20260427)
 
 
 def test_filter_liquid_frames_keeps_top_dollar_volume_symbols():

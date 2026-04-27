@@ -63,6 +63,14 @@ def _fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int) -> lis
                     logger.warning("{} rate limited, sleeping {}s", symbol, retry_after)
                     time.sleep(retry_after)
                     continue
+                if 400 <= resp.status_code < 500:
+                    logger.warning(
+                        "{} unavailable from Binance klines (HTTP {}): {}",
+                        symbol,
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+                    return all_klines
                 resp.raise_for_status()
                 break
             except requests.RequestException:

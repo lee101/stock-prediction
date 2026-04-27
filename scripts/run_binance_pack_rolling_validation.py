@@ -259,6 +259,9 @@ def _eval_args(
         entry_allocator_max_single_position_fraction=float(args.entry_allocator_max_single_position_fraction),
         entry_allocator_reserve_fraction=float(args.entry_allocator_reserve_fraction),
         fill_buffer_bps=float(fill_buffer_bps),
+        side_mode=str(args.side_mode),
+        entry_block_hours_utc=str(args.entry_block_hours_utc),
+        force_exit_hours_utc=str(args.force_exit_hours_utc),
         min_result_trades=int(args.min_result_trades),
         disable_drawdown_profit_early_exit=bool(args.disable_drawdown_profit_early_exit),
     )
@@ -350,6 +353,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--entry-min-intensity-fraction", type=float, default=0.0)
     parser.add_argument("--entry-allocator-max-single-position-fraction", type=float, default=0.35)
     parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.05)
+    parser.add_argument("--side-mode", choices=("long", "short"), default="long")
+    parser.add_argument(
+        "--entry-block-hours-utc",
+        default="",
+        help="Comma-separated UTC hours where new entries are suppressed during validation.",
+    )
+    parser.add_argument(
+        "--force-exit-hours-utc",
+        default="",
+        help="Comma-separated UTC hours where open inventory is force-closed during validation.",
+    )
     parser.add_argument("--min-result-trades", type=int, default=20)
     parser.set_defaults(disable_drawdown_profit_early_exit=True)
     parser.add_argument(

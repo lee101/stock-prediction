@@ -4,7 +4,9 @@ import csv
 from pathlib import Path
 
 from scripts.run_binance_pack_rolling_validation import (
+    _eval_args,
     load_candidate_configs,
+    parse_args,
     summarize_results,
 )
 
@@ -146,3 +148,26 @@ def test_summarize_results_penalizes_negative_cells():
 
     assert summary[0]["candidate_id"] == "stable"
     assert summary[1]["negative_cells"] == 1
+
+
+def test_eval_args_passes_time_controls_to_pack_evaluator():
+    args = parse_args(
+        [
+            "--candidate-csv",
+            "candidates.csv",
+            "--entry-block-hours-utc",
+            "3,6",
+            "--force-exit-hours-utc",
+            "14",
+            "--side-mode",
+            "short",
+        ]
+    )
+
+    eval_args = _eval_args(args, fill_buffer_bps=20.0, min_take_profit_bps=75.0)
+
+    assert eval_args.side_mode == "short"
+    assert eval_args.entry_block_hours_utc == "3,6"
+    assert eval_args.force_exit_hours_utc == "14"
+    assert eval_args.fill_buffer_bps == 20.0
+    assert eval_args.min_take_profit_bps == 75.0

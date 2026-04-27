@@ -284,6 +284,21 @@ class TestDownloadScript:
         from scripts.download_binance_data import SYMBOLS
         assert len(SYMBOLS) == len(set(SYMBOLS))
 
+    def test_fetch_klines_skips_unavailable_pair(self, monkeypatch):
+        from scripts import download_binance_data as mod
+
+        class Response:
+            status_code = 400
+            text = '{"code":-1121,"msg":"Invalid symbol."}'
+            headers = {}
+
+            def raise_for_status(self):
+                raise AssertionError("client-side errors should not be raised")
+
+        monkeypatch.setattr(mod.requests, "get", lambda *args, **kwargs: Response())
+
+        assert mod._fetch_klines("KASUSDT", "1h", 0, 1) == []
+
 
 class TestBackwardsCompatibility:
     def test_original_30_unchanged(self):

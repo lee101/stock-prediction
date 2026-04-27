@@ -5,7 +5,7 @@ This experiment is intentionally grounded in the execution path we already
 trust for multi-position hourly simulation:
 
 1. Train XGBoost models to forecast future high/low/close returns per pair.
-2. Convert forecasts into opportunistic long limit watchers with buy/sell
+2. Convert forecasts into opportunistic long/short limit watchers with buy/sell
    levels, confidence-sized amounts, and a CVaR-style downside penalty.
 3. Evaluate those actions with the portfolio simulator using binary OHLC fills,
    fill buffers, decision lag, pending-order TTL, max positions, and leverage.
@@ -123,6 +123,29 @@ def _parse_str_list(value: str) -> list[str]:
     if not items:
         raise ValueError(f"empty string list: {value!r}")
     return items
+
+
+def _parse_hour_set(value: str) -> tuple[int, ...]:
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    hours: set[int] = set()
+    for part in raw.replace(";", ",").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        hour = int(token)
+        if hour < 0 or hour > 23:
+            raise ValueError(f"UTC hour must be in [0, 23], got {token!r}")
+        hours.add(hour)
+    return tuple(sorted(hours))
+
+
+def _normalize_side_mode(value: str) -> str:
+    mode = str(value or "long").strip().lower()
+    if mode not in {"long", "short"}:
+        raise ValueError(f"side_mode must be 'long' or 'short', got {value!r}")
+    return mode
 
 
 def _to_utc(value: str | pd.Timestamp) -> pd.Timestamp:
@@ -422,8 +445,11 @@ def build_actions_and_bars(
     max_exit_gap_bps: float,
     fee_rate: float,
     top_candidates_per_hour: int,
+    entry_block_hours_utc: str = "",
+    side_mode: str = "long",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = scored.copy()
+    side_mode = _normalize_side_mode(side_mode)
     ref = rows["reference_close"].astype(float).to_numpy()
     pred_high = rows["pred_high_ret_xgb"].astype(float).to_numpy()
     pred_low = rows["pred_low_ret_xgb"].astype(float).to_numpy()
@@ -471,42 +497,66 @@ def build_actions_and_bars(
         market_vol_scale = float(cfg.vol_target_ann) / np.maximum(market_vol_ann, 1e-9)
         market_vol_scale = np.clip(market_vol_scale, float(cfg.inv_vol_floor), float(cfg.inv_vol_cap))
 
-    upside = np.maximum.reduce([pred_high, pred_close, np.zeros_like(pred_high)])
-    downside = np.maximum(-pred_low, 0.0)
+    if side_mode == "short":
+        favorable_move = np.maximum.reduce([-pred_low, -pred_close, np.zeros_like(pred_low)])
+        adverse_move = np.maximum(pred_high, 0.0)
+        close_edge_signal = -pred_close
+    else:
+        favorable_move = np.maximum.reduce([pred_high, pred_close, np.zeros_like(pred_high)])
+        adverse_move = np.maximum(-pred_low, 0.0)
+        close_edge_signal = pred_close
     base_entry_gap = float(cfg.entry_gap_bps) / 10_000.0
-    entry_gap = np.maximum(base_entry_gap, float(cfg.entry_alpha) * downside)
+    entry_gap = np.maximum(base_entry_gap, float(cfg.entry_alpha) * adverse_move)
     entry_gap = np.clip(entry_gap, 0.0, float(max_entry_gap_bps) / 10_000.0)
     min_tp = float(min_take_profit_bps) / 10_000.0
-    exit_gap = np.maximum(min_tp, float(cfg.exit_alpha) * upside)
+    exit_gap = np.maximum(min_tp, float(cfg.exit_alpha) * favorable_move)
     exit_gap = np.clip(exit_gap, min_tp, float(max_exit_gap_bps) / 10_000.0)
 
-    buy_price = ref * (1.0 - entry_gap)
-    sell_price = np.maximum(buy_price * (1.0 + min_tp), ref * (1.0 + exit_gap))
-    gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
-    risk_charge = float(cfg.risk_penalty) * (downside + float(cfg.cvar_weight) * cvar)
-    close_edge_bonus = float(cfg.close_edge_weight) * pred_close
+    if side_mode == "short":
+        sell_price = ref * (1.0 + entry_gap)
+        buy_price = np.minimum(sell_price * (1.0 - min_tp), ref * (1.0 - exit_gap))
+        gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
+    else:
+        buy_price = ref * (1.0 - entry_gap)
+        sell_price = np.maximum(buy_price * (1.0 + min_tp), ref * (1.0 + exit_gap))
+        gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
+    risk_charge = float(cfg.risk_penalty) * (adverse_move + float(cfg.cvar_weight) * cvar)
+    close_edge_bonus = float(cfg.close_edge_weight) * close_edge_signal
     edge = gross_edge - risk_charge - 2.0 * float(fee_rate) + close_edge_bonus
-    risk_denominator = np.maximum(downside + cvar, 1e-9)
-    upside_downside_ratio = upside / risk_denominator
+    risk_denominator = np.maximum(adverse_move + cvar, 1e-9)
+    upside_downside_ratio = favorable_move / risk_denominator
     amount = 100.0 * np.clip(edge / max(float(cfg.edge_to_full_size), 1e-9), 0.0, 1.0)
+    if side_mode == "short":
+        recent_ret_24h_ok = recent_ret_24h <= -float(cfg.min_recent_ret_24h)
+        recent_ret_72h_ok = recent_ret_72h <= -float(cfg.min_recent_ret_72h)
+    else:
+        recent_ret_24h_ok = recent_ret_24h >= float(cfg.min_recent_ret_24h)
+        recent_ret_72h_ok = recent_ret_72h >= float(cfg.min_recent_ret_72h)
     active = (
         (edge >= float(cfg.edge_threshold))
-        & (pred_close >= float(cfg.min_close_ret))
+        & (close_edge_signal >= float(cfg.min_close_ret))
         & (upside_downside_ratio >= float(cfg.min_upside_downside_ratio))
-        & (recent_ret_24h >= float(cfg.min_recent_ret_24h))
-        & (recent_ret_72h >= float(cfg.min_recent_ret_72h))
+        & recent_ret_24h_ok
+        & recent_ret_72h_ok
     )
     if float(cfg.max_recent_vol_72h) > 0.0:
         active &= recent_vol_72h <= float(cfg.max_recent_vol_72h)
     if float(cfg.regime_cs_skew_min) > -1e8:
         active &= regime_cs_skew_24h >= float(cfg.regime_cs_skew_min)
+    entry_block_hours = _parse_hour_set(entry_block_hours_utc)
+    if entry_block_hours:
+        timestamps = pd.to_datetime(rows["timestamp"], utc=True)
+        blocked_hours = timestamps.dt.hour.isin(entry_block_hours).to_numpy()
+        active &= ~blocked_hours
+    else:
+        blocked_hours = np.zeros(len(rows), dtype=bool)
     amount = amount * inv_vol_scale * market_vol_scale
     amount = np.where(active, amount, 0.0)
 
     rows["buy_price"] = buy_price
     rows["sell_price"] = sell_price
-    rows["buy_amount"] = amount
-    rows["sell_amount"] = 0.0
+    rows["buy_amount"] = np.where(side_mode == "short", 0.0, amount)
+    rows["sell_amount"] = np.where(side_mode == "short", amount, 0.0)
     rows["trade_amount"] = amount
     rows["xgb_edge"] = edge
     rows["xgb_gross_edge"] = gross_edge
@@ -521,6 +571,8 @@ def build_actions_and_bars(
     rows["market_vol_ann"] = market_vol_ann
     rows["inv_vol_scale"] = inv_vol_scale
     rows["market_vol_scale"] = market_vol_scale
+    rows["entry_blocked_utc_hour"] = blocked_hours.astype(float)
+    rows["side_mode"] = side_mode
     rows["watch_entry_gap_bps"] = entry_gap * 10_000.0
     rows["watch_exit_gap_bps"] = exit_gap * 10_000.0
     rows[f"predicted_high_p50_h{label_horizon}"] = ref * (1.0 + pred_high)
@@ -552,6 +604,8 @@ def build_actions_and_bars(
         "market_vol_ann",
         "inv_vol_scale",
         "market_vol_scale",
+        "entry_blocked_utc_hour",
+        "side_mode",
         "watch_entry_gap_bps",
         "watch_exit_gap_bps",
         f"predicted_high_p50_h{label_horizon}",
@@ -613,8 +667,11 @@ def evaluate_pack(
         max_exit_gap_bps=float(args.max_exit_gap_bps),
         fee_rate=float(args.fee_rate),
         top_candidates_per_hour=int(args.top_candidates_per_hour),
+        entry_block_hours_utc=str(args.entry_block_hours_utc),
+        side_mode=str(args.side_mode),
     )
     symbols = sorted(scored["symbol"].astype(str).str.upper().unique())
+    side_mode = _normalize_side_mode(str(args.side_mode))
     sim_cfg = PortfolioConfig(
         initial_cash=float(args.initial_cash),
         max_positions=int(cfg.max_positions),
@@ -642,8 +699,11 @@ def evaluate_pack(
         entry_allocator_reserve_fraction=float(args.entry_allocator_reserve_fraction),
         max_pending_entries=int(cfg.max_pending_entries),
         apply_leverage_to_crypto=True,
+        allow_crypto_shorts=side_mode == "short",
+        short_only_symbols=set(symbols) if side_mode == "short" else None,
         sim_backend="python",
         drawdown_profit_early_exit=not bool(args.disable_drawdown_profit_early_exit),
+        force_exit_hours_utc=_parse_hour_set(str(args.force_exit_hours_utc)),
     )
     result = run_portfolio_simulation(bars, actions, sim_cfg, horizon=int(label_horizon))
     start = pd.Timestamp(bars["timestamp"].min())
@@ -667,7 +727,11 @@ def evaluate_pack(
         "num_sells": int(result.metrics.get("num_sells", 0)),
         "target_exits": int(result.metrics.get("target_exits", 0)),
         "timeout_exits": int(result.metrics.get("timeout_exits", 0)),
+        "forced_hour_exits": int(result.metrics.get("forced_hour_exits", 0)),
     }
+    row["entry_block_hours_utc"] = str(args.entry_block_hours_utc)
+    row["force_exit_hours_utc"] = str(args.force_exit_hours_utc)
+    row["side_mode"] = side_mode
     row["min_result_trades"] = int(args.min_result_trades)
     row["selection_score"] = compute_pack_selection_score(
         row,
@@ -1050,9 +1114,8 @@ def render_best_artifacts(
             print(f"mp4 render skipped: {exc}")
 
 
-def iter_pack_configs(args: argparse.Namespace) -> list[PackConfig]:
-    configs = []
-    for values in itertools.product(
+def _pack_config_axes(args: argparse.Namespace) -> tuple[list[Any], ...]:
+    return (
         _parse_float_list(args.risk_penalties),
         _parse_float_list(args.cvar_weights),
         _parse_float_list(args.entry_gap_bps_grid),
@@ -1079,9 +1142,21 @@ def iter_pack_configs(args: argparse.Namespace) -> list[PackConfig]:
         _parse_str_list(args.entry_selection_modes),
         _parse_str_list(args.entry_allocator_modes),
         _parse_float_list(args.entry_allocator_edge_power_grid),
-    ):
-        configs.append(PackConfig(*values))
-    return configs
+    )
+
+
+def _pack_config_at_index(axes: tuple[list[Any], ...], index: int) -> PackConfig:
+    coords: list[int] = []
+    remaining = int(index)
+    for axis in reversed(axes):
+        remaining, coord = divmod(remaining, len(axis))
+        coords.append(coord)
+    values = [axis[coord] for axis, coord in zip(axes, reversed(coords), strict=True)]
+    return PackConfig(*values)
+
+
+def iter_pack_configs(args: argparse.Namespace) -> list[PackConfig]:
+    return [PackConfig(*values) for values in itertools.product(*_pack_config_axes(args))]
 
 
 def sample_pack_configs(configs: list[PackConfig], *, limit: int, seed: int) -> list[PackConfig]:
@@ -1090,6 +1165,24 @@ def sample_pack_configs(configs: list[PackConfig], *, limit: int, seed: int) -> 
     rng = np.random.default_rng(int(seed))
     selected = rng.choice(len(configs), size=int(limit), replace=False).tolist()
     return [configs[idx] for idx in selected]
+
+
+def sample_pack_configs_from_args(
+    args: argparse.Namespace,
+    *,
+    limit: int,
+    seed: int,
+) -> tuple[list[PackConfig], int]:
+    """Sample configs without materializing a large Cartesian grid first."""
+    axes = _pack_config_axes(args)
+    total = int(math.prod(len(axis) for axis in axes))
+    if total <= 0:
+        return [], 0
+    if int(limit) <= 0 or int(limit) >= total:
+        return [_pack_config_at_index(axes, idx) for idx in range(total)], total
+    rng = np.random.default_rng(int(seed))
+    selected = rng.choice(total, size=int(limit), replace=False).tolist()
+    return [_pack_config_at_index(axes, idx) for idx in selected], total
 
 
 def main() -> int:
@@ -1154,6 +1247,17 @@ def main() -> int:
     parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.05)
     parser.add_argument("--min-result-trades", type=int, default=10)
     parser.add_argument("--disable-drawdown-profit-early-exit", action="store_true")
+    parser.add_argument("--side-mode", choices=("long", "short"), default="long")
+    parser.add_argument(
+        "--entry-block-hours-utc",
+        default="",
+        help="Comma/semicolon-separated UTC hours where new entry watchers are suppressed.",
+    )
+    parser.add_argument(
+        "--force-exit-hours-utc",
+        default="",
+        help="Comma/semicolon-separated UTC hours where open positions are force-closed at close +/- slippage.",
+    )
 
     parser.add_argument("--render-days", type=int, default=14)
     parser.add_argument("--num-pairs", type=int, default=6)
@@ -1212,9 +1316,8 @@ def main() -> int:
     scored = score_eval_rows(model_frame, feature_cols, models, eval_start=eval_start, eval_end=end)
     print(f"scored eval rows={len(scored):,} symbols={scored['symbol'].nunique()}")
 
-    all_configs = iter_pack_configs(args)
-    configs = sample_pack_configs(
-        all_configs,
+    configs, total_configs = sample_pack_configs_from_args(
+        args,
         limit=int(args.max_configs),
         seed=int(args.config_sample_seed),
     )
@@ -1228,7 +1331,7 @@ def main() -> int:
     fieldnames: list[str] | None = None
     with args.out.open("w", newline="") as fh:
         writer: csv.DictWriter | None = None
-        print(f"evaluating {len(configs)} sampled configs from full grid of {len(all_configs)}")
+        print(f"evaluating {len(configs)} sampled configs from full grid of {total_configs}")
         for idx, cfg in enumerate(configs, start=1):
             row, _bars, _actions, _result = evaluate_pack(
                 scored,

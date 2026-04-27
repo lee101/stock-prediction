@@ -156,6 +156,126 @@ def test_long_entry_works_without_predicted_columns():
     assert entries[0].quantity == 100.0
 
 
+def test_force_exit_hours_close_crypto_positions():
+    bars = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-03T10:00:00Z"),
+                "symbol": "BTCUSDT",
+                "open": 100.0,
+                "high": 100.5,
+                "low": 99.0,
+                "close": 100.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-03T11:00:00Z"),
+                "symbol": "BTCUSDT",
+                "open": 100.0,
+                "high": 100.5,
+                "low": 99.5,
+                "close": 102.0,
+            },
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-03T10:00:00Z"),
+                "symbol": "BTCUSDT",
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 100.0,
+                "sell_amount": 0.0,
+                "trade_amount": 100.0,
+            }
+        ]
+    )
+    cfg = PortfolioConfig(
+        initial_cash=10_000.0,
+        max_positions=1,
+        max_leverage=1.0,
+        trade_amount_scale=100.0,
+        fee_by_symbol={"BTCUSDT": 0.0},
+        decision_lag_bars=0,
+        enforce_market_hours=False,
+        close_at_eod=False,
+        max_hold_hours=1000,
+        bar_margin=0.0,
+        force_close_slippage=0.0,
+        force_exit_hours_utc=(11,),
+        int_qty=False,
+    )
+
+    result = run_portfolio_simulation(bars, actions, cfg, horizon=1)
+
+    exits = [trade for trade in result.trades if trade.reason == "forced_hour"]
+    assert len(exits) == 1
+    assert exits[0].side == "sell"
+    assert exits[0].price == 102.0
+    assert result.metrics["forced_hour_exits"] == 1
+
+
+def test_allow_crypto_shorts_uses_sell_amount_and_buy_cover_target():
+    t0 = pd.Timestamp("2026-03-03T10:00:00Z")
+    t1 = pd.Timestamp("2026-03-03T11:00:00Z")
+    bars = pd.DataFrame(
+        [
+            {"timestamp": t0, "symbol": "BTCUSDT", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+            {"timestamp": t1, "symbol": "BTCUSDT", "open": 100.0, "high": 100.0, "low": 94.0, "close": 95.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "timestamp": t0,
+                "symbol": "BTCUSDT",
+                "buy_price": 95.0,
+                "sell_price": 100.0,
+                "buy_amount": 0.0,
+                "sell_amount": 100.0,
+                "trade_amount": 100.0,
+            },
+            {
+                "timestamp": t1,
+                "symbol": "BTCUSDT",
+                "buy_price": 95.0,
+                "sell_price": 100.0,
+                "buy_amount": 0.0,
+                "sell_amount": 0.0,
+                "trade_amount": 0.0,
+            },
+        ]
+    )
+
+    result = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(
+            initial_cash=10_000.0,
+            max_positions=1,
+            decision_lag_bars=0,
+            enforce_market_hours=False,
+            close_at_eod=False,
+            int_qty=False,
+            fee_by_symbol={"BTCUSDT": 0.0},
+            market_order_entry=False,
+            bar_margin=0.0,
+            allow_crypto_shorts=True,
+            short_only_symbols={"BTCUSDT"},
+            apply_leverage_to_crypto=True,
+            max_leverage=1.0,
+            sim_backend="python",
+            drawdown_profit_early_exit=False,
+        ),
+    )
+
+    assert [(trade.side, trade.price) for trade in result.trades] == [
+        ("short_sell", 100.0),
+        ("buy_cover", 95.0),
+    ]
+    assert result.metrics["target_exits"] == 1
+
+
 def test_short_entry_works_without_predicted_columns():
     ts = pd.Timestamp("2026-03-03T15:00:00Z")
     bars = pd.DataFrame(
