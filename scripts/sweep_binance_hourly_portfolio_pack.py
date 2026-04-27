@@ -569,6 +569,7 @@ def evaluate_pack(
         max_pending_entries=int(cfg.max_pending_entries),
         apply_leverage_to_crypto=True,
         sim_backend="python",
+        drawdown_profit_early_exit=not bool(args.disable_drawdown_profit_early_exit),
     )
     result = run_portfolio_simulation(bars, actions, sim_cfg, horizon=int(label_horizon))
     start = pd.Timestamp(bars["timestamp"].min())
@@ -1062,6 +1063,7 @@ def main() -> int:
     parser.add_argument("--entry-allocator-max-single-position-fraction", type=float, default=0.35)
     parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.05)
     parser.add_argument("--min-result-trades", type=int, default=10)
+    parser.add_argument("--disable-drawdown-profit-early-exit", action="store_true")
 
     parser.add_argument("--render-days", type=int, default=14)
     parser.add_argument("--num-pairs", type=int, default=6)

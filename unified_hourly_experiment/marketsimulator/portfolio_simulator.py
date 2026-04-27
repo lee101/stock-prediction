@@ -83,6 +83,7 @@ class PortfolioConfig:
     max_pending_entries: Optional[int] = None
     apply_leverage_to_crypto: bool = False
     sim_backend: str = "auto"  # auto prefers native when safe, else falls back to python
+    drawdown_profit_early_exit: bool = True
 
 
 @dataclass
@@ -391,10 +392,14 @@ def _run_portfolio_simulation_native(
     trade_reason = np.asarray(out["trade_reason"], dtype=np.int8)
     equity_values = np.asarray(out["equity_values"], dtype=np.float64)
 
-    stop_idx = _first_drawdown_profit_early_exit_index(
-        equity_values,
-        total_steps=t_count,
-        label="unified_hourly_experiment.run_portfolio_simulation",
+    stop_idx = (
+        _first_drawdown_profit_early_exit_index(
+            equity_values,
+            total_steps=t_count,
+            label="unified_hourly_experiment.run_portfolio_simulation",
+        )
+        if bool(cfg.drawdown_profit_early_exit)
+        else None
     )
     if stop_idx is not None:
         keep = trade_t_idx <= int(stop_idx)
@@ -555,6 +560,8 @@ def run_portfolio_simulation(
 
     def _append_equity_snapshot(ts: pd.Timestamp) -> bool:
         equity_values.append((ts, _equity()))
+        if not bool(cfg.drawdown_profit_early_exit):
+            return False
         early_exit = evaluate_drawdown_vs_profit_early_exit(
             [value for _, value in equity_values],
             total_steps=total_steps,
