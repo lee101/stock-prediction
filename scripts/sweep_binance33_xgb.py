@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +47,10 @@ class Experiment:
     reg_lambda: float
     min_abs_score: float
     btc_gate: float
+    size_mode: str = "full"
+    level_mode: str = "mid"
+    score_scale: float = 0.05
+    target_vol: float = 0.05
 
 
 def _slice_window(data: MktdData, start: int, steps: int) -> MktdData:
@@ -177,11 +181,85 @@ def _make_policy(
     *,
     decision_lag: int,
     scores_by_t: np.ndarray | None = None,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
 ):
     symbols = [symbol.upper() for symbol in data.symbols]
     btc_idx = next((idx for idx, symbol in enumerate(symbols) if symbol.startswith("BTC")), 0)
     pending: list[int] = []
     state = {"step": 0, "last_action": 0}
+
+    alloc_bins = max(1, int(action_allocation_bins))
+    level_bins = max(1, int(action_level_bins))
+    per_symbol_actions = alloc_bins * level_bins
+    side_block = data.num_symbols * per_symbol_actions
+
+    def _confidence_from_scores(scores: np.ndarray, chosen_idx: int, edge: float) -> float:
+        edge_abs = abs(float(edge))
+        if exp.size_mode in {"score_linear", "score_sqrt"}:
+            conf = edge_abs / max(1e-9, float(exp.score_scale))
+        elif exp.size_mode in {"score_gap", "score_gap_sqrt"}:
+            finite = np.asarray(scores[np.isfinite(scores)], dtype=np.float64)
+            if finite.size <= 1:
+                conf = 0.0
+            elif edge >= 0.0:
+                ordered = np.sort(finite)
+                runner_up = float(ordered[-2])
+                conf = max(0.0, float(scores[chosen_idx]) - runner_up) / max(edge_abs, 1e-9)
+            else:
+                ordered = np.sort(finite)
+                runner_up = float(ordered[1])
+                conf = max(0.0, runner_up - float(scores[chosen_idx])) / max(edge_abs, 1e-9)
+        else:
+            conf = 1.0
+        conf = float(min(1.0, max(0.0, conf)))
+        if exp.size_mode.endswith("_sqrt"):
+            conf = float(np.sqrt(conf))
+        return conf
+
+    def _allocation_index(scores: np.ndarray, chosen_idx: int, edge: float, feat_idx: int) -> int:
+        if alloc_bins <= 1 or exp.size_mode == "full":
+            return alloc_bins - 1
+        conf = _confidence_from_scores(scores, chosen_idx, edge)
+        if exp.size_mode.startswith("voltarget"):
+            vol = float(data.features[feat_idx, chosen_idx, FEATURES["volatility_20d"]])
+            if not np.isfinite(vol) or vol <= 0.0:
+                vol_scale = 0.0
+            else:
+                vol_scale = min(1.0, max(0.0, float(exp.target_vol) / max(vol, 1e-6)))
+            if exp.size_mode in {"voltarget_score", "voltarget_score_sqrt"}:
+                conf *= vol_scale
+            else:
+                conf = vol_scale
+            if exp.size_mode.endswith("_sqrt"):
+                conf = float(np.sqrt(max(0.0, conf)))
+        idx = int(np.ceil(conf * alloc_bins) - 1)
+        return max(0, min(alloc_bins - 1, idx))
+
+    def _level_index(*, is_short: bool, scores: np.ndarray, chosen_idx: int, edge: float) -> int:
+        if level_bins <= 1 or exp.level_mode == "mid":
+            return (level_bins - 1) // 2
+        if exp.level_mode == "passive":
+            return level_bins - 1 if is_short else 0
+        if exp.level_mode == "aggressive":
+            return 0 if is_short else level_bins - 1
+        if exp.level_mode == "confidence_passive":
+            conf = _confidence_from_scores(scores, chosen_idx, edge)
+            mid = (level_bins - 1) / 2.0
+            if is_short:
+                raw = (level_bins - 1) - conf * ((level_bins - 1) - mid)
+            else:
+                raw = conf * mid
+            return max(0, min(level_bins - 1, int(round(raw))))
+        raise ValueError(f"unknown level mode: {exp.level_mode}")
+
+    def _encode_action(symbol_idx: int, *, is_short: bool, scores: np.ndarray, edge: float, feat_idx: int) -> int:
+        alloc_idx = _allocation_index(scores, symbol_idx, edge, feat_idx)
+        level_idx = _level_index(is_short=is_short, scores=scores, chosen_idx=symbol_idx, edge=edge)
+        encoded = symbol_idx * per_symbol_actions + alloc_idx * level_bins + level_idx
+        if is_short:
+            encoded += side_block
+        return 1 + encoded
 
     def raw_policy(_obs: np.ndarray) -> int:
         step = int(state["step"])
@@ -214,21 +292,21 @@ def _make_policy(
         action = 0
         if exp.mode == "long_top":
             if best >= exp.min_abs_score:
-                action = 1 + best_idx
+                action = _encode_action(best_idx, is_short=False, scores=scores, edge=best, feat_idx=feat_idx)
         elif exp.mode == "short_bottom":
             if -worst >= exp.min_abs_score:
-                action = 1 + data.num_symbols + worst_idx
+                action = _encode_action(worst_idx, is_short=True, scores=scores, edge=worst, feat_idx=feat_idx)
         elif exp.mode == "long_or_short":
             if best >= exp.min_abs_score and best >= -worst:
-                action = 1 + best_idx
+                action = _encode_action(best_idx, is_short=False, scores=scores, edge=best, feat_idx=feat_idx)
             elif -worst >= exp.min_abs_score:
-                action = 1 + data.num_symbols + worst_idx
+                action = _encode_action(worst_idx, is_short=True, scores=scores, edge=worst, feat_idx=feat_idx)
         elif exp.mode == "regime":
             if np.isfinite(btc_mom) and btc_mom >= max(exp.btc_gate, 0.0):
                 if best >= exp.min_abs_score:
-                    action = 1 + best_idx
+                    action = _encode_action(best_idx, is_short=False, scores=scores, edge=best, feat_idx=feat_idx)
             elif -worst >= exp.min_abs_score:
-                action = 1 + data.num_symbols + worst_idx
+                action = _encode_action(worst_idx, is_short=True, scores=scores, edge=worst, feat_idx=feat_idx)
         else:
             raise ValueError(f"unknown mode: {exp.mode}")
         state["last_action"] = int(action)
@@ -259,6 +337,9 @@ def _eval_model(
     fill_buffer_bps: float,
     decision_lag: int,
     scores_by_t: np.ndarray | None = None,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> dict[str, float | int | str]:
     returns: list[float] = []
     sortinos: list[float] = []
@@ -271,7 +352,15 @@ def _eval_model(
         window_scores = None
         if scores_by_t is not None:
             window_scores = np.asarray(scores_by_t[start : start + int(eval_days) + 1], dtype=np.float64)
-        policy = _make_policy(window, model, exp, decision_lag=decision_lag, scores_by_t=window_scores)
+        policy = _make_policy(
+            window,
+            model,
+            exp,
+            decision_lag=decision_lag,
+            scores_by_t=window_scores,
+            action_allocation_bins=action_allocation_bins,
+            action_level_bins=action_level_bins,
+        )
         result = simulate_daily_policy(
             window,
             policy,
@@ -280,6 +369,9 @@ def _eval_model(
             slippage_bps=float(slippage_bps),
             fill_buffer_bps=float(fill_buffer_bps),
             max_leverage=float(max_leverage),
+            action_allocation_bins=int(action_allocation_bins),
+            action_level_bins=int(action_level_bins),
+            action_max_offset_bps=float(action_max_offset_bps),
             periods_per_year=365.0,
             enable_drawdown_profit_early_exit=False,
         )
@@ -297,7 +389,14 @@ def _eval_model(
         "horizon": exp.horizon,
         "label": exp.label,
         "mode": exp.mode,
+        "size_mode": exp.size_mode,
+        "level_mode": exp.level_mode,
         "rebalance_days": exp.rebalance_days,
+        "action_allocation_bins": int(action_allocation_bins),
+        "action_level_bins": int(action_level_bins),
+        "action_max_offset_bps": float(action_max_offset_bps),
+        "score_scale": float(exp.score_scale),
+        "target_vol": float(exp.target_vol),
         "max_leverage": float(max_leverage),
         "eval_days": int(eval_days),
         "slip_bps": float(slippage_bps),
@@ -350,6 +449,11 @@ def _parse_float_list(value: str) -> list[float]:
     return parsed
 
 
+def _parse_str_list(value: str, *, default: list[str]) -> list[str]:
+    parsed = [part.strip() for part in str(value or "").split(",") if part.strip()]
+    return parsed or list(default)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sweep Binance33 XGBoost cross-sectional policies.")
     parser.add_argument("--train-data", type=Path, default=Path("pufferlib_market/data/binance33_daily_train.bin"))
@@ -363,6 +467,13 @@ def main() -> int:
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--max-leverage", default="1.0", help="Single leverage or comma list, e.g. 1,1.5,2")
     parser.add_argument("--experiment-names", default="", help="Comma list of experiment names to run, e.g. xgb08,xgb14")
+    parser.add_argument("--size-modes", default="full", help="Comma list: full,score_linear,score_sqrt,score_gap,voltarget,voltarget_score")
+    parser.add_argument("--level-modes", default="mid", help="Comma list: mid,passive,aggressive,confidence_passive")
+    parser.add_argument("--allocation-bins", type=int, default=1)
+    parser.add_argument("--level-bins", type=int, default=1)
+    parser.add_argument("--max-offset-bps", type=float, default=0.0)
+    parser.add_argument("--score-scale", type=float, default=0.05)
+    parser.add_argument("--target-vol", type=float, default=0.05)
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--decision-lag", type=int, default=2)
@@ -373,6 +484,8 @@ def main() -> int:
     eval_days = [int(part.strip()) for part in str(args.eval_days).split(",") if part.strip()]
     slippages = [float(part.strip()) for part in str(args.slippage_bps).split(",") if part.strip()]
     leverages = _parse_float_list(str(args.max_leverage))
+    size_modes = _parse_str_list(args.size_modes, default=["full"])
+    level_modes = _parse_str_list(args.level_modes, default=["mid"])
     experiments = _experiments()
     if args.experiment_names:
         requested = [part.strip() for part in str(args.experiment_names).split(",") if part.strip()]
@@ -383,6 +496,26 @@ def main() -> int:
         experiments = [by_name[name] for name in requested]
     elif args.max_experiments > 0:
         experiments = experiments[: int(args.max_experiments)]
+    expanded: list[Experiment] = []
+    for exp in experiments:
+        for size_mode in size_modes:
+            for level_mode in level_modes:
+                suffix = ""
+                if len(size_modes) > 1 or size_mode != "full":
+                    suffix += f"_{size_mode}"
+                if len(level_modes) > 1 or level_mode != "mid":
+                    suffix += f"_{level_mode}"
+                expanded.append(
+                    replace(
+                        exp,
+                        name=f"{exp.name}{suffix}",
+                        size_mode=size_mode,
+                        level_mode=level_mode,
+                        score_scale=float(args.score_scale),
+                        target_vol=float(args.target_vol),
+                    )
+                )
+    experiments = expanded
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -390,7 +523,14 @@ def main() -> int:
         "horizon",
         "label",
         "mode",
+        "size_mode",
+        "level_mode",
         "rebalance_days",
+        "action_allocation_bins",
+        "action_level_bins",
+        "action_max_offset_bps",
+        "score_scale",
+        "target_vol",
         "max_leverage",
         "eval_days",
         "slip_bps",
@@ -428,6 +568,9 @@ def main() -> int:
                             fill_buffer_bps=float(args.fill_buffer_bps),
                             decision_lag=int(args.decision_lag),
                             scores_by_t=scores_by_t,
+                            action_allocation_bins=int(args.allocation_bins),
+                            action_level_bins=int(args.level_bins),
+                            action_max_offset_bps=float(args.max_offset_bps),
                         )
                         rows.append(row)
                         writer.writerow(row)
@@ -446,7 +589,8 @@ def main() -> int:
                 f"{row['median_pct']:+7.2f}% p10={row['p10_pct']:+7.2f}% "
                 f"neg={row['neg_windows']}/{row['windows']} dd90={row['p90_dd_pct']:.2f}% "
                 f"{row['experiment']} lev={row['max_leverage']} h={row['horizon']} "
-                f"{row['label']} {row['mode']} rb={row['rebalance_days']}"
+                f"{row['label']} {row['mode']} size={row['size_mode']} level={row['level_mode']} "
+                f"rb={row['rebalance_days']}"
             )
     print(f"\nwrote {args.out}")
     return 0

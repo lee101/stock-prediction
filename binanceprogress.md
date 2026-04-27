@@ -48,10 +48,19 @@ Updated: 2026-04-27
 - Added `scripts/sweep_binance33_xgb.py`, a compact supervised XGBoost ranker sweep for the Binance33 daily MKTD panel.
   - It trains cross-sectional forward-return predictors, supports 20 preset experiments, lag-2 binary-fill daily evaluation, cached eval scores for fast leverage sweeps, and targeted reruns via `--experiment-names`.
   - Full 1x run: `analysis/binance33_xgb_1x_20260427.csv`.
+- Extended `scripts/binance_status.py` so the live status report now separates actionable margin exit coverage from dust:
+  - latest status: `actionable 5/5 covered, partial=0, missing=0, dust=7 below $12`.
+  - This explains the apparent `14 positions` mismatch: the extra rows are sub-dollar dust positions that cannot receive standalone Binance limit sells under min-notional rules.
 - 20-experiment XGBoost 1x result at 20 bps slippage:
   - best 30-day median: `xgb14` (`h=20`, raw, short-bottom, rebalance 14d) at `+14.23%`, but p10 `-18.07%`, `35/135` negative windows, p90 DD `44.67%`.
   - best 120-day median: `xgb08` (`h=5`, raw, short-bottom, rebalance 7d) at `+68.96%`, p10 `+8.39%`, `2/45` negative windows, p90 DD `55.02%`.
   - Verdict: still below the `>=27%` monthly target at 1x and not smooth enough.
+- Added learned-score position sizing and entry-level sweeps to the XGBoost evaluator:
+  - New knobs: `--size-modes`, `--allocation-bins`, `--score-scale`, `--target-vol`, `--level-modes`, `--level-bins`, `--max-offset-bps`.
+  - Sizing run: `analysis/binance33_xgb_sizing_1x_20260427.csv` plus score-scale sweeps `analysis/binance33_xgb_sizing_scale_*_1x_20260427.csv`.
+  - Best 1x 30-day median remained full-size/passive: `xgb14_full_passive` at `+14.62%`, p10 `-17.68%`, p90 DD `44.49%`.
+  - Best smoother learned-size tradeoff: `xgb08_score_linear_passive` with `score_scale=0.04` at `+8.58%` 30-day median, p10 `-3.93%`, p90 DD `16.04%`; 120-day median `+50.64%`, p10 `+21.83%`, p90 DD `25.74%`.
+  - Verdict: learned sizing improves smoothness materially but gives up too much 1x return. It is useful as a risk layer, not yet a standalone production candidate.
 - Targeted leverage sweep on top XGBoost rows: `analysis/binance33_xgb_top_leverage_20260427.csv`.
   - `xgb14` at 2x reaches 30-day median `+27.65%`, but p10 is `-37.15%` and p90 DD is `79.45%`.
   - 3x rows push median higher (`xgb14` `+31.54%`, `xgb08` `+28.95%`) but have tail losses worse than `-80%` to `-112%` and p90 DD above `90%`.

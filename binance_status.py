@@ -15,6 +15,7 @@ from src.binan.binance_margin import (
 SEP = "=" * 72
 STABLE_ASSETS = {"USDT", "FDUSD", "BUSD", "USDC"}
 SPOT_RECENT_ORDER_SYMBOLS = ["BTCFDUSD", "ETHFDUSD", "SOLFDUSD", "BTCU", "ETHU", "SOLU"]
+MIN_ACTIONABLE_MARGIN_VALUE_USDT = 12.0
 
 def fmt_usd(v): return f"${v:,.2f}"
 def fmt_ts(ms): return datetime.fromtimestamp(ms/1000, tz=timezone.utc).strftime("%m-%d %H:%M")
@@ -153,6 +154,66 @@ def _load_recent_margin_orders(symbols):
     return rows
 
 
+def _remaining_order_qty(order):
+    return max(0.0, _safe_float(order.get("origQty")) - _safe_float(order.get("executedQty")))
+
+
+def _stable_quote_pair_candidates(asset):
+    base = str(asset or "").upper().strip()
+    return tuple(dict.fromkeys([f"{base}USDT", f"{base}FDUSD", f"{base}BUSD", f"{base}USDC"]))
+
+
+def _margin_exit_coverage_rows(margin_rows, open_margin_orders):
+    sell_qty_by_pair = {}
+    buy_qty_by_pair = {}
+    for order in open_margin_orders:
+        pair = str(order.get("symbol") or "").upper().strip()
+        side = str(order.get("side") or "").upper().strip()
+        if not pair:
+            continue
+        if side == "SELL":
+            sell_qty_by_pair[pair] = sell_qty_by_pair.get(pair, 0.0) + _remaining_order_qty(order)
+        elif side == "BUY":
+            buy_qty_by_pair[pair] = buy_qty_by_pair.get(pair, 0.0) + _remaining_order_qty(order)
+
+    rows = []
+    for row in margin_rows:
+        asset = str(row.get("asset") or "").upper().strip()
+        if not asset or asset in STABLE_ASSETS:
+            continue
+        net = float(row.get("net") or 0.0)
+        value = row.get("value_usdt")
+        value = float(value) if value is not None else 0.0
+        if net <= 0.0:
+            continue
+        pair_candidates = _stable_quote_pair_candidates(asset)
+        sell_qty = sum(sell_qty_by_pair.get(pair, 0.0) for pair in pair_candidates)
+        buy_qty = sum(buy_qty_by_pair.get(pair, 0.0) for pair in pair_candidates)
+        ratio = sell_qty / max(net, 1e-12)
+        actionable = value >= MIN_ACTIONABLE_MARGIN_VALUE_USDT
+        if not actionable:
+            status = "dust"
+        elif ratio >= 0.98:
+            status = "covered"
+        elif sell_qty > 0.0:
+            status = "partial"
+        else:
+            status = "missing"
+        rows.append(
+            {
+                "asset": asset,
+                "net": net,
+                "value_usdt": value,
+                "sell_qty": sell_qty,
+                "buy_qty": buy_qty,
+                "coverage_ratio": ratio,
+                "status": status,
+            }
+        )
+    rows.sort(key=lambda item: abs(item["value_usdt"]), reverse=True)
+    return rows
+
+
 def main():
     print(f"\n{SEP}")
     print(f"  BINANCE ACCOUNT STATUS  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
@@ -230,9 +291,37 @@ def main():
         else:
             print("\n-- SELECTOR POSITION: flat --")
 
-    # open orders
     spot_orders = bw.get_open_orders()
     margin_orders = get_open_margin_orders()
+
+    if margin_rows:
+        coverage_rows = _margin_exit_coverage_rows(margin_rows, margin_orders)
+        actionable = [row for row in coverage_rows if row["status"] != "dust"]
+        covered = sum(1 for row in actionable if row["status"] == "covered")
+        partial = sum(1 for row in actionable if row["status"] == "partial")
+        missing = sum(1 for row in actionable if row["status"] == "missing")
+        dust = [row for row in coverage_rows if row["status"] == "dust"]
+        print(
+            f"\n-- MARGIN EXIT COVERAGE "
+            f"(actionable {covered}/{len(actionable)} covered, partial={partial}, missing={missing}, "
+            f"dust={len(dust)} below ${MIN_ACTIONABLE_MARGIN_VALUE_USDT:.0f}) --"
+        )
+        rows = []
+        for row in coverage_rows:
+            rows.append(
+                (
+                    row["asset"],
+                    fmt_usd(row["value_usdt"]),
+                    f"{row['net']:.8g}",
+                    f"{row['sell_qty']:.8g}",
+                    f"{row['buy_qty']:.8g}",
+                    f"{row['coverage_ratio']:.2f}",
+                    row["status"],
+                )
+            )
+        print_table(["Asset", "Value", "Net", "SellQty", "BuyQty", "Cover", "Status"], rows)
+
+    # open orders
     combined_open = len(spot_orders) + len(margin_orders)
     print(f"\n-- OPEN ORDERS (combined: {combined_open}, spot: {len(spot_orders)}, margin: {len(margin_orders)}) --")
     if spot_orders:
