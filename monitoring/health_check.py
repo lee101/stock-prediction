@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -28,6 +29,11 @@ from pathlib import Path
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from unified_orchestrator.jsonl_utils import append_jsonl_row
+
 STATE_FILE = REPO_ROOT / "strategy_state" / "stock_portfolio_state.json"
 LOG_DIR = REPO_ROOT / "monitoring" / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -509,6 +515,524 @@ def check_xgb_spy_provenance() -> CheckResult:
     )
 
 
+def _parse_current_status_line(text: str) -> tuple[dict[str, str], str | None]:
+    fields: dict[str, str] = {}
+    tokens = text.strip().split()
+    if not tokens:
+        return fields, "empty current status"
+    for token in tokens[1:]:
+        if "=" not in token:
+            return fields, f"unexpected token {token!r}"
+        key, _, value = token.partition("=")
+        if not key:
+            return fields, "empty current status field name"
+        if key in fields:
+            return fields, f"duplicate current status field {key!r}"
+        fields[key] = value
+    return fields, None
+
+
+def _current_status_timestamp(text: str) -> datetime:
+    timestamp = text.strip().split(maxsplit=1)[0] if text.strip() else ""
+    if not timestamp:
+        raise ValueError("missing current status timestamp")
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("invalid current status timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _hourly_audit_expected_now(now: float) -> bool:
+    now_utc = datetime.fromtimestamp(now, tz=timezone.utc)
+    # The hourly audit runs during the trading day (13:00-20:00 UTC). Keep
+    # enforcing freshness through the 3h grace period so the 22:00 monitor run
+    # catches a missed late-session audit instead of suppressing it as off-hours.
+    return now_utc.weekday() < 5 and 13 <= now_utc.hour < 23
+
+
+def _status_artifact_path(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return LOG_DIR / path
+
+
+def _status_artifact_is_in_log_dir(path: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(LOG_DIR.resolve())
+    except OSError:
+        return False
+
+
+def _expected_ok_status_artifact_names(name: str, fields: dict[str, str]) -> dict[str, str] | None:
+    log_name = Path(fields.get("log", "")).name
+    if name == "codex":
+        if not log_name.startswith("codex_prod_") or _artifact_timestamp_from_log_name(log_name) is None:
+            return None
+        stem = log_name.removesuffix(".log")
+        return {
+            "log": log_name,
+            "raw_log": f"{stem}.raw.jsonl",
+            "last_msg": f"{stem}.last.txt",
+        }
+    if name == "hourly":
+        if not log_name.startswith("hourly_prod_") or _artifact_timestamp_from_log_name(log_name) is None:
+            return None
+        stem = log_name.removesuffix(".log")
+        return {
+            "log": log_name,
+            "raw_log": f"{stem}.raw.jsonl",
+        }
+    return None
+
+
+def _artifact_timestamp_from_log_name(log_name: str) -> datetime | None:
+    if log_name.startswith("monitor_") and log_name.endswith(".log"):
+        stamp = log_name.removeprefix("monitor_").removesuffix(".log")
+        fmt = "%Y%m%dT%H%M%S"
+    elif log_name.startswith("codex_prod_") and log_name.endswith(".log"):
+        stamp = log_name.removeprefix("codex_prod_").removesuffix(".log")
+        fmt = "%Y%m%dT%H%M%SZ"
+    elif log_name.startswith("hourly_prod_") and log_name.endswith(".log"):
+        stamp = log_name.removeprefix("hourly_prod_").removesuffix(".log")
+        fmt = "%Y%m%dT%H%M%SZ"
+    else:
+        return None
+    try:
+        return datetime.strptime(stamp, fmt).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _artifact_timestamp_errors(log_name: str, current_ts: datetime) -> list[str]:
+    artifact_ts = _artifact_timestamp_from_log_name(log_name)
+    if artifact_ts is None:
+        return ["log:bad_timestamp"]
+    age_s = (current_ts - artifact_ts).total_seconds()
+    if age_s < -300:
+        return ["log:future_timestamp"]
+    if age_s > 2 * 3600:
+        return ["log:stale_artifact_timestamp"]
+    return []
+
+
+def _is_sha256_hex(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _artifact_hash_errors(field: str, path: Path, fields: dict[str, str]) -> list[str]:
+    hash_field = f"{field}_sha256"
+    expected = fields.get(hash_field, "")
+    if not expected:
+        return [f"{hash_field}:missing"]
+    if not _is_sha256_hex(expected):
+        return [f"{hash_field}:bad_hash"]
+    try:
+        actual = _file_sha256(path)
+    except OSError:
+        return [f"{hash_field}:unreadable"]
+    if actual != expected.lower():
+        return [f"{hash_field}:mismatch"]
+    return []
+
+
+def _invalid_ok_status_artifacts(
+    name: str,
+    fields: dict[str, str],
+    current_ts: datetime,
+) -> list[str]:
+    required = ["log", "raw_log"]
+    if name == "codex":
+        required.append("last_msg")
+
+    expected_names = _expected_ok_status_artifact_names(name, fields)
+    if expected_names is None:
+        return [f"{field}:bad_name" for field in required]
+
+    invalid = _artifact_timestamp_errors(expected_names["log"], current_ts)
+    for field in required:
+        value = fields.get(field, "")
+        if not value:
+            invalid.append(f"{field}:missing")
+            continue
+        path = _status_artifact_path(value)
+        if path.name != expected_names[field]:
+            invalid.append(f"{field}:bad_name")
+            continue
+        if not path.exists():
+            invalid.append(f"{field}:missing")
+            continue
+        if not _status_artifact_is_in_log_dir(path):
+            invalid.append(f"{field}:outside_log_dir")
+            continue
+        try:
+            if path.stat().st_size <= 0:
+                invalid.append(f"{field}:empty")
+                continue
+        except OSError:
+            invalid.append(f"{field}:unreadable")
+            continue
+        invalid.extend(_artifact_hash_errors(field, path, fields))
+    return invalid
+
+
+def check_scheduled_audit_status() -> CheckResult:
+    """Check wrapper-owned current-status files for scheduled audit failures."""
+    now = time.time()
+    specs = [
+        ("codex", LOG_DIR / "codex_current.log", 48 * 3600),
+        (
+            "hourly",
+            LOG_DIR / "hourly_current.log",
+            3 * 3600 if _hourly_audit_expected_now(now) else None,
+        ),
+    ]
+    missing: list[str] = []
+    failed: list[str] = []
+    skipped: list[str] = []
+    stale: list[str] = []
+    ok: list[str] = []
+    details: dict[str, dict[str, str] | str] = {}
+
+    for name, path, stale_after_s in specs:
+        if not path.exists():
+            missing.append(name)
+            details[name] = "missing"
+            continue
+        try:
+            text = path.read_text().strip()
+            if len(text.splitlines()) != 1:
+                failed.append(f"{name}: malformed multi-line current status")
+                details[name] = "malformed multi-line current status"
+                continue
+            fields, parse_error = _parse_current_status_line(text)
+            if parse_error:
+                failed.append(f"{name}: malformed current status ({parse_error})")
+                details[name] = {
+                    "parse_error": parse_error,
+                }
+                continue
+            try:
+                current_ts = _current_status_timestamp(text)
+                age_s, age_source = now - current_ts.timestamp(), "line_timestamp"
+            except ValueError as exc:
+                failed.append(f"{name}: malformed current status ({exc})")
+                details[name] = {
+                    "parse_error": str(exc),
+                }
+                continue
+        except Exception as exc:
+            failed.append(f"{name}: unreadable ({exc})")
+            details[name] = f"unreadable: {exc}"
+            continue
+
+        status = fields.get("status", "")
+        rc = fields.get("rc", "")
+        details[name] = {
+            **fields,
+            "age_s": str(round(age_s)),
+            "age_source": age_source,
+            "stale_after_s": str(stale_after_s) if stale_after_s is not None else "off_hours",
+        }
+        if not status or not rc:
+            failed.append(f"{name}: malformed current status")
+        elif age_s < -300:
+            failed.append(f"{name}: future-dated current status")
+        elif status in {"FAILED", "SETUP_FAILED"} or rc != "0":
+            failed.append(f"{name}: status={status or '?'} rc={rc or '?'}")
+        elif status in {"DRY_RUN", "SKIPPED_LOCK"}:
+            skipped.append(name)
+        elif status != "OK":
+            failed.append(f"{name}: unknown status={status}")
+        elif stale_after_s is not None and age_s > stale_after_s:
+            stale.append(f"{name}: {round(age_s / 3600, 1)}h old")
+        elif invalid_artifacts := _invalid_ok_status_artifacts(name, fields, current_ts):
+            failed.append(
+                f"{name}: OK current status invalid audit artifact(s): "
+                + ", ".join(invalid_artifacts),
+            )
+        else:
+            ok.append(f"{name}: status={status or '?'} rc={rc or '?'}")
+
+    if failed:
+        return CheckResult(
+            "scheduled-audits",
+            "fail",
+            "; ".join(failed),
+            details,
+        )
+    if stale:
+        return CheckResult(
+            "scheduled-audits",
+            "fail",
+            "stale scheduled audit status: " + "; ".join(stale),
+            details,
+        )
+    if skipped:
+        return CheckResult(
+            "scheduled-audits",
+            "warn",
+            "scheduled audit skipped or dry-run did not run normally: "
+            + ", ".join(skipped),
+            details,
+        )
+    if missing:
+        return CheckResult(
+            "scheduled-audits",
+            "warn",
+            "missing scheduled audit status: " + ", ".join(missing),
+            details,
+        )
+    return CheckResult(
+        "scheduled-audits",
+        "ok",
+        "scheduled audit wrappers healthy: " + "; ".join(ok),
+        details,
+    )
+
+
+def _invalid_monitor_status_artifacts(
+    fields: dict[str, str],
+    current_ts: datetime,
+) -> list[str]:
+    value = fields.get("log", "")
+    if not value:
+        return ["log:missing"]
+    path = _status_artifact_path(value)
+    if not (path.name.startswith("monitor_") and path.name.endswith(".log")):
+        return ["log:bad_name"]
+    if timestamp_errors := _artifact_timestamp_errors(path.name, current_ts):
+        return timestamp_errors
+    if not path.exists():
+        return ["log:missing"]
+    if not _status_artifact_is_in_log_dir(path):
+        return ["log:outside_log_dir"]
+    try:
+        if path.stat().st_size <= 0:
+            return ["log:empty"]
+    except OSError:
+        return ["log:unreadable"]
+    return _artifact_hash_errors("log", path, fields)
+
+
+def _monitor_status_contract_error(fields: dict[str, str]) -> str | None:
+    required = ["status", "rc", "initial_rc", "final_rc", "agent_rc", "log"]
+    missing = [field for field in required if not fields.get(field)]
+    if missing:
+        return "missing field(s): " + ", ".join(missing)
+
+    for field in ["rc", "final_rc"]:
+        if not fields[field].isdigit():
+            return f"non-integer {field}={fields[field]}"
+    if fields["initial_rc"] != "NA" and not fields["initial_rc"].isdigit():
+        return f"non-integer initial_rc={fields['initial_rc']}"
+    agent_rc = fields["agent_rc"]
+    if agent_rc != "NA" and not agent_rc.isdigit():
+        return f"non-integer agent_rc={agent_rc}"
+    if fields["rc"] != fields["final_rc"]:
+        return f"rc/final_rc mismatch: rc={fields['rc']} final_rc={fields['final_rc']}"
+
+    status = fields["status"]
+    initial_rc = fields["initial_rc"]
+    final_rc = fields["final_rc"]
+    if status == "OK":
+        if initial_rc != "0" or final_rc != "0" or agent_rc != "NA":
+            return "OK status must have initial_rc=0 final_rc=0 agent_rc=NA"
+    elif status == "RECOVERED":
+        if initial_rc == "0" or final_rc != "0" or agent_rc == "NA":
+            return "RECOVERED status must have nonzero initial_rc, final_rc=0, numeric agent_rc"
+    elif status == "STILL_UNHEALTHY":
+        if initial_rc == "0" or final_rc == "0" or agent_rc == "NA":
+            return (
+                "STILL_UNHEALTHY status must have nonzero initial_rc, "
+                "nonzero final_rc, numeric agent_rc"
+            )
+    elif status == "SETUP_FAILED":
+        if initial_rc != "NA" or final_rc == "0" or agent_rc != "NA":
+            return "SETUP_FAILED status must have initial_rc=NA, nonzero final_rc, agent_rc=NA"
+    return None
+
+
+def check_monitor_agent_status() -> CheckResult:
+    """Check wrapper-owned current status for the remediation monitor itself."""
+    if os.environ.get("HEALTH_CHECK_SKIP_MONITOR_CURRENT") == "1":
+        return CheckResult(
+            "monitor-agent-status",
+            "ok",
+            "skipped monitor current-status check in monitor-agent context",
+        )
+
+    path = LOG_DIR / "monitor_current.log"
+    if not path.exists():
+        return CheckResult(
+            "monitor-agent-status",
+            "warn",
+            "missing monitor current status",
+            {"monitor": "missing"},
+        )
+
+    now = time.time()
+    try:
+        text = path.read_text().strip()
+        if len(text.splitlines()) != 1:
+            return CheckResult(
+                "monitor-agent-status",
+                "fail",
+                "monitor current status malformed: multi-line current status",
+                {"monitor": "malformed multi-line current status"},
+            )
+        fields, parse_error = _parse_current_status_line(text)
+        if parse_error:
+            return CheckResult(
+                "monitor-agent-status",
+                "fail",
+                f"monitor current status malformed: {parse_error}",
+                {"parse_error": parse_error},
+            )
+        try:
+            current_ts = _current_status_timestamp(text)
+            age_s, age_source = now - current_ts.timestamp(), "line_timestamp"
+        except ValueError as exc:
+            return CheckResult(
+                "monitor-agent-status",
+                "fail",
+                f"monitor current status malformed: {exc}",
+                {"parse_error": str(exc)},
+            )
+    except Exception as exc:
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            f"monitor current status unreadable: {exc}",
+            {"monitor": f"unreadable: {exc}"},
+        )
+
+    status = fields.get("status", "")
+    rc = fields.get("rc", "")
+    stale_after_s = 8 * 3600 if _hourly_audit_expected_now(now) else None
+    details = {
+        **fields,
+        "age_s": str(round(age_s)),
+        "age_source": age_source,
+        "stale_after_s": str(stale_after_s) if stale_after_s is not None else "off_hours",
+    }
+    if contract_error := _monitor_status_contract_error(fields):
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            f"monitor current status malformed: {contract_error}",
+            details,
+        )
+    if age_s < -300:
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            "monitor current status is future-dated",
+            details,
+        )
+    if status not in {"OK", "RECOVERED", "STILL_UNHEALTHY", "SETUP_FAILED"}:
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            f"monitor current status unknown status={status}",
+            details,
+        )
+    if status in {"SETUP_FAILED", "STILL_UNHEALTHY"} or rc != "0":
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            f"monitor current status={status} rc={rc}",
+            details,
+        )
+    if stale_after_s is not None and age_s > stale_after_s:
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            f"stale monitor current status: {round(age_s / 3600, 1)}h old",
+            details,
+        )
+    if invalid_artifacts := _invalid_monitor_status_artifacts(fields, current_ts):
+        return CheckResult(
+            "monitor-agent-status",
+            "fail",
+            "monitor current status invalid audit artifact(s): "
+            + ", ".join(invalid_artifacts),
+            details,
+        )
+    agent_rc = fields.get("agent_rc", "NA")
+    if status == "RECOVERED" and agent_rc not in {"0", "NA"}:
+        return CheckResult(
+            "monitor-agent-status",
+            "warn",
+            f"monitor recovered but remediation agent exited rc={agent_rc}",
+            details,
+        )
+    return CheckResult(
+        "monitor-agent-status",
+        "ok",
+        f"monitor current status healthy: status={status} rc={rc}",
+        details,
+    )
+
+
+def check_alpaca_monitor_timer() -> CheckResult:
+    """Verify the systemd timer that runs this remediation monitor is active."""
+    rc_active, active, err_active = run_cmd("systemctl is-active alpaca-monitor.timer")
+    rc_enabled, enabled, err_enabled = run_cmd("systemctl is-enabled alpaca-monitor.timer")
+    rc_failed, failed_state, err_failed = run_cmd("systemctl is-failed alpaca-monitor.service")
+
+    details = {
+        "active": active,
+        "enabled": enabled,
+        "service_failed_state": failed_state,
+        "active_rc": rc_active,
+        "enabled_rc": rc_enabled,
+        "service_failed_rc": rc_failed,
+        "active_error": err_active,
+        "enabled_error": err_enabled,
+        "service_failed_error": err_failed,
+    }
+    if active != "active":
+        return CheckResult(
+            "alpaca-monitor-timer",
+            "fail",
+            f"alpaca-monitor.timer is not active: {active or err_active or 'unknown'}",
+            details,
+        )
+    if failed_state == "failed":
+        return CheckResult(
+            "alpaca-monitor-timer",
+            "fail",
+            "alpaca-monitor.service is failed; timer is active but remediation runs are failing",
+            details,
+        )
+    if enabled not in {"enabled", "static"}:
+        return CheckResult(
+            "alpaca-monitor-timer",
+            "warn",
+            f"alpaca-monitor.timer is active but not enabled for restart persistence: "
+            f"{enabled or err_enabled or 'unknown'}",
+            details,
+        )
+    return CheckResult(
+        "alpaca-monitor-timer",
+        "ok",
+        "alpaca-monitor.timer active and enabled",
+        details,
+    )
+
+
 def check_gpu_available() -> CheckResult:
     """Check if GPU is available for training/inference."""
     rc, out, _ = run_cmd("nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader,nounits 2>&1")
@@ -600,6 +1124,39 @@ def auto_fix(results: list[CheckResult]) -> list[str]:
             else:
                 actions.append(f"Failed to restart cancel-multi-orders: {err}")
 
+        if r.name == "alpaca-monitor-timer" and r.status in ("warn", "fail"):
+            actions.extend(_auto_fix_alpaca_monitor_timer(r))
+
+    return actions
+
+
+def _auto_fix_alpaca_monitor_timer(result: CheckResult) -> list[str]:
+    """Repair only the monitor timer schedule; failed service runs need review."""
+    actions = []
+    if result.details.get("service_failed_state") == "failed":
+        return [
+            "Skipped alpaca-monitor.timer auto-fix: alpaca-monitor.service is failed",
+        ]
+
+    active = result.details.get("active")
+    enabled = result.details.get("enabled")
+    if not isinstance(active, str) or not isinstance(enabled, str):
+        return [
+            "Skipped alpaca-monitor.timer auto-fix: incomplete timer check details",
+        ]
+
+    if enabled not in {"enabled", "static"}:
+        rc, _, err = run_cmd("sudo systemctl enable alpaca-monitor.timer")
+        if rc == 0:
+            actions.append("Enabled alpaca-monitor.timer")
+        else:
+            actions.append(f"Failed to enable alpaca-monitor.timer: {err}")
+    if active != "active":
+        rc, _, err = run_cmd("sudo systemctl start alpaca-monitor.timer")
+        if rc == 0:
+            actions.append("Started alpaca-monitor.timer")
+        else:
+            actions.append(f"Failed to start alpaca-monitor.timer: {err}")
     return actions
 
 
@@ -620,6 +1177,9 @@ def run_all_checks() -> list[CheckResult]:
         check_portfolio_state,
         check_recent_activity,
         check_xgb_spy_provenance,
+        check_scheduled_audit_status,
+        check_monitor_agent_status,
+        check_alpaca_monitor_timer,
         check_gpu_available,
         check_disk_space,
     ]
@@ -658,8 +1218,7 @@ def main():
     }
 
     log_file = LOG_DIR / f"health_{now.strftime('%Y%m%d')}.jsonl"
-    with open(log_file, "a") as f:
-        f.write(json.dumps(log_entry) + "\n")
+    append_jsonl_row(log_file, log_entry, default=str)
 
     if args.json:
         print(json.dumps(log_entry, indent=2))

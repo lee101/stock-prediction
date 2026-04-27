@@ -71,4 +71,6 @@ Actions taken:
 Residual risk / next check:
 ```
 
-Also update `monitoring/logs/codex_current.log` with one line summarizing the latest status.
+Do not write `monitoring/logs/codex_current.log`; that file is wrapper-owned
+machine-readable health state. If you need breadcrumbs during the run, write
+free-form progress to `monitoring/logs/codex_progress.log` instead.

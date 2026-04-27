@@ -562,14 +562,15 @@ echo "PID: $! — harvested by next hour" >> "$BC"
 ```
 
 - **Harvest first**: your Phase 3 starts by checking `.tmp_train/*.log`, `analysis/xgbnew_*/*.json`, `docs/realism_gate_*` for results from prior hours' launches. A harvest is usually higher-value than a new launch.
-- **Progress log**: write a one-line status update to `monitoring/logs/hourly_current.log` every ~5 min. Overwrite, don't append.
+- **Progress log**: write one-line breadcrumbs to `monitoring/logs/hourly_progress.log` every ~5 min.
+  Do not write `monitoring/logs/hourly_current.log`; that file is wrapper-owned machine-readable health state.
 - **Summary first, work second** if budget is short: at 40 min elapsed, write the summary block even if Phase 3 isn't done.
 
 ## Streaming output
 
 At the START of your run, create a breadcrumbs file:
 ```bash
-BC="monitoring/logs/hourly_current.log"
+BC="monitoring/logs/hourly_progress.log"
 echo "[$(date -u +%H:%M:%SZ)] Phase1 started" > "$BC"
 ```
 Every tool call > 30 s of work should follow with `echo "[$(date -u +%H:%M:%SZ)] <what-I-did>" >> "$BC"`. This is how the user debugs a killed run.
