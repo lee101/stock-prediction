@@ -81,6 +81,9 @@ class PackConfig:
     exit_alpha: float
     edge_threshold: float
     edge_to_full_size: float
+    min_close_ret: float
+    close_edge_weight: float
+    min_upside_downside_ratio: float
     max_positions: int
     max_pending_entries: int
     entry_ttl_hours: int
@@ -383,9 +386,17 @@ def build_actions_and_bars(
     sell_price = np.maximum(buy_price * (1.0 + min_tp), ref * (1.0 + exit_gap))
     gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
     risk_charge = float(cfg.risk_penalty) * (downside + float(cfg.cvar_weight) * cvar)
-    edge = gross_edge - risk_charge - 2.0 * float(fee_rate)
+    close_edge_bonus = float(cfg.close_edge_weight) * pred_close
+    edge = gross_edge - risk_charge - 2.0 * float(fee_rate) + close_edge_bonus
+    risk_denominator = np.maximum(downside + cvar, 1e-9)
+    upside_downside_ratio = upside / risk_denominator
     amount = 100.0 * np.clip(edge / max(float(cfg.edge_to_full_size), 1e-9), 0.0, 1.0)
-    amount = np.where(edge >= float(cfg.edge_threshold), amount, 0.0)
+    active = (
+        (edge >= float(cfg.edge_threshold))
+        & (pred_close >= float(cfg.min_close_ret))
+        & (upside_downside_ratio >= float(cfg.min_upside_downside_ratio))
+    )
+    amount = np.where(active, amount, 0.0)
 
     rows["buy_price"] = buy_price
     rows["sell_price"] = sell_price
@@ -395,6 +406,8 @@ def build_actions_and_bars(
     rows["xgb_edge"] = edge
     rows["xgb_gross_edge"] = gross_edge
     rows["xgb_risk_charge"] = risk_charge
+    rows["xgb_close_edge_bonus"] = close_edge_bonus
+    rows["xgb_upside_downside_ratio"] = upside_downside_ratio
     rows["watch_entry_gap_bps"] = entry_gap * 10_000.0
     rows["watch_exit_gap_bps"] = exit_gap * 10_000.0
     rows[f"predicted_high_p50_h{label_horizon}"] = ref * (1.0 + pred_high)
@@ -416,6 +429,8 @@ def build_actions_and_bars(
         "xgb_edge",
         "xgb_gross_edge",
         "xgb_risk_charge",
+        "xgb_close_edge_bonus",
+        "xgb_upside_downside_ratio",
         "watch_entry_gap_bps",
         "watch_exit_gap_bps",
         f"predicted_high_p50_h{label_horizon}",
@@ -923,6 +938,9 @@ def iter_pack_configs(args: argparse.Namespace) -> list[PackConfig]:
         _parse_float_list(args.exit_alpha_grid),
         _parse_float_list(args.edge_threshold_grid),
         _parse_float_list(args.edge_to_full_size_grid),
+        _parse_float_list(args.min_close_ret_grid),
+        _parse_float_list(args.close_edge_weight_grid),
+        _parse_float_list(args.min_upside_downside_ratio_grid),
         _parse_int_list(args.max_positions_grid),
         _parse_int_list(args.max_pending_entries_grid),
         _parse_int_list(args.entry_ttl_hours_grid),
@@ -965,6 +983,9 @@ def main() -> int:
     parser.add_argument("--exit-alpha-grid", default="0.8")
     parser.add_argument("--edge-threshold-grid", default="0.003,0.006")
     parser.add_argument("--edge-to-full-size-grid", default="0.02")
+    parser.add_argument("--min-close-ret-grid", default="-0.2")
+    parser.add_argument("--close-edge-weight-grid", default="0.0")
+    parser.add_argument("--min-upside-downside-ratio-grid", default="0.0")
     parser.add_argument("--max-positions-grid", default="5,8")
     parser.add_argument("--max-pending-entries-grid", default="12,24")
     parser.add_argument("--entry-ttl-hours-grid", default="3,6")
