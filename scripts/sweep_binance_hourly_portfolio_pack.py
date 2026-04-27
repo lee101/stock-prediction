@@ -444,6 +444,23 @@ def _monthly_return(total_return: float, start: pd.Timestamp, end: pd.Timestamp)
     return float(base ** (30.0 / days) - 1.0)
 
 
+def compute_pack_selection_score(row: dict[str, Any], *, min_result_trades: int = 10) -> float:
+    """Rank configs by return/risk while rejecting "smooth because idle" rows."""
+    num_sells = int(row.get("num_sells", 0) or 0)
+    min_trades = max(0, int(min_result_trades))
+    trade_shortfall = max(0, min_trades - num_sells)
+    idle_penalty = 100.0 if num_sells <= 0 else 0.0
+    return float(
+        row["monthly_return_pct"]
+        + 8.0 * row["sortino"]
+        + 20.0 * row["pnl_smoothness_score"]
+        + 5.0 * row["goodness_score"]
+        - 1.5 * row["max_drawdown_pct"]
+        - idle_penalty
+        - 4.0 * trade_shortfall
+    )
+
+
 def evaluate_pack(
     scored: pd.DataFrame,
     *,
@@ -514,12 +531,10 @@ def evaluate_pack(
         "target_exits": int(result.metrics.get("target_exits", 0)),
         "timeout_exits": int(result.metrics.get("timeout_exits", 0)),
     }
-    row["selection_score"] = (
-        row["monthly_return_pct"]
-        + 8.0 * row["sortino"]
-        + 20.0 * row["pnl_smoothness_score"]
-        + 5.0 * row["goodness_score"]
-        - 1.5 * row["max_drawdown_pct"]
+    row["min_result_trades"] = int(args.min_result_trades)
+    row["selection_score"] = compute_pack_selection_score(
+        row,
+        min_result_trades=int(args.min_result_trades),
     )
     return row, bars, actions, result
 
@@ -975,6 +990,7 @@ def main() -> int:
     parser.add_argument("--entry-min-intensity-fraction", type=float, default=0.0)
     parser.add_argument("--entry-allocator-max-single-position-fraction", type=float, default=0.35)
     parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.05)
+    parser.add_argument("--min-result-trades", type=int, default=10)
 
     parser.add_argument("--render-days", type=int, default=14)
     parser.add_argument("--num-pairs", type=int, default=6)

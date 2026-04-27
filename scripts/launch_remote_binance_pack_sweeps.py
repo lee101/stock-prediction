@@ -46,6 +46,13 @@ DEFAULT_TARGETS = {
         env=".venv313",
         gpu="0",
     ),
+    "sscp": RemoteTarget(
+        name="sscp",
+        host="administrator@93.127.141.100",
+        repo="/nvme0n1-disk/code/stock-prediction",
+        env=".venv313",
+        gpu="0",
+    ),
 }
 
 
@@ -261,7 +268,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch remote Binance hourly portfolio-pack sweep shards.")
     parser.add_argument("--fetch", type=Path, default=None, help="Fetch results using a launch_manifest.json and exit.")
     parser.add_argument("--run-id", default=_default_run_id())
-    parser.add_argument("--targets", default="daisy,leaf5090")
+    parser.add_argument("--targets", default="daisy,sscp")
     parser.add_argument("--remote-ref", default="origin/main")
     parser.add_argument("--symbols", default="")
     parser.add_argument("--min-bars", type=int, default=5000)

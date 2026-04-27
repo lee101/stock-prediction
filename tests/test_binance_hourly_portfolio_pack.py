@@ -7,6 +7,7 @@ import pandas as pd
 from scripts.sweep_binance_hourly_portfolio_pack import (
     PackConfig,
     build_actions_and_bars,
+    compute_pack_selection_score,
     iter_pack_configs,
     sample_pack_configs,
 )
@@ -149,3 +150,17 @@ def test_sample_pack_configs_spreads_across_full_grid_deterministically():
     assert len(sampled_a) == 20
     assert {cfg.entry_gap_bps for cfg in sampled_a} == {25.0, 50.0, 75.0}
     assert {cfg.risk_penalty for cfg in sampled_a} == {0.2, 0.5}
+
+
+def test_selection_score_penalizes_idle_configs():
+    base = {
+        "monthly_return_pct": 0.0,
+        "sortino": 0.0,
+        "pnl_smoothness_score": 1.0,
+        "goodness_score": 0.5,
+        "max_drawdown_pct": 0.0,
+    }
+    idle = dict(base, num_sells=0)
+    active = dict(base, num_sells=10)
+
+    assert compute_pack_selection_score(active) > compute_pack_selection_score(idle)
