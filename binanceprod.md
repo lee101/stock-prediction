@@ -1,5 +1,54 @@
 # Binance Production Systems
 
+## Runtime + Backtest Re-Audit (2026-04-27 NZ / 2026-04-27 10:50 UTC)
+
+Current machine state:
+
+- `binance-hybrid-spot` is now aligned with `deployments/binance-hybrid-spot/launch.sh`.
+  - running PID: `71548`
+  - checkpoint: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_dd002/best.pt`
+  - symbols: `BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD`
+  - leverage: `0.5x`
+- live-writer isolation is still not clean:
+  - `binanceleveragesui.trade_margin_meta` PID `1943`
+  - `binance_worksteal.trade_live` PID `3833`
+  - `binanceexp1` selector/hourly processes are cache-only and not counted as writers.
+- recent hybrid runtime snapshots are completing and exit coverage is present for all six meaningful long positions, but runtime audit still flags every managed symbol as oversized versus the current planned sleeve. Treat current live PnL as account-state contaminated until the extra writers are stopped persistently.
+
+Offline live-like holdout rerun, same six-symbol launch mask, `decision_lag=2`, `slippage_bps=5`, `fill_buffer_bps=5`, `0.5x`, shorts disabled:
+
+| Checkpoint | med_ret | med_sort | p10_ret | med_dd |
+|---|---:|---:|---:|---:|
+| launch `robust_reg_tp005_dd002` | `-2.90%` | `-3.84` | `-5.94%` | `4.63%` |
+| stale old `robust_champion` | `-4.48%` | `-6.17` | `-8.57%` | `5.17%` |
+| `gspo_like_smooth_mix15` | `-2.38%` | `-2.05` | `-9.29%` | `6.31%` |
+| `per_env_adv_smooth` | `-3.59%` | `-4.71` | `-10.75%` | `6.06%` |
+
+Artifacts: `analysis/current_binance_prod_eval_20260427_runtime_compare/`
+
+Current `binance-meta-margin` exact live-like replay after refreshing DOGE/AAVE 5m data through `2026-04-27T10:50Z`:
+
+| Strategy | 30d return | MaxDD | Sortino | Trades |
+|---|---:|---:|---:|---:|
+| DOGE single model | `-0.20%` | `-0.33%` | `-1.56` | `137` |
+| AAVE single model | `+0.41%` | `-0.42%` | `1.92` | `79` |
+| deployed `winner_cash/omega` meta selector | `0.00%` | `0.00%` | n/a | `0` |
+
+Artifact: `analysis/binance_meta_margin_current_live_like_30d_refreshed_20260427.json`
+
+Production hint tested in the XGB portfolio packer:
+
+- Narrowed universe to `DOGEUSDT,AAVEUSDT`, current 120d, `1x`, `20bps` fill buffer, strict entry/cash-gate-like settings.
+- Stopped after 18 sampled configs because active variants were negative and strict variants went flat.
+- Best non-flat row: `-0.43%` monthly, `-1.69%` total, `2.83%` max DD, 3 sells.
+- Artifact: `analysis/binance_pack_current_doge_aave_prod_hint_long_20bps_120d_20260427.csv`
+
+Decision:
+
+- Do not infer that Binance production is secretly outperforming the simulator. The current hybrid launch is negative in live-like holdout; the meta-margin path is mostly a cash gate, not a high-PnL strategy; and the narrow DOGE/AAVE XGB transfer does not improve PnL.
+- The useful transfer is the conservative `winner_cash` / live-like profit-gate pattern: new entries should require a recent strategy-level positive edge, not just a positive per-row model forecast.
+- Next research direction should be an explicit rolling profit-gate / cash-state feature in the hourly packer, plus concentrated AAVE/ETH/BTC-style single/pair candidates. Do not spend more time on broad six-symbol RL checkpoint swaps unless lag-2 50-window holdout becomes positive.
+
 ## Runtime Repair (2026-04-27 NZ / 2026-04-26 21:52 UTC)
 
 The live account had `5` margin closing sell orders but `6` meaningful long positions. `SOL` was the uncovered position (~$228); the remaining extra assets in the account were sub-dollar dust.
