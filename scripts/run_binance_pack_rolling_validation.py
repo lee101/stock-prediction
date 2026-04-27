@@ -50,6 +50,8 @@ PACK_DEFAULTS: dict[str, Any] = {
 
 SUMMARY_FIELDS = [
     "candidate_id",
+    "base_candidate_id",
+    "min_take_profit_bps",
     "source",
     "source_row",
     "cells",
@@ -194,6 +196,8 @@ def summarize_results(rows: list[dict[str, Any]], *, min_trades: int) -> list[di
         sells = group["num_sells"].astype(float)
         summary = {
             "candidate_id": candidate_id,
+            "base_candidate_id": first.get("base_candidate_id", candidate_id),
+            "min_take_profit_bps": float(first.get("min_take_profit_bps", 0.0)),
             "source": first["source"],
             "source_row": int(first["source_row"]),
             "cells": int(len(group)),
@@ -229,9 +233,14 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: Sequence[str]
         writer.writerows(rows)
 
 
-def _eval_args(args: argparse.Namespace, *, fill_buffer_bps: float) -> argparse.Namespace:
+def _eval_args(
+    args: argparse.Namespace,
+    *,
+    fill_buffer_bps: float,
+    min_take_profit_bps: float,
+) -> argparse.Namespace:
     return argparse.Namespace(
-        min_take_profit_bps=float(args.min_take_profit_bps),
+        min_take_profit_bps=float(min_take_profit_bps),
         max_entry_gap_bps=float(args.max_entry_gap_bps),
         max_exit_gap_bps=float(args.max_exit_gap_bps),
         fee_rate=float(args.fee_rate),
@@ -324,6 +333,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--min-take-profit-bps", type=float, default=35.0)
+    parser.add_argument(
+        "--min-take-profit-bps-grid",
+        default="",
+        help="Optional comma grid for exit-level validation; defaults to --min-take-profit-bps.",
+    )
     parser.add_argument("--max-entry-gap-bps", type=float, default=120.0)
     parser.add_argument("--max-exit-gap-bps", type=float, default=250.0)
     parser.add_argument("--top-candidates-per-hour", type=int, default=15)
@@ -357,6 +371,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     end_dates = [_to_utc(value) for value in str(args.end_dates).split(",") if value.strip()]
     fill_buffers = _parse_float_list(str(args.fill_buffer_bps_grid))
+    take_profit_values = (
+        _parse_float_list(str(args.min_take_profit_bps_grid))
+        if str(args.min_take_profit_bps_grid).strip()
+        else [float(args.min_take_profit_bps)]
+    )
     symbols = _discover_symbols(args.hourly_root, args.symbols)
     raw_frames = _load_hourly_frames(args.hourly_root, symbols=symbols, min_bars=int(args.min_bars))
     summary_path = args.summary_out or args.out.with_name(args.out.stem + "_summary.csv")
@@ -376,45 +395,60 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     detail_rows: list[dict[str, Any]] = []
-    print(f"validating {len(candidates)} configs over {len(end_dates)} windows x {len(fill_buffers)} fill cells")
+    print(
+        f"validating {len(candidates)} configs over {len(end_dates)} windows x "
+        f"{len(fill_buffers)} fill cells x {len(take_profit_values)} take-profit cells"
+    )
     for end_idx, end in enumerate(end_dates, start=1):
         scored = _load_scored_window(raw_frames, args=args, end=end)
         for fill_buffer_bps in fill_buffers:
-            eval_args = _eval_args(args, fill_buffer_bps=float(fill_buffer_bps))
-            for cand_idx, candidate in enumerate(candidates, start=1):
-                row, _bars, _actions, _result = evaluate_pack(
-                    scored,
-                    cfg=candidate.cfg,
-                    label_horizon=int(args.label_horizon),
-                    args=eval_args,
+            for min_take_profit_bps in take_profit_values:
+                eval_args = _eval_args(
+                    args,
+                    fill_buffer_bps=float(fill_buffer_bps),
+                    min_take_profit_bps=float(min_take_profit_bps),
                 )
-                row.update(
-                    {
-                        "candidate_id": candidate.candidate_id,
-                        "candidate_index": cand_idx,
-                        "source": candidate.source,
-                        "source_row": candidate.source_row,
-                        "source_rank_value": candidate.source_rank_value,
-                        "window_index": end_idx,
-                        "validation_end": end.isoformat(),
-                        "train_days": int(args.train_days),
-                        "rounds": int(args.rounds),
-                        "label_horizon": int(args.label_horizon),
-                        "fill_buffer_bps": float(fill_buffer_bps),
-                        "config_json": json.dumps(asdict(candidate.cfg), sort_keys=True),
-                    }
-                )
-                detail_rows.append(row)
-                _write_csv(args.out, detail_rows)
-                summary_rows = summarize_results(detail_rows, min_trades=int(args.min_result_trades))
-                _write_csv(summary_path, summary_rows, SUMMARY_FIELDS)
-                print(
-                    f"window={end_idx}/{len(end_dates)} fill={fill_buffer_bps:g} "
-                    f"cfg={cand_idx}/{len(candidates)} monthly={row['monthly_return_pct']:+.2f}% "
-                    f"ret={row['total_return_pct']:+.2f}% dd={row['max_drawdown_pct']:.2f}% "
-                    f"trades={row['num_sells']}",
-                    flush=True,
-                )
+                for cand_idx, candidate in enumerate(candidates, start=1):
+                    variant_id = (
+                        candidate.candidate_id
+                        if len(take_profit_values) == 1
+                        else f"{candidate.candidate_id}_tp{float(min_take_profit_bps):g}"
+                    )
+                    row, _bars, _actions, _result = evaluate_pack(
+                        scored,
+                        cfg=candidate.cfg,
+                        label_horizon=int(args.label_horizon),
+                        args=eval_args,
+                    )
+                    row.update(
+                        {
+                            "candidate_id": variant_id,
+                            "base_candidate_id": candidate.candidate_id,
+                            "candidate_index": cand_idx,
+                            "source": candidate.source,
+                            "source_row": candidate.source_row,
+                            "source_rank_value": candidate.source_rank_value,
+                            "window_index": end_idx,
+                            "validation_end": end.isoformat(),
+                            "train_days": int(args.train_days),
+                            "rounds": int(args.rounds),
+                            "label_horizon": int(args.label_horizon),
+                            "fill_buffer_bps": float(fill_buffer_bps),
+                            "min_take_profit_bps": float(min_take_profit_bps),
+                            "config_json": json.dumps(asdict(candidate.cfg), sort_keys=True),
+                        }
+                    )
+                    detail_rows.append(row)
+                    _write_csv(args.out, detail_rows)
+                    summary_rows = summarize_results(detail_rows, min_trades=int(args.min_result_trades))
+                    _write_csv(summary_path, summary_rows, SUMMARY_FIELDS)
+                    print(
+                        f"window={end_idx}/{len(end_dates)} fill={fill_buffer_bps:g} "
+                        f"tp={min_take_profit_bps:g} cfg={cand_idx}/{len(candidates)} "
+                        f"monthly={row['monthly_return_pct']:+.2f}% ret={row['total_return_pct']:+.2f}% "
+                        f"dd={row['max_drawdown_pct']:.2f}% trades={row['num_sells']}",
+                        flush=True,
+                    )
 
     summary_rows = summarize_results(detail_rows, min_trades=int(args.min_result_trades))
     print("\n=== Best rolling configs ===")
