@@ -181,6 +181,53 @@ def _choose_end_timestamp(frames: dict[str, pd.DataFrame], min_symbols_per_hour:
     return pd.Timestamp(eligible.index[-1]).tz_convert("UTC")
 
 
+def _filter_liquid_frames(
+    frames: dict[str, pd.DataFrame],
+    *,
+    end: pd.Timestamp,
+    lookback_days: int,
+    min_median_dollar_volume: float,
+    max_symbols: int,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    if float(min_median_dollar_volume) <= 0.0 and int(max_symbols) <= 0:
+        return frames, pd.DataFrame()
+
+    start = pd.Timestamp(end) - pd.Timedelta(days=max(1, int(lookback_days)))
+    rows: list[dict[str, Any]] = []
+    for symbol, df in frames.items():
+        recent = df[(df["timestamp"] >= start) & (df["timestamp"] <= end)]
+        if recent.empty:
+            continue
+        dollar_volume = (
+            recent["close"].astype(float).clip(lower=0.0)
+            * recent["volume"].astype(float).clip(lower=0.0)
+        ).replace([np.inf, -np.inf], np.nan)
+        rows.append(
+            {
+                "symbol": symbol,
+                "recent_bars": int(len(recent)),
+                "median_dollar_volume": float(dollar_volume.median(skipna=True)),
+                "mean_dollar_volume": float(dollar_volume.mean(skipna=True)),
+            }
+        )
+    if not rows:
+        raise ValueError("no symbols have recent bars for liquidity filtering")
+    metrics = pd.DataFrame(rows).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    metrics = metrics.sort_values(["median_dollar_volume", "mean_dollar_volume", "symbol"], ascending=[False, False, True])
+    selected = metrics
+    if float(min_median_dollar_volume) > 0.0:
+        selected = selected[selected["median_dollar_volume"] >= float(min_median_dollar_volume)]
+    if int(max_symbols) > 0:
+        selected = selected.head(int(max_symbols))
+    selected_symbols = set(selected["symbol"].astype(str))
+    if not selected_symbols:
+        raise ValueError(
+            "liquidity filters removed all symbols; "
+            f"min_median_dollar_volume={min_median_dollar_volume} max_symbols={max_symbols}"
+        )
+    return {symbol: frames[symbol] for symbol in sorted(selected_symbols)}, metrics.reset_index(drop=True)
+
+
 def _future_rolling(series: pd.Series, horizon: int, op: str) -> pd.Series:
     shifted = series.shift(-1).iloc[::-1]
     rolled = shifted.rolling(int(horizon), min_periods=int(horizon))
@@ -968,6 +1015,9 @@ def main() -> int:
     parser.add_argument("--symbols", default="")
     parser.add_argument("--min-bars", type=int, default=5000)
     parser.add_argument("--min-symbols-per-hour", type=int, default=20)
+    parser.add_argument("--liquidity-lookback-days", type=int, default=90)
+    parser.add_argument("--min-median-dollar-volume", type=float, default=0.0)
+    parser.add_argument("--max-symbols-by-dollar-volume", type=int, default=0)
     parser.add_argument("--train-days", type=int, default=720)
     parser.add_argument("--eval-days", type=int, default=120)
     parser.add_argument("--end-date", default="")
@@ -1028,6 +1078,24 @@ def main() -> int:
     frames = _load_hourly_frames(args.hourly_root, symbols=symbols, min_bars=int(args.min_bars))
     min_symbols = min(int(args.min_symbols_per_hour), len(frames))
     end = _to_utc(args.end_date) if args.end_date.strip() else _choose_end_timestamp(frames, min_symbols)
+    frames, liquidity_metrics = _filter_liquid_frames(
+        frames,
+        end=end,
+        lookback_days=int(args.liquidity_lookback_days),
+        min_median_dollar_volume=float(args.min_median_dollar_volume),
+        max_symbols=int(args.max_symbols_by_dollar_volume),
+    )
+    if not liquidity_metrics.empty:
+        selected = set(frames)
+        top_selected = liquidity_metrics[liquidity_metrics["symbol"].isin(selected)].head(8)
+        print(
+            "liquidity filter selected "
+            f"{len(frames)}/{len(liquidity_metrics)} symbols; top="
+            + ",".join(
+                f"{row.symbol}:{row.median_dollar_volume:.0f}"
+                for row in top_selected.itertuples(index=False)
+            )
+        )
     eval_start = end - pd.Timedelta(days=int(args.eval_days))
     train_start = eval_start - pd.Timedelta(days=int(args.train_days))
     feature_start = train_start - pd.Timedelta(days=10)

@@ -6,6 +6,7 @@ import pandas as pd
 
 from scripts.sweep_binance_hourly_portfolio_pack import (
     PackConfig,
+    _filter_liquid_frames,
     build_actions_and_bars,
     compute_pack_selection_score,
     iter_pack_configs,
@@ -193,6 +194,26 @@ def test_sample_pack_configs_spreads_across_full_grid_deterministically():
     assert len(sampled_a) == 20
     assert {cfg.entry_gap_bps for cfg in sampled_a} == {25.0, 50.0, 75.0}
     assert {cfg.risk_penalty for cfg in sampled_a} == {0.2, 0.5}
+
+
+def test_filter_liquid_frames_keeps_top_dollar_volume_symbols():
+    ts = pd.date_range("2026-03-01T00:00:00Z", periods=4, freq="h")
+    frames = {
+        "LOWUSDT": pd.DataFrame({"timestamp": ts, "close": [1.0] * 4, "volume": [10.0] * 4}),
+        "MIDUSDT": pd.DataFrame({"timestamp": ts, "close": [10.0] * 4, "volume": [100.0] * 4}),
+        "HIGHUSDT": pd.DataFrame({"timestamp": ts, "close": [100.0] * 4, "volume": [1000.0] * 4}),
+    }
+
+    filtered, metrics = _filter_liquid_frames(
+        frames,
+        end=pd.Timestamp("2026-03-01T03:00:00Z"),
+        lookback_days=1,
+        min_median_dollar_volume=0.0,
+        max_symbols=2,
+    )
+
+    assert list(filtered) == ["HIGHUSDT", "MIDUSDT"]
+    assert metrics.iloc[0]["symbol"] == "HIGHUSDT"
 
 
 def test_selection_score_penalizes_idle_configs():
