@@ -196,6 +196,34 @@ def test_sample_pack_configs_spreads_across_full_grid_deterministically():
     assert {cfg.risk_penalty for cfg in sampled_a} == {0.2, 0.5}
 
 
+def test_sample_pack_configs_keeps_randomized_order():
+    args = argparse.Namespace(
+        risk_penalties="0.2,0.5",
+        cvar_weights="0.0",
+        entry_gap_bps_grid="25,50,75",
+        entry_alpha_grid="0.5",
+        exit_alpha_grid="0.8",
+        edge_threshold_grid="0.003,0.006",
+        edge_to_full_size_grid="0.02",
+        min_close_ret_grid="0.0",
+        close_edge_weight_grid="0.0",
+        min_upside_downside_ratio_grid="0.0",
+        max_positions_grid="5,8",
+        max_pending_entries_grid="12",
+        entry_ttl_hours_grid="3",
+        max_hold_hours_grid="24",
+        max_leverage_grid="1.0",
+        entry_selection_modes="edge_rank",
+        entry_allocator_modes="concentrated",
+        entry_allocator_edge_power_grid="2.0",
+    )
+    configs = iter_pack_configs(args)
+    sampled = sample_pack_configs(configs, limit=10, seed=20260427)
+    sampled_indices = [configs.index(cfg) for cfg in sampled]
+
+    assert sampled_indices != sorted(sampled_indices)
+
+
 def test_filter_liquid_frames_keeps_top_dollar_volume_symbols():
     ts = pd.date_range("2026-03-01T00:00:00Z", periods=4, freq="h")
     frames = {

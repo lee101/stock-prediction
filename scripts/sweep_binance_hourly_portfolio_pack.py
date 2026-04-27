@@ -1005,7 +1005,7 @@ def sample_pack_configs(configs: list[PackConfig], *, limit: int, seed: int) -> 
     if int(limit) <= 0 or int(limit) >= len(configs):
         return list(configs)
     rng = np.random.default_rng(int(seed))
-    selected = sorted(rng.choice(len(configs), size=int(limit), replace=False).tolist())
+    selected = rng.choice(len(configs), size=int(limit), replace=False).tolist()
     return [configs[idx] for idx in selected]
 
 
