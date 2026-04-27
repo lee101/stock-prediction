@@ -84,6 +84,9 @@ class PackConfig:
     min_close_ret: float
     close_edge_weight: float
     min_upside_downside_ratio: float
+    min_recent_ret_24h: float
+    min_recent_ret_72h: float
+    max_recent_vol_72h: float
     max_positions: int
     max_pending_entries: int
     entry_ttl_hours: int
@@ -419,6 +422,21 @@ def build_actions_and_bars(
     pred_low = rows["pred_low_ret_xgb"].astype(float).to_numpy()
     pred_close = rows["pred_close_ret_xgb"].astype(float).to_numpy()
     cvar = rows["cvar_loss_72h"].astype(float).fillna(0.0).to_numpy()
+    recent_ret_24h = (
+        rows["ret_24h"].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy()
+        if "ret_24h" in rows.columns
+        else np.zeros(len(rows), dtype=np.float64)
+    )
+    recent_ret_72h = (
+        rows["ret_72h"].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy()
+        if "ret_72h" in rows.columns
+        else np.zeros(len(rows), dtype=np.float64)
+    )
+    recent_vol_72h = (
+        rows["vol_72h"].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy()
+        if "vol_72h" in rows.columns
+        else np.zeros(len(rows), dtype=np.float64)
+    )
 
     upside = np.maximum.reduce([pred_high, pred_close, np.zeros_like(pred_high)])
     downside = np.maximum(-pred_low, 0.0)
@@ -442,7 +460,11 @@ def build_actions_and_bars(
         (edge >= float(cfg.edge_threshold))
         & (pred_close >= float(cfg.min_close_ret))
         & (upside_downside_ratio >= float(cfg.min_upside_downside_ratio))
+        & (recent_ret_24h >= float(cfg.min_recent_ret_24h))
+        & (recent_ret_72h >= float(cfg.min_recent_ret_72h))
     )
+    if float(cfg.max_recent_vol_72h) > 0.0:
+        active &= recent_vol_72h <= float(cfg.max_recent_vol_72h)
     amount = np.where(active, amount, 0.0)
 
     rows["buy_price"] = buy_price
@@ -455,6 +477,9 @@ def build_actions_and_bars(
     rows["xgb_risk_charge"] = risk_charge
     rows["xgb_close_edge_bonus"] = close_edge_bonus
     rows["xgb_upside_downside_ratio"] = upside_downside_ratio
+    rows["recent_ret_24h"] = recent_ret_24h
+    rows["recent_ret_72h"] = recent_ret_72h
+    rows["recent_vol_72h"] = recent_vol_72h
     rows["watch_entry_gap_bps"] = entry_gap * 10_000.0
     rows["watch_exit_gap_bps"] = exit_gap * 10_000.0
     rows[f"predicted_high_p50_h{label_horizon}"] = ref * (1.0 + pred_high)
@@ -478,6 +503,9 @@ def build_actions_and_bars(
         "xgb_risk_charge",
         "xgb_close_edge_bonus",
         "xgb_upside_downside_ratio",
+        "recent_ret_24h",
+        "recent_ret_72h",
+        "recent_vol_72h",
         "watch_entry_gap_bps",
         "watch_exit_gap_bps",
         f"predicted_high_p50_h{label_horizon}",
@@ -989,6 +1017,9 @@ def iter_pack_configs(args: argparse.Namespace) -> list[PackConfig]:
         _parse_float_list(args.min_close_ret_grid),
         _parse_float_list(args.close_edge_weight_grid),
         _parse_float_list(args.min_upside_downside_ratio_grid),
+        _parse_float_list(args.min_recent_ret_24h_grid),
+        _parse_float_list(args.min_recent_ret_72h_grid),
+        _parse_float_list(args.max_recent_vol_72h_grid),
         _parse_int_list(args.max_positions_grid),
         _parse_int_list(args.max_pending_entries_grid),
         _parse_int_list(args.entry_ttl_hours_grid),
@@ -1037,6 +1068,9 @@ def main() -> int:
     parser.add_argument("--min-close-ret-grid", default="-0.2")
     parser.add_argument("--close-edge-weight-grid", default="0.0")
     parser.add_argument("--min-upside-downside-ratio-grid", default="0.0")
+    parser.add_argument("--min-recent-ret-24h-grid", default="-1.0")
+    parser.add_argument("--min-recent-ret-72h-grid", default="-1.0")
+    parser.add_argument("--max-recent-vol-72h-grid", default="0.0")
     parser.add_argument("--max-positions-grid", default="5,8")
     parser.add_argument("--max-pending-entries-grid", default="12,24")
     parser.add_argument("--entry-ttl-hours-grid", default="3,6")

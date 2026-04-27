@@ -26,6 +26,9 @@ def _pack_config(**overrides) -> PackConfig:
         min_close_ret=-0.2,
         close_edge_weight=0.0,
         min_upside_downside_ratio=0.0,
+        min_recent_ret_24h=-1.0,
+        min_recent_ret_72h=-1.0,
+        max_recent_vol_72h=0.0,
         max_positions=2,
         max_pending_entries=4,
         entry_ttl_hours=3,
@@ -165,6 +168,47 @@ def test_build_actions_and_bars_can_gate_weak_close_consensus():
     assert action["buy_amount"] == 0.0
 
 
+def test_build_actions_and_bars_can_gate_weak_recent_momentum():
+    ts = pd.Timestamp("2026-03-03T15:00:00Z")
+    scored = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "BTCUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.08,
+                "pred_low_ret_xgb": -0.005,
+                "pred_close_ret_xgb": 0.02,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": -0.03,
+                "ret_72h": 0.04,
+                "vol_72h": 0.01,
+            }
+        ]
+    )
+
+    _, actions = build_actions_and_bars(
+        scored,
+        cfg=_pack_config(min_recent_ret_24h=0.0),
+        label_horizon=24,
+        min_take_profit_bps=35.0,
+        max_entry_gap_bps=120.0,
+        max_exit_gap_bps=250.0,
+        fee_rate=0.001,
+        top_candidates_per_hour=10,
+    )
+
+    action = actions.iloc[0]
+    assert action["xgb_edge"] > 0.0
+    assert action["recent_ret_24h"] == -0.03
+    assert action["buy_amount"] == 0.0
+
+
 def test_sample_pack_configs_spreads_across_full_grid_deterministically():
     args = argparse.Namespace(
         risk_penalties="0.2,0.5",
@@ -177,6 +221,9 @@ def test_sample_pack_configs_spreads_across_full_grid_deterministically():
         min_close_ret_grid="-0.2",
         close_edge_weight_grid="0.0",
         min_upside_downside_ratio_grid="0.0",
+        min_recent_ret_24h_grid="-1.0",
+        min_recent_ret_72h_grid="-1.0",
+        max_recent_vol_72h_grid="0.0",
         max_positions_grid="5,8",
         max_pending_entries_grid="12,24",
         entry_ttl_hours_grid="3,6",
@@ -208,6 +255,9 @@ def test_sample_pack_configs_keeps_randomized_order():
         min_close_ret_grid="0.0",
         close_edge_weight_grid="0.0",
         min_upside_downside_ratio_grid="0.0",
+        min_recent_ret_24h_grid="-1.0",
+        min_recent_ret_72h_grid="-1.0",
+        max_recent_vol_72h_grid="0.0",
         max_positions_grid="5,8",
         max_pending_entries_grid="12",
         entry_ttl_hours_grid="3",
