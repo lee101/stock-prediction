@@ -79,6 +79,27 @@ def daily_backfill(symbols: list, out_root: Path):
         logger.warning(f"backfill failed: {e}")
 
 
+def run_collection_cycle(symbols: list[str], out_root: Path, last_backfill):
+    for sym in symbols:
+        try:
+            bars = fetch_recent_5m(sym, limit=3)
+            path = out_root / f"{sym}.csv"
+            n = append_bars(path, bars)
+            if n > 0:
+                logger.info(f"{sym}: +{n} bars")
+        except Exception as e:
+            logger.error(f"{sym} fetch/append failed: {e}")
+
+    try:
+        now = datetime.now(timezone.utc)
+        if last_backfill is None or (now - last_backfill).total_seconds() > 86400:
+            daily_backfill(symbols, out_root)
+            last_backfill = now
+    except Exception as e:
+        logger.error(f"backfill scheduler error: {e}")
+    return last_backfill
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--symbols", nargs="+", default=["DOGEUSDT"])
@@ -92,22 +113,7 @@ def main():
     last_backfill = None
 
     while True:
-        try:
-            for sym in args.symbols:
-                bars = fetch_recent_5m(sym, limit=3)
-                path = args.out_root / f"{sym}.csv"
-                n = append_bars(path, bars)
-                if n > 0:
-                    logger.info(f"{sym}: +{n} bars")
-
-            now = datetime.now(timezone.utc)
-            if last_backfill is None or (now - last_backfill).total_seconds() > 86400:
-                daily_backfill(args.symbols, args.out_root)
-                last_backfill = now
-
-        except Exception as e:
-            logger.error(f"cycle error: {e}")
-
+        last_backfill = run_collection_cycle(args.symbols, args.out_root, last_backfill)
         time.sleep(args.interval_seconds)
 
 
