@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from unified_hourly_experiment.marketsimulator.portfolio_simulator import (
     PortfolioConfig,
@@ -519,6 +520,108 @@ def test_pending_entry_can_fill_on_bar_without_action_row():
     entries = [t for t in result.trades if t.side == "buy"]
     assert len(entries) == 1
     assert entries[0].timestamp == t1
+
+
+def test_max_pending_entries_allows_more_watchers_than_position_slots():
+    t0 = pd.Timestamp("2026-03-03T15:00:00Z")
+    t1 = pd.Timestamp("2026-03-03T16:00:00Z")
+    bars = pd.DataFrame(
+        [
+            {"timestamp": t0, "symbol": "AAA", "open": 100.0, "high": 100.6, "low": 99.6, "close": 100.0},
+            {"timestamp": t0, "symbol": "BBB", "open": 100.0, "high": 100.6, "low": 99.6, "close": 100.0},
+            {"timestamp": t0, "symbol": "CCC", "open": 100.0, "high": 100.6, "low": 99.6, "close": 100.0},
+            {"timestamp": t1, "symbol": "AAA", "open": 100.0, "high": 100.6, "low": 99.6, "close": 100.0},
+            {"timestamp": t1, "symbol": "BBB", "open": 100.0, "high": 100.6, "low": 99.6, "close": 100.0},
+            {"timestamp": t1, "symbol": "CCC", "open": 100.0, "high": 101.0, "low": 96.5, "close": 99.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": t0, "symbol": "AAA", "buy_price": 98.0, "sell_price": 102.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+            {"timestamp": t0, "symbol": "BBB", "buy_price": 97.5, "sell_price": 102.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+            {"timestamp": t0, "symbol": "CCC", "buy_price": 97.0, "sell_price": 104.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+        ]
+    )
+    cfg = PortfolioConfig(
+        initial_cash=10_000.0,
+        max_positions=1,
+        max_pending_entries=3,
+        max_leverage=1.0,
+        trade_amount_scale=100.0,
+        fee_by_symbol={"AAA": 0.0, "BBB": 0.0, "CCC": 0.0},
+        decision_lag_bars=0,
+        enforce_market_hours=False,
+        close_at_eod=False,
+        max_hold_hours=0,
+        bar_margin=0.0,
+        int_qty=True,
+        entry_order_ttl_hours=2,
+    )
+    result = run_portfolio_simulation(bars, actions, cfg, horizon=1)
+
+    entries = [t for t in result.trades if t.side == "buy"]
+    assert len(entries) == 1
+    assert entries[0].symbol == "CCC"
+    assert entries[0].timestamp == t1
+
+
+def test_apply_leverage_to_crypto_increases_entry_budget():
+    ts = pd.Timestamp("2026-03-03T15:00:00Z")
+    bars = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "BTCUSDT",
+                "open": 100.0,
+                "high": 110.0,
+                "low": 99.0,
+                "close": 100.0,
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "BTCUSDT",
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 100.0,
+                "sell_amount": 0.0,
+                "trade_amount": 100.0,
+            }
+        ]
+    )
+    base_cfg = dict(
+        initial_cash=10_000.0,
+        max_positions=1,
+        max_leverage=2.0,
+        trade_amount_scale=100.0,
+        fee_by_symbol={"BTCUSDT": 0.0},
+        decision_lag_bars=0,
+        enforce_market_hours=False,
+        close_at_eod=False,
+        max_hold_hours=1000,
+        bar_margin=0.0,
+        int_qty=False,
+    )
+
+    spot = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(**base_cfg, apply_leverage_to_crypto=False),
+        horizon=1,
+    )
+    margin = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(**base_cfg, apply_leverage_to_crypto=True),
+        horizon=1,
+    )
+
+    spot_entry = next(t for t in spot.trades if t.side == "buy")
+    margin_entry = next(t for t in margin.trades if t.side == "buy")
+    assert margin_entry.quantity == pytest.approx(2.0 * spot_entry.quantity)
 
 
 def test_equity_curve_keeps_all_bar_timestamps_with_sparse_actions():

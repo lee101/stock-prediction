@@ -80,6 +80,8 @@ class PortfolioConfig:
     entry_allocator_edge_power: float = 2.0
     entry_allocator_max_single_position_fraction: float = 0.6
     entry_allocator_reserve_fraction: float = 0.1
+    max_pending_entries: Optional[int] = None
+    apply_leverage_to_crypto: bool = False
     sim_backend: str = "auto"  # auto prefers native when safe, else falls back to python
 
 
@@ -493,6 +495,8 @@ def run_portfolio_simulation(
         int(cfg.entry_order_ttl_hours) <= 0
         and bool(cfg.entry_fee_inclusive_sizing)
         and not bool(cfg.market_order_entry_uses_signal_price_for_qty)
+        and cfg.max_pending_entries is None
+        and not bool(cfg.apply_leverage_to_crypto)
     )
     if backend in {"native", "auto"} and native_allowed:
         native_result = _run_portfolio_simulation_native(
@@ -715,9 +719,19 @@ def run_portfolio_simulation(
             for sym in expired_pending:
                 pending_entries.pop(sym, None)
 
-        # 4. Find new entries if we have open slots
-        open_slots = cfg.max_positions - len(positions) - len(pending_entries)
-        if open_slots <= 0:
+        # 4. Find new entries if we have capacity. By default, pending entries
+        # consume the same budget as positions for backward compatibility. When
+        # max_pending_entries is explicit, pending watcher orders can outnumber
+        # actual position slots; capital is only consumed after a watcher fills.
+        position_slots = max(0, int(cfg.max_positions) - len(positions))
+        if cfg.max_pending_entries is None:
+            candidate_slots = max(0, int(cfg.max_positions) - len(positions) - len(pending_entries))
+            pending_capacity = int(cfg.max_positions)
+        else:
+            pending_capacity = max(0, int(cfg.max_pending_entries))
+            pending_slots = max(0, pending_capacity - len(pending_entries))
+            candidate_slots = max(0, position_slots + pending_slots)
+        if candidate_slots <= 0:
             if _append_equity_snapshot(ts):
                 break
             continue
@@ -804,6 +818,9 @@ def run_portfolio_simulation(
                 if int(cfg.entry_order_ttl_hours) <= 0:
                     continue
 
+            symbol_leverage = float(cfg.max_leverage) if (
+                bool(cfg.apply_leverage_to_crypto) or not is_crypto_symbol(sym)
+            ) else 1.0
             candidates.append({
                 "symbol": sym,
                 "edge": edge,
@@ -819,7 +836,7 @@ def run_portfolio_simulation(
                     entry_price=actual_entry_price,
                     is_long=is_long,
                 ),
-                "slot_budget": (equity_for_entries * (1.0 if is_crypto_symbol(sym) else cfg.max_leverage)) / cfg.max_positions,
+                "slot_budget": (equity_for_entries * symbol_leverage) / cfg.max_positions,
                 "fee_rate": fee,
             })
 
@@ -827,7 +844,7 @@ def run_portfolio_simulation(
             candidates.sort(key=lambda x: (x["required_move_frac"], -x["edge"]))
         else:
             candidates.sort(key=lambda x: x["edge"], reverse=True)
-        selected_candidates = candidates[:open_slots]
+        selected_candidates = candidates[:candidate_slots]
         allocator_mode = normalize_entry_allocator_mode(cfg.entry_allocator_mode)
         ready_candidates: list[dict[str, Any]] = []
 
@@ -890,6 +907,8 @@ def run_portfolio_simulation(
             direction = str(cand["direction"])
             qty = float(cand["qty"])
             if cand["fillable_now"]:
+                if len(positions) >= int(cfg.max_positions):
+                    continue
                 cost = qty * entry_price * (1 + fee)
                 cash -= cost
                 positions[sym] = Position(
@@ -903,6 +922,8 @@ def run_portfolio_simulation(
                 side = "short_sell" if direction == "short" else "buy"
                 trades.append(UnifiedTradeRecord(ts, sym, side, entry_price, qty, cash, qty, "entry"))
             else:
+                if len(pending_entries) >= pending_capacity:
+                    continue
                 pending_entries[sym] = {
                     "symbol": sym,
                     "direction": direction,
