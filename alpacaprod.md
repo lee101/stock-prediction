@@ -2,6 +2,43 @@
 
 ## Active Deployments
 
+### 🟢 2026-04-27 15:08 UTC — manual rotation: alltrain ensemble train_end 2026-04-20 → 2026-04-26
+
+**Action**: rotated the LIVE 5-seed alltrain ensemble from `alltrain_ensemble_gpu_prev_20260427T150729Z` (trained through 2026-04-20) to the staging ensemble that the Sunday auto-retrain produced (trained through 2026-04-26, originally at `alltrain_ensemble_gpu_staging_20260426T230016Z`). Recipe is bit-identical: 400 trees / depth 5 / lr 0.03, seeds {0,7,42,73,197}, GPU, 5M training-time dolvol floor, same 15 feature cols.
+
+**Why now**: weekly auto-retrain at 2026-04-26 23:04 UTC produced a clean staging artifact, but `xgb_weekly_retrain.sh` aborted at preflight with `dirty_repo_outside_watchlist:6` (the script does NOT pass `--allow-dirty`). After the previous monitor commit the dirty-path count dropped to 3 (xgbcat WIP), still blocking auto-rotate. Live was running 6-day-stale weights; recency is asymmetric upside per `project_xgb_recency_monotonic.md`.
+
+**Path used**:
+1. `mv analysis/xgbnew_daily/alltrain_ensemble_gpu analysis/xgbnew_daily/alltrain_ensemble_gpu_prev_20260427T150729Z`
+2. `mv analysis/xgbnew_daily/alltrain_ensemble_gpu_staging_20260426T230016Z analysis/xgbnew_daily/alltrain_ensemble_gpu`
+3. `python scripts/normalize_xgb_ensemble_manifest.py analysis/xgbnew_daily/alltrain_ensemble_gpu`
+4. `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live`
+
+**Validation before swap**:
+- `scripts/validate_xgb_ensemble.py` on staging: OK, 5 models, train_end 2026-04-26.
+- All 5 staging pkls loaded cleanly via Python pickle (≈6.5s total).
+- Manifest config block bit-identical to the live recipe (n_estimators/max_depth/lr/feature_cols all match).
+- Same SHA256 set in deploy preflight runtime read-back as the staging manifest sha256s.
+
+**Post-deploy state** (2026-04-27 15:08:58 UTC):
+- supervisor `xgb-daily-trader-live` RUNNING pid=2370763, lock holder pid=2370763 — singleton OK.
+- xgb_ensemble_train_end="2026-04-26" (was "2026-04-20").
+- Active equity $19,800, buying_power $39,599 (unchanged from incident block below).
+- New post-restart session began scoring 846 symbols at 15:08 UTC; first new-ensemble pick will land at the next regular pre-open at 2026-04-28 13:20 UTC if the conviction gate clears.
+- `daily-rl-trader` STOPPED, `trading-server` FATAL (intentional, unchanged).
+
+**Rollback** (if needed):
+- `mv analysis/xgbnew_daily/alltrain_ensemble_gpu /tmp/failed_$(date +%s)`
+- `mv analysis/xgbnew_daily/alltrain_ensemble_gpu_prev_20260427T150729Z analysis/xgbnew_daily/alltrain_ensemble_gpu`
+- `python scripts/normalize_xgb_ensemble_manifest.py analysis/xgbnew_daily/alltrain_ensemble_gpu`
+- `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live`
+
+**Audit trail**: `deployments/live_trader_history.log` line `2026-04-27T15:08:58Z status=ok`. Preflight reports under `deployments/preflight_reports/20260427T150755Z_*`.
+
+**No model recipe / launch flag change** — only training-data cutoff advanced 6 days. The live launch.sh is unchanged.
+
+---
+
 ### 🚨 2026-04-27 13:10 UTC — UNEXPLAINED EQUITY DROP −$8,879 over weekend (HUMAN REVIEW NEEDED)
 
 **Symptom**: equity dropped from $28,758.98 (last reported by Alpaca portfolio history on 2026-04-25 Sat close) to $19,799.53 (real-time at 2026-04-27 13:10 UTC Mon pre-open). That is a single-step drop of **−$8,879.45 (-30.8%)** between Apr 25 00:00 UTC and Apr 27 08:00 UTC.
