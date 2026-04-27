@@ -71,6 +71,8 @@ CS_FEATURE_BASE = [
     "cvar_loss_72h",
 ]
 
+HOURS_PER_YEAR = 24.0 * 365.25
+
 
 @dataclass(frozen=True)
 class PackConfig:
@@ -87,6 +89,11 @@ class PackConfig:
     min_recent_ret_24h: float
     min_recent_ret_72h: float
     max_recent_vol_72h: float
+    regime_cs_skew_min: float
+    vol_target_ann: float
+    inv_vol_target_ann: float
+    inv_vol_floor: float
+    inv_vol_cap: float
     max_positions: int
     max_pending_entries: int
     entry_ttl_hours: int
@@ -437,6 +444,32 @@ def build_actions_and_bars(
         if "vol_72h" in rows.columns
         else np.zeros(len(rows), dtype=np.float64)
     )
+    rows["_recent_ret_24h_for_regime"] = recent_ret_24h
+    rows["_recent_vol_72h_for_scale"] = recent_vol_72h
+    regime_cs_skew_24h = (
+        rows.groupby("timestamp")["_recent_ret_24h_for_regime"]
+        .transform(lambda values: values.skew())
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .to_numpy(dtype=np.float64)
+    )
+    market_vol_72h = (
+        rows.groupby("timestamp")["_recent_vol_72h_for_scale"]
+        .transform("median")
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .to_numpy(dtype=np.float64)
+    )
+    recent_vol_ann = recent_vol_72h * float(np.sqrt(HOURS_PER_YEAR))
+    market_vol_ann = market_vol_72h * float(np.sqrt(HOURS_PER_YEAR))
+    inv_vol_scale = np.ones(len(rows), dtype=np.float64)
+    if float(cfg.inv_vol_target_ann) > 0.0:
+        inv_vol_scale = float(cfg.inv_vol_target_ann) / np.maximum(recent_vol_ann, 1e-9)
+        inv_vol_scale = np.clip(inv_vol_scale, float(cfg.inv_vol_floor), float(cfg.inv_vol_cap))
+    market_vol_scale = np.ones(len(rows), dtype=np.float64)
+    if float(cfg.vol_target_ann) > 0.0:
+        market_vol_scale = float(cfg.vol_target_ann) / np.maximum(market_vol_ann, 1e-9)
+        market_vol_scale = np.clip(market_vol_scale, float(cfg.inv_vol_floor), float(cfg.inv_vol_cap))
 
     upside = np.maximum.reduce([pred_high, pred_close, np.zeros_like(pred_high)])
     downside = np.maximum(-pred_low, 0.0)
@@ -465,6 +498,9 @@ def build_actions_and_bars(
     )
     if float(cfg.max_recent_vol_72h) > 0.0:
         active &= recent_vol_72h <= float(cfg.max_recent_vol_72h)
+    if float(cfg.regime_cs_skew_min) > -1e8:
+        active &= regime_cs_skew_24h >= float(cfg.regime_cs_skew_min)
+    amount = amount * inv_vol_scale * market_vol_scale
     amount = np.where(active, amount, 0.0)
 
     rows["buy_price"] = buy_price
@@ -480,6 +516,11 @@ def build_actions_and_bars(
     rows["recent_ret_24h"] = recent_ret_24h
     rows["recent_ret_72h"] = recent_ret_72h
     rows["recent_vol_72h"] = recent_vol_72h
+    rows["recent_vol_ann"] = recent_vol_ann
+    rows["regime_cs_skew_24h"] = regime_cs_skew_24h
+    rows["market_vol_ann"] = market_vol_ann
+    rows["inv_vol_scale"] = inv_vol_scale
+    rows["market_vol_scale"] = market_vol_scale
     rows["watch_entry_gap_bps"] = entry_gap * 10_000.0
     rows["watch_exit_gap_bps"] = exit_gap * 10_000.0
     rows[f"predicted_high_p50_h{label_horizon}"] = ref * (1.0 + pred_high)
@@ -506,6 +547,11 @@ def build_actions_and_bars(
         "recent_ret_24h",
         "recent_ret_72h",
         "recent_vol_72h",
+        "recent_vol_ann",
+        "regime_cs_skew_24h",
+        "market_vol_ann",
+        "inv_vol_scale",
+        "market_vol_scale",
         "watch_entry_gap_bps",
         "watch_exit_gap_bps",
         f"predicted_high_p50_h{label_horizon}",
@@ -1020,6 +1066,11 @@ def iter_pack_configs(args: argparse.Namespace) -> list[PackConfig]:
         _parse_float_list(args.min_recent_ret_24h_grid),
         _parse_float_list(args.min_recent_ret_72h_grid),
         _parse_float_list(args.max_recent_vol_72h_grid),
+        _parse_float_list(args.regime_cs_skew_min_grid),
+        _parse_float_list(args.vol_target_ann_grid),
+        _parse_float_list(args.inv_vol_target_ann_grid),
+        _parse_float_list(args.inv_vol_floor_grid),
+        _parse_float_list(args.inv_vol_cap_grid),
         _parse_int_list(args.max_positions_grid),
         _parse_int_list(args.max_pending_entries_grid),
         _parse_int_list(args.entry_ttl_hours_grid),
@@ -1071,6 +1122,11 @@ def main() -> int:
     parser.add_argument("--min-recent-ret-24h-grid", default="-1.0")
     parser.add_argument("--min-recent-ret-72h-grid", default="-1.0")
     parser.add_argument("--max-recent-vol-72h-grid", default="0.0")
+    parser.add_argument("--regime-cs-skew-min-grid", default="-1000000000.0")
+    parser.add_argument("--vol-target-ann-grid", default="0.0")
+    parser.add_argument("--inv-vol-target-ann-grid", default="0.0")
+    parser.add_argument("--inv-vol-floor-grid", default="0.05")
+    parser.add_argument("--inv-vol-cap-grid", default="3.0")
     parser.add_argument("--max-positions-grid", default="5,8")
     parser.add_argument("--max-pending-entries-grid", default="12,24")
     parser.add_argument("--entry-ttl-hours-grid", default="3,6")

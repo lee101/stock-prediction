@@ -46,6 +46,11 @@ PACK_DEFAULTS: dict[str, Any] = {
     "min_recent_ret_24h": -1.0,
     "min_recent_ret_72h": -1.0,
     "max_recent_vol_72h": 0.0,
+    "regime_cs_skew_min": -1_000_000_000.0,
+    "vol_target_ann": 0.0,
+    "inv_vol_target_ann": 0.0,
+    "inv_vol_floor": 0.05,
+    "inv_vol_cap": 3.0,
 }
 
 SUMMARY_FIELDS = [

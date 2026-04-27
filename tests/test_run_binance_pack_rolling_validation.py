@@ -66,6 +66,11 @@ def test_load_candidate_configs_defaults_new_regime_gates_and_dedupes(tmp_path):
     assert cfg.min_recent_ret_24h == -1.0
     assert cfg.min_recent_ret_72h == -1.0
     assert cfg.max_recent_vol_72h == 0.0
+    assert cfg.regime_cs_skew_min == -1_000_000_000.0
+    assert cfg.vol_target_ann == 0.0
+    assert cfg.inv_vol_target_ann == 0.0
+    assert cfg.inv_vol_floor == 0.05
+    assert cfg.inv_vol_cap == 3.0
 
 
 def test_load_candidate_configs_applies_top_k_after_ranking(tmp_path):
