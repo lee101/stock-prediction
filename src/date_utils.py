@@ -8,18 +8,23 @@ from loguru import logger
 UTC = ZoneInfo("UTC")
 NEW_YORK = ZoneInfo("America/New_York")
 
-# Lazy-loaded exchange calendar for NYSE
+# Lazy-loaded exchange calendar for NYSE.  Use an explicit sentinel for the
+# missing-calendar case so fallback mode does not retry/log on every date check.
+_NYSE_CALENDAR_MISSING = object()
 _nyse_calendar = None
 
 
 def _get_nyse_calendar():
     """Lazily load the NYSE calendar to avoid import overhead."""
     global _nyse_calendar
+    if _nyse_calendar is _NYSE_CALENDAR_MISSING:
+        return None
     if _nyse_calendar is None:
         try:
             import exchange_calendars as xcals
             _nyse_calendar = xcals.get_calendar("XNYS")
         except ImportError:
+            _nyse_calendar = _NYSE_CALENDAR_MISSING
             logger.warning("exchange_calendars not installed, falling back to weekday check")
             return None
     return _nyse_calendar
