@@ -2,6 +2,38 @@
 
 ## Active Deployments
 
+### 🚨 2026-04-27 13:10 UTC — UNEXPLAINED EQUITY DROP −$8,879 over weekend (HUMAN REVIEW NEEDED)
+
+**Symptom**: equity dropped from $28,758.98 (last reported by Alpaca portfolio history on 2026-04-25 Sat close) to $19,799.53 (real-time at 2026-04-27 13:10 UTC Mon pre-open). That is a single-step drop of **−$8,879.45 (-30.8%)** between Apr 25 00:00 UTC and Apr 27 08:00 UTC.
+
+**Reconciliation attempted** (cannot account for the drop):
+- Only 2 fills since 2026-04-24: `BTC/USD` BUY 0.185112 @ $77,611.60 (2026-04-25 12:50 UTC) and SELL 0.184704763 @ $78,825.40 (2026-04-27 00:03 UTC).
+- BTC trade net cash impact: −$14,366.84 + $14,559.43 − $32.04 (CFEE USD) = **+$160.55** (small win).
+- BTC fee in BTC (0.000407247 BTC ≈ $31.61) is implicit in the qty difference between buy and sell.
+- All other activity types queried (TRANS, CSD, CSW, JNLC, JNLS, MA, DIV, REORG, FEE, INT) → nothing material since 2026-04-01.
+- The only historic large CSW was −$10,000 + −$40 fee on 2026-04-01 (already reflected in the Apr 2 portfolio drop $38,697 → $28,681); not the cause of today's gap.
+- `/v2/wallets/transfers` returns []; no crypto transfers in/out.
+- `/v2/account` shows `balance_asof: 2026-04-24` with `cash=equity=$19,799.53`. `non_marginable_buying_power=$19,638.98` (= $19,799.53 − $160.55 BTC PnL = pre-BTC trade cash). Suggests "true" cash entering the weekend was $19,638.98, not $28,758.98 as the daily portfolio history showed.
+- Alpaca's daily portfolio history reported a flat $28,758.98 from 2026-04-08 through 2026-04-25 — that 17-day flatline now looks like a stale reporting artifact that was reconciled at Mon 08:00 UTC.
+- 5-min portfolio history Apr 25-27 returns only 2 data points (Apr 24 08:00 and Apr 27 08:00) — Alpaca records no intermediate equity over the weekend.
+
+**Hypothesis (must verify with Alpaca dashboard / support)**: an Alpaca-side accounting reconciliation hit the account at 2026-04-27 08:00 UTC. The reported equity may have been over-stated by ~$9,040 since on or before April 8 (when daily history first stamped $28,759). Possible causes:
+- Mis-priced dust positions (AVAX, DOGE, LTC, SOL — all show qty < 1e-7 with mv=$0 today; could have been held at non-zero historical price earlier).
+- Deferred / silent journal that never appeared in `/v2/account/activities`.
+- Balance correction following a Reg-T or PDT-related lien.
+
+**System status**: NOT a runtime emergency — XGB live trader is RUNNING normally (pid 3294379, lock matches), no death-spiral guard fires, no rogue writers, RL path STOPPED. The equity drop is entirely reflected on the Alpaca side; nothing the trader did caused it.
+
+**Action items**:
+1. **HUMAN**: log into the Alpaca dashboard at `app.alpaca.markets` and check the account ledger for journal/adjustment entries on or around 2026-04-26 / 2026-04-27 that don't appear via the public `/v2/account/activities` endpoint.
+2. **HUMAN**: open a support ticket at Alpaca with this evidence if no obvious cause is visible in the dashboard.
+3. **MONITOR**: confirm equity stays at the new (corrected) level when XGB next attempts a buy. Future buy_plan events will quote `equity≈$19,800` and notional/pick will scale accordingly.
+4. **NO TRADER CHANGE**: launch.sh / model / flags / leverage all unchanged. Do not retune for the smaller equity — the strategy is dollar-fraction based and adapts automatically.
+
+**Audit trail**: full transaction reconstruction in `monitoring/logs/hourly_progress.log` for run `20260427T130001Z`.
+
+---
+
 ### Production bookkeeping
 - `alpacaprod.md` is the current-production ledger. Keep it updated with what is live, how it is launched, and the latest timestamped results.
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
