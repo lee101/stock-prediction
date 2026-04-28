@@ -669,6 +669,8 @@ pufferlib_market/stocks12_*.log
 **/sapp_events.jsonl
 monitoring/logs/
 monitoring/*.raw.jsonl
+monitoring/.crontab_backup_*.txt
+monitoring/.crontab_new.txt
 chronos2_finetuned
 compiled_models
 

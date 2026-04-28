@@ -20,6 +20,53 @@ This is the **process, in strict priority order**. Finish each phase before movi
 
 ---
 
+## Phase 0 — Read the deterministic algo health report (always FIRST)
+
+`monitoring/hourly_prod_check.sh` runs `monitoring/algo_health_report.py` before invoking you and writes the human-readable verdict to `monitoring/logs/algo_health_current.txt` (and a structured copy to `monitoring/logs/algo_health.jsonl`). A separate cron also runs the same report every 15 min during market hours; the rolling one-line summary lives at `monitoring/logs/algo_health_cron.log`.
+
+Read these two files BEFORE running any commands of your own, and use them to skip work that is already known-green:
+
+```bash
+cat monitoring/logs/algo_health_current.txt
+tail -10 monitoring/logs/algo_health_cron.log
+```
+
+The report covers: lock holder liveness, ensemble vs launch.sh consistency, stale-data, score trend (with near-miss + stale-feature detection), Alpaca account, positions+fills, **plan preview** ("if a BUY fired right now what would we submit at what price for what notional?"), **parity replay** (re-runs `score_all_symbols` against the most recent live `scored` event and asserts bit-identity), and **hyperparam candidates**.
+
+How to react to each section:
+
+- **lock_holder FAIL** → singleton broken; jump to Phase 2 R1 and DO NOT proceed.
+- **ensemble_consistency FAIL** → launch.sh references missing pkls or pkls > 14d old; queue a retrain job, but don't redeploy mid-day.
+- **stale_data WARN/FAIL** → check `_get_latest_bars` is succeeding; the loader extends from Alpaca, so root CSV staleness is OK if Alpaca fetch is healthy.
+- **score_trend FAIL** (stale_top_signature: same top symbol AND score across 3+ sessions) → R9a stale-features; investigate before any redeploy.
+- **score_trend WARN** (NEAR MISS: top score within 0.10 of gate) → mark this hour as "watch closely"; an intraday rescore could push it through.
+- **plan_preview** — verify `expected_drift_bps_vs_close` is small (< 30 bps) and `target_qty > 0`. If `live_bid` or `live_ask` is far from `last_close` (> 100 bps), the next BUY may submit a limit prod won't fill — flag it.
+- **parity_replay max |Δ| > 0.001** → live and replay diverge. Investigate immediately (model load, feature recipe, or live-bar truncation drift). Phase 2 R10.
+- **hyperparam_candidates** → if a candidate is suggested AND we are in Phase 3 research mode AND the deploy gate from prior research is currently green, queue the suggested sweep into `analysis/sweeps/` with a launch script. Don't run it inside this hour unless tiny.
+
+If the deterministic report is `overall=ok`, you may compress Phase 1 to a 30-second sanity scan (one supervisor status, one Alpaca /clock query) and spend the rest of the hour on Phase 3 research. If it shows `warn` or `fail`, treat it as Phase 2 entry.
+
+### Big-checklist invariants (verify hourly)
+1. **Singleton lock-holder PID == supervisor PID == descendant of supervisor.** From `algo_health_current.txt` `[lock_holder]` and `supervisorctl status xgb-daily-trader-live`.
+2. **Exactly 1 process matching `xgbnew.live_trader`** (`pgrep -af 'xgbnew.live_trader' | wc -l` == 1).
+3. **No `daily-rl-trader` or `trading-server` process.** `pgrep -af '(daily.rl.trader|trading_server)'` empty. If running → conflict, stop.
+4. **Ensemble dir has ≥ 5 `alltrain_seed*.pkl`, all matching launch.sh declared paths.**
+5. **Most recent `scored` event in `analysis/xgb_live_trade_log/*.jsonl` is < 24h old on a trading day.**
+6. **Top-1 score from latest scored event** is in plausible range `[0.40, 0.95]`. Outside → stale features or model corruption.
+7. **`per_seed_spread > 0`** on latest scored event — confirms the 5-seed ensemble is genuinely blending and not collapsed to a single model.
+8. **Replay parity** `max_abs_delta < 1e-3` against latest scored event.
+9. **Alpaca `/account.status == ACTIVE`**, equity within `[15k, 200k]` band (alert outside).
+10. **At most 1 open stock position** (top_n=1 invariant).
+11. **No pending orders > 30 min old** — check `orders?status=open` with `submitted_at` > 30min back; would-be stuck limits.
+12. **Death-spiral guard buy-price memory** is fresh (< 3d TTL) iff a position is held; stale memory + open position is a bug.
+13. **Crypto-weekend bookkeeping**: on Sat/Sun, an open BTC position is fine; on weekday market-open with BTC still held → ran past `crypto_weekend_close` time, investigate.
+14. **Plan-preview sanity**: if gate fires, simulated `target_qty * expected_limit_price` ≤ `equity * allocation * 1.05` (no leverage misconfig).
+15. **5-min/1h supervisor restart count == 0** (`supervisorctl status` should show a single PID for hours).
+
+If any 1–15 fails, treat as Phase 2 entry and resolve before research.
+
+---
+
 ## Phase 1 — Triage (always run; complete in < 2 min)
 
 Do these reads **in parallel** where possible:
@@ -346,6 +393,8 @@ Fixes:
 ## Phase 3 — Research: try to beat the current deployed best
 
 When Phase 1 is green and Phase 2 did nothing, you work the model.
+
+**Seed your research from `algo_health_current.txt[hyperparam_candidates]`.** That section watches the deployed score distribution and emits sweep suggestions when score-mean collapses, gate-gap stays > 0.10 across many sessions, or per-seed spread shrinks toward 0. Cross-reference its `rationale` against `MEMORY.md` to avoid re-running a lever already refuted (e.g. score-cap collapse, retrain-through-0228, no-picks SPY/QQQ fallback, regime-inversion at 15-seed bonferroni). If the candidate is in the refuted list, do NOT re-run it; instead update memory with the latest observation and pick the next-most-promising suggested lever.
 
 **North-star metric**: the currently deployed config is the 5-seed alltrain ensemble with the **full-stack flags**: `--top-n 1 --allocation 2.0 --min-score 0.85 --hold-through --min-dollar-vol 50000000 --min-vol-20d 0.10`. The deploy gate is evaluated on the **TRUE-OOS** `oos2024_ensemble_gpu` artifacts (trained through 2024-12-31), NOT on `alltrain_ensemble_gpu` (which is retrained through today and is therefore in-sample on the validation window). 60-window OOS grid 2025-01-02 → 2026-04-19, `fee=0.0000278`, `fill_buffer_bps=5`, `decision_lag=2`, binary fills. Numbers from `monitoring/current_algorithms.md §Deploy gate`:
 

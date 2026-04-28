@@ -64,6 +64,24 @@ fi
 
 PROMPT=$(cat "$PROMPT_FILE")
 
+# --- Phase 0: run deterministic algo health report ---
+# Cheap (<60s), no LLM dependency. Writes to monitoring/logs/algo_health_current.txt
+# which the LLM prompt instructs the agent to read as its first triage step.
+HEALTH_LOG="$LOG_DIR/algo_health_${TS}.log"
+echo "=== Phase 0: deterministic algo_health_report $(date -u -Iseconds) ===" | tee -a "$LOG"
+set +e
+timeout 240 "$REPO/.venv/bin/python" "$REPO/monitoring/algo_health_report.py" \
+  > "$HEALTH_LOG" 2>&1
+health_rc=$?
+set -e
+if [ $health_rc -ne 0 ]; then
+  echo "[hourly] algo_health_report exited rc=$health_rc (continuing)" | tee -a "$LOG"
+else
+  echo "[hourly] algo_health_report OK ($HEALTH_LOG)" | tee -a "$LOG"
+fi
+# Surface the human-readable summary header into the main log
+head -20 "$LOG_DIR/algo_health_current.txt" 2>/dev/null | tee -a "$LOG" || true
+
 echo "=== Hourly prod audit $(date -u -Iseconds) ===" | tee -a "$LOG"
 echo "=== PROMPT sent to Claude (opus, xhigh effort, --dangerously-skip-permissions) ===" | tee -a "$LOG"
 echo "$PROMPT_FILE ($(wc -c < "$PROMPT_FILE") bytes)" | tee -a "$LOG"
