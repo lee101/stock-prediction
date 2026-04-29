@@ -35,7 +35,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import MISSING, dataclass
+from dataclasses import MISSING, dataclass, field
 from datetime import date
 from itertools import product
 from pathlib import Path
@@ -79,6 +79,17 @@ class CellResult:
     median_sortino: float
     worst_dd_pct: float
     n_neg: int
+    mean_abs_neg_monthly_pct: float = 0.0
+    monthly_return_pcts: list[float] = field(default_factory=list)
+    window_sortino_values: list[float] = field(default_factory=list)
+    window_drawdown_pcts: list[float] = field(default_factory=list)
+    window_time_under_water_pcts: list[float] = field(default_factory=list)
+    window_ulcer_indexes: list[float] = field(default_factory=list)
+    window_active_day_pcts: list[float] = field(default_factory=list)
+    window_worst_intraday_dd_pcts: list[float] = field(default_factory=list)
+    window_avg_intraday_dd_pcts: list[float] = field(default_factory=list)
+    window_start_dates: list[str] = field(default_factory=list)
+    window_end_dates: list[str] = field(default_factory=list)
     # Aggressive packing floor. 0 means classic min_score-gated behavior.
     min_picks: int = 0
     # Opportunistic work-stealing entries: watch more names than top_n and
@@ -535,8 +546,8 @@ def _cell_key_from_mapping(row: dict) -> tuple:
 def _strategy_key_from_mapping(row: dict) -> tuple:
     """Stable identity for deployable strategy knobs, excluding stress axes."""
     out = []
-    for field in STRATEGY_PARAM_FIELDS:
-        value = row.get(field, 0 if field == "min_picks" else None)
+    for param_name in STRATEGY_PARAM_FIELDS:
+        value = row.get(param_name, 0 if param_name == "min_picks" else None)
         if isinstance(value, float):
             out.append(_key_float(value))
         else:
@@ -678,6 +689,7 @@ def _run_cell(
     fail_fast_max_dd_pct: float = 0.0,
     fail_fast_max_intraday_dd_pct: float = 0.0,
     fail_fast_neg_windows: int = 0,
+    overnight_max_gross_leverage: float | None = None,
 ) -> CellResult:
     fees = FEE_REGIMES[fee_regime]
     # Override fill_buffer if the caller explicitly set it; otherwise
@@ -723,6 +735,10 @@ def _run_cell(
         allocation_temp=float(allocation_temp),
         stop_on_drawdown_pct=max(float(fail_fast_max_dd_pct), 0.0),
         stop_on_intraday_drawdown_pct=max(float(fail_fast_max_intraday_dd_pct), 0.0),
+        overnight_max_gross_leverage=(
+            None if overnight_max_gross_leverage is None
+            else float(overnight_max_gross_leverage)
+        ),
     )
 
     monthlies: list[float] = []
@@ -733,6 +749,8 @@ def _run_cell(
     tuws: list[float] = []
     ulcers: list[float] = []
     active_day_pcts: list[float] = []
+    window_start_dates: list[str] = []
+    window_end_dates: list[str] = []
     fail_fast_reason = ""
     for w_start, w_end in windows:
         w_df = oos_df[(oos_df["date"] >= w_start) & (oos_df["date"] <= w_end)]
@@ -756,6 +774,8 @@ def _run_cell(
         intra_dds_avg.append(res.avg_intraday_dd_pct)
         tuws.append(res.time_under_water_pct)
         ulcers.append(res.ulcer_index)
+        window_start_dates.append(pd.Timestamp(w_start).date().isoformat())
+        window_end_dates.append(pd.Timestamp(w_end).date().isoformat())
         if fail_fast_max_dd_pct > 0.0 and res.max_drawdown_pct >= fail_fast_max_dd_pct:
             fail_fast_reason = f"max_dd_pct>={fail_fast_max_dd_pct:g}"
             break
@@ -773,8 +793,19 @@ def _run_cell(
 
     n = len(monthlies)
     if n == 0:
-        empty = CellResult(leverage, min_score, hold_through, top_n, fee_regime,
-                           0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0)
+        empty = CellResult(
+            leverage=leverage,
+            min_score=min_score,
+            hold_through=hold_through,
+            top_n=top_n,
+            fee_regime=fee_regime,
+            n_windows=0,
+            median_monthly_pct=0.0,
+            p10_monthly_pct=0.0,
+            median_sortino=0.0,
+            worst_dd_pct=0.0,
+            n_neg=0,
+        )
         empty.min_picks = int(min_picks)
         empty.opportunistic_watch_n = int(opportunistic_watch_n)
         empty.opportunistic_entry_discount_bps = float(opportunistic_entry_discount_bps)
@@ -793,6 +824,7 @@ def _run_cell(
     p10 = float(np.percentile(arr, 10))
     worst_dd = float(np.max(dds))
     n_neg = int(np.sum(arr < 0))
+    mean_abs_neg = float(-arr[arr < 0].sum()) / n if n_neg else 0.0
     goodness = compute_goodness(p10, worst_dd, n_neg, n)
     robust_goodness = compute_robust_goodness(arr, worst_dd)
     worst_intra = float(np.max(intra_dds_worst)) if intra_dds_worst else 0.0
@@ -823,6 +855,17 @@ def _run_cell(
         median_sortino=float(np.median(sortinos)),
         worst_dd_pct=worst_dd,
         n_neg=n_neg,
+        mean_abs_neg_monthly_pct=mean_abs_neg,
+        monthly_return_pcts=[float(value) for value in arr],
+        window_sortino_values=[float(value) for value in sortinos],
+        window_drawdown_pcts=[float(value) for value in dds],
+        window_time_under_water_pcts=[float(value) for value in tuws],
+        window_ulcer_indexes=[float(value) for value in ulcers],
+        window_active_day_pcts=[float(value) for value in active_day_pcts],
+        window_worst_intraday_dd_pcts=[float(value) for value in intra_dds_worst],
+        window_avg_intraday_dd_pcts=[float(value) for value in intra_dds_avg],
+        window_start_dates=window_start_dates,
+        window_end_dates=window_end_dates,
         min_picks=int(min_picks),
         opportunistic_watch_n=int(opportunistic_watch_n),
         opportunistic_entry_discount_bps=float(opportunistic_entry_discount_bps),
@@ -1130,6 +1173,7 @@ def run_sweep(
     fail_fast_max_intraday_dd_pct: float = 0.0,
     fail_fast_neg_windows: int = 0,
     fast_features: bool = False,
+    overnight_max_gross_leverage: float | None = None,
     progress_callback: Callable[[list[CellResult], int, int], None] | None = None,
     resume_rows: list[dict] | None = None,
 ) -> list[CellResult]:
@@ -1450,6 +1494,7 @@ def run_sweep(
             fail_fast_max_dd_pct=float(fail_fast_max_dd_pct),
             fail_fast_max_intraday_dd_pct=float(fail_fast_max_intraday_dd_pct),
             fail_fast_neg_windows=int(fail_fast_neg_windows),
+            overnight_max_gross_leverage=overnight_max_gross_leverage,
         )
         cell.ensemble_needs_ranks = bool(needs_ranks)
         cell.ensemble_needs_dispersion = bool(needs_disp)
@@ -1496,6 +1541,17 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "median_sortino": c.median_sortino,
             "worst_dd_pct": c.worst_dd_pct,
             "n_neg": c.n_neg,
+            "mean_abs_neg_monthly_pct": c.mean_abs_neg_monthly_pct,
+            "monthly_return_pcts": c.monthly_return_pcts,
+            "window_sortino_values": c.window_sortino_values,
+            "window_drawdown_pcts": c.window_drawdown_pcts,
+            "window_time_under_water_pcts": c.window_time_under_water_pcts,
+            "window_ulcer_indexes": c.window_ulcer_indexes,
+            "window_active_day_pcts": c.window_active_day_pcts,
+            "window_worst_intraday_dd_pcts": c.window_worst_intraday_dd_pcts,
+            "window_avg_intraday_dd_pcts": c.window_avg_intraday_dd_pcts,
+            "window_start_dates": c.window_start_dates,
+            "window_end_dates": c.window_end_dates,
             "goodness_score": c.goodness_score,
             "robust_goodness_score": c.robust_goodness_score,
             "pain_adjusted_goodness_score": c.pain_adjusted_goodness_score,
@@ -2054,6 +2110,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "skews toward lower values.")
     p.add_argument("--fast-features", action="store_true",
                    help="Use the Polars feature builder for large-universe sweeps.")
+    p.add_argument("--overnight-max-gross-leverage", type=float, default=None,
+                   help="Reg-T overnight gross-leverage cap. None (default) "
+                        "preserves legacy uncapped behavior. Pass 2.0 to mirror "
+                        "prod xgbnew/live_trader._eod_deleverage_tick — "
+                        "candidate cells with leverage>cap will have their "
+                        "per-pick effective leverage clipped at cap, matching "
+                        "how the prod EOD tick auto-deleverages before close.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("analysis/xgbnew_ensemble_sweep"))
     p.add_argument("--verbose", action="store_true")
@@ -2271,6 +2334,11 @@ def main(argv=None) -> int:
         fail_fast_max_intraday_dd_pct=float(args.fail_fast_max_intraday_dd_pct),
         fail_fast_neg_windows=int(args.fail_fast_neg_windows),
         fast_features=bool(args.fast_features),
+        overnight_max_gross_leverage=(
+            None
+            if args.overnight_max_gross_leverage is None
+            else float(args.overnight_max_gross_leverage)
+        ),
         progress_callback=_checkpoint if checkpoint_every > 0 else None,
         resume_rows=resume_rows,
     )

@@ -173,6 +173,16 @@ class BacktestConfig:
     # this percentage. This catches high-leverage cells that recover by close
     # but would have been unacceptable live risk while the position was open.
     stop_on_intraday_drawdown_pct: float = 0.0
+    # Optional Reg-T overnight gross-leverage cap. ``None`` (default)
+    # preserves legacy behaviour. When set (e.g. 2.0), the per-pick effective
+    # leverage used to compute returns is clipped to
+    # ``min(eff_lev, overnight_max_gross_leverage)``. In daily-bar mode each
+    # bar IS the overnight, so this matches the production
+    # ``xgbnew/live_trader._eod_deleverage_tick`` semantic — positions can be
+    # sized up to ``leverage`` intraday but must collapse back to the cap
+    # before market close. Use this when scoring candidates that would be
+    # deployed against the prod EOD deleverage tick.
+    overnight_max_gross_leverage: float | None = None
 
 
 @dataclass
@@ -543,6 +553,14 @@ def simulate(
     if missing:
         raise ValueError(f"test_df missing columns: {missing}")
 
+    if config.overnight_max_gross_leverage is not None:
+        cap_val = float(config.overnight_max_gross_leverage)
+        if not np.isfinite(cap_val) or cap_val <= 0.0:
+            raise ValueError(
+                "overnight_max_gross_leverage must be positive and finite "
+                f"(got {config.overnight_max_gross_leverage!r})"
+            )
+
     # Compute combined scores for every row
     if precomputed_scores is None:
         scores = combined_scores(
@@ -854,6 +872,11 @@ def simulate(
                 cap=config.inv_vol_cap,
             )
             eff_lev = config.leverage * pick_scale * conviction_scale
+            if config.overnight_max_gross_leverage is not None:
+                eff_lev = min(
+                    float(eff_lev),
+                    float(config.overnight_max_gross_leverage),
+                )
 
             if is_continuation:
                 # Position is held across the prior close — no trade fires
@@ -958,6 +981,11 @@ def simulate(
                     fb_lev = float(config.leverage) * float(
                         config.no_picks_fallback_alloc_scale
                     )
+                    if config.overnight_max_gross_leverage is not None:
+                        fb_lev = min(
+                            float(fb_lev),
+                            float(config.overnight_max_gross_leverage),
+                        )
                     fb_fee = _resolve_fee_rate(fallback_sym, config)
                     fb_entry, fb_exit = _fill_prices(
                         fb_o, fb_c, fill_buffer_bps=config.fill_buffer_bps
@@ -1243,6 +1271,14 @@ def simulate_hourly(
     if missing:
         raise ValueError(f"test_df missing columns: {missing}")
 
+    if config.overnight_max_gross_leverage is not None:
+        cap_val = float(config.overnight_max_gross_leverage)
+        if not np.isfinite(cap_val) or cap_val <= 0.0:
+            raise ValueError(
+                "overnight_max_gross_leverage must be positive and finite "
+                f"(got {config.overnight_max_gross_leverage!r})"
+            )
+
     if precomputed_scores is None:
         scores = combined_scores(
             test_df, model,
@@ -1276,7 +1312,12 @@ def simulate_hourly(
         for sym in pd.unique(df["symbol"].astype(str)):
             symbol_fee_rates[str(sym)] = _resolve_fee_rate(str(sym), config)
 
-    margin_per_bar = _hour_margin_cost(config.leverage, bars_per_year=bars_per_year)
+    _hourly_eff_lev = float(config.leverage)
+    if config.overnight_max_gross_leverage is not None:
+        _hourly_eff_lev = min(
+            _hourly_eff_lev, float(config.overnight_max_gross_leverage)
+        )
+    margin_per_bar = _hour_margin_cost(_hourly_eff_lev, bars_per_year=bars_per_year)
 
     equity = float(config.initial_cash)
     bar_results: list[DayResult] = []
@@ -1322,10 +1363,13 @@ def simulate_hourly(
             round_trip_return = (
                 exit_fill * (1.0 - fee_rate) / (entry_fill * (1.0 + fee_rate))
             ) - 1.0
-            gross_leveraged = config.leverage * round_trip_return
+            eff_lev = float(config.leverage)
+            if config.overnight_max_gross_leverage is not None:
+                eff_lev = min(eff_lev, float(config.overnight_max_gross_leverage))
+            gross_leveraged = eff_lev * round_trip_return
 
             cost_frac = (
-                config.leverage * (2.0 * config.commission_bps) / 10_000.0
+                eff_lev * (2.0 * config.commission_bps) / 10_000.0
                 + margin_per_bar
             )
             net = gross_leveraged - cost_frac
@@ -1341,7 +1385,7 @@ def simulate_hourly(
                 commission_bps=config.commission_bps,
                 fee_rate=fee_rate,
                 fill_buffer_bps=float(config.fill_buffer_bps),
-                leverage=config.leverage,
+                leverage=eff_lev,
                 gross_return_pct=gross_oc * 100.0,
                 net_return_pct=net * 100.0,
             ))

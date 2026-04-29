@@ -206,19 +206,22 @@ def _compute_equity(cash: float, pos: Optional[Position], price: float) -> float
 
 def _short_borrow_fee(
     *,
+    cash: float,
     pos: Optional[Position],
     price: float,
     short_borrow_apr: float,
     periods_per_year: float,
 ) -> float:
-    if pos is None or not pos.is_short:
-        return 0.0
     if short_borrow_apr <= 0.0:
         return 0.0
     periods_per_year = float(periods_per_year) if periods_per_year > 0 else 8760.0
     if periods_per_year <= 0.0:
         return 0.0
-    return float(max(0.0, pos.qty * price) * float(short_borrow_apr) / periods_per_year)
+    if pos is not None and pos.is_short:
+        borrowed_notional = max(0.0, pos.qty * price)
+    else:
+        borrowed_notional = max(0.0, -float(cash))
+    return float(borrowed_notional * float(short_borrow_apr) / periods_per_year)
 
 
 def _apply_short_borrow_cost(
@@ -230,6 +233,7 @@ def _apply_short_borrow_cost(
     periods_per_year: float,
 ) -> tuple[float, float]:
     fee = _short_borrow_fee(
+        cash=cash,
         pos=pos,
         price=price,
         short_borrow_apr=short_borrow_apr,
@@ -620,6 +624,7 @@ def simulate_daily_policy(
     death_spiral_tolerance_bps: float | None = None,
     death_spiral_overnight_tolerance_bps: float = 500.0,
     death_spiral_stale_after_bars: int = 8,
+    overnight_max_gross_leverage: float | None = None,
 ) -> DailySimResult:
     """Pure-python simulation matching the C env's daily step semantics.
 
@@ -638,6 +643,15 @@ def simulate_daily_policy(
         min_notional_usd: Skip opening a position if the dollar value of the
             position would be below this threshold (e.g. 12.0 for $12 minimum).
             0 = disabled. Matches production min notional check.
+        overnight_max_gross_leverage: Optional Reg-T overnight leverage cap.
+            ``None`` (default) preserves legacy behavior. When set (e.g. 2.0)
+            the *effective* ``max_leverage`` used for sizing every new
+            position is ``min(max_leverage, overnight_max_gross_leverage)``.
+            In daily-bar mode each bar IS the overnight, so this matches the
+            production ``xgbnew/live_trader._eod_deleverage_tick`` semantic
+            (gross exposure at close ≤ equity * cap). The original
+            ``max_leverage`` is preserved for downstream consumers but never
+            actually used to size a position when the cap is tighter.
         death_spiral_tolerance_bps: Intraday (fresh-buy) refusal threshold in
             bps below entry price. ``None`` (default) disables the guard for
             backward-compatibility; production deploys should pass 50.0 to
@@ -671,12 +685,26 @@ def simulate_daily_policy(
     _max_hold = max(0, int(max_hold_bars))
     _min_notional = max(0.0, float(min_notional_usd))
 
+    # Reg-T overnight cap. None preserves legacy behavior; when set, every
+    # new position is sized with min(max_leverage, cap). Each daily bar is
+    # one overnight so this is sufficient — no intraday/EOD split here.
+    if overnight_max_gross_leverage is None:
+        effective_max_leverage = float(max_leverage)
+    else:
+        cap = float(overnight_max_gross_leverage)
+        if not np.isfinite(cap) or cap <= 0.0:
+            raise ValueError(
+                f"overnight_max_gross_leverage must be positive and finite "
+                f"(got {overnight_max_gross_leverage!r})"
+            )
+        effective_max_leverage = float(min(float(max_leverage), cap))
+
     init_state = _build_initial_portfolio_state(
         symbols=[s.upper() for s in data.symbols],
         initial_cash=initial_cash,
         initial_position=initial_position,
         fee_rate=effective_fee,
-        max_leverage=max_leverage,
+        max_leverage=effective_max_leverage,
         price_by_sym=lambda sym_idx: float(data.prices[0, sym_idx, P_CLOSE]),
     )
 
@@ -806,7 +834,7 @@ def simulate_daily_policy(
                     low_px = float(data.prices[t, target_sym, P_LOW])
                     high_px = float(data.prices[t, target_sym, P_HIGH])
                     # Min notional check: skip if position value would be too small
-                    open_budget = cash * max_leverage * target_alloc
+                    open_budget = cash * effective_max_leverage * target_alloc
                     if _min_notional > 0.0 and open_budget < _min_notional:
                         pass  # below min notional — stay flat
                     elif is_short_target:
@@ -817,7 +845,7 @@ def simulate_daily_policy(
                             low_price=low_px,
                             high_price=high_px,
                             fee_rate=effective_fee,
-                            max_leverage=max_leverage,
+                            max_leverage=effective_max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
                             fill_buffer_bps=fill_buffer_bps,
@@ -831,7 +859,7 @@ def simulate_daily_policy(
                             low_price=low_px,
                             high_price=high_px,
                             fee_rate=effective_fee,
-                            max_leverage=max_leverage,
+                            max_leverage=effective_max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
                             fill_buffer_bps=fill_buffer_bps,

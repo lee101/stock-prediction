@@ -271,9 +271,10 @@ def _cache_config_signature(
     max_leverage: float,
     tradable_symbols: str | None,
     disable_shorts: bool,
+    overnight_max_gross_leverage: float | None = None,
 ) -> str:
     payload = {
-        "version": 2,
+        "version": 3,
         "data_dir": str(data_dir),
         "periods": [int(period) for period in periods],
         "fee_rate": float(fee_rate),
@@ -284,6 +285,10 @@ def _cache_config_signature(
         "max_hold_bars": int(max_hold_bars),
         "min_notional_usd": float(min_notional_usd),
         "max_leverage": float(max_leverage),
+        "overnight_max_gross_leverage": (
+            None if overnight_max_gross_leverage is None
+            else float(overnight_max_gross_leverage)
+        ),
         "tradable_symbols": _normalized_tradable_symbols_csv(tradable_symbols),
         "disable_shorts": bool(disable_shorts),
     }
@@ -416,6 +421,7 @@ def _eval_all_periods(
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
     min_notional_usd: float = MIN_NOTIONAL_USD,
+    overnight_max_gross_leverage: float | None = None,
 ) -> list[dict]:
     """Run simulate_daily_policy for each period, return list of result dicts."""
     results = []
@@ -440,6 +446,7 @@ def _eval_all_periods(
             max_hold_bars=max_hold_bars,
             min_notional_usd=min_notional_usd,
             enable_drawdown_profit_early_exit=False,
+            overnight_max_gross_leverage=overnight_max_gross_leverage,
         )
         results.append(_format_sim_result(sim_result, ckpt_name, universe, period_days, periods_per_year))
     return results
@@ -460,6 +467,7 @@ def evaluate_single_checkpoint(
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
     min_notional_usd: float = MIN_NOTIONAL_USD,
+    overnight_max_gross_leverage: float | None = None,
 ) -> list[dict]:
     """Evaluate a single checkpoint across all periods. Designed for use in worker processes.
 
@@ -517,6 +525,7 @@ def evaluate_single_checkpoint(
         trailing_stop_pct=trailing_stop_pct,
         max_hold_bars=max_hold_bars,
         min_notional_usd=min_notional_usd,
+        overnight_max_gross_leverage=overnight_max_gross_leverage,
     )
 
 
@@ -540,6 +549,7 @@ def fast_eval_sequential(
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
     min_notional_usd: float = MIN_NOTIONAL_USD,
+    overnight_max_gross_leverage: float | None = None,
 ) -> pd.DataFrame:
     """Evaluate all checkpoints sequentially with shared data loading and caching.
 
@@ -575,6 +585,7 @@ def fast_eval_sequential(
         max_leverage=max_leverage,
         tradable_symbols=tradable_symbols,
         disable_shorts=disable_shorts,
+        overnight_max_gross_leverage=overnight_max_gross_leverage,
     )
     cache_hits = 0
 
@@ -653,6 +664,7 @@ def fast_eval_sequential(
             trailing_stop_pct=trailing_stop_pct,
             max_hold_bars=max_hold_bars,
             min_notional_usd=min_notional_usd,
+            overnight_max_gross_leverage=overnight_max_gross_leverage,
         )
         all_results.extend(ckpt_results)
 
@@ -699,6 +711,7 @@ def fast_eval_parallel(
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
     min_notional_usd: float = MIN_NOTIONAL_USD,
+    overnight_max_gross_leverage: float | None = None,
 ) -> pd.DataFrame:
     """Evaluate all checkpoints in parallel using ProcessPoolExecutor.
 
@@ -728,6 +741,7 @@ def fast_eval_parallel(
         max_leverage=max_leverage,
         tradable_symbols=tradable_symbols,
         disable_shorts=disable_shorts,
+        overnight_max_gross_leverage=overnight_max_gross_leverage,
     )
     cache_hits = 0
 
@@ -777,6 +791,7 @@ def fast_eval_parallel(
                     trailing_stop_pct,
                     max_hold_bars,
                     min_notional_usd,
+                    overnight_max_gross_leverage,
                 )
                 futures[future] = ckpt_path
 
@@ -909,6 +924,16 @@ def main():
     parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     parser.add_argument("--sequential", action="store_true", help="Force sequential evaluation")
     parser.add_argument("--max-leverage", type=float, default=MAX_LEVERAGE)
+    parser.add_argument(
+        "--overnight-max-gross-leverage",
+        type=float,
+        default=None,
+        help=(
+            "Optional Reg-T overnight gross leverage cap. None (default) "
+            "preserves legacy uncapped behavior. Pass 2.0 to mirror prod "
+            "xgbnew/live_trader._eod_deleverage_tick."
+        ),
+    )
     parser.add_argument("--tradable-symbols", type=str, default="")
     parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument(
@@ -941,6 +966,11 @@ def main():
         print(f"Tradable symbols: {_normalized_tradable_symbols_csv(args.tradable_symbols)}")
     print(f"Disable shorts: {bool(args.disable_shorts)}")
     print(f"Max leverage: {float(args.max_leverage):.4g}")
+    if args.overnight_max_gross_leverage is not None:
+        print(
+            f"Overnight gross-leverage cap: "
+            f"{float(args.overnight_max_gross_leverage):.4g}"
+        )
     print(f"Fee: {FEE_RATE*10000:.0f}bps + {SLIPPAGE_BPS:.1f}bps slippage")
     print(
         f"Trailing stop: {TRAILING_STOP_PCT*100:.2f}%  "
@@ -951,6 +981,11 @@ def main():
 
     t_start = time.time()
 
+    overnight_cap = (
+        None
+        if args.overnight_max_gross_leverage is None
+        else float(args.overnight_max_gross_leverage)
+    )
     if parallel and args.max_workers > 1:
         df = fast_eval_parallel(
             root, dirs, periods, FEE_RATE, FILL_BUFFER_BPS,
@@ -962,6 +997,7 @@ def main():
             trailing_stop_pct=TRAILING_STOP_PCT,
             max_hold_bars=MAX_HOLD_BARS,
             min_notional_usd=MIN_NOTIONAL_USD,
+            overnight_max_gross_leverage=overnight_cap,
         )
     else:
         df = fast_eval_sequential(
@@ -974,6 +1010,7 @@ def main():
             trailing_stop_pct=TRAILING_STOP_PCT,
             max_hold_bars=MAX_HOLD_BARS,
             min_notional_usd=MIN_NOTIONAL_USD,
+            overnight_max_gross_leverage=overnight_cap,
         )
 
     elapsed = time.time() - t_start

@@ -450,6 +450,19 @@ def main() -> None:
         help="Require the daily bar to trade through each limit by this many bps before fill.",
     )
     parser.add_argument("--max-leverage", type=float, default=1.0)
+    parser.add_argument(
+        "--overnight-max-gross-leverage",
+        type=float,
+        default=None,
+        help=(
+            "Optional Reg-T overnight gross leverage cap. None (default) "
+            "preserves legacy uncapped behavior. Pass 2.0 to mirror prod "
+            "xgbnew/live_trader._eod_deleverage_tick (positions can be 4x "
+            "intraday but must be ≤2x overnight). In daily-bar mode each bar "
+            "is one overnight, so the simulator clips effective max-leverage "
+            "to min(--max-leverage, --overnight-max-gross-leverage)."
+        ),
+    )
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0)
     parser.add_argument("--disable-shorts", action="store_true")
@@ -694,6 +707,10 @@ def main() -> None:
             ),
             death_spiral_overnight_tolerance_bps=float(args.death_spiral_overnight_tolerance_bps),
             death_spiral_stale_after_bars=int(args.death_spiral_stale_after_bars),
+            overnight_max_gross_leverage=(
+                None if args.overnight_max_gross_leverage is None
+                else float(args.overnight_max_gross_leverage)
+            ),
         )
         annualized_return = annualize_total_return(
             float(result.total_return),
@@ -750,6 +767,10 @@ def main() -> None:
         "slippage_bps": float(args.slippage_bps),
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "max_leverage": float(args.max_leverage),
+        "overnight_max_gross_leverage": (
+            None if args.overnight_max_gross_leverage is None
+            else float(args.overnight_max_gross_leverage)
+        ),
         "short_borrow_apr": float(args.short_borrow_apr),
         "periods_per_year": float(args.periods_per_year),
         "window_selection": window_selection,
