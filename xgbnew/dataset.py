@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Iterator
@@ -30,6 +31,56 @@ from .features import (
 )
 
 logger = logging.getLogger(__name__)
+_FM_LATENT_RE = re.compile(r"^latent_(\d+)$")
+
+
+def _normalize_fm_latents_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Validate and normalize FM latent rows before joining into XGB features."""
+    missing = {"symbol", "date"} - set(df.columns)
+    if missing:
+        raise ValueError(f"fm latents missing required columns: {sorted(missing)}")
+
+    latent_cols = []
+    bad_latent_cols = []
+    for col in df.columns:
+        col_name = str(col)
+        if not col_name.startswith("latent_"):
+            continue
+        match = _FM_LATENT_RE.fullmatch(col_name)
+        if match is None:
+            bad_latent_cols.append(col_name)
+            continue
+        latent_cols.append((int(match.group(1)), col_name))
+    if bad_latent_cols:
+        raise ValueError(f"fm latents have invalid latent columns: {bad_latent_cols}")
+    if not latent_cols:
+        raise ValueError("fm latents must include at least one latent_N column")
+    latent_cols.sort()
+    expected = list(range(len(latent_cols)))
+    got = [idx for idx, _col in latent_cols]
+    if got != expected:
+        raise ValueError(
+            f"fm latents latent_N columns must be contiguous from 0; got {got}"
+        )
+
+    out = df.copy()
+    out["symbol"] = out["symbol"].astype(str).str.strip().str.upper()
+    if (out["symbol"] == "").any():
+        raise ValueError("fm latents contain empty symbols")
+    if not out.empty:
+        parsed_dates = pd.to_datetime(out["date"], errors="coerce", utc=True)
+        if parsed_dates.isna().any():
+            raise ValueError("fm latents contain unparseable dates")
+        out["date"] = parsed_dates.dt.date
+    if out.duplicated(["symbol", "date"]).any():
+        raise ValueError("fm latents contain duplicate (symbol, date) rows")
+    latent_col_names = [col for _idx, col in latent_cols]
+    for col in latent_col_names:
+        values = pd.to_numeric(out[col], errors="coerce")
+        if values.isna().any() or not np.isfinite(values.to_numpy(dtype=np.float64)).all():
+            raise ValueError(f"fm latents column {col} contains non-finite values")
+        out[col] = values.astype(np.float32)
+    return out, latent_col_names
 
 
 # ── CSV loader (reuse screener approach) ─────────────────────────────────────
@@ -166,6 +217,81 @@ def _attach_chronos_features(
     return feat_df
 
 
+def load_fm_latents(path: Path) -> pd.DataFrame | None:
+    """Load foundation-model latents parquet (one row per (symbol, date)).
+
+    Expected columns: ``symbol``, ``date``, ``latent_0`` ... ``latent_K``.
+    Returns ``None`` if the file does not exist.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    df = pd.read_parquet(p)
+    normalized, _latent_cols = _normalize_fm_latents_frame(df)
+    return normalized
+
+
+def attach_fm_latents(
+    feat_df: pd.DataFrame,
+    fm_df: pd.DataFrame | None,
+    *,
+    n_latents: int | None = None,
+    fillna: float = 0.0,
+) -> pd.DataFrame:
+    """Merge foundation-model latents into ``feat_df`` on (symbol, date).
+
+    Adds ``latent_0..latent_{n_latents-1}`` columns plus an ``fm_available``
+    indicator. When ``fm_df`` is None or has no overlapping rows, all latent
+    columns are filled with ``fillna`` and ``fm_available`` is 0.0 - the
+    XGB model still has the columns available so ensemble feature_cols are
+    consistent across windows.
+
+    Args:
+        feat_df: feature DataFrame with ``symbol`` + ``date`` columns.
+        fm_df: foundation-model latent DataFrame (from load_fm_latents).
+        n_latents: number of ``latent_N`` columns to attach. ``None`` =
+            auto-detect from ``fm_df``.
+        fillna: value to use for missing rows.
+    """
+    out = feat_df.copy()
+    out["fm_available"] = 0.0
+    if fm_df is None or fm_df.empty or "symbol" not in feat_df.columns:
+        # populate canonical 32 latent cols with fillna so feature_cols are stable
+        n_lat = n_latents if n_latents is not None else 32
+        for k in range(n_lat):
+            col = f"latent_{k}"
+            if col not in out.columns:
+                out[col] = float(fillna)
+        return out
+
+    fm_normalized, latent_cols = _normalize_fm_latents_frame(fm_df)
+    if n_latents is not None:
+        n_lat = int(n_latents)
+        if n_lat <= 0:
+            raise ValueError(f"n_latents must be positive when fm_df is provided; got {n_lat}")
+        if n_lat > len(latent_cols):
+            raise ValueError(
+                f"requested {n_lat} fm latent columns but artifact has {len(latent_cols)}"
+            )
+        latent_cols = latent_cols[:n_lat]
+    use_cols = ["symbol", "date", *latent_cols]
+    fm_subset = fm_normalized[use_cols]
+    fm_subset = fm_subset.assign(fm_available=1.0)
+    merged = out.merge(fm_subset, on=["symbol", "date"], how="left", suffixes=("", "_fm"))
+    for col in latent_cols:
+        merged[col] = merged[col].fillna(float(fillna)).astype(np.float32)
+    if "fm_available_fm" in merged.columns:
+        merged["fm_available"] = (
+            merged["fm_available_fm"].fillna(0.0).astype(np.float32)
+        )
+        merged = merged.drop(columns=["fm_available_fm"])
+    else:
+        merged["fm_available"] = (
+            merged["fm_available"].fillna(0.0).astype(np.float32)
+        )
+    return merged
+
+
 def _attach_chronos_features_fast(
     feat_df: pd.DataFrame,
     chronos_cache: dict[date, dict[str, dict]],
@@ -229,6 +355,8 @@ def build_daily_dataset(
     fast_features: bool = False,
     include_cross_sectional_ranks: bool = False,
     include_cross_sectional_dispersion: bool = False,
+    fm_latents: pd.DataFrame | None = None,
+    fm_n_latents: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build train / val / test DataFrames for daily XGBoost model.
 
@@ -255,6 +383,8 @@ def build_daily_dataset(
             min_dollar_vol=min_dollar_vol,
             include_cross_sectional_ranks=include_cross_sectional_ranks,
             include_cross_sectional_dispersion=include_cross_sectional_dispersion,
+            fm_latents=fm_latents,
+            fm_n_latents=fm_n_latents,
         )
 
     train_parts, val_parts, test_parts = [], [], []
@@ -325,6 +455,28 @@ def build_daily_dataset(
     if chronos_cache and len(test_df) > 0:
         test_df = _attach_chronos_features_fast(test_df, chronos_cache)
 
+    # Attach foundation-model latents to ALL splits (train AND val/test) so
+    # the XGB model sees them at training time. The latents parquet covers
+    # the full history and was computed offline with strict no-lookahead
+    # (see scripts/build_chronos_bolt_latents.py).
+    if fm_latents is not None:
+        if len(train_df) > 0:
+            train_df = attach_fm_latents(
+                train_df, fm_latents, n_latents=fm_n_latents
+            )
+        if len(val_df) > 0:
+            val_df = attach_fm_latents(val_df, fm_latents, n_latents=fm_n_latents)
+        if len(test_df) > 0:
+            test_df = attach_fm_latents(
+                test_df, fm_latents, n_latents=fm_n_latents
+            )
+        logger.info(
+            "fm_latents attached: train_avail=%.2f val_avail=%.2f test_avail=%.2f",
+            float(train_df["fm_available"].mean()) if len(train_df) > 0 else 0.0,
+            float(val_df["fm_available"].mean()) if len(val_df) > 0 else 0.0,
+            float(test_df["fm_available"].mean()) if len(test_df) > 0 else 0.0,
+        )
+
     logger.info(
         "Dataset sizes: train=%d val=%d test=%d rows",
         len(train_df), len(val_df), len(test_df),
@@ -345,6 +497,8 @@ def _build_daily_dataset_fast(
     min_dollar_vol: float = 1e6,
     include_cross_sectional_ranks: bool = False,
     include_cross_sectional_dispersion: bool = False,
+    fm_latents: pd.DataFrame | None = None,
+    fm_n_latents: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Polars-native dataset builder. Same splits and columns as the pandas
     path, but features come from ``xgbnew.features_fast.build_daily_features_fast``
@@ -397,6 +551,14 @@ def _build_daily_dataset_fast(
     if chronos_cache and len(te) > 0:
         te = _attach_chronos_features_fast(te, chronos_cache)
 
+    if fm_latents is not None:
+        if len(tr) > 0:
+            tr = attach_fm_latents(tr, fm_latents, n_latents=fm_n_latents)
+        if len(va) > 0:
+            va = attach_fm_latents(va, fm_latents, n_latents=fm_n_latents)
+        if len(te) > 0:
+            te = attach_fm_latents(te, fm_latents, n_latents=fm_n_latents)
+
     logger.info(
         "Dataset sizes (fast): train=%d val=%d test=%d rows",
         len(tr), len(va), len(te),
@@ -411,6 +573,8 @@ __all__ = [
     "build_hourly_dataset",
     "load_hourly_symbol_csv",
     "list_hourly_symbols",
+    "load_fm_latents",
+    "attach_fm_latents",
 ]
 
 
@@ -543,12 +707,28 @@ def build_hourly_dataset(
     if symbols is None:
         symbols = list_hourly_symbols(root, universe=universe)
 
-    train_end_ts = pd.Timestamp(train_end, tz="UTC") if pd.Timestamp(train_end).tzinfo is None else pd.Timestamp(train_end)
-    val_end_ts = pd.Timestamp(val_end, tz="UTC") if pd.Timestamp(val_end).tzinfo is None else pd.Timestamp(val_end)
-    test_end_ts = pd.Timestamp(test_end, tz="UTC") if pd.Timestamp(test_end).tzinfo is None else pd.Timestamp(test_end)
+    train_end_ts = (
+        pd.Timestamp(train_end, tz="UTC")
+        if pd.Timestamp(train_end).tzinfo is None
+        else pd.Timestamp(train_end)
+    )
+    val_end_ts = (
+        pd.Timestamp(val_end, tz="UTC")
+        if pd.Timestamp(val_end).tzinfo is None
+        else pd.Timestamp(val_end)
+    )
+    test_end_ts = (
+        pd.Timestamp(test_end, tz="UTC")
+        if pd.Timestamp(test_end).tzinfo is None
+        else pd.Timestamp(test_end)
+    )
     train_start_ts = None
     if train_start is not None:
-        train_start_ts = pd.Timestamp(train_start, tz="UTC") if pd.Timestamp(train_start).tzinfo is None else pd.Timestamp(train_start)
+        train_start_ts = (
+            pd.Timestamp(train_start, tz="UTC")
+            if pd.Timestamp(train_start).tzinfo is None
+            else pd.Timestamp(train_start)
+        )
 
     train_parts: list[pd.DataFrame] = []
     val_parts: list[pd.DataFrame] = []

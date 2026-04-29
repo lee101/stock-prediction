@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents
 from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
     DAILY_FEATURE_COLS,
@@ -86,6 +86,19 @@ def _parse_seed_list(value: str) -> list[int]:
     return seeds
 
 
+def _fm_latent_columns(df) -> list[str]:
+    cols = []
+    for col in df.columns:
+        col_name = str(col)
+        if not col_name.startswith("latent_"):
+            continue
+        suffix = col_name.removeprefix("latent_")
+        if suffix.isdecimal():
+            cols.append((int(suffix), col_name))
+    cols.sort()
+    return [col for _idx, col in cols]
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -115,6 +128,17 @@ def parse_args(argv=None):
                         "(cs_iqr_ret5, cs_skew_ret5). Broadcast same value to "
                         "every symbol-row of the same date. Saved into pkl "
                         "feature_cols so predict-time uses them.")
+    p.add_argument("--fm-latents-path", type=Path, default=None,
+                   help="Optional foundation-model latents parquet "
+                        "(scripts/build_chronos_bolt_latents.py output). "
+                        "When provided, latent_0..latent_K and fm_available "
+                        "are joined per (symbol, date) and added to the "
+                        "training feature set. Saved into the pkl "
+                        "feature_cols so predict-time uses them.")
+    p.add_argument("--fm-n-latents", type=int, default=32,
+                   help="Number of latent_N columns to keep from the "
+                        "fm-latents parquet. Default 32 matches the PCA "
+                        "output of build_chronos_bolt_latents.py.")
     p.add_argument("--shapes", default="",
                    help="Architectural-diversity mode. Comma-separated tuples "
                         "'n_est:depth:lr:seed', one model per tuple. Overrides "
@@ -171,9 +195,40 @@ def main(argv=None) -> int:
             print("ERROR: need at least 2 seeds", file=sys.stderr)
             return 1
 
-    symbols = _load_symbols(args.symbols_file)
     train_start = date.fromisoformat(args.train_start)
     train_end = date.fromisoformat(args.train_end) if args.train_end else date.today()
+
+    fm_latents_df = None
+    fm_latents_sha256 = None
+    if args.fm_latents_path is not None:
+        if int(args.fm_n_latents) <= 0:
+            print(
+                f"ERROR: --fm-n-latents must be positive when --fm-latents-path is set; "
+                f"got {args.fm_n_latents}",
+                file=sys.stderr,
+            )
+            return 1
+        fm_latents_df = load_fm_latents(args.fm_latents_path)
+        if fm_latents_df is None:
+            print(f"ERROR: --fm-latents-path {args.fm_latents_path} not found",
+                  file=sys.stderr)
+            return 1
+        latent_cols = _fm_latent_columns(fm_latents_df)
+        if int(args.fm_n_latents) > len(latent_cols):
+            print(
+                f"ERROR: --fm-n-latents={args.fm_n_latents} exceeds artifact latent "
+                f"columns ({len(latent_cols)})",
+                file=sys.stderr,
+            )
+            return 1
+        fm_latents_sha256 = _file_sha256(args.fm_latents_path)
+        print(f"[xgb-alltrain-ens] fm latents: rows={len(fm_latents_df):,} "
+              f"unique_symbols={fm_latents_df['symbol'].nunique()} "
+              f"unique_dates={fm_latents_df['date'].nunique()} "
+              f"cols={[c for c in fm_latents_df.columns if c.startswith('latent_')][:3]}…",
+              flush=True)
+
+    symbols = _load_symbols(args.symbols_file)
 
     chronos_cache = {}
     if args.chronos_cache.exists():
@@ -194,6 +249,8 @@ def main(argv=None) -> int:
         fast_features=False,
         include_cross_sectional_ranks=bool(args.include_ranks),
         include_cross_sectional_dispersion=bool(args.include_dispersion),
+        fm_latents=fm_latents_df,
+        fm_n_latents=int(args.fm_n_latents) if fm_latents_df is not None else None,
     )
     print(f"[xgb-alltrain-ens] dataset built in {time.perf_counter()-t0:.1f}s | "
           f"rows={len(train_df):,}  train_symbols={train_df['symbol'].nunique()}", flush=True)
@@ -203,8 +260,12 @@ def main(argv=None) -> int:
         feature_cols += list(DAILY_RANK_FEATURE_COLS)
     if args.include_dispersion:
         feature_cols += list(DAILY_DISPERSION_FEATURE_COLS)
+    if fm_latents_df is not None:
+        n_lat = int(args.fm_n_latents)
+        feature_cols += [f"latent_{i}" for i in range(n_lat)] + ["fm_available"]
     print(f"[xgb-alltrain-ens] feature_cols={len(feature_cols)} "
-          f"ranks_on={bool(args.include_ranks)} disp_on={bool(args.include_dispersion)}", flush=True)
+          f"ranks_on={bool(args.include_ranks)} disp_on={bool(args.include_dispersion)} "
+          f"fm_latents_on={fm_latents_df is not None}", flush=True)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -271,6 +332,14 @@ def main(argv=None) -> int:
             "device": args.device,
             "min_dollar_vol": float(args.min_dollar_vol),
             "include_ranks": bool(args.include_ranks),
+            "include_dispersion": bool(args.include_dispersion),
+            "fm_latents_path": (
+                str(args.fm_latents_path) if args.fm_latents_path else None
+            ),
+            "fm_latents_sha256": fm_latents_sha256,
+            "fm_n_latents": (
+                int(args.fm_n_latents) if fm_latents_df is not None else 0
+            ),
             "feature_cols": feature_cols,
             "shapes_mode": bool(shapes),
             "shapes": shapes,

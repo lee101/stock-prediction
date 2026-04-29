@@ -53,6 +53,7 @@ from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
     DAILY_FEATURE_COLS,
     DAILY_RANK_FEATURE_COLS,
+    FM_LATENT_FEATURE_COLS,
     LIVE_SUPPORTED_FEATURE_COLS,
     add_cross_sectional_dispersion,
     add_cross_sectional_ranks,
@@ -2151,6 +2152,14 @@ def _validated_model_features(model: XGBStockModel, path: Path) -> tuple[str, ..
         print(
             "ERROR: Model feature_cols contain unsupported live features: "
             f"{path}: {unsupported}",
+            file=sys.stderr,
+        )
+        return None
+    offline_only = sorted(set(features).intersection(FM_LATENT_FEATURE_COLS))
+    if offline_only:
+        print(
+            "ERROR: Model feature_cols require offline FM latents not available "
+            f"in live trading: {path}: {offline_only}",
             file=sys.stderr,
         )
         return None

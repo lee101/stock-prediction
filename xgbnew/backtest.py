@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from src.fees import get_fee_for_symbol
+
 from .features import cross_sectional_regime_keep_by_date
 from .model import XGBStockModel, combined_scores
 
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 ANNUAL_MARGIN_RATE = 0.0625   # 6.25% per year (Alpaca rate)
 TRADING_DAYS_PER_YEAR = 252
+PRODUCTION_STOCK_FEE_RATE = 0.001  # 10 bps production-realism stress fee
 
 
 @dataclass
@@ -110,8 +112,8 @@ class BacktestConfig:
     # (tariff-crash style cross-sectional dislocation) are where the
     # ensemble's rank-order flips sign on fresh 2025-07→2026-04 true-OOS.
     # Gating OUT those days (trading only when IQR is below the threshold)
-    # turned top-1/day cumulative from −37% to +43% on the fresh 5-seed
-    # oos2025h1 ensemble. Leak-free — ret_5d is lag-1 (close[t-1]/close[t-6]),
+    # turned top-1/day cumulative from -37% to +43% on the fresh 5-seed
+    # oos2025h1 ensemble. Leak-free: ret_5d is lag-1 (close[t-1]/close[t-6]),
     # so IQR computed on day T is known at the 9:30 am open.
     # 0.0 disables (legacy identity). Suggested: 0.042 from diagnostic.
     regime_cs_iqr_max: float = 0.0
@@ -1204,26 +1206,27 @@ def print_summary(res: BacktestResult, label: str = "") -> None:
 __all__ = [
     "BacktestConfig",
     "BacktestResult",
+    "CRYPTO_HOURS_PER_YEAR",
     "DayResult",
     "DayTrade",
+    "PRODUCTION_STOCK_FEE_RATE",
+    "STOCK_HOURS_PER_YEAR",
     "_allocation_weights",
+    "print_summary",
     "simulate",
     "simulate_hourly",
-    "print_summary",
-    "STOCK_HOURS_PER_YEAR",
-    "CRYPTO_HOURS_PER_YEAR",
 ]
 
 
 # ── Hourly backtest (bar-granular, same cost model) ───────────────────────────
 
-# Regular US-equity session: 6.5 hr × 252 td = 1,638 bars/yr
+# Regular US-equity session: 6.5 hr x 252 td = 1,638 bars/yr
 STOCK_HOURS_PER_YEAR = 252 * 6.5
-# Crypto trades 24/7: 24 hr × 365 d = 8,760 bars/yr  (≈ 5.35× higher budget)
+# Crypto trades 24/7: 24 hr x 365 d = 8,760 bars/yr  (~5.35x higher budget)
 CRYPTO_HOURS_PER_YEAR = 24 * 365
 # Per-calendar-month bar counts (used for monthly-return annualisation)
-STOCK_HOURS_PER_MONTH = 21 * 6.5          # ≈ 136.5
-CRYPTO_HOURS_PER_MONTH = (24 * 365) / 12  # ≈ 730.0
+STOCK_HOURS_PER_MONTH = 21 * 6.5          # ~136.5
+CRYPTO_HOURS_PER_MONTH = (24 * 365) / 12  # ~730.0
 
 
 def _hour_margin_cost(leverage: float, *, bars_per_year: float) -> float:

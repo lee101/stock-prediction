@@ -1,4 +1,4 @@
-"""Fill-buffer × leverage realism gate for the prod screened32 ensemble.
+"""Fill-buffer x leverage realism gate for the prod screened32 ensemble.
 
 Sweeps the production ensemble (DEFAULT_CHECKPOINT + DEFAULT_EXTRA_CHECKPOINTS)
 across a grid of (fill_buffer_bps, max_leverage) and reports per-cell median /
@@ -7,12 +7,12 @@ single-offset val set. Use this BEFORE deploying any ensemble change to
 verify that the proposed config still passes at the live-equivalent fill
 buffer (5bps minimum; live limits sit at +5/+25 bps from open).
 
-Why this exists: scripts/eval_100d.py runs the daily fp4 path with
-fill_buffer_bps=0 by default — that lets the policy "fill" anywhere inside
-[low, high] of the daily bar. Production limit orders need the bar to trade
-*through* the limit by 5+ bps before they get hit. The 19.57%/mo headline is
-the lookahead-tolerant (bps=0) number; this script tells you whether the
-ensemble actually clears the bar at production-realistic execution.
+Why this exists: historical scripts/eval_100d.py runs used the daily fp4 path
+with fill_buffer_bps=0 — that let the policy "fill" anywhere inside [low, high]
+of the daily bar. Production limit orders need the bar to trade *through* the
+limit by 5+ bps before they get hit. Modern eval_100d promotion requires
+hourly_intrabar replay; this script remains a focused fill-buffer x leverage
+stress gate for the published screened32 ensemble.
 
 Usage::
 
@@ -20,6 +20,7 @@ Usage::
         --val-data pufferlib_market/data/screened32_single_offset_val_full.bin \
         --window-days 50 \
         --fill-buffer-bps-grid 0,5,10,20 \
+        --slippage-bps-grid 0,5,10,20 \
         --max-leverage-grid 1.0,1.5,2.0 \
         --decision-lag 2 \
         --out-dir docs/realism_gate
@@ -30,26 +31,29 @@ import argparse
 import collections
 import json
 import math
+import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import torch
 from torch.distributions import Categorical
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from pufferlib_market.batched_ensemble import StackedEnsemble, can_batch  # noqa: E402
 from pufferlib_market.evaluate_holdout import (  # noqa: E402
     _mask_all_shorts,
     _slice_window,
     load_policy,
 )
-from pufferlib_market.batched_ensemble import StackedEnsemble, can_batch  # noqa: E402
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy  # noqa: E402
+
 from src.daily_stock_defaults import (  # noqa: E402
     DEFAULT_CHECKPOINT,
     DEFAULT_EXTRA_CHECKPOINTS,
@@ -58,6 +62,7 @@ from src.daily_stock_defaults import (  # noqa: E402
 
 @dataclass(frozen=True)
 class CellResult:
+    slippage_bps: float
     fill_buffer_bps: float
     max_leverage: float
     median_total_return: float
@@ -84,6 +89,72 @@ def _percentile(values: Sequence[float], q: float) -> float:
     if not values:
         return 0.0
     return float(np.percentile(np.asarray(values, dtype=np.float64), q))
+
+
+def _require_finite_float(
+    value: float,
+    *,
+    name: str,
+    min_value: float | None = None,
+    strictly_positive: bool = False,
+) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if strictly_positive:
+        if parsed <= 0.0:
+            raise ValueError(f"{name} must be > 0, got {parsed!r}")
+    elif min_value is not None and parsed < float(min_value):
+        raise ValueError(f"{name} must be >= {float(min_value):g}, got {parsed!r}")
+    return parsed
+
+
+def _parse_float_grid(
+    raw: str,
+    *,
+    name: str,
+    min_value: float | None = None,
+    strictly_positive: bool = False,
+) -> list[float]:
+    values: list[float] = []
+    seen: set[float] = set()
+    for part in str(raw).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            parsed = _require_finite_float(
+                float(text),
+                name=name,
+                min_value=min_value,
+                strictly_positive=strictly_positive,
+            )
+        except ValueError as exc:
+            raise ValueError(f"{name} contains invalid value {text!r}: {exc}") from exc
+        if parsed in seen:
+            raise ValueError(f"{name} contains duplicate value {parsed:g}")
+        seen.add(parsed)
+        values.append(parsed)
+    if not values:
+        raise ValueError(f"{name} must contain at least one value")
+    return values
+
+
+def _require_int_at_least(value: int, *, name: str, min_value: int) -> int:
+    parsed = int(value)
+    if parsed < int(min_value):
+        raise ValueError(f"{name} must be >= {int(min_value)}, got {parsed}")
+    return parsed
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _build_ensemble_policy_fn(
@@ -120,12 +191,11 @@ def _build_ensemble_policy_fn(
     pending: collections.deque[int] = collections.deque(maxlen=max(1, decision_lag + 1))
 
     # Fast path: stack all members' weights into one bmm-based forward.
-    # ~13× speedup on per-step inference vs the serial for-loop at batch=1.
+    # ~13x speedup on per-step inference vs the serial for-loop at batch=1.
     # Golden-tested in tests/test_batched_ensemble.py for argmax parity.
     # Env kill-switch: BATCHED_ENSEMBLE_DISABLE=1 forces the serial loop (for debugging).
-    import os as _os
     stacked = None
-    if n_ensemble > 1 and can_batch(policies) and not _os.environ.get("BATCHED_ENSEMBLE_DISABLE"):
+    if n_ensemble > 1 and can_batch(policies) and not os.environ.get("BATCHED_ENSEMBLE_DISABLE"):
         stacked = StackedEnsemble.from_policies(policies, device)
 
     def reset_buffer() -> None:
@@ -181,7 +251,7 @@ def _build_ensemble_policy_fn(
 def _can_use_gpu_path(
     *, decision_lag: int, disable_shorts: bool, deterministic: bool,
     alloc_bins: int, level_bins: int, action_max_offset_bps: float,
-    ensemble_mode: str,
+    ensemble_mode: str, short_borrow_apr: float,
 ) -> bool:
     """The GPU parallel-windows sim only covers the deploy-gate envelope.
 
@@ -195,6 +265,7 @@ def _can_use_gpu_path(
         and int(alloc_bins) == 1
         and int(level_bins) == 1
         and float(action_max_offset_bps) == 0.0
+        and float(short_borrow_apr) == 0.0
         and ensemble_mode in ("softmax_avg", "logit_avg")
         and torch.cuda.is_available()
     )
@@ -214,14 +285,14 @@ def _run_cell(
     max_leverage: float,
     fee_rate: float,
     slippage_bps: float,
+    short_borrow_apr: float,
     window_days: int,
     start_indices: Sequence[int],
     ensemble_mode: str = "softmax_avg",
     use_gpu_sim: bool = False,
 ) -> CellResult:
     # Read head metadata once — needed by both GPU and CPU paths.
-    from pufferlib_market.evaluate_holdout import load_policy as _load_policy
-    _head = _load_policy(str(checkpoints[0]), num_symbols, features_per_sym=features_per_sym, device=device)
+    _head = load_policy(str(checkpoints[0]), num_symbols, features_per_sym=features_per_sym, device=device)
 
     gpu_ok = use_gpu_sim and _can_use_gpu_path(
         decision_lag=decision_lag,
@@ -231,13 +302,14 @@ def _run_cell(
         level_bins=int(_head.action_level_bins),
         action_max_offset_bps=float(_head.action_max_offset_bps),
         ensemble_mode=ensemble_mode,
+        short_borrow_apr=float(short_borrow_apr),
     )
     rets: list[float] = []
     sortinos: list[float] = []
     maxdds: list[float] = []
     if gpu_ok:
         # Parallel-windows GPU sim — processes all windows in one pass.
-        from pufferlib_market.gpu_realism_gate import run_cell_gpu
+        from pufferlib_market.gpu_realism_gate import run_cell_gpu  # noqa: PLC0415
         result = run_cell_gpu(
             data,
             checkpoints=[str(p) for p in checkpoints],
@@ -277,6 +349,7 @@ def _run_cell(
                 fee_rate=float(fee_rate),
                 slippage_bps=float(slippage_bps),
                 max_leverage=float(max_leverage),
+                short_borrow_apr=float(short_borrow_apr),
                 periods_per_year=365.0,
                 fill_buffer_bps=float(fill_buffer_bps),
                 action_allocation_bins=int(head.action_allocation_bins),
@@ -291,6 +364,7 @@ def _run_cell(
     p10_ret = _percentile(rets, 10)
     p90_ret = _percentile(rets, 90)
     return CellResult(
+        slippage_bps=float(slippage_bps),
         fill_buffer_bps=float(fill_buffer_bps),
         max_leverage=float(max_leverage),
         median_total_return=median_ret,
@@ -301,8 +375,45 @@ def _run_cell(
         median_sortino=_percentile(sortinos, 50),
         median_max_dd=_percentile(maxdds, 50),
         n_neg=int(sum(1 for r in rets if r < 0.0)),
-        n_windows=int(len(rets)),
+        n_windows=len(rets),
     )
+
+
+def _promotion_gate(cells: Sequence[CellResult], *, monthly_target: float, enforce: bool = True) -> dict:
+    worst_cell = None
+    if cells:
+        worst = min(cells, key=lambda c: c.median_monthly_return)
+        worst_cell = {
+            "slippage_bps": float(worst.slippage_bps),
+            "fill_buffer_bps": float(worst.fill_buffer_bps),
+            "max_leverage": float(worst.max_leverage),
+            "median_monthly_return": float(worst.median_monthly_return),
+            "p10_monthly_return": float(worst.p10_monthly_return),
+            "n_neg": int(worst.n_neg),
+            "n_windows": int(worst.n_windows),
+        }
+        worst_median_monthly = float(worst.median_monthly_return)
+    else:
+        worst_median_monthly = None
+
+    failures: list[str] = []
+    if not cells:
+        failures.append("no_cells_evaluated")
+    elif worst_median_monthly is None or worst_median_monthly < float(monthly_target):
+        failures.append(
+            "worst_median_monthly_return "
+            f"{float(worst_median_monthly or 0.0):.6g} < target {float(monthly_target):.6g}"
+        )
+
+    return {
+        "passed": not failures,
+        "enforced": bool(enforce),
+        "monthly_target": float(monthly_target),
+        "n_cells": len(cells),
+        "worst_median_monthly_return": worst_median_monthly,
+        "worst_cell": worst_cell,
+        "failures": failures,
+    }
 
 
 def _render_md(
@@ -311,17 +422,21 @@ def _render_md(
     val_path: Path,
     window_days: int,
     fee_rate: float,
-    slippage_bps: float,
+    slippage_bps_grid: Sequence[float],
+    short_borrow_apr: float,
     decision_lag: int,
     monthly_target: float,
+    promotion_gate: dict | None = None,
     checkpoint_names: list[str] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# Screened32 realism gate — `{val_path.name}`")
     lines.append("")
+    slippage_summary = ",".join(f"{x:g}" for x in slippage_bps_grid)
     lines.append(
-        f"- window_days={window_days}, fee_rate={fee_rate}, slippage_bps={slippage_bps}, "
-        f"decision_lag={decision_lag}, monthly_target={monthly_target * 100:.1f}%/mo"
+        f"- window_days={window_days}, fee_rate={fee_rate}, slippage_bps_grid={slippage_summary}, "
+        f"short_borrow_apr={short_borrow_apr}, decision_lag={decision_lag}, "
+        f"monthly_target={monthly_target * 100:.1f}%/mo"
     )
     if checkpoint_names is not None:
         names_summary = ", ".join(checkpoint_names) if len(checkpoint_names) <= 16 \
@@ -329,66 +444,83 @@ def _render_md(
         lines.append(f"- ensemble: {len(checkpoint_names)}-model softmax_avg ({names_summary})")
     else:
         lines.append("- ensemble: softmax_avg (checkpoint list unspecified)")
+    if promotion_gate is not None:
+        status = "PASS" if bool(promotion_gate.get("passed")) else "FAIL"
+        lines.append(
+            f"- promotion_gate: {status}, enforced={bool(promotion_gate.get('enforced'))}, "
+            f"worst_median_monthly={float(promotion_gate.get('worst_median_monthly_return') or 0.0) * 100:+.2f}%"
+        )
+        failures = promotion_gate.get("failures") or []
+        if failures:
+            lines.append(f"- gate_failures: {', '.join(str(x) for x in failures)}")
     lines.append("")
 
+    slippages = sorted({c.slippage_bps for c in cells})
     fill_buffers = sorted({c.fill_buffer_bps for c in cells})
     leverages = sorted({c.max_leverage for c in cells})
 
-    def cell_for(fb: float, lev: float) -> CellResult | None:
+    def cell_for(slip: float, fb: float, lev: float) -> CellResult | None:
         for c in cells:
-            if c.fill_buffer_bps == fb and c.max_leverage == lev:
+            if c.slippage_bps == slip and c.fill_buffer_bps == fb and c.max_leverage == lev:
                 return c
         return None
 
-    lines.append("## Median monthly return (worst on each row is the realistic deploy gate)")
+    lines.append("## Median monthly return (worst on each slippage/fill row is the realistic deploy gate)")
     lines.append("")
-    header = "| fill_bps \\ leverage | " + " | ".join(f"{lev:g}x" for lev in leverages) + " |"
-    sep = "|---:" * (len(leverages) + 1) + "|"
+    header = "| slip_bps | fill_bps \\ leverage | " + " | ".join(f"{lev:g}x" for lev in leverages) + " |"
+    sep = "|---:|---:" + "|---:" * len(leverages) + "|"
     lines.append(header)
     lines.append(sep)
-    for fb in fill_buffers:
-        row = [f"{fb:g}"]
-        for lev in leverages:
-            c = cell_for(fb, lev)
-            if c is None:
-                row.append("—")
-            else:
-                marker = "✅" if c.median_monthly_return >= monthly_target else ("⚠️" if c.median_monthly_return >= 0.10 else "❌")
-                row.append(f"{c.median_monthly_return * 100:+.2f}% {marker}")
-        lines.append("| " + " | ".join(row) + " |")
+    for slip in slippages:
+        for fb in fill_buffers:
+            row = [f"{slip:g}", f"{fb:g}"]
+            for lev in leverages:
+                c = cell_for(slip, fb, lev)
+                if c is None:
+                    row.append("—")
+                else:
+                    marker = (
+                        "✅"
+                        if c.median_monthly_return >= monthly_target
+                        else ("⚠️" if c.median_monthly_return >= 0.10 else "❌")
+                    )
+                    row.append(f"{c.median_monthly_return * 100:+.2f}% {marker}")
+            lines.append("| " + " | ".join(row) + " |")
     lines.append("")
 
     lines.append("## p10 monthly return (tail risk)")
     lines.append("")
     lines.append(header)
     lines.append(sep)
-    for fb in fill_buffers:
-        row = [f"{fb:g}"]
-        for lev in leverages:
-            c = cell_for(fb, lev)
-            row.append("—" if c is None else f"{c.p10_monthly_return * 100:+.2f}%")
-        lines.append("| " + " | ".join(row) + " |")
+    for slip in slippages:
+        for fb in fill_buffers:
+            row = [f"{slip:g}", f"{fb:g}"]
+            for lev in leverages:
+                c = cell_for(slip, fb, lev)
+                row.append("—" if c is None else f"{c.p10_monthly_return * 100:+.2f}%")
+            lines.append("| " + " | ".join(row) + " |")
     lines.append("")
 
     lines.append("## Negative-window count (out of 263)")
     lines.append("")
     lines.append(header)
     lines.append(sep)
-    for fb in fill_buffers:
-        row = [f"{fb:g}"]
-        for lev in leverages:
-            c = cell_for(fb, lev)
-            row.append("—" if c is None else f"{c.n_neg}/{c.n_windows}")
-        lines.append("| " + " | ".join(row) + " |")
+    for slip in slippages:
+        for fb in fill_buffers:
+            row = [f"{slip:g}", f"{fb:g}"]
+            for lev in leverages:
+                c = cell_for(slip, fb, lev)
+                row.append("—" if c is None else f"{c.n_neg}/{c.n_windows}")
+            lines.append("| " + " | ".join(row) + " |")
     lines.append("")
 
     lines.append("## Per-cell raw")
     lines.append("")
-    lines.append("| fill_bps | leverage | median_total | p10_total | sortino | max_dd | n_neg |")
-    lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| slip_bps | fill_bps | leverage | median_total | p10_total | sortino | max_dd | n_neg |")
+    lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|")
     for c in cells:
         lines.append(
-            f"| {c.fill_buffer_bps:g} | {c.max_leverage:g} "
+            f"| {c.slippage_bps:g} | {c.fill_buffer_bps:g} | {c.max_leverage:g} "
             f"| {c.median_total_return * 100:+.2f}% | {c.p10_total_return * 100:+.2f}% "
             f"| {c.median_sortino:.2f} | {c.median_max_dd * 100:.2f}% "
             f"| {c.n_neg}/{c.n_windows} |"
@@ -407,11 +539,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="Comma-separated max_leverage cells (default: 1.0,1.5,2.0)")
     ap.add_argument("--fee-rate", type=float, default=0.001,
                     help="Per-fill fee rate (default 0.001 = 10bps).")
-    ap.add_argument("--slippage-bps", type=float, default=5.0,
-                    help="Adverse fill slippage in bps; symmetric on open and close.")
+    ap.add_argument("--slippage-bps-grid", default="0,5,10,20",
+                    help="Comma-separated adverse fill slippage cells in bps (default: 0,5,10,20).")
+    ap.add_argument("--slippage-bps", type=float, default=None,
+                    help="Legacy/smoke override: evaluate one adverse fill slippage cell in bps.")
+    ap.add_argument("--short-borrow-apr", type=float, default=0.0625,
+                    help="Annualized short borrow APR charged by the simulator (default 0.0625 = 6.25%).")
     ap.add_argument("--decision-lag", type=int, default=2,
                     help="Defer the policy's action by N bars (production-safe default 2).")
     ap.add_argument("--monthly-target", type=float, default=0.27)
+    ap.add_argument("--no-enforce-gate", dest="enforce_gate", action="store_false",
+                    help="Write report artifacts but return 0 even if cells miss monthly_target.")
+    ap.set_defaults(enforce_gate=True)
     ap.add_argument("--no-disable-shorts", dest="disable_shorts", action="store_false",
                     help="Allow short actions; default is to mask them like prod (longs-only, 33-action ensemble).")
     ap.set_defaults(disable_shorts=True)
@@ -432,14 +571,48 @@ def main(argv: list[str] | None = None) -> int:
                          "Anything outside the envelope falls back to CPU automatically.")
     args = ap.parse_args(argv)
 
+    try:
+        window_days = _require_int_at_least(args.window_days, name="window_days", min_value=1)
+        fill_buffers = _parse_float_grid(
+            args.fill_buffer_bps_grid,
+            name="fill_buffer_bps_grid",
+            min_value=0.0,
+        )
+        leverages = _parse_float_grid(
+            args.max_leverage_grid,
+            name="max_leverage_grid",
+            strictly_positive=True,
+        )
+        fee_rate = _require_finite_float(args.fee_rate, name="fee_rate", min_value=0.0)
+        if args.slippage_bps is None:
+            slippages = _parse_float_grid(
+                args.slippage_bps_grid,
+                name="slippage_bps_grid",
+                min_value=0.0,
+            )
+        else:
+            slippages = [
+                _require_finite_float(args.slippage_bps, name="slippage_bps", min_value=0.0)
+            ]
+        short_borrow_apr = _require_finite_float(
+            args.short_borrow_apr,
+            name="short_borrow_apr",
+            min_value=0.0,
+        )
+        decision_lag = _require_int_at_least(args.decision_lag, name="decision_lag", min_value=0)
+        monthly_target = _require_finite_float(args.monthly_target, name="monthly_target")
+        max_windows = (
+            None
+            if args.max_windows is None
+            else _require_int_at_least(args.max_windows, name="max_windows", min_value=1)
+        )
+    except ValueError as exc:
+        print(f"realism_gate: {exc}", file=sys.stderr)
+        return 2
+
     val_path = Path(args.val_data).resolve()
     if not val_path.exists():
         print(f"realism_gate: val data not found: {val_path}", file=sys.stderr)
-        return 2
-    fill_buffers = [float(x) for x in args.fill_buffer_bps_grid.split(",") if x.strip()]
-    leverages = [float(x) for x in args.max_leverage_grid.split(",") if x.strip()]
-    if not fill_buffers or not leverages:
-        print("realism_gate: empty grid", file=sys.stderr)
         return 2
 
     if args.checkpoints:
@@ -455,50 +628,61 @@ def main(argv: list[str] | None = None) -> int:
     data = read_mktd(val_path)
     num_symbols = int(data.num_symbols)
     features_per_sym = int(data.features.shape[2])
-    window_len = int(args.window_days) + 1
+    window_len = int(window_days) + 1
     if window_len > data.num_timesteps:
         print(
-            f"realism_gate: val too short for window_days={args.window_days} "
+            f"realism_gate: val too short for window_days={window_days} "
             f"(T={data.num_timesteps})",
             file=sys.stderr,
         )
         return 2
     candidate_count = data.num_timesteps - window_len + 1
     start_indices = list(range(candidate_count))
-    if args.max_windows is not None:
-        start_indices = start_indices[: int(args.max_windows)]
+    if max_windows is not None:
+        start_indices = start_indices[: int(max_windows)]
 
     device = torch.device(args.device)
     cells: list[CellResult] = []
-    for fb in fill_buffers:
-        for lev in leverages:
-            print(f"[{fb:g} bps × {lev:g}x] running {len(start_indices)} windows...", flush=True)
-            cell = _run_cell(
-                data=data,
-                checkpoints=abs_ckpts,
-                num_symbols=num_symbols,
-                features_per_sym=features_per_sym,
-                decision_lag=int(args.decision_lag),
-                disable_shorts=bool(args.disable_shorts),
-                deterministic=bool(args.deterministic),
-                device=device,
-                fill_buffer_bps=float(fb),
-                max_leverage=float(lev),
-                fee_rate=float(args.fee_rate),
-                slippage_bps=float(args.slippage_bps),
-                window_days=int(args.window_days),
-                start_indices=start_indices,
-                ensemble_mode=str(args.ensemble_mode),
-                use_gpu_sim=bool(args.use_gpu_sim),
-            )
-            cells.append(cell)
-            print(
-                f"  med_monthly={cell.median_monthly_return * 100:+.2f}%  "
-                f"p10_monthly={cell.p10_monthly_return * 100:+.2f}%  "
-                f"neg={cell.n_neg}/{cell.n_windows}  sortino={cell.median_sortino:.2f}",
-                flush=True,
-            )
+    for slip in slippages:
+        for fb in fill_buffers:
+            for lev in leverages:
+                print(
+                    f"[slip {slip:g} bps x fill {fb:g} bps x {lev:g}x] "
+                    f"running {len(start_indices)} windows...",
+                    flush=True,
+                )
+                cell = _run_cell(
+                    data=data,
+                    checkpoints=abs_ckpts,
+                    num_symbols=num_symbols,
+                    features_per_sym=features_per_sym,
+                    decision_lag=int(decision_lag),
+                    disable_shorts=bool(args.disable_shorts),
+                    deterministic=bool(args.deterministic),
+                    device=device,
+                    fill_buffer_bps=float(fb),
+                    max_leverage=float(lev),
+                    fee_rate=float(fee_rate),
+                    slippage_bps=float(slip),
+                    short_borrow_apr=float(short_borrow_apr),
+                    window_days=int(window_days),
+                    start_indices=start_indices,
+                    ensemble_mode=str(args.ensemble_mode),
+                    use_gpu_sim=bool(args.use_gpu_sim),
+                )
+                cells.append(cell)
+                print(
+                    f"  med_monthly={cell.median_monthly_return * 100:+.2f}%  "
+                    f"p10_monthly={cell.p10_monthly_return * 100:+.2f}%  "
+                    f"neg={cell.n_neg}/{cell.n_windows}  sortino={cell.median_sortino:.2f}",
+                    flush=True,
+                )
 
+    promotion_gate = _promotion_gate(
+        cells,
+        monthly_target=float(monthly_target),
+        enforce=bool(args.enforce_gate),
+    )
     out_dir = Path(args.out_dir)
     if not out_dir.is_absolute():
         out_dir = REPO / out_dir
@@ -506,39 +690,47 @@ def main(argv: list[str] | None = None) -> int:
     val_stem = val_path.stem
     payload = {
         "val_data": str(val_path),
-        "window_days": int(args.window_days),
-        "fee_rate": float(args.fee_rate),
-        "slippage_bps": float(args.slippage_bps),
-        "decision_lag": int(args.decision_lag),
+        "window_days": int(window_days),
+        "fee_rate": float(fee_rate),
+        "slippage_bps_grid": slippages,
+        "slippage_bps": slippages[0] if len(slippages) == 1 else slippages,
+        "short_borrow_apr": float(short_borrow_apr),
+        "decision_lag": int(decision_lag),
         "disable_shorts": bool(args.disable_shorts),
-        "monthly_target": float(args.monthly_target),
+        "monthly_target": float(monthly_target),
         "ensemble_size": len(abs_ckpts),
         "ensemble_mode": str(args.ensemble_mode),
         "checkpoints": [str(c) for c in ckpts],
         "n_windows_per_cell": len(start_indices),
         "fill_buffer_bps_grid": fill_buffers,
         "max_leverage_grid": leverages,
+        "promotion_gate": promotion_gate,
         "cells": [c.__dict__ for c in cells],
     }
     json_path = out_dir / f"{val_stem}_realism_gate.json"
     md_path = out_dir / f"{val_stem}_realism_gate.md"
-    json_path.write_text(json.dumps(payload, indent=2, default=str))
+    _write_text_atomic(json_path, json.dumps(payload, indent=2, default=str) + "\n")
     md = _render_md(
         cells,
         val_path=val_path,
-        window_days=int(args.window_days),
-        fee_rate=float(args.fee_rate),
-        slippage_bps=float(args.slippage_bps),
-        decision_lag=int(args.decision_lag),
-        monthly_target=float(args.monthly_target),
+        window_days=int(window_days),
+        fee_rate=float(fee_rate),
+        slippage_bps_grid=slippages,
+        short_borrow_apr=float(short_borrow_apr),
+        decision_lag=int(decision_lag),
+        monthly_target=float(monthly_target),
+        promotion_gate=promotion_gate,
         checkpoint_names=[Path(c).stem for c in ckpts],
     )
-    md_path.write_text(md)
+    _write_text_atomic(md_path, md)
     print()
     print(md)
     print()
     print(f"wrote {json_path}")
     print(f"wrote {md_path}")
+    if bool(args.enforce_gate) and not bool(promotion_gate["passed"]):
+        print(f"realism_gate: promotion gate failed: {promotion_gate['failures'][0]}", file=sys.stderr)
+        return 3
     return 0
 
 

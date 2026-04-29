@@ -24,12 +24,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from pufferlib_market.hourly_replay import read_mktd
-from src.daily_stock_defaults import DEFAULT_CHECKPOINT, DEFAULT_EXTRA_CHECKPOINTS
+from pufferlib_market.hourly_replay import read_mktd  # noqa: E402
+
+from src.daily_stock_defaults import DEFAULT_CHECKPOINT, DEFAULT_EXTRA_CHECKPOINTS  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,15 @@ class Scenario:
 
 def _parse_int_csv(raw: str) -> list[int]:
     return [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+
+
+def _require_finite_float(value: float, *, name: str, min_value: float | None = None) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if min_value is not None and parsed < float(min_value):
+        raise ValueError(f"{name} must be >= {float(min_value):g}, got {parsed!r}")
+    return parsed
 
 
 def _monthly_from_total(total_return: float, window_days: int, trading_days_per_month: float = 21.0) -> float:
@@ -61,8 +74,6 @@ def build_start_indices(
     recent_within_days: int | None = None,
     exhaustive: bool = False,
 ) -> list[int]:
-    import numpy as np
-
     steps = int(eval_days)
     if steps < 1:
         raise ValueError("eval_days must be >= 1")
@@ -107,6 +118,7 @@ def _run_holdout(
     fee_rate: float,
     slippage_bps: int,
     fill_buffer_bps: float,
+    short_borrow_apr: float,
     decision_lag: int,
     disable_shorts: bool,
 ) -> dict[str, Any]:
@@ -130,6 +142,8 @@ def _run_holdout(
             str(int(slippage_bps)),
             "--fill-buffer-bps",
             str(float(fill_buffer_bps)),
+            "--short-borrow-apr",
+            str(float(short_borrow_apr)),
             "--decision-lag",
             str(int(decision_lag)),
             "--deterministic",
@@ -176,7 +190,7 @@ def _build_scenarios(args: argparse.Namespace) -> list[Scenario]:
     combo = Scenario(
         name="baseline_plus_candidate",
         checkpoint=str(args.baseline_checkpoint),
-        extra_checkpoints=tuple([*args.baseline_extra_checkpoints, *combo_paths]),
+        extra_checkpoints=(*args.baseline_extra_checkpoints, *combo_paths),
     )
     scenarios.extend([candidate, combo])
     return scenarios
@@ -365,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exhaustive", action="store_true", help="Use all possible windows per horizon/regime")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=0.0625)
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--allow-shorts", action="store_false", dest="disable_shorts")
     parser.set_defaults(disable_shorts=True)
@@ -374,6 +389,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        short_borrow_apr = _require_finite_float(
+            args.short_borrow_apr,
+            name="short_borrow_apr",
+            min_value=0.0,
+        )
+    except ValueError as exc:
+        print(f"eval_multihorizon_candidate: {exc}", file=sys.stderr)
+        return 2
+
     data_path = Path(args.data_path)
     if not data_path.is_absolute():
         data_path = REPO / data_path
@@ -402,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
             "recent_within_days": regimes.get("recent"),
             "fee_rate": float(args.fee_rate),
             "fill_buffer_bps": float(args.fill_buffer_bps),
+            "short_borrow_apr": short_borrow_apr,
             "decision_lag": int(args.decision_lag),
             "disable_shorts": bool(args.disable_shorts),
         },
@@ -432,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
                         fee_rate=float(args.fee_rate),
                         slippage_bps=int(slip),
                         fill_buffer_bps=float(args.fill_buffer_bps),
+                        short_borrow_apr=short_borrow_apr,
                         decision_lag=int(args.decision_lag),
                         disable_shorts=bool(args.disable_shorts),
                     )

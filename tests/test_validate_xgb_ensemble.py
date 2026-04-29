@@ -110,6 +110,15 @@ def test_validate_model_paths_loads_exact_paths_without_manifest(tmp_path) -> No
     assert [model.path for model in check.models] == [str(path) for path in model_paths]
 
 
+def test_validate_model_paths_rejects_offline_fm_latent_features(tmp_path) -> None:
+    mod = _load_module()
+    path = tmp_path / "alltrain_seed0.pkl"
+    _write_fake_model(path, feature_cols=["ret_1d", "latent_0", "fm_available"])
+
+    with pytest.raises(ValueError, match="offline FM latents not available in live trading"):
+        mod.validate_model_paths((path,), min_pkl_bytes=1)
+
+
 def test_validate_model_paths_rejects_duplicate_paths(tmp_path) -> None:
     mod = _load_module()
     path = tmp_path / "alltrain_seed0.pkl"

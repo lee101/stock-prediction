@@ -2,6 +2,17 @@
 
 ## Active Deployments
 
+### 🟢 2026-04-27 22:03 UTC — monitor-agent health snapshot
+
+- supervisor `xgb-daily-trader-live` RUNNING pid=2370763, uptime 6h54m, lock holder pid=2370763 — singleton OK.
+- alpaca-api OK, equity $19,799.53 (unchanged since 13:10 UTC reconciliation), buying_power $39,599.06.
+- 0 open positions, 0 pending close. 8 trade-log events in last 48h; latest 2026-04-27.jsonl. No SPY provenance warnings across 7 sessions.
+- `daily-rl-trader` STOPPED, `trading-server` STOPPED — expected. No death-spiral markers, no orphan locks. RTX 5090 idle (2.3/32.6 GB).
+- Single FAIL: `scheduled-audits` reports the 20:00 UTC hourly cron's claude wrapper hit its 50-min timeout (rc=124). The audit itself completed Phase 1 GREEN inside the log (commit `babec422`); only the wrapper exit code was non-zero. Cron schedule is 13–20 UTC Mon-Fri so no further runs until 2026-04-28 13:00 UTC — nothing to restart. No fix attempted.
+- WARNs (unchanged, non-blocking): `llm-stock-trader` not configured (optional); `cancel-multi-orders` inactive (optional); disk `/`=89% `/nvme0n1-disk`=85% (stable post prior vacuum).
+
+---
+
 ### 🟢 2026-04-27 15:08 UTC — manual rotation: alltrain ensemble train_end 2026-04-20 → 2026-04-26
 
 **Action**: rotated the LIVE 5-seed alltrain ensemble from `alltrain_ensemble_gpu_prev_20260427T150729Z` (trained through 2026-04-20) to the staging ensemble that the Sunday auto-retrain produced (trained through 2026-04-26, originally at `alltrain_ensemble_gpu_staging_20260426T230016Z`). Recipe is bit-identical: 400 trees / depth 5 / lr 0.03, seeds {0,7,42,73,197}, GPU, 5M training-time dolvol floor, same 15 feature cols.

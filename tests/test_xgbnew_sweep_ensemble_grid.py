@@ -577,13 +577,18 @@ def test_min_score_gate_changes_outcome(monkeypatch, tmp_path):
 
 
 def test_fee_regimes_in_registry():
-    assert set(sweep.FEE_REGIMES) >= {"deploy", "stress36x"}
+    assert set(sweep.FEE_REGIMES) >= {"deploy", "prod10bps", "stress36x"}
     d = sweep.FEE_REGIMES["deploy"]
+    p = sweep.FEE_REGIMES["prod10bps"]
     s = sweep.FEE_REGIMES["stress36x"]
+    assert p["fee_rate"] == pytest.approx(0.001)
+    assert p["fill_buffer_bps"] == d["fill_buffer_bps"]
+    assert p["commission_bps"] == d["commission_bps"]
+    assert p["fee_rate"] > d["fee_rate"]
     # stress must be meaningfully more pessimistic on every axis
-    assert s["fee_rate"] > d["fee_rate"]
-    assert s["fill_buffer_bps"] > d["fill_buffer_bps"]
-    assert s["commission_bps"] >= d["commission_bps"]
+    assert s["fee_rate"] >= p["fee_rate"]
+    assert s["fill_buffer_bps"] > p["fill_buffer_bps"]
+    assert s["commission_bps"] > p["commission_bps"]
 
 
 def test_cells_to_rows_shapes():
@@ -804,6 +809,63 @@ def test_sweep_json_payload_reuses_supplied_spy_csv_hash(monkeypatch, tmp_path):
     assert payload["spy_csv_sha256"] == "precomputed"
 
 
+def test_sweep_json_payload_records_fm_latent_metadata(tmp_path):
+    fm_latents = tmp_path / "latents.parquet"
+    fm_latents.write_bytes(b"fm-latents")
+
+    payload = sweep._sweep_json_payload(
+        fm_latents_path=fm_latents,
+        fm_n_latents=32,
+        model_paths=[Path("model.pkl")],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["fm_latents_path"] == str(fm_latents)
+    assert payload["fm_latents_sha256"] == hashlib.sha256(fm_latents.read_bytes()).hexdigest()
+    assert payload["fm_n_latents"] == 32
+
+
+def test_sweep_json_payload_reuses_supplied_fm_latent_hash(monkeypatch, tmp_path):
+    fm_latents = tmp_path / "latents.parquet"
+    fm_latents.write_bytes(b"fm-latents")
+
+    def _fail_if_rehashed(path):
+        if path is None:
+            return None
+        raise AssertionError("checkpoint payload should reuse precomputed FM latent hash")
+
+    monkeypatch.setattr(sweep, "_optional_file_sha256", _fail_if_rehashed)
+
+    payload = sweep._sweep_json_payload(
+        fm_latents_path=fm_latents,
+        fm_latents_sha256="precomputed",
+        fm_n_latents=16,
+        model_paths=[Path("model.pkl")],
+        oos_start="2025-01-02",
+        oos_end=date(2025, 4, 1),
+        window_days=30,
+        stride_days=7,
+        fee_regimes=["deploy"],
+        fail_fast_max_dd_pct=40.0,
+        fail_fast_max_intraday_dd_pct=35.0,
+        fail_fast_neg_windows=2,
+        rows=[],
+        complete=True,
+    )
+
+    assert payload["fm_latents_sha256"] == "precomputed"
+    assert payload["fm_n_latents"] == 16
+
+
 def test_sweep_json_payload_reuses_supplied_model_hashes(monkeypatch, tmp_path):
     model = tmp_path / "model.pkl"
     model.write_bytes(b"model")
@@ -938,6 +1000,81 @@ def test_run_sweep_rejects_unsupported_model_feature_cols(monkeypatch, tmp_path)
             hold_through_grid=[True],
             top_n_grid=[1],
             fee_regimes=["deploy"],
+        )
+
+
+def test_run_sweep_rejects_sparse_fm_latent_model_feature_cols(monkeypatch, tmp_path):
+    class _SparseFmFeatureModel(_FakeModel):
+        feature_cols = ["ret_1d", "latent_0", "latent_2", "fm_available"]
+
+    monkeypatch.setattr(
+        sweep,
+        "load_any_model",
+        lambda path: _SparseFmFeatureModel(seed=hash(str(path)) & 0xFFFF),
+    )
+    paths = _fake_paths(tmp_path, 1)
+
+    with pytest.raises(ValueError, match="contiguous from latent_0"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[True],
+            top_n_grid=[1],
+            fee_regimes=["deploy"],
+        )
+
+
+def test_run_sweep_rejects_missing_explicit_fm_latents_path(tmp_path):
+    paths = _fake_paths(tmp_path, 1)
+
+    with pytest.raises(ValueError, match="--fm-latents-path not found"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[True],
+            top_n_grid=[1],
+            fee_regimes=["deploy"],
+            fm_latents_path=tmp_path / "missing_latents.parquet",
+        )
+
+
+def test_run_sweep_rejects_fm_n_latents_below_model_requirement(monkeypatch, tmp_path):
+    class _FmFeatureModel(_FakeModel):
+        feature_cols = ["ret_1d", "latent_0", "latent_1", "latent_2", "fm_available"]
+
+    monkeypatch.setattr(
+        sweep,
+        "load_any_model",
+        lambda path: _FmFeatureModel(seed=hash(str(path)) & 0xFFFF),
+    )
+    paths = _fake_paths(tmp_path, 1)
+
+    with pytest.raises(ValueError, match="smaller than model feature_cols require"):
+        sweep.run_sweep(
+            symbols=[f"SYM{k}" for k in range(6)],
+            data_root=Path("/tmp"),
+            model_paths=paths,
+            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+            window_days=10, stride_days=5,
+            leverage_grid=[1.0],
+            min_score_grid=[0.0],
+            hold_through_grid=[True],
+            top_n_grid=[1],
+            fee_regimes=["deploy"],
+            fm_n_latents=2,
         )
 
 

@@ -1435,6 +1435,26 @@ def test_load_models_rejects_unsupported_single_model_features(monkeypatch, tmp_
     assert "unsupported live features" in capsys.readouterr().err
 
 
+def test_load_models_rejects_offline_fm_latent_features(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "single.pkl"
+    path.write_bytes(b"x")
+
+    monkeypatch.setattr(
+        live_trader.XGBStockModel,
+        "load",
+        staticmethod(lambda _path: SimpleNamespace(feature_cols=["ret_1d", "latent_0", "fm_available"])),
+    )
+    args = SimpleNamespace(
+        model_paths="",
+        model_path=path,
+    )
+
+    result = live_trader._load_models(args)
+
+    assert result is None
+    assert "offline FM latents not available in live trading" in capsys.readouterr().err
+
+
 def test_load_models_rejects_unsupported_ensemble_features(monkeypatch, tmp_path, capsys):
     path0 = tmp_path / "alltrain_seed0.pkl"
     path7 = tmp_path / "alltrain_seed7.pkl"

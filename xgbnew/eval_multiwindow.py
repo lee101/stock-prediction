@@ -21,22 +21,23 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from loss_utils import TRADING_FEE
-from src.forecast_cache_metrics import compute_mae_percent
-from xgbnew.backtest import BacktestConfig, simulate
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS
-from xgbnew.model import XGBStockModel
+from src.forecast_cache_metrics import compute_mae_percent  # noqa: E402
+from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate  # noqa: E402
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache  # noqa: E402
+from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
+from xgbnew.model import XGBStockModel  # noqa: E402
+
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def _compute_xgb_mae(
         )
     )
     return {
-        "count": int(len(df)),
+        "count": len(df),
         "return_mae_pct_points": mae_return_pct_points,
         "return_mae_percent": float(
             compute_mae_percent(
@@ -203,7 +204,12 @@ def parse_args(argv=None):
     p.add_argument("--leverage", type=float, default=1.0)
     p.add_argument("--leverage-grid", default="")
     p.add_argument("--fill-buffer-bps", type=float, default=5.0)
-    p.add_argument("--fee-rate", type=float, default=float(TRADING_FEE))
+    p.add_argument(
+        "--fee-rate",
+        type=float,
+        default=PRODUCTION_STOCK_FEE_RATE,
+        help="Per-side fee fraction. Default 0.001 = 10 bps production-realism stress fee.",
+    )
     p.add_argument("--commission-bps", type=float, default=0.0)
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
     p.add_argument("--n-estimators", type=int, default=300)
@@ -229,8 +235,8 @@ def parse_args(argv=None):
     p.add_argument(
         "--fast-features",
         action="store_true",
-        help="Use polars-native feature builder (~3× faster). Minor numerical "
-        "divergence on rolling / EWM columns (corr > 0.98) vs pandas path — "
+        help="Use polars-native feature builder (~3x faster). Minor numerical "
+        "divergence on rolling / EWM columns (corr > 0.98) vs pandas path; "
         "fine for exploratory sweeps; use pandas for headline publish.",
     )
     p.add_argument(
@@ -272,7 +278,7 @@ def parse_args(argv=None):
         action="store_true",
         help="If tomorrow's pick set equals today's, carry the position "
         "(skip the sell-close+buy-open round-trip). Saves "
-        "2×(fee+buffer) per held day and captures overnight drift. "
+        "2x(fee+buffer) per held day and captures overnight drift. "
         "Off by default.",
     )
     p.add_argument(
@@ -318,7 +324,7 @@ def main(argv=None) -> int:
 
     symbols = _load_symbols(args.symbols_file)
     oos_start = date.fromisoformat(args.oos_start)
-    oos_end_str = args.oos_end or date.today().isoformat()
+    oos_end_str = args.oos_end or datetime.now(UTC).date().isoformat()
     oos_end = date.fromisoformat(oos_end_str)
 
     chronos_cache = {}
@@ -326,8 +332,8 @@ def main(argv=None) -> int:
         chronos_cache = load_chronos_cache(args.chronos_cache)
 
     print(
-        f"[xgb-eval] {len(symbols)} symbols | train {args.train_start}–{args.train_end} | "
-        f"OOS {args.oos_start}–{oos_end_str} | windows={args.window_days}d stride={args.stride_days}d",
+        f"[xgb-eval] {len(symbols)} symbols | train {args.train_start}-{args.train_end} | "
+        f"OOS {args.oos_start}-{oos_end_str} | windows={args.window_days}d stride={args.stride_days}d",
         flush=True,
     )
     print(
@@ -470,7 +476,7 @@ def main(argv=None) -> int:
                 precomputed_scores=w_scores,
                 spy_close_by_date=spy_close_by_date,
             )
-            n_days = int(len(pd.unique(w_df["date"])))
+            n_days = len(pd.unique(w_df["date"]))
             n_active_days = len(result.day_results)
             monthly = _monthly_return(result.total_return_pct, max(n_days, 1)) * 100.0
             window_results.append(
@@ -518,7 +524,7 @@ def main(argv=None) -> int:
                 "mean_monthly_pct": float(np.mean(monthly_rets)),
                 "median_total_ret_pct": float(np.median(total_rets)),
                 "median_sortino": float(np.median(sortinos)),
-                "n_windows": int(len(window_results)),
+                "n_windows": len(window_results),
                 "n_neg_monthly": n_neg,
                 "xgb_mae": xgb_mae,
                 "chronos_mae": chronos_mae,

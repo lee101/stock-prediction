@@ -251,6 +251,7 @@ def test_short_borrow_cost():
     # The borrow fee per step is applied to (qty * price), where qty ~ cash/price = 100 shares.
     # Expected fee per step: 10000 * 0.0625 / 365 ~ 1.7123.
     expected_fee_per_step = _short_borrow_fee(
+        cash=10000.0,
         pos=Position(sym=0, is_short=True, qty=100.0, entry_price=100.0),
         price=100.0,
         short_borrow_apr=short_borrow_apr,

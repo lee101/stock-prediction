@@ -122,12 +122,23 @@ CHRONOS_FEATURE_COLS = [
     "chronos_available",
 ]
 
+# Foundation-model latent feature columns. Opt-in: only present when the
+# dataset builder is called with ``fm_latents_path=…``. Generated offline
+# by ``scripts/build_chronos_bolt_latents.py`` (or another model) and
+# joined per-(symbol,date). The +1 ``fm_available`` column lets the model
+# learn to fall back when latents aren't available for a row.
+FM_LATENT_DIM = 32
+FM_LATENT_FEATURE_COLS = [f"latent_{i}" for i in range(FM_LATENT_DIM)] + [
+    "fm_available"
+]
+
 ALL_FEATURE_COLS = DAILY_FEATURE_COLS + CHRONOS_FEATURE_COLS
 LIVE_SUPPORTED_FEATURE_COLS = frozenset(
     DAILY_FEATURE_COLS
     + CHRONOS_FEATURE_COLS
     + DAILY_RANK_FEATURE_COLS
     + DAILY_DISPERSION_FEATURE_COLS
+    + FM_LATENT_FEATURE_COLS
 )
 
 
@@ -472,6 +483,8 @@ __all__ = [
     "DAILY_RANK_FEATURE_COLS",
     "DAILY_DISPERSION_FEATURE_COLS",
     "CHRONOS_FEATURE_COLS",
+    "FM_LATENT_DIM",
+    "FM_LATENT_FEATURE_COLS",
     "ALL_FEATURE_COLS",
     "LIVE_SUPPORTED_FEATURE_COLS",
     "HOURLY_FEATURE_COLS",

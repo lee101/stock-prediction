@@ -34,18 +34,18 @@ import time
 from datetime import date
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from loss_utils import TRADING_FEE
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import ALL_FEATURE_COLS, CHRONOS_FEATURE_COLS, DAILY_FEATURE_COLS
-from xgbnew.model import XGBStockModel, combined_scores
-from xgbnew.backtest import BacktestConfig, simulate, print_summary
+from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, print_summary, simulate  # noqa: E402
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache  # noqa: E402
+from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
+from xgbnew.model import XGBStockModel  # noqa: E402
+
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="XGB weight in blended score (0=pure Chronos2, 1=pure XGB)")
     p.add_argument("--commission-bps", type=float, default=0.0,
                    help="Legacy extra commission per side in bps (default 0; stock fee defaults are applied separately)")
-    p.add_argument("--fee-rate", type=float, default=float(TRADING_FEE),
-                   help="Per-side fee fraction (default: shared stock TRADING_FEE)")
+    p.add_argument(
+        "--fee-rate",
+        type=float,
+        default=PRODUCTION_STOCK_FEE_RATE,
+        help="Per-side fee fraction. Default 0.001 = 10 bps production-realism stress fee.",
+    )
     p.add_argument("--fill-buffer-bps", type=float, default=5.0,
                    help="Adverse fill buffer applied around open/close bars (default 5bps)")
     p.add_argument("--min-dollar-vol", type=float, default=5e6)
@@ -250,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             "dir_acc_pct": result.directional_accuracy_pct,
             "total_trades": result.total_trades,
             "avg_spread_bps": result.avg_spread_bps,
+            "avg_fee_bps": result.avg_fee_bps,
         })
 
         # Save per-trade CSV for the primary config
@@ -262,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                         "leverage": t.leverage, "actual_open": t.actual_open,
                         "actual_close": t.actual_close, "gross_return_pct": t.gross_return_pct,
                         "spread_bps": t.spread_bps, "commission_bps": t.commission_bps,
+                        "fee_rate": t.fee_rate, "fill_buffer_bps": t.fill_buffer_bps,
                         "net_return_pct": t.net_return_pct, "equity_end": dr.equity_end,
                     })
             pd.DataFrame(rows).to_csv(
@@ -284,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
         "val_start": args.val_start, "val_end": args.val_end,
         "test_start": args.test_start, "test_end": args.test_end,
         "n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df),
+        "fee_rate": float(args.fee_rate),
+        "fill_buffer_bps": float(args.fill_buffer_bps),
+        "commission_bps": float(args.commission_bps),
         "results": results_summary,
     }, indent=2), encoding="utf-8")
     print(f"\n  Summary → {summary_path}")

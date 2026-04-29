@@ -85,9 +85,17 @@ def build_daily_train_val_window(
         latest_common = min(latest_common, _to_utc_day(hourly_latest_raw))
 
     resolved_val_end = _to_utc_day(val_end) if val_end else latest_common
-    resolved_val_start = _to_utc_day(val_start) if val_start else (resolved_val_end - pd.Timedelta(days=int(val_days) - 1))
+    resolved_val_start = (
+        _to_utc_day(val_start)
+        if val_start
+        else (resolved_val_end - pd.Timedelta(days=int(val_days) - 1))
+    )
     resolved_train_start = _to_utc_day(train_start) if train_start else earliest_common
-    resolved_train_end = _to_utc_day(train_end) if train_end else (resolved_val_start - pd.Timedelta(days=int(gap_days) + 1))
+    resolved_train_end = (
+        _to_utc_day(train_end)
+        if train_end
+        else (resolved_val_start - pd.Timedelta(days=int(gap_days) + 1))
+    )
 
     if resolved_val_end > latest_common:
         raise ValueError(f"val_end {resolved_val_end.date()} exceeds latest common {latest_common.date()}")
@@ -250,6 +258,13 @@ def build_eval_command(
     daily_start_date: str | None,
     extra_args: Sequence[str],
 ) -> list[str]:
+    extra_args_list = [str(arg) for arg in extra_args]
+    allow_daily_smoke = "--allow-daily-promotion" in extra_args_list
+    if (hourly_data_root is None or daily_start_date is None) and not allow_daily_smoke:
+        raise ValueError(
+            "eval_100d promotion requires hourly_data_root and daily_start_date; "
+            "pass --allow-daily-promotion only for explicit smoke/legacy checks"
+        )
     cmd = [
         sys.executable,
         "-u",
@@ -276,7 +291,7 @@ def build_eval_command(
                 str(daily_start_date),
             ]
         )
-    cmd.extend(str(arg) for arg in extra_args)
+    cmd.extend(extra_args_list)
     return cmd
 
 
@@ -348,7 +363,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--separator-days", type=int, default=14)
     parser.add_argument("--work-root", type=Path, default=Path("analysis/augmented_daily_stock_runs"))
     parser.add_argument("--data-output-root", type=Path, default=Path("pufferlib_market/data/augmented_daily_stock"))
-    parser.add_argument("--checkpoint-root", type=Path, default=Path("pufferlib_market/checkpoints/augmented_daily_stock"))
+    parser.add_argument(
+        "--checkpoint-root",
+        type=Path,
+        default=Path("pufferlib_market/checkpoints/augmented_daily_stock"),
+    )
     parser.add_argument("--train-start", default=None)
     parser.add_argument("--train-end", default=None)
     parser.add_argument("--val-start", default=None)
@@ -361,7 +380,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-group", default="c_augmented_daily_stock")
     parser.add_argument("--wandb-mode", default="online")
-    parser.add_argument("--prepare-only", action="store_true", help="Build shifted data and MKTD bins, then stop before training.")
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Build shifted data and MKTD bins, then stop before training.",
+    )
     parser.add_argument("--skip-eval-100d", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args, extra_train_args = parser.parse_known_args(list(argv) if argv is not None else None)
@@ -473,7 +496,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         metrics={
             "build/symbol_count": len(symbols),
             "build/offset_count": len(offsets),
-            "build/train_calendar_days": int((_to_utc_day(window.train_end) - _to_utc_day(window.train_start)).days) + 1,
+            "build/train_calendar_days": int(
+                (_to_utc_day(window.train_end) - _to_utc_day(window.train_start)).days
+            )
+            + 1,
             "build/val_calendar_days": int(window.val_days),
         },
         text_name="build/shift_manifest",

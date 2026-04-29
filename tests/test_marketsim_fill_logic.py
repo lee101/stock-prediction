@@ -4,9 +4,7 @@ opening/closing, allocation helpers, and short borrow costs.
 Covers edge cases: zero prices, NaN, extreme leverage, boundary fills, etc.
 """
 
-import math
 import pytest
-import numpy as np
 
 from pufferlib_market.hourly_replay import (
     Position,
@@ -278,7 +276,7 @@ class TestOpenShort:
         assert cash > 10000.0
 
     def test_zero_price_no_short(self):
-        cash, pos = _open_short(cash=10000.0, sym=0, price=0.0, fee_rate=0.001, max_leverage=1.0)
+        _cash, pos = _open_short(cash=10000.0, sym=0, price=0.0, fee_rate=0.001, max_leverage=1.0)
         assert pos is None
 
 
@@ -288,7 +286,7 @@ class TestOpenShort:
 
 class TestOpenLongLimit:
     def test_fills_when_low_touches(self):
-        cash, pos = _open_long_limit(
+        _cash, pos = _open_long_limit(
             cash=10000.0, sym=0, close_price=100.0,
             low_price=99.0, high_price=102.0,
             fee_rate=0.001, max_leverage=1.0,
@@ -339,7 +337,7 @@ class TestOpenLongLimit:
         assert abs(pos.entry_price - 101.0) < 1e-6
 
     def test_zero_allocation_no_open(self):
-        cash, pos = _open_long_limit(
+        _cash, pos = _open_long_limit(
             cash=10000.0, sym=0, close_price=100.0,
             low_price=95.0, high_price=105.0,
             fee_rate=0.001, max_leverage=1.0,
@@ -394,7 +392,7 @@ class TestOpenLongLimit:
 
 class TestOpenShortLimit:
     def test_fills_when_high_reaches_target(self):
-        cash, pos = _open_short_limit(
+        _cash, pos = _open_short_limit(
             cash=10000.0, sym=0, close_price=100.0,
             low_price=98.0, high_price=101.0,
             fee_rate=0.001, max_leverage=1.0,
@@ -406,7 +404,7 @@ class TestOpenShortLimit:
         assert pos.entry_price == 100.0
 
     def test_no_fill_when_high_below_target(self):
-        cash, pos = _open_short_limit(
+        _cash, pos = _open_short_limit(
             cash=10000.0, sym=0, close_price=100.0,
             low_price=90.0, high_price=99.0,
             fee_rate=0.001, max_leverage=1.0,
@@ -430,7 +428,7 @@ class TestClosePosition:
 
     def test_close_long_loss(self):
         pos = Position(sym=0, is_short=False, qty=10.0, entry_price=100.0)
-        cash, win = _close_position(cash=0.0, pos=pos, price=90.0, fee_rate=0.001)
+        _cash, win = _close_position(cash=0.0, pos=pos, price=90.0, fee_rate=0.001)
         assert win is False
 
     def test_close_short_win(self):
@@ -443,7 +441,7 @@ class TestClosePosition:
 
     def test_close_short_loss(self):
         pos = Position(sym=0, is_short=True, qty=10.0, entry_price=100.0)
-        cash, win = _close_position(cash=20000.0, pos=pos, price=110.0, fee_rate=0.001)
+        _cash, win = _close_position(cash=20000.0, pos=pos, price=110.0, fee_rate=0.001)
         assert win is False
 
     def test_fee_rate_zero(self):
@@ -458,22 +456,67 @@ class TestClosePosition:
 # ---------------------------------------------------------------------------
 
 class TestShortBorrowFee:
-    def test_no_fee_for_long(self):
+    def test_no_fee_for_unlevered_long(self):
         pos = Position(sym=0, is_short=False, qty=10.0, entry_price=100.0)
-        assert _short_borrow_fee(pos=pos, price=100.0, short_borrow_apr=0.10, periods_per_year=365.0) == 0.0
+        assert (
+            _short_borrow_fee(
+                cash=0.0,
+                pos=pos,
+                price=100.0,
+                short_borrow_apr=0.10,
+                periods_per_year=365.0,
+            )
+            == 0.0
+        )
 
     def test_no_fee_for_none(self):
-        assert _short_borrow_fee(pos=None, price=100.0, short_borrow_apr=0.10, periods_per_year=365.0) == 0.0
+        assert (
+            _short_borrow_fee(
+                cash=10000.0,
+                pos=None,
+                price=100.0,
+                short_borrow_apr=0.10,
+                periods_per_year=365.0,
+            )
+            == 0.0
+        )
 
     def test_no_fee_when_apr_zero(self):
         pos = Position(sym=0, is_short=True, qty=10.0, entry_price=100.0)
-        assert _short_borrow_fee(pos=pos, price=100.0, short_borrow_apr=0.0, periods_per_year=365.0) == 0.0
+        assert (
+            _short_borrow_fee(
+                cash=10000.0,
+                pos=pos,
+                price=100.0,
+                short_borrow_apr=0.0,
+                periods_per_year=365.0,
+            )
+            == 0.0
+        )
 
     def test_correct_daily_fee(self):
         pos = Position(sym=0, is_short=True, qty=10.0, entry_price=100.0)
         # notional = 10 * 100 = 1000, daily fee = 1000 * 0.10 / 365
-        fee = _short_borrow_fee(pos=pos, price=100.0, short_borrow_apr=0.10, periods_per_year=365.0)
+        fee = _short_borrow_fee(
+            cash=10000.0,
+            pos=pos,
+            price=100.0,
+            short_borrow_apr=0.10,
+            periods_per_year=365.0,
+        )
         expected = 1000.0 * 0.10 / 365.0
+        assert abs(fee - expected) < 1e-8
+
+    def test_leveraged_long_pays_margin_borrow_on_negative_cash(self):
+        pos = Position(sym=0, is_short=False, qty=200.0, entry_price=100.0)
+        fee = _short_borrow_fee(
+            cash=-10000.0,
+            pos=pos,
+            price=100.0,
+            short_borrow_apr=0.10,
+            periods_per_year=365.0,
+        )
+        expected = 10000.0 * 0.10 / 365.0
         assert abs(fee - expected) < 1e-8
 
     def test_apply_short_borrow_cost_deducts(self):

@@ -161,6 +161,36 @@ def test_simulate_daily_policy_respects_long_leverage_above_one() -> None:
     assert res_2x.total_return > res_1x.total_return
 
 
+def test_simulate_daily_policy_charges_margin_borrow_for_leveraged_long() -> None:
+    data = _single_symbol_daily_data(np.asarray([100.0, 100.0, 100.0], dtype=np.float32))
+    apr = 0.10
+    periods_per_year = 252.0
+
+    res_1x = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=periods_per_year,
+        short_borrow_apr=apr,
+    )
+    res_2x = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=2.0,
+        periods_per_year=periods_per_year,
+        short_borrow_apr=apr,
+    )
+
+    expected_first_step_fee = 10_000.0 * apr / periods_per_year
+    assert res_1x.total_return == pytest.approx(0.0, abs=1e-12)
+    assert res_2x.total_return < 0.0
+    assert res_2x.total_return < -expected_first_step_fee / 10_000.0
+
+
 def test_hourly_replay_respects_fill_buffer_and_slippage() -> None:
     data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
     market_index = pd.date_range("2024-01-01T00:00:00Z", "2024-01-03T23:00:00Z", freq="h", tz="UTC")

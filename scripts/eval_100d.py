@@ -16,13 +16,16 @@ Usage::
     python scripts/eval_100d.py \
         --checkpoint pufferlib_market/checkpoints/stocks12_v5_rsi/tp05_s42/best.pt \
         --val-data pufferlib_market/data/stocks12_daily_v5_rsi_val.bin \
+        --execution-granularity hourly_intrabar \
+        --hourly-data-root data/hourly \
+        --daily-start-date 2025-12-18 \
         --n-windows 30 --window-days 100 --monthly-target 0.27
 
 The C marketsim is the ground truth (binary fills, realistic fees +
-slippage). For policies that don't fit the marketsim shape (e.g. fp4
-trainers on ``gpu_trading_env``) the script falls back to
-``fp4.bench.eval_generic._same_backend_eval`` so the pipeline still
-produces ranked output.
+slippage). Production promotion additionally requires hourly intrabar replay
+so the 5 bps fill-through buffer and 6h max-hold guard are exercised. Daily
+execution is retained for smoke/legacy inspection but cannot pass the gate
+unless ``--allow-daily-promotion`` is set explicitly.
 """
 from __future__ import annotations
 
@@ -55,6 +58,19 @@ def _monthly_from_total(total_return: float, window_days: int,
         return 0.0
 
 
+def _total_from_monthly(monthly_return: float, window_days: int,
+                        trading_days_per_month: float = 21.0) -> float:
+    """Convert a monthly compound target into the equivalent window return."""
+    if window_days <= 0:
+        return 0.0
+    try:
+        return math.expm1(
+            math.log1p(float(monthly_return)) * (float(window_days) / trading_days_per_month)
+        )
+    except Exception:
+        return math.inf
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -74,6 +90,262 @@ def _summary_int_metric(summary: Dict[str, Any], key: str, default: int = 0) -> 
     if not math.isfinite(out) or not out.is_integer() or out < 0:
         return None
     return int(out)
+
+
+def _parse_int_csv(
+    value: str,
+    *,
+    label: str,
+    allow_empty: bool = False,
+    min_value: int | None = None,
+) -> list[int]:
+    if value.strip() == "":
+        if allow_empty:
+            return []
+        raise ValueError(f"{label} must not be empty")
+    out: list[int] = []
+    seen: set[int] = set()
+    for idx, raw in enumerate(value.split(",")):
+        token = raw.strip()
+        if token == "":
+            raise ValueError(f"{label} contains an empty entry at position {idx}")
+        try:
+            parsed = int(token)
+        except ValueError as exc:
+            raise ValueError(f"{label} contains non-integer entry: {token}") from exc
+        if min_value is not None and parsed < int(min_value):
+            raise ValueError(f"{label} contains entry below {int(min_value)}: {parsed}")
+        if parsed in seen:
+            raise ValueError(f"{label} contains duplicate entry: {parsed}")
+        seen.add(parsed)
+        out.append(parsed)
+    return out
+
+
+def _validate_main_numeric_args(
+    args: argparse.Namespace,
+    *,
+    min_completed_windows: int,
+) -> list[str]:
+    errors: list[str] = []
+
+    def finite_nonnegative(name: str, value: float) -> None:
+        parsed = float(value)
+        if not math.isfinite(parsed) or parsed < 0.0:
+            errors.append(f"{name} must be finite and non-negative")
+
+    def finite_positive(name: str, value: float) -> None:
+        parsed = float(value)
+        if not math.isfinite(parsed) or parsed <= 0.0:
+            errors.append(f"{name} must be finite and positive")
+
+    def int_nonnegative(name: str, value: int) -> None:
+        if int(value) < 0:
+            errors.append(f"{name} must be non-negative")
+
+    def int_positive(name: str, value: int) -> None:
+        if int(value) <= 0:
+            errors.append(f"{name} must be positive")
+
+    int_positive("n_windows", int(args.n_windows))
+    int_positive("window_days", int(args.window_days))
+    int_nonnegative("min_window_days", int(args.min_window_days))
+    int_nonnegative("decision_lag", int(args.decision_lag))
+    int_nonnegative("min_decision_lag", int(args.min_decision_lag))
+    int_nonnegative("min_max_slippage_bps", int(args.min_max_slippage_bps))
+    int_nonnegative("min_completed_windows", int(min_completed_windows))
+
+    finite_nonnegative("monthly_target", float(args.monthly_target))
+    finite_nonnegative("max_dd_target", float(args.max_dd_target))
+    finite_nonnegative("fee_rate", float(args.fee_rate))
+    finite_nonnegative("min_fee_rate", float(args.min_fee_rate))
+    finite_nonnegative("short_borrow_apr", float(args.short_borrow_apr))
+    finite_nonnegative("min_short_borrow_apr", float(args.min_short_borrow_apr))
+    finite_positive("max_leverage", float(args.max_leverage))
+    finite_nonnegative("max_leverage_target", float(args.max_leverage_target))
+    finite_nonnegative("fail_fast_max_dd", float(args.fail_fast_max_dd))
+    int_nonnegative("fail_fast_min_completed", int(args.fail_fast_min_completed))
+
+    if str(args.execution_granularity) == "hourly_intrabar":
+        finite_nonnegative("hourly_fill_buffer_bps", float(args.hourly_fill_buffer_bps))
+        finite_nonnegative("min_hourly_fill_buffer_bps", float(args.min_hourly_fill_buffer_bps))
+        int_nonnegative("hourly_max_hold_hours", int(args.hourly_max_hold_hours))
+        int_nonnegative(
+            "max_hourly_hold_hours_target",
+            int(args.max_hourly_hold_hours_target),
+        )
+        finite_nonnegative("hourly_stop_loss_pct", float(args.hourly_stop_loss_pct))
+        finite_nonnegative("hourly_take_profit_pct", float(args.hourly_take_profit_pct))
+
+    return errors
+
+
+def _static_promotion_preflight(
+    args: argparse.Namespace,
+    *,
+    slippages: list[int],
+    required_slippages: list[int],
+    min_completed_windows: int,
+) -> list[str]:
+    errors: list[str] = []
+
+    if (
+        not bool(args.allow_daily_promotion)
+        and str(args.execution_granularity) != "hourly_intrabar"
+    ):
+        errors.append(
+            "execution_granularity daily is not promotable; use hourly_intrabar "
+            "or --allow-daily-promotion for smoke/legacy checks"
+        )
+    if int(args.window_days) < int(args.min_window_days):
+        errors.append(f"window_days {int(args.window_days)} < {int(args.min_window_days)}")
+    if int(args.decision_lag) < int(args.min_decision_lag):
+        errors.append(
+            f"decision_lag {int(args.decision_lag)} < {int(args.min_decision_lag)}"
+        )
+    if int(min_completed_windows) > int(args.n_windows):
+        errors.append(
+            f"min_completed_windows {int(min_completed_windows)} > n_windows {int(args.n_windows)}"
+        )
+
+    evaluated_max_slippage = max(slippages, default=0)
+    if evaluated_max_slippage < int(args.min_max_slippage_bps):
+        errors.append(
+            f"max_slippage_bps {evaluated_max_slippage} < {int(args.min_max_slippage_bps)}"
+        )
+    missing_required = sorted(set(required_slippages) - set(slippages))
+    if missing_required:
+        errors.append(
+            "missing_required_slippage_bps "
+            f"{','.join(str(x) for x in missing_required)}"
+        )
+
+    fee_rate = float(args.fee_rate)
+    min_fee_rate = float(args.min_fee_rate)
+    if min_fee_rate > 0.0 and fee_rate < min_fee_rate:
+        errors.append(f"fee_rate {fee_rate:g} < {min_fee_rate:g}")
+    short_borrow_apr = float(args.short_borrow_apr)
+    min_short_borrow_apr = float(args.min_short_borrow_apr)
+    if min_short_borrow_apr > 0.0 and short_borrow_apr < min_short_borrow_apr:
+        errors.append(f"short_borrow_apr {short_borrow_apr:g} < {min_short_borrow_apr:g}")
+    max_leverage = float(args.max_leverage)
+    max_leverage_target = float(args.max_leverage_target)
+    if max_leverage_target > 0.0 and max_leverage > max_leverage_target:
+        errors.append(f"max_leverage {max_leverage:g} > {max_leverage_target:g}")
+
+    if str(args.execution_granularity) == "hourly_intrabar":
+        fill_buffer = float(args.hourly_fill_buffer_bps)
+        min_fill_buffer = float(args.min_hourly_fill_buffer_bps)
+        if min_fill_buffer > 0.0 and fill_buffer < min_fill_buffer:
+            errors.append(f"hourly_fill_buffer_bps {fill_buffer:g} < {min_fill_buffer:g}")
+        max_hold = int(args.hourly_max_hold_hours)
+        max_hold_target = int(args.max_hourly_hold_hours_target)
+        if max_hold_target > 0:
+            if max_hold <= 0:
+                errors.append("hourly_max_hold_hours 0 disables max-hold guard")
+            elif max_hold > max_hold_target:
+                errors.append(f"hourly_max_hold_hours {max_hold} > {max_hold_target}")
+
+    return errors
+
+
+def _write_static_preflight_artifacts(
+    *,
+    out_dir: Path,
+    ckpt: Path,
+    val: Path,
+    checkpoint_sha256: str,
+    args: argparse.Namespace,
+    slippages: list[int],
+    required_slippages: list[int],
+    min_completed_windows: int,
+    failures: list[str],
+) -> str:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    aggregate = _aggregate({}, window_days=int(args.window_days))
+    hourly_fill_buffer_for_gate = (
+        float(args.hourly_fill_buffer_bps)
+        if str(args.execution_granularity) == "hourly_intrabar"
+        else None
+    )
+    hourly_max_hold_for_gate = (
+        int(args.hourly_max_hold_hours)
+        if str(args.execution_granularity) == "hourly_intrabar"
+        else None
+    )
+    gate = _promotion_status(
+        aggregate,
+        target_monthly=float(args.monthly_target),
+        max_dd_target=float(args.max_dd_target),
+        window_days=int(args.window_days),
+        min_window_days=int(args.min_window_days),
+        decision_lag=int(args.decision_lag),
+        min_decision_lag=int(args.min_decision_lag),
+        fee_rate=float(args.fee_rate),
+        min_fee_rate=float(args.min_fee_rate),
+        short_borrow_apr=float(args.short_borrow_apr),
+        min_short_borrow_apr=float(args.min_short_borrow_apr),
+        max_leverage=float(args.max_leverage),
+        max_leverage_target=float(args.max_leverage_target),
+        execution_granularity=str(args.execution_granularity),
+        require_hourly_intrabar=not bool(args.allow_daily_promotion),
+        slippage_bps=slippages,
+        min_max_slippage_bps=int(args.min_max_slippage_bps),
+        required_slippage_bps=required_slippages,
+        hourly_fill_buffer_bps=hourly_fill_buffer_for_gate,
+        min_hourly_fill_buffer_bps=float(args.min_hourly_fill_buffer_bps),
+        hourly_max_hold_hours=hourly_max_hold_for_gate,
+        max_hourly_hold_hours=int(args.max_hourly_hold_hours_target),
+        max_negative_windows=int(args.max_negative_windows),
+        min_completed_windows=int(min_completed_windows),
+    )
+    gate["static_preflight"] = True
+    gate["failures"] = list(dict.fromkeys([*list(gate["failures"]), *failures]))
+    md = (
+        f"# 100d unseen-data eval — `{ckpt.name}`\n\n"
+        f"- checkpoint_sha256: `{checkpoint_sha256}`\n"
+        "- **status**: STATIC_PREFLIGHT_FAIL\n"
+        f"- failures: {'; '.join(failures)}\n"
+        f"- windows: {int(args.n_windows)} × {int(args.window_days)}d\n"
+        f"- decision_lag: {int(args.decision_lag)}\n"
+        f"- slippage_bps: {','.join(str(x) for x in slippages)}\n"
+        f"- required_slippage_bps: {','.join(str(x) for x in required_slippages)}\n"
+        "- promotion_gate: FAIL\n"
+    )
+    (out_dir / f"{ckpt.stem}_eval100d.md").write_text(md)
+    (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
+        "checkpoint": str(ckpt),
+        "checkpoint_sha256": checkpoint_sha256,
+        "val_data": str(val),
+        "raw": {"status": "static_promotion_preflight_failed"},
+        "aggregate": aggregate,
+        "promotion_gate": gate,
+        "monthly_target": float(args.monthly_target),
+        "max_dd_target": float(args.max_dd_target),
+        "min_window_days": int(args.min_window_days),
+        "decision_lag": int(args.decision_lag),
+        "min_decision_lag": int(args.min_decision_lag),
+        "fee_rate": float(args.fee_rate),
+        "min_fee_rate": float(args.min_fee_rate),
+        "short_borrow_apr": float(args.short_borrow_apr),
+        "min_short_borrow_apr": float(args.min_short_borrow_apr),
+        "max_leverage": float(args.max_leverage),
+        "max_leverage_target": float(args.max_leverage_target),
+        "execution_granularity": str(args.execution_granularity),
+        "require_hourly_intrabar": not bool(args.allow_daily_promotion),
+        "min_max_slippage_bps": int(args.min_max_slippage_bps),
+        "required_slippage_bps": required_slippages,
+        "hourly_fill_buffer_bps": gate["hourly_fill_buffer_bps"],
+        "min_hourly_fill_buffer_bps": gate["min_hourly_fill_buffer_bps"],
+        "hourly_max_hold_hours": gate["hourly_max_hold_hours"],
+        "max_hourly_hold_hours": gate["max_hourly_hold_hours"],
+        "max_negative_windows": int(args.max_negative_windows),
+        "min_completed_windows": int(min_completed_windows),
+        "n_windows": int(args.n_windows),
+        "window_days": int(args.window_days),
+        "slippage_bps": slippages,
+    }, indent=2, default=str))
+    return md
 
 
 def _aggregate(summaries_by_bps: Dict[str, Any], window_days: int) -> Dict[str, Any]:
@@ -211,8 +483,21 @@ def _promotion_status(
     min_window_days: int = 0,
     decision_lag: int | None = None,
     min_decision_lag: int = 0,
+    fee_rate: float | None = None,
+    min_fee_rate: float = 0.0,
+    short_borrow_apr: float | None = None,
+    min_short_borrow_apr: float = 0.0,
+    max_leverage: float | None = None,
+    max_leverage_target: float = 0.0,
+    execution_granularity: str | None = None,
+    require_hourly_intrabar: bool = False,
     slippage_bps: list[int] | None = None,
     min_max_slippage_bps: int = 0,
+    required_slippage_bps: list[int] | None = None,
+    hourly_fill_buffer_bps: float | None = None,
+    min_hourly_fill_buffer_bps: float = 0.0,
+    hourly_max_hold_hours: int | None = None,
+    max_hourly_hold_hours: int = 0,
     max_negative_windows: int = 0,
     min_completed_windows: int = 0,
 ) -> Dict[str, Any]:
@@ -223,50 +508,142 @@ def _promotion_status(
     else:
         worst_dd, worst_dd_ok = _finite_metric(aggregate, "max_slip_median_max_drawdown", failures)
     median_dd, _median_dd_ok = _finite_metric(aggregate, "max_slip_median_max_drawdown", failures)
-    if worst_m_ok and worst_m < float(target_monthly):
+    monthly_target = float(target_monthly)
+    if not math.isfinite(monthly_target) or monthly_target < 0.0:
+        failures.append("monthly_target must be finite and non-negative")
+    max_dd_cap = float(max_dd_target)
+    if not math.isfinite(max_dd_cap) or max_dd_cap < 0.0:
+        failures.append("max_dd_target must be finite and non-negative")
+    if worst_m_ok and math.isfinite(monthly_target) and worst_m < monthly_target:
         failures.append(
             f"worst_slip_monthly {worst_m * 100:.2f}% < "
-            f"{float(target_monthly) * 100:.2f}%"
+            f"{monthly_target * 100:.2f}%"
         )
-    if worst_dd_ok and worst_dd > float(max_dd_target):
+    if worst_dd_ok and math.isfinite(max_dd_cap) and worst_dd > max_dd_cap:
         failures.append(
             f"max_slip_worst_max_drawdown {worst_dd * 100:.2f}% > "
-            f"{float(max_dd_target) * 100:.2f}%"
+            f"{max_dd_cap * 100:.2f}%"
         )
-    if window_days is not None and int(window_days) < int(min_window_days):
-        failures.append(f"window_days {int(window_days)} < {int(min_window_days)}")
-    if decision_lag is not None and int(decision_lag) < int(min_decision_lag):
-        failures.append(f"decision_lag {int(decision_lag)} < {int(min_decision_lag)}")
-    evaluated_max_slippage_bps = (
-        None if slippage_bps is None else max((int(x) for x in slippage_bps), default=0)
-    )
+    min_window = int(min_window_days)
+    if min_window < 0:
+        failures.append("min_window_days must be non-negative")
+    elif window_days is not None and int(window_days) < min_window:
+        failures.append(f"window_days {int(window_days)} < {min_window}")
+    min_lag = int(min_decision_lag)
+    if min_lag < 0:
+        failures.append("min_decision_lag must be non-negative")
+    elif decision_lag is not None and int(decision_lag) < min_lag:
+        failures.append(f"decision_lag {int(decision_lag)} < {min_lag}")
+    fee = None if fee_rate is None else float(fee_rate)
+    min_fee = float(min_fee_rate)
+    if not math.isfinite(min_fee) or min_fee < 0.0:
+        failures.append("min_fee_rate must be finite and non-negative")
+    if fee is not None:
+        if not math.isfinite(fee) or fee < 0.0:
+            failures.append("fee_rate must be finite and non-negative")
+        elif min_fee > 0.0 and fee < min_fee:
+            failures.append(f"fee_rate {fee:g} < {min_fee:g}")
+    borrow = None if short_borrow_apr is None else float(short_borrow_apr)
+    min_borrow = float(min_short_borrow_apr)
+    if not math.isfinite(min_borrow) or min_borrow < 0.0:
+        failures.append("min_short_borrow_apr must be finite and non-negative")
+    if borrow is not None:
+        if not math.isfinite(borrow) or borrow < 0.0:
+            failures.append("short_borrow_apr must be finite and non-negative")
+        elif min_borrow > 0.0 and borrow < min_borrow:
+            failures.append(f"short_borrow_apr {borrow:g} < {min_borrow:g}")
+    leverage = None if max_leverage is None else float(max_leverage)
+    leverage_limit = float(max_leverage_target)
+    if not math.isfinite(leverage_limit) or leverage_limit < 0.0:
+        failures.append("max_leverage_target must be finite and non-negative")
+    if leverage is not None:
+        if not math.isfinite(leverage) or leverage <= 0.0:
+            failures.append("max_leverage must be finite and positive")
+        elif leverage_limit > 0.0 and leverage > leverage_limit:
+            failures.append(f"max_leverage {leverage:g} > {leverage_limit:g}")
+    granularity = None if execution_granularity is None else str(execution_granularity)
+    if require_hourly_intrabar and granularity != "hourly_intrabar":
+        failures.append(
+            "execution_granularity daily is not promotable; use hourly_intrabar "
+            "or --allow-daily-promotion for smoke/legacy checks"
+        )
+    min_max_slip = int(min_max_slippage_bps)
+    if min_max_slip < 0:
+        failures.append("min_max_slippage_bps must be non-negative")
+    evaluated_slippage_set: set[int] = set()
+    evaluated_max_slippage_bps = None
+    if slippage_bps is not None:
+        evaluated_slippage_set = {int(x) for x in slippage_bps}
+        if any(x < 0 for x in evaluated_slippage_set):
+            failures.append("slippage_bps must be non-negative")
+        evaluated_max_slippage_bps = max(evaluated_slippage_set, default=0)
     if (
         evaluated_max_slippage_bps is not None
-        and int(evaluated_max_slippage_bps) < int(min_max_slippage_bps)
+        and min_max_slip >= 0
+        and int(evaluated_max_slippage_bps) < min_max_slip
     ):
         failures.append(
             f"max_slippage_bps {int(evaluated_max_slippage_bps)} < "
-            f"{int(min_max_slippage_bps)}"
+            f"{min_max_slip}"
         )
+    required_slippage_set = (
+        set() if required_slippage_bps is None else {int(x) for x in required_slippage_bps}
+    )
+    if any(x < 0 for x in required_slippage_set):
+        failures.append("required_slippage_bps must be non-negative")
+    missing_required_slippage = sorted(required_slippage_set - evaluated_slippage_set)
+    if missing_required_slippage:
+        failures.append(
+            "missing_required_slippage_bps "
+            f"{','.join(str(x) for x in missing_required_slippage)}"
+        )
+    fill_buffer = (
+        None if hourly_fill_buffer_bps is None else float(hourly_fill_buffer_bps)
+    )
+    min_fill_buffer = float(min_hourly_fill_buffer_bps)
+    if not math.isfinite(min_fill_buffer) or min_fill_buffer < 0.0:
+        failures.append("min_hourly_fill_buffer_bps must be finite and non-negative")
+    if fill_buffer is not None:
+        if not math.isfinite(fill_buffer) or fill_buffer < 0.0:
+            failures.append("hourly_fill_buffer_bps must be finite and non-negative")
+        elif min_fill_buffer > 0.0 and fill_buffer < min_fill_buffer:
+            failures.append(
+                f"hourly_fill_buffer_bps {fill_buffer:g} < {min_fill_buffer:g}"
+            )
+    max_hold_limit = int(max_hourly_hold_hours)
+    if max_hold_limit < 0:
+        failures.append("max_hourly_hold_hours must be non-negative")
+    elif hourly_max_hold_hours is not None and max_hold_limit > 0:
+        if int(hourly_max_hold_hours) <= 0:
+            failures.append("hourly_max_hold_hours 0 disables max-hold guard")
+        elif int(hourly_max_hold_hours) > max_hold_limit:
+            failures.append(
+                f"hourly_max_hold_hours {int(hourly_max_hold_hours)} > "
+                f"{max_hold_limit}"
+            )
     negative_windows, negative_windows_ok = _integer_metric(
         aggregate, "max_slip_negative_windows", failures
     )
+    negative_window_cap = int(max_negative_windows)
     if (
         negative_windows_ok
-        and int(max_negative_windows) >= 0
-        and negative_windows > int(max_negative_windows)
+        and negative_window_cap >= 0
+        and negative_windows > negative_window_cap
     ):
-        failures.append(f"negative_windows {negative_windows} > {int(max_negative_windows)}")
+        failures.append(f"negative_windows {negative_windows} > {negative_window_cap}")
     completed_windows, completed_windows_ok = _integer_metric(
         aggregate, "min_slip_n_windows", failures
     )
+    min_completed = int(min_completed_windows)
+    if min_completed < 0:
+        failures.append("min_completed_windows must be non-negative")
     if (
         completed_windows_ok
-        and int(min_completed_windows) > 0
-        and completed_windows < int(min_completed_windows)
+        and min_completed > 0
+        and completed_windows < min_completed
     ):
         failures.append(
-            f"completed_windows {completed_windows} < {int(min_completed_windows)}"
+            f"completed_windows {completed_windows} < {min_completed}"
         )
     return {
         "passed": not failures,
@@ -274,18 +651,34 @@ def _promotion_status(
         "worst_slip_monthly": worst_m,
         "max_slip_median_max_drawdown": median_dd,
         "max_slip_worst_max_drawdown": worst_dd,
-        "monthly_target": float(target_monthly),
-        "max_dd_target": float(max_dd_target),
+        "monthly_target": monthly_target,
+        "max_dd_target": max_dd_cap,
         "window_days": None if window_days is None else int(window_days),
-        "min_window_days": int(min_window_days),
+        "min_window_days": min_window,
         "decision_lag": None if decision_lag is None else int(decision_lag),
-        "min_decision_lag": int(min_decision_lag),
+        "min_decision_lag": min_lag,
+        "fee_rate": fee,
+        "min_fee_rate": min_fee,
+        "short_borrow_apr": borrow,
+        "min_short_borrow_apr": min_borrow,
+        "max_leverage": leverage,
+        "max_leverage_target": leverage_limit,
+        "execution_granularity": granularity,
+        "require_hourly_intrabar": bool(require_hourly_intrabar),
         "max_slippage_bps": evaluated_max_slippage_bps,
-        "min_max_slippage_bps": int(min_max_slippage_bps),
+        "min_max_slippage_bps": min_max_slip,
+        "required_slippage_bps": sorted(required_slippage_set),
+        "missing_required_slippage_bps": missing_required_slippage,
+        "hourly_fill_buffer_bps": fill_buffer,
+        "min_hourly_fill_buffer_bps": min_fill_buffer,
+        "hourly_max_hold_hours": (
+            None if hourly_max_hold_hours is None else int(hourly_max_hold_hours)
+        ),
+        "max_hourly_hold_hours": max_hold_limit,
         "negative_windows": negative_windows,
-        "max_negative_windows": int(max_negative_windows),
+        "max_negative_windows": negative_window_cap,
         "completed_windows": completed_windows,
-        "min_completed_windows": int(min_completed_windows),
+        "min_completed_windows": min_completed,
     }
 
 
@@ -311,8 +704,21 @@ def _render_md(
     min_window_days: int = 0,
     decision_lag: int | None = None,
     min_decision_lag: int = 0,
+    fee_rate: float | None = None,
+    min_fee_rate: float = 0.0,
+    short_borrow_apr: float | None = None,
+    min_short_borrow_apr: float = 0.0,
+    max_leverage: float | None = None,
+    max_leverage_target: float = 0.0,
+    execution_granularity: str | None = None,
+    require_hourly_intrabar: bool = False,
     slippage_bps: list[int] | None = None,
     min_max_slippage_bps: int = 0,
+    required_slippage_bps: list[int] | None = None,
+    hourly_fill_buffer_bps: float | None = None,
+    min_hourly_fill_buffer_bps: float = 0.0,
+    hourly_max_hold_hours: int | None = None,
+    max_hourly_hold_hours: int = 0,
     max_negative_windows: int = 0,
     min_completed_windows: int = 0,
 ) -> str:
@@ -324,8 +730,21 @@ def _render_md(
         min_window_days=int(min_window_days),
         decision_lag=decision_lag,
         min_decision_lag=int(min_decision_lag),
+        fee_rate=fee_rate,
+        min_fee_rate=float(min_fee_rate),
+        short_borrow_apr=short_borrow_apr,
+        min_short_borrow_apr=float(min_short_borrow_apr),
+        max_leverage=max_leverage,
+        max_leverage_target=float(max_leverage_target),
+        execution_granularity=execution_granularity,
+        require_hourly_intrabar=bool(require_hourly_intrabar),
         slippage_bps=_evaluated_slippage_bps(aggregate),
         min_max_slippage_bps=int(min_max_slippage_bps),
+        required_slippage_bps=required_slippage_bps,
+        hourly_fill_buffer_bps=hourly_fill_buffer_bps,
+        min_hourly_fill_buffer_bps=float(min_hourly_fill_buffer_bps),
+        hourly_max_hold_hours=hourly_max_hold_hours,
+        max_hourly_hold_hours=int(max_hourly_hold_hours),
         max_negative_windows=int(max_negative_windows),
         min_completed_windows=int(min_completed_windows),
     )
@@ -346,8 +765,44 @@ def _render_md(
     lines.append(f"- windows: {n_windows} × {window_days}d  (total {n_windows * window_days}d unseen)")
     if decision_lag is not None:
         lines.append(f"- decision_lag: {int(decision_lag)}")
+    if fee_rate is not None:
+        lines.append(
+            f"- fee_rate: {float(fee_rate):g} "
+            f"(min {float(min_fee_rate):g})"
+        )
+    if short_borrow_apr is not None:
+        lines.append(
+            f"- short_borrow_apr: {float(short_borrow_apr):g} "
+            f"(min {float(min_short_borrow_apr):g})"
+        )
+    if max_leverage is not None:
+        lines.append(
+            f"- max_leverage: {float(max_leverage):g} "
+            f"(max {float(max_leverage_target):g})"
+        )
+    if execution_granularity is not None:
+        requirement = "required" if require_hourly_intrabar else "not required"
+        lines.append(
+            f"- execution_granularity: {execution_granularity} "
+            f"(hourly_intrabar {requirement})"
+        )
     if slippage_bps is not None:
         lines.append(f"- slippage_bps: {','.join(str(int(x)) for x in slippage_bps)}")
+    if required_slippage_bps is not None:
+        lines.append(
+            "- required_slippage_bps: "
+            f"{','.join(str(int(x)) for x in required_slippage_bps)}"
+        )
+    if hourly_fill_buffer_bps is not None:
+        lines.append(
+            f"- hourly_fill_buffer_bps: {float(hourly_fill_buffer_bps):g} "
+            f"(min {float(min_hourly_fill_buffer_bps):g})"
+        )
+    if hourly_max_hold_hours is not None:
+        lines.append(
+            f"- hourly_max_hold_hours: {int(hourly_max_hold_hours)} "
+            f"(max {int(max_hourly_hold_hours)})"
+        )
     lines.append(
         f"- negative_windows: {int(gate['negative_windows'])} "
         f"(cap {int(gate['max_negative_windows'])})"
@@ -423,6 +878,32 @@ def _summarise_window_metrics(rows: List[Dict[str, float]]) -> Dict[str, Any]:
     }
 
 
+def _median_target_impossible(
+    rows: List[Dict[str, float]],
+    *,
+    n_windows: int,
+    window_days: int,
+    target_monthly: float,
+) -> tuple[bool, int, float]:
+    """Return true when remaining windows cannot rescue the final median target."""
+    planned_windows = int(n_windows)
+    if planned_windows <= 0:
+        return False, 0, 0.0
+    target_total = _total_from_monthly(float(target_monthly), int(window_days))
+    if not math.isfinite(target_total):
+        return False, 0, target_total
+    below_target = 0
+    for row in rows:
+        try:
+            total_return = float(row["total_return"])
+        except (KeyError, TypeError, ValueError):
+            below_target += 1
+            continue
+        if not math.isfinite(total_return) or total_return < target_total:
+            below_target += 1
+    return below_target > (planned_windows // 2), below_target, target_total
+
+
 def _evaluate_intrabar_hourly(
     *,
     checkpoint: Path,
@@ -433,6 +914,7 @@ def _evaluate_intrabar_hourly(
     window_days: int,
     slippages: List[int],
     fee_rate: float,
+    short_borrow_apr: float,
     max_leverage: float,
     seed: int,
     fill_buffer_bps: float,
@@ -441,6 +923,7 @@ def _evaluate_intrabar_hourly(
     take_profit_pct: float,
     trade_hour_mode: str,
     decision_lag: int,
+    target_monthly: float,
     fail_fast: bool,
     fail_fast_max_dd: float,
     fail_fast_min_completed: int,
@@ -501,6 +984,7 @@ def _evaluate_intrabar_hourly(
                 start_date=str(window_start_day),
                 max_steps=int(window_days),
                 fee_rate=float(fee_rate) + float(bps) / 10_000.0,
+                short_borrow_apr=float(short_borrow_apr),
                 fill_buffer_bps=float(fill_buffer_bps),
                 max_leverage=float(max_leverage),
                 stop_loss_pct=(float(stop_loss_pct) if stop_loss_pct > 0.0 else None),
@@ -531,6 +1015,20 @@ def _evaluate_intrabar_hourly(
                         f"after {len(cell_rows)} completed"
                     )
                     break
+                if len(cell_rows) >= int(fail_fast_min_completed):
+                    impossible, below_target, target_total = _median_target_impossible(
+                        cell_rows,
+                        n_windows=int(n_windows),
+                        window_days=int(window_days),
+                        target_monthly=float(target_monthly),
+                    )
+                    if impossible:
+                        failed_fast_reason = (
+                            "median_target_impossible: "
+                            f"{below_target}/{int(n_windows)} windows below "
+                            f"target_total={target_total:.4f}"
+                        )
+                        break
 
         cell = _summarise_window_metrics(cell_rows)
         if failed_fast_reason is not None:
@@ -578,13 +1076,40 @@ def main(argv: list[str] | None = None) -> int:
                          "the final promotion gate (default 20 bps). Lower "
                          "values are useful for smoke tests but are not a "
                          "production promotion check.")
+    ap.add_argument("--required-slippage-bps", default="0,5,10,20",
+                    help="Comma-separated slippage levels that must be present "
+                         "in completed eval results for the final promotion "
+                         "gate. Default matches the production realism grid. "
+                         "Set to empty only for explicit smoke/legacy checks.")
     ap.add_argument("--fee-rate", type=float, default=0.001)
+    ap.add_argument("--min-fee-rate", type=float, default=0.001,
+                    help="Minimum base fee rate allowed to pass the promotion "
+                         "gate. Default 0.001 = 10 bps production realism; "
+                         "set 0 only for explicit smoke/legacy checks.")
+    ap.add_argument("--short-borrow-apr", type=float, default=0.0625,
+                    help="Annualized borrow / margin rate charged by the "
+                         "marketsim. Default 0.0625 = 6.25%% production realism.")
+    ap.add_argument("--min-short-borrow-apr", type=float, default=0.0625,
+                    help="Minimum borrow / margin APR allowed to pass the "
+                         "promotion gate. Set 0 only for explicit smoke/legacy checks.")
     ap.add_argument("--max-leverage", type=float, default=1.5)
+    ap.add_argument("--max-leverage-target", type=float, default=2.0,
+                    help="Maximum leverage allowed to pass the promotion gate. "
+                         "Default 2x matches the intended aggressive account "
+                         "packing ceiling; set 0 only for explicit smoke/legacy checks.")
     ap.add_argument(
         "--execution-granularity",
         choices=["daily", "hourly_intrabar"],
         default="daily",
         help="Use the default C daily marketsim or replay daily decisions through hourly OHLC execution.",
+    )
+    ap.add_argument(
+        "--allow-daily-promotion",
+        action="store_true",
+        help="Allow daily execution-granularity artifacts to pass the promotion "
+             "gate. Use only for explicit smoke/legacy checks; production "
+             "realism requires hourly_intrabar so fill_buffer and max_hold "
+             "are exercised.",
     )
     ap.add_argument("--hourly-data-root", default=None,
                     help="Required for --execution-granularity hourly_intrabar. "
@@ -594,8 +1119,18 @@ def main(argv: list[str] | None = None) -> int:
                          "UTC start date of row 0 in the MKTD file.")
     ap.add_argument("--hourly-fill-buffer-bps", type=float, default=5.0,
                     help="Hourly limit fill-through buffer for hourly_intrabar mode.")
-    ap.add_argument("--hourly-max-hold-hours", type=int, default=0,
-                    help="Optional hourly max-hold guard in hourly_intrabar mode.")
+    ap.add_argument("--min-hourly-fill-buffer-bps", type=float, default=5.0,
+                    help="Minimum hourly fill-through buffer allowed to pass "
+                         "the promotion gate. Default 5 bps matches production "
+                         "realism; set 0 only for explicit smoke/legacy checks.")
+    ap.add_argument("--hourly-max-hold-hours", type=int, default=6,
+                    help="Hourly max-hold guard in hourly_intrabar mode. "
+                         "Default 6h matches production realism; set 0 only "
+                         "with --max-hourly-hold-hours-target 0 for smoke checks.")
+    ap.add_argument("--max-hourly-hold-hours-target", type=int, default=6,
+                    help="Maximum hourly max-hold setting allowed to pass the "
+                         "promotion gate. Set 0 to disable only for explicit "
+                         "smoke/legacy checks.")
     ap.add_argument("--hourly-stop-loss-pct", type=float, default=0.0,
                     help="Optional intrabar stop-loss fraction in hourly_intrabar mode.")
     ap.add_argument("--hourly-take-profit-pct", type=float, default=0.0,
@@ -644,12 +1179,73 @@ def main(argv: list[str] | None = None) -> int:
         print(f"eval_100d: val data not found: {val}", file=sys.stderr)
         return 2
     checkpoint_sha256 = _file_sha256(ckpt)
-    slippages = [int(x) for x in args.slippage_bps.split(",") if x.strip()]
+    try:
+        slippages = _parse_int_csv(
+            str(args.slippage_bps),
+            label="slippage_bps",
+            min_value=0,
+        )
+        required_slippages = _parse_int_csv(
+            str(args.required_slippage_bps),
+            label="required_slippage_bps",
+            allow_empty=True,
+            min_value=0,
+        )
+    except ValueError as exc:
+        print(f"eval_100d: {exc}", file=sys.stderr)
+        return 2
     min_completed_windows = (
         int(args.n_windows)
         if args.min_completed_windows is None
         else int(args.min_completed_windows)
     )
+    input_errors = _validate_main_numeric_args(
+        args,
+        min_completed_windows=min_completed_windows,
+    )
+    if input_errors:
+        print(f"eval_100d: {input_errors[0]}", file=sys.stderr)
+        return 2
+    preflight_errors = _static_promotion_preflight(
+        args,
+        slippages=slippages,
+        required_slippages=required_slippages,
+        min_completed_windows=min_completed_windows,
+    )
+    if preflight_errors:
+        print(f"eval_100d: {preflight_errors[0]}", file=sys.stderr)
+        out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
+        md = _write_static_preflight_artifacts(
+            out_dir=out_dir,
+            ckpt=ckpt,
+            val=val,
+            checkpoint_sha256=checkpoint_sha256,
+            args=args,
+            slippages=slippages,
+            required_slippages=required_slippages,
+            min_completed_windows=min_completed_windows,
+            failures=preflight_errors,
+        )
+        print(md)
+        return 3
+    hourly_max_hold_for_gate = (
+        int(args.hourly_max_hold_hours)
+        if args.execution_granularity == "hourly_intrabar"
+        else None
+    )
+    max_hourly_hold_hours_target = int(args.max_hourly_hold_hours_target)
+    fee_rate_for_gate = float(args.fee_rate)
+    min_fee_rate = float(args.min_fee_rate)
+    short_borrow_apr_for_gate = float(args.short_borrow_apr)
+    min_short_borrow_apr = float(args.min_short_borrow_apr)
+    max_leverage_for_gate = float(args.max_leverage)
+    max_leverage_target = float(args.max_leverage_target)
+    hourly_fill_buffer_for_gate = (
+        float(args.hourly_fill_buffer_bps)
+        if args.execution_granularity == "hourly_intrabar"
+        else None
+    )
+    min_hourly_fill_buffer_bps = float(args.min_hourly_fill_buffer_bps)
 
     # Build a cfg shaped like fp4_ppo_stocks12.yaml so evaluate_policy_file
     # reads the knobs it already knows.
@@ -657,6 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
         "env": {
             "val_data": str(val.relative_to(REPO)) if val.is_relative_to(REPO) else str(val),
             "fee_rate": float(args.fee_rate),
+            "short_borrow_apr": short_borrow_apr_for_gate,
             "max_leverage_scalar_fallback": float(args.max_leverage),
         },
         "eval": {
@@ -688,6 +1285,7 @@ def main(argv: list[str] | None = None) -> int:
             window_days=int(args.window_days),
             slippages=slippages,
             fee_rate=float(args.fee_rate),
+            short_borrow_apr=short_borrow_apr_for_gate,
             max_leverage=float(args.max_leverage),
             seed=int(args.seed),
             fill_buffer_bps=float(args.hourly_fill_buffer_bps),
@@ -696,6 +1294,7 @@ def main(argv: list[str] | None = None) -> int:
             take_profit_pct=float(args.hourly_take_profit_pct),
             trade_hour_mode=str(args.hourly_trade_hour_mode),
             decision_lag=int(args.decision_lag),
+            target_monthly=float(args.monthly_target),
             fail_fast=bool(args.fail_fast),
             fail_fast_max_dd=float(args.fail_fast_max_dd),
             fail_fast_min_completed=int(args.fail_fast_min_completed),
@@ -709,11 +1308,80 @@ def main(argv: list[str] | None = None) -> int:
               f"{result.get('reason', '<no reason>')}", file=sys.stderr)
         out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
         out_dir.mkdir(parents=True, exist_ok=True)
+        aggregate = _aggregate({}, window_days=int(args.window_days))
+        gate = _promotion_status(
+            aggregate,
+            target_monthly=float(args.monthly_target),
+            max_dd_target=float(args.max_dd_target),
+            window_days=int(args.window_days),
+            min_window_days=int(args.min_window_days),
+            decision_lag=int(args.decision_lag),
+            min_decision_lag=int(args.min_decision_lag),
+            fee_rate=fee_rate_for_gate,
+            min_fee_rate=min_fee_rate,
+            short_borrow_apr=short_borrow_apr_for_gate,
+            min_short_borrow_apr=min_short_borrow_apr,
+            max_leverage=max_leverage_for_gate,
+            max_leverage_target=max_leverage_target,
+            execution_granularity=str(args.execution_granularity),
+            require_hourly_intrabar=not bool(args.allow_daily_promotion),
+            slippage_bps=[],
+            min_max_slippage_bps=int(args.min_max_slippage_bps),
+            required_slippage_bps=required_slippages,
+            hourly_fill_buffer_bps=hourly_fill_buffer_for_gate,
+            min_hourly_fill_buffer_bps=min_hourly_fill_buffer_bps,
+            hourly_max_hold_hours=hourly_max_hold_for_gate,
+            max_hourly_hold_hours=max_hourly_hold_hours_target,
+            max_negative_windows=int(args.max_negative_windows),
+            min_completed_windows=int(min_completed_windows),
+        )
+        gate["passed"] = False
+        status = str(result.get("status"))
+        reason = str(result.get("reason", "<no reason>"))
+        gate["failures"] = [
+            *list(gate.get("failures", [])),
+            f"evaluator_status {status}: {reason}",
+        ]
+        md = (
+            f"# 100d unseen-data eval — `{ckpt.name}`\n\n"
+            f"- checkpoint_sha256: `{checkpoint_sha256}`\n"
+            f"- **status**: EVALUATOR_NON_OK  ({status}: {reason})\n"
+            "- promotion_gate: FAIL\n"
+            f"- execution_granularity: {args.execution_granularity}\n"
+            f"- backend: {result.get('backend', 'unknown')}\n"
+        )
+        (out_dir / f"{ckpt.stem}_eval100d.md").write_text(md)
         (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
             "checkpoint": str(ckpt),
             "checkpoint_sha256": checkpoint_sha256,
             "val_data": str(val),
+            "n_windows": int(args.n_windows),
+            "window_days": int(args.window_days),
+            "slippage_bps": slippages,
+            "monthly_target": float(args.monthly_target),
+            "max_dd_target": float(args.max_dd_target),
+            "min_window_days": int(args.min_window_days),
+            "decision_lag": int(args.decision_lag),
+            "min_decision_lag": int(args.min_decision_lag),
+            "fee_rate": fee_rate_for_gate,
+            "min_fee_rate": min_fee_rate,
+            "short_borrow_apr": short_borrow_apr_for_gate,
+            "min_short_borrow_apr": min_short_borrow_apr,
+            "max_leverage": max_leverage_for_gate,
+            "max_leverage_target": max_leverage_target,
+            "execution_granularity": str(args.execution_granularity),
+            "require_hourly_intrabar": not bool(args.allow_daily_promotion),
+            "min_max_slippage_bps": int(args.min_max_slippage_bps),
+            "required_slippage_bps": required_slippages,
+            "hourly_fill_buffer_bps": hourly_fill_buffer_for_gate,
+            "min_hourly_fill_buffer_bps": min_hourly_fill_buffer_bps,
+            "hourly_max_hold_hours": hourly_max_hold_for_gate,
+            "max_hourly_hold_hours": max_hourly_hold_hours_target,
+            "max_negative_windows": int(args.max_negative_windows),
+            "min_completed_windows": int(min_completed_windows),
             "raw": result,
+            "aggregate": aggregate,
+            "promotion_gate": gate,
         }, indent=2, default=str))
         return 1
     if result.get("status") == "failed_fast":
@@ -731,8 +1399,21 @@ def main(argv: list[str] | None = None) -> int:
             min_window_days=int(args.min_window_days),
             decision_lag=int(args.decision_lag),
             min_decision_lag=int(args.min_decision_lag),
+            fee_rate=fee_rate_for_gate,
+            min_fee_rate=min_fee_rate,
+            short_borrow_apr=short_borrow_apr_for_gate,
+            min_short_borrow_apr=min_short_borrow_apr,
+            max_leverage=max_leverage_for_gate,
+            max_leverage_target=max_leverage_target,
+            execution_granularity=str(args.execution_granularity),
+            require_hourly_intrabar=not bool(args.allow_daily_promotion),
             slippage_bps=_evaluated_slippage_bps(aggregate),
             min_max_slippage_bps=int(args.min_max_slippage_bps),
+            required_slippage_bps=required_slippages,
+            hourly_fill_buffer_bps=hourly_fill_buffer_for_gate,
+            min_hourly_fill_buffer_bps=min_hourly_fill_buffer_bps,
+            hourly_max_hold_hours=hourly_max_hold_for_gate,
+            max_hourly_hold_hours=max_hourly_hold_hours_target,
             max_negative_windows=int(args.max_negative_windows),
             min_completed_windows=int(min_completed_windows),
         )
@@ -760,7 +1441,20 @@ def main(argv: list[str] | None = None) -> int:
             "min_window_days": int(args.min_window_days),
             "decision_lag": int(args.decision_lag),
             "min_decision_lag": int(args.min_decision_lag),
+            "fee_rate": fee_rate_for_gate,
+            "min_fee_rate": min_fee_rate,
+            "short_borrow_apr": short_borrow_apr_for_gate,
+            "min_short_borrow_apr": min_short_borrow_apr,
+            "max_leverage": max_leverage_for_gate,
+            "max_leverage_target": max_leverage_target,
+            "execution_granularity": str(args.execution_granularity),
+            "require_hourly_intrabar": not bool(args.allow_daily_promotion),
             "min_max_slippage_bps": int(args.min_max_slippage_bps),
+            "required_slippage_bps": required_slippages,
+            "hourly_fill_buffer_bps": hourly_fill_buffer_for_gate,
+            "min_hourly_fill_buffer_bps": min_hourly_fill_buffer_bps,
+            "hourly_max_hold_hours": hourly_max_hold_for_gate,
+            "max_hourly_hold_hours": max_hourly_hold_hours_target,
             "max_negative_windows": int(args.max_negative_windows),
             "min_completed_windows": int(min_completed_windows),
             "n_windows": int(args.n_windows), "window_days": int(args.window_days),
@@ -781,8 +1475,21 @@ def main(argv: list[str] | None = None) -> int:
         min_window_days=int(args.min_window_days),
         decision_lag=int(args.decision_lag),
         min_decision_lag=int(args.min_decision_lag),
+        fee_rate=fee_rate_for_gate,
+        min_fee_rate=min_fee_rate,
+        short_borrow_apr=short_borrow_apr_for_gate,
+        min_short_borrow_apr=min_short_borrow_apr,
+        max_leverage=max_leverage_for_gate,
+        max_leverage_target=max_leverage_target,
+        execution_granularity=str(args.execution_granularity),
+        require_hourly_intrabar=not bool(args.allow_daily_promotion),
         slippage_bps=_evaluated_slippage_bps(aggregate),
         min_max_slippage_bps=int(args.min_max_slippage_bps),
+        required_slippage_bps=required_slippages,
+        hourly_fill_buffer_bps=hourly_fill_buffer_for_gate,
+        min_hourly_fill_buffer_bps=min_hourly_fill_buffer_bps,
+        hourly_max_hold_hours=hourly_max_hold_for_gate,
+        max_hourly_hold_hours=max_hourly_hold_hours_target,
         max_negative_windows=int(args.max_negative_windows),
         min_completed_windows=int(min_completed_windows),
     )
@@ -798,7 +1505,20 @@ def main(argv: list[str] | None = None) -> int:
         "min_window_days": int(args.min_window_days),
         "decision_lag": int(args.decision_lag),
         "min_decision_lag": int(args.min_decision_lag),
+        "fee_rate": fee_rate_for_gate,
+        "min_fee_rate": min_fee_rate,
+        "short_borrow_apr": short_borrow_apr_for_gate,
+        "min_short_borrow_apr": min_short_borrow_apr,
+        "max_leverage": max_leverage_for_gate,
+        "max_leverage_target": max_leverage_target,
+        "execution_granularity": str(args.execution_granularity),
+        "require_hourly_intrabar": not bool(args.allow_daily_promotion),
         "min_max_slippage_bps": int(args.min_max_slippage_bps),
+        "required_slippage_bps": required_slippages,
+        "hourly_fill_buffer_bps": hourly_fill_buffer_for_gate,
+        "min_hourly_fill_buffer_bps": min_hourly_fill_buffer_bps,
+        "hourly_max_hold_hours": hourly_max_hold_for_gate,
+        "max_hourly_hold_hours": max_hourly_hold_hours_target,
         "max_negative_windows": int(args.max_negative_windows),
         "min_completed_windows": int(min_completed_windows),
         "raw": result,
@@ -815,8 +1535,21 @@ def main(argv: list[str] | None = None) -> int:
         min_window_days=int(args.min_window_days),
         decision_lag=int(args.decision_lag),
         min_decision_lag=int(args.min_decision_lag),
+        fee_rate=fee_rate_for_gate,
+        min_fee_rate=min_fee_rate,
+        short_borrow_apr=short_borrow_apr_for_gate,
+        min_short_borrow_apr=min_short_borrow_apr,
+        max_leverage=max_leverage_for_gate,
+        max_leverage_target=max_leverage_target,
+        execution_granularity=str(args.execution_granularity),
+        require_hourly_intrabar=not bool(args.allow_daily_promotion),
         slippage_bps=slippages,
         min_max_slippage_bps=int(args.min_max_slippage_bps),
+        required_slippage_bps=required_slippages,
+        hourly_fill_buffer_bps=hourly_fill_buffer_for_gate,
+        min_hourly_fill_buffer_bps=min_hourly_fill_buffer_bps,
+        hourly_max_hold_hours=hourly_max_hold_for_gate,
+        max_hourly_hold_hours=max_hourly_hold_hours_target,
         max_negative_windows=int(args.max_negative_windows),
         min_completed_windows=int(min_completed_windows),
     )

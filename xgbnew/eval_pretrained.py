@@ -28,23 +28,26 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \\
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.backtest import BacktestConfig, simulate
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.model import XGBStockModel
+from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate  # noqa: E402
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents  # noqa: E402
+from xgbnew.model import XGBStockModel  # noqa: E402
+
 
 TRADING_DAYS_PER_MONTH = 21.0
 
@@ -82,6 +85,64 @@ def _load_pretrained(path: Path) -> XGBStockModel:
     return XGBStockModel.load(path)
 
 
+def _fm_latent_columns_from_model(model: XGBStockModel, path: Path) -> list[int]:
+    feature_cols = getattr(model, "feature_cols", None)
+    if not isinstance(feature_cols, list):
+        return []
+    latent_indices: list[int] = []
+    for col in feature_cols:
+        if not isinstance(col, str) or not col.startswith("latent_"):
+            continue
+        suffix = col.removeprefix("latent_")
+        if not suffix.isdigit():
+            raise ValueError(f"{path}: invalid FM latent feature column {col!r}")
+        latent_indices.append(int(suffix))
+    if not latent_indices:
+        if "fm_available" in feature_cols:
+            raise ValueError(f"{path}: fm_available present without latent_N features")
+        return []
+    unique_indices = sorted(set(latent_indices))
+    expected = list(range(unique_indices[-1] + 1))
+    if unique_indices != expected:
+        raise ValueError(
+            f"{path}: FM latent feature columns must be contiguous from latent_0; "
+            f"got {unique_indices}",
+        )
+    return unique_indices
+
+
+def _required_fm_n_latents(
+    models: list[XGBStockModel],
+    model_paths: list[Path],
+) -> int | None:
+    required = 0
+    for model, path in zip(models, model_paths, strict=True):
+        latent_indices = _fm_latent_columns_from_model(model, path)
+        if latent_indices:
+            required = max(required, latent_indices[-1] + 1)
+    return required or None
+
+
+def _fm_artifact_n_latents(fm_df: pd.DataFrame) -> int:
+    latent_indices = []
+    for col in fm_df.columns:
+        col_name = str(col)
+        if not col_name.startswith("latent_"):
+            continue
+        suffix = col_name.removeprefix("latent_")
+        if suffix.isdigit():
+            latent_indices.append(int(suffix))
+    return len(set(latent_indices))
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _blend(probs: list[pd.Series], mode: str, oos_df: pd.DataFrame) -> pd.Series:
     mat = np.stack([p.to_numpy(dtype=np.float64, copy=False) for p in probs], axis=0)
     if mode == "mean":
@@ -117,6 +178,11 @@ def parse_args(argv=None):
     p.add_argument("--data-root", type=Path, default=REPO / "trainingdata")
     p.add_argument("--chronos-cache", type=Path,
                    default=REPO / "analysis/top2_backtest/forecast_cache")
+    p.add_argument("--fm-latents-path", type=Path, default=None,
+                   help="Optional FM latents parquet to attach for models whose "
+                        "feature_cols include latent_N/fm_available features.")
+    p.add_argument("--fm-n-latents", type=int, default=32,
+                   help="Number of latent_N columns to attach from --fm-latents-path.")
     p.add_argument("--oos-start", default="2025-01-02")
     p.add_argument("--oos-end", default="")
     p.add_argument("--window-days", type=int, default=30)
@@ -125,7 +191,12 @@ def parse_args(argv=None):
     p.add_argument("--top-n", type=int, default=1)
     p.add_argument("--leverage", type=float, default=1.0)
     p.add_argument("--xgb-weight", type=float, default=1.0)
-    p.add_argument("--fee-rate", type=float, default=0.0000278)
+    p.add_argument(
+        "--fee-rate",
+        type=float,
+        default=PRODUCTION_STOCK_FEE_RATE,
+        help="Per-side fee fraction. Default 0.001 = 10 bps production-realism stress fee.",
+    )
     p.add_argument("--commission-bps", type=float, default=0.0)
     p.add_argument("--fill-buffer-bps", type=float, default=5.0)
     p.add_argument("--min-dollar-vol", type=float, default=5_000_000.0)
@@ -147,7 +218,7 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def main(argv=None) -> int:
+def main(argv=None) -> int:  # noqa: PLR0911
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
@@ -164,9 +235,51 @@ def main(argv=None) -> int:
         models.append(m)
         print(f"[xgb-eval-pre] loaded {mp.name} in {time.perf_counter()-t:.2f}s", flush=True)
 
+    try:
+        required_fm_n_latents = _required_fm_n_latents(models, model_paths)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    fm_latents_df = None
+    fm_latents_sha256 = None
+    if required_fm_n_latents is not None and args.fm_latents_path is None:
+        print(
+            "ERROR: model feature_cols require FM latents; pass --fm-latents-path",
+            file=sys.stderr,
+        )
+        return 1
+    if args.fm_latents_path is not None:
+        if int(args.fm_n_latents) <= 0:
+            print("ERROR: --fm-n-latents must be positive", file=sys.stderr)
+            return 1
+        if required_fm_n_latents is not None and int(args.fm_n_latents) < required_fm_n_latents:
+            print(
+                f"ERROR: --fm-n-latents={args.fm_n_latents} is smaller than "
+                f"model feature_cols require ({required_fm_n_latents})",
+                file=sys.stderr,
+            )
+            return 1
+        fm_latents_df = load_fm_latents(args.fm_latents_path)
+        if fm_latents_df is None:
+            print(f"ERROR: --fm-latents-path {args.fm_latents_path} not found", file=sys.stderr)
+            return 1
+        artifact_n_latents = _fm_artifact_n_latents(fm_latents_df)
+        if int(args.fm_n_latents) > artifact_n_latents:
+            print(
+                f"ERROR: --fm-n-latents={args.fm_n_latents} exceeds artifact "
+                f"latent columns ({artifact_n_latents})",
+                file=sys.stderr,
+            )
+            return 1
+        fm_latents_sha256 = _file_sha256(args.fm_latents_path)
+
     symbols = _load_symbols(args.symbols_file)
     oos_start = date.fromisoformat(args.oos_start)
-    oos_end = date.fromisoformat(args.oos_end) if args.oos_end else date.today()
+    oos_end = (
+        date.fromisoformat(args.oos_end)
+        if args.oos_end
+        else datetime.now(UTC).date()
+    )
 
     chronos_cache = {}
     if args.chronos_cache.exists():
@@ -184,6 +297,8 @@ def main(argv=None) -> int:
         chronos_cache=chronos_cache if chronos_cache else None,
         min_dollar_vol=args.min_dollar_vol,
         fast_features=False,
+        fm_latents=fm_latents_df,
+        fm_n_latents=int(args.fm_n_latents) if fm_latents_df is not None else None,
     )
     print(f"[xgb-eval-pre] OOS dataset built in {time.perf_counter()-t0:.1f}s | "
           f"rows={len(oos_df):,}  symbols={oos_df['symbol'].nunique()}", flush=True)
@@ -231,7 +346,7 @@ def main(argv=None) -> int:
             continue
         w_scores = blended_scores.loc[w_df.index]
         res = simulate(w_df, models[0], backtest_cfg, precomputed_scores=w_scores)
-        n_days = int(len(pd.unique(w_df["date"])))
+        n_days = len(pd.unique(w_df["date"]))
         n_active_days = len(res.day_results)
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
         wr = {
@@ -291,6 +406,9 @@ def main(argv=None) -> int:
         "fee_rate": float(args.fee_rate),
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "blend_mode": str(args.blend_mode),
+        "fm_latents_path": str(args.fm_latents_path) if args.fm_latents_path else None,
+        "fm_latents_sha256": fm_latents_sha256,
+        "fm_n_latents": int(args.fm_n_latents) if fm_latents_df is not None else 0,
         "summary": summary,
         "windows": window_results,
     }

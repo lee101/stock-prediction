@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from xgbnew.model import XGBStockModel
 from xgbnew.features import (
+    FM_LATENT_FEATURE_COLS,
     LIVE_SUPPORTED_FEATURE_COLS,
 )
 
@@ -101,6 +102,12 @@ def _validate_model_contract(model: XGBStockModel, path: Path, *, sha256: str) -
     if unsupported:
         raise ValueError(
             f"{path}: feature_cols contains unsupported live features: {unsupported}"
+        )
+    offline_only = sorted(set(feature_cols).intersection(FM_LATENT_FEATURE_COLS))
+    if offline_only:
+        raise ValueError(
+            f"{path}: feature_cols require offline FM latents not available in live trading: "
+            f"{offline_only}"
         )
     medians = np.asarray(getattr(model, "_col_medians", []), dtype=np.float32)
     if medians.shape != (len(feature_cols),):

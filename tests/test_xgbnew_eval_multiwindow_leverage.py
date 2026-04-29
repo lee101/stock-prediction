@@ -1,6 +1,7 @@
 """Coverage for the leverage knob added to xgbnew.eval_multiwindow."""
 from __future__ import annotations
 
+from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE
 from xgbnew.eval_multiwindow import SweepConfig, _config_grid, parse_args
 
 
@@ -42,6 +43,16 @@ def test_config_grid_default_leverage_when_grid_empty():
     grid = _config_grid(args)
     assert len(grid) == 1
     assert grid[0].leverage == 1.0
+
+
+def test_eval_multiwindow_default_fee_is_production_stress_fee():
+    args = parse_args([
+        "--n-estimators", "400",
+        "--max-depth", "5",
+        "--learning-rate", "0.03",
+        "--top-n-grid", "1",
+    ])
+    assert args.fee_rate == PRODUCTION_STOCK_FEE_RATE
 
 
 def test_config_grid_custom_single_leverage():
@@ -117,7 +128,7 @@ def test_device_cuda_is_parsed():
 
 
 def test_config_grid_crosses_random_state_and_hyperparams():
-    # Orthogonal sweep: 2 depths × 3 seeds = 6 cells.
+    # Orthogonal sweep: 2 depths x 3 seeds = 6 cells.
     args = parse_args([
         "--n-estimators", "400",
         "--max-depth-grid", "5,7",

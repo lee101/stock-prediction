@@ -25,7 +25,7 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
         --leverage-grid 2.0,2.25,2.5,2.75,3.0 \
         --min-score-grid 0.80,0.85,0.90 \
         --hold-through \
-        --fee-regimes deploy,stress36x \
+        --fee-regimes deploy,prod10bps,stress36x \
         --output-dir analysis/xgbnew_ensemble_sweep
 """
 from __future__ import annotations
@@ -44,8 +44,8 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from xgbnew.backtest import BacktestConfig, simulate
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
+from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents
 from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
     DAILY_RANK_FEATURE_COLS,
@@ -57,12 +57,43 @@ from xgbnew.model_registry import load_any_model
 logger = logging.getLogger(__name__)
 
 
+def _infer_required_fm_latents(
+    feature_cols: tuple[str, ...],
+    path: Path,
+) -> int | None:
+    """Return required latent count, rejecting sparse latent feature contracts."""
+    latent_indices: list[int] = []
+    for col in feature_cols:
+        if not col.startswith("latent_"):
+            continue
+        suffix = col.removeprefix("latent_")
+        if not suffix.isdecimal():
+            raise ValueError(f"{path}: model feature_cols contains invalid FM latent column {col!r}")
+        latent_indices.append(int(suffix))
+    if not latent_indices:
+        return None
+    unique_indices = sorted(set(latent_indices))
+    expected = list(range(unique_indices[-1] + 1))
+    if unique_indices != expected:
+        raise ValueError(
+            f"{path}: model FM latent feature columns must be contiguous from latent_0; "
+            f"got {unique_indices}"
+        )
+    return unique_indices[-1] + 1
+
+
 # ── Fee regimes ───────────────────────────────────────────────────────────────
-# "deploy" mirrors real Alpaca costs. "stress36x" is the realism-gate stress
-# (matches the 36× cell used in project_xgb_full_lever_stack_40pct.md).
+# "deploy" is the historical Alpaca fee baseline kept for compatibility.
+# "prod10bps" is the current production-realism fee at the normal fill buffer.
+# "stress36x" is the harsher realism-gate stress cell.
 FEE_REGIMES: dict[str, dict[str, float]] = {
-    "deploy":    {"fee_rate": 0.0000278, "fill_buffer_bps": 5.0,  "commission_bps": 0.0},
-    "stress36x": {"fee_rate": 0.001,     "fill_buffer_bps": 15.0, "commission_bps": 10.0},
+    "deploy": {"fee_rate": 0.0000278, "fill_buffer_bps": 5.0, "commission_bps": 0.0},
+    "prod10bps": {
+        "fee_rate": PRODUCTION_STOCK_FEE_RATE,
+        "fill_buffer_bps": 5.0,
+        "commission_bps": 0.0,
+    },
+    "stress36x": {"fee_rate": 0.001, "fill_buffer_bps": 15.0, "commission_bps": 10.0},
 }
 
 
@@ -1176,6 +1207,8 @@ def run_sweep(
     overnight_max_gross_leverage: float | None = None,
     progress_callback: Callable[[list[CellResult], int, int], None] | None = None,
     resume_rows: list[dict] | None = None,
+    fm_latents_path: Path | None = None,
+    fm_n_latents: int | None = None,
 ) -> list[CellResult]:
     """Run the full sweep. Returns a flat list of CellResult."""
     _validate_model_paths_for_sweep(model_paths)
@@ -1226,6 +1259,20 @@ def run_sweep(
     if chronos_cache_path is not None and chronos_cache_path.exists():
         chronos_cache = load_chronos_cache(chronos_cache_path)
 
+    fm_latents_df = None
+    if fm_latents_path is not None:
+        fm_latents_path = Path(fm_latents_path)
+        if not fm_latents_path.exists():
+            raise ValueError(f"--fm-latents-path not found: {fm_latents_path}")
+        fm_latents_df = load_fm_latents(fm_latents_path)
+        if fm_latents_df is not None:
+            logger.info(
+                "fm_latents loaded: rows=%d unique_syms=%d unique_dates=%d",
+                len(fm_latents_df),
+                fm_latents_df["symbol"].nunique(),
+                fm_latents_df["date"].nunique(),
+            )
+
     # Load models first so we can peek at their feature_cols and decide
     # whether the dataset needs cross-sectional ranks attached. Any family
     # registered in xgbnew.model_registry (xgb/lgb/cat/mlp/...) is accepted;
@@ -1263,9 +1310,27 @@ def run_sweep(
             )
 
     assert first_features is not None
+    assert first_path is not None
     needs_ranks = any(c in first_features for c in DAILY_RANK_FEATURE_COLS)
     needs_disp = any(c in first_features for c in DAILY_DISPERSION_FEATURE_COLS)
-    logger.info("ensemble feature-mode: ranks=%s disp=%s", needs_ranks, needs_disp)
+    fm_latent_cols_in_model = [c for c in first_features if c.startswith("latent_")]
+    needs_fm = bool(fm_latent_cols_in_model) or "fm_available" in first_features
+    fm_n_latents_inferred = _infer_required_fm_latents(first_features, first_path)
+    if fm_n_latents is not None and fm_n_latents_inferred is not None and fm_n_latents < fm_n_latents_inferred:
+        raise ValueError(
+            f"--fm-n-latents={fm_n_latents} is smaller than model feature_cols require "
+            f"({fm_n_latents_inferred})"
+        )
+    if needs_fm and fm_latents_df is None:
+        raise ValueError(
+            "Ensemble feature_cols include foundation-model latents "
+            f"({fm_latent_cols_in_model[:3]}…) but --fm-latents-path was not provided."
+        )
+    logger.info(
+        "ensemble feature-mode: ranks=%s disp=%s fm_latents=%s (n_lat=%s)",
+        needs_ranks, needs_disp, needs_fm,
+        fm_n_latents_inferred if needs_fm else 0,
+    )
 
     _t = time.perf_counter()
     train_df, _, oos_df = build_daily_dataset(
@@ -1280,6 +1345,12 @@ def run_sweep(
         fast_features=bool(fast_features),
         include_cross_sectional_ranks=needs_ranks,
         include_cross_sectional_dispersion=needs_disp,
+        fm_latents=fm_latents_df if needs_fm else None,
+        fm_n_latents=(
+            fm_n_latents
+            if fm_n_latents is not None
+            else fm_n_latents_inferred
+        ),
     )
     logger.info("dataset built in %.1fs | train=%d oos=%d",
                 time.perf_counter() - _t, len(train_df), len(oos_df))
@@ -1706,6 +1777,9 @@ def _sweep_json_payload(
     data_root: Path | None = None,
     spy_csv_path: Path | None = None,
     spy_csv_sha256: str | None = None,
+    fm_latents_path: Path | None = None,
+    fm_latents_sha256: str | None = None,
+    fm_n_latents: int | None = None,
     blend_mode: str | None = None,
     model_paths: list[Path],
     model_sha256: list[str] | None = None,
@@ -1730,6 +1804,7 @@ def _sweep_json_payload(
         **({"symbols_file": str(symbols_file)} if symbols_file is not None else {}),
         **({"data_root": str(data_root)} if data_root is not None else {}),
         **({"spy_csv": str(spy_csv_path)} if spy_csv_path is not None else {}),
+        **({"fm_latents_path": str(fm_latents_path)} if fm_latents_path is not None else {}),
         **({"blend_mode": str(blend_mode)} if blend_mode is not None else {}),
         "model_paths": [str(p) for p in model_paths],
         "oos_start": oos_start,
@@ -1771,6 +1846,15 @@ def _sweep_json_payload(
         "friction_robust_strategies": robust_strategies,
         "cells": rows,
     }
+    fm_hash = (
+        _optional_file_sha256(fm_latents_path)
+        if fm_latents_sha256 is None and fm_latents_path is not None
+        else fm_latents_sha256
+    )
+    if fm_hash is not None:
+        payload["fm_latents_sha256"] = fm_hash
+    if fm_n_latents is not None:
+        payload["fm_n_latents"] = int(fm_n_latents)
     hashes = _model_sha256(model_paths) if model_sha256 is None else list(model_sha256)
     if hashes is not None:
         payload["model_sha256"] = hashes
@@ -1880,6 +1964,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--data-root", type=Path, default=Path("trainingdata"))
     p.add_argument("--chronos-cache", type=Path,
                    default=Path("analysis/xgbnew_daily/chronos_cache.parquet"))
+    p.add_argument("--fm-latents-path", type=Path, default=None,
+                   help="Optional foundation-model latents parquet "
+                        "(scripts/build_chronos_bolt_latents.py output). "
+                        "Required when the loaded ensemble's feature_cols "
+                        "include latent_N / fm_available columns.")
+    p.add_argument("--fm-n-latents", type=int, default=0,
+                   help="Override the number of latent_N columns to attach. "
+                        "0 (default) = auto-detect from the model's feature_cols.")
     p.add_argument("--model-paths", type=str, required=True,
                    help="Comma-separated pkl paths.")
     p.add_argument("--blend-mode", choices=["mean", "median"], default="mean")
@@ -1958,7 +2050,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "Comma-separated bps, e.g. '3,5,8,15,30' — "
                         "tests how the config degrades as executions "
                         "get progressively worse. Empty = single cell at "
-                        "the fee regime's default FB (deploy=5, "
+                        "the fee regime's default FB (deploy/prod10bps=5, "
                         "stress36x=15).")
     p.add_argument("--regime-gate-window-grid", type=str, default="",
                    help="Comma-separated SPY MA windows (e.g. '0,20,50,200'). "
@@ -2148,6 +2240,15 @@ def main(argv=None) -> int:
     model_sha256 = _model_sha256(model_paths)
     ensemble_manifest = _ensemble_manifest_metadata(model_paths)
     spy_csv_sha256 = _optional_file_sha256(args.spy_csv)
+    fm_latents_path = (
+        args.fm_latents_path if getattr(args, "fm_latents_path", None) else None
+    )
+    fm_latents_sha256 = _optional_file_sha256(fm_latents_path)
+    fm_n_latents = (
+        int(args.fm_n_latents)
+        if getattr(args, "fm_n_latents", 0) and int(args.fm_n_latents) > 0
+        else None
+    )
     ht_grid: list[bool] = []
     if args.hold_through:
         ht_grid.append(True)
@@ -2199,6 +2300,9 @@ def main(argv=None) -> int:
                 data_root=args.data_root,
                 spy_csv_path=args.spy_csv,
                 spy_csv_sha256=spy_csv_sha256,
+                fm_latents_path=fm_latents_path,
+                fm_latents_sha256=fm_latents_sha256,
+                fm_n_latents=fm_n_latents,
                 blend_mode=args.blend_mode,
                 model_paths=model_paths,
                 model_sha256=model_sha256,
@@ -2341,6 +2445,8 @@ def main(argv=None) -> int:
         ),
         progress_callback=_checkpoint if checkpoint_every > 0 else None,
         resume_rows=resume_rows,
+        fm_latents_path=fm_latents_path,
+        fm_n_latents=fm_n_latents,
     )
 
     rows = _cells_to_rows(cells)
@@ -2351,6 +2457,9 @@ def main(argv=None) -> int:
             data_root=args.data_root,
             spy_csv_path=args.spy_csv,
             spy_csv_sha256=spy_csv_sha256,
+            fm_latents_path=fm_latents_path,
+            fm_latents_sha256=fm_latents_sha256,
+            fm_n_latents=fm_n_latents,
             blend_mode=args.blend_mode,
             model_paths=model_paths,
             model_sha256=model_sha256,

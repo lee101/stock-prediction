@@ -43,14 +43,14 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from xgbnew.backtest import BacktestConfig, simulate
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents
 from xgbnew.features import DAILY_FEATURE_COLS, DAILY_RANK_FEATURE_COLS
 from xgbnew.model import XGBStockModel
 from xgbnew.sweep_ensemble_grid import (
@@ -60,6 +60,7 @@ from xgbnew.sweep_ensemble_grid import (
     _monthly_return,
     compute_goodness,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ def _resolve_model_paths(spec: str) -> list[Path]:
             continue
         # If the token looks like a glob, expand it.
         if any(ch in tok for ch in ["*", "?", "["]):
-            matches = sorted(glob.glob(tok))
+            matches = sorted(glob.glob(tok))  # noqa: PTH207
             out.extend(Path(m) for m in matches)
         else:
             out.append(Path(tok))
@@ -111,6 +112,64 @@ def _resolve_model_paths(spec: str) -> list[Path]:
             seen.add(key)
             uniq.append(p)
     return uniq
+
+
+def _fm_latent_columns_from_model(model: XGBStockModel, path: Path) -> list[int]:
+    feature_cols = getattr(model, "feature_cols", None)
+    if not isinstance(feature_cols, (list, tuple)):
+        return []
+    latent_indices: list[int] = []
+    for col in feature_cols:
+        if not isinstance(col, str) or not col.startswith("latent_"):
+            continue
+        suffix = col.removeprefix("latent_")
+        if not suffix.isdigit():
+            raise ValueError(f"{path}: invalid FM latent feature column {col!r}")
+        latent_indices.append(int(suffix))
+    if not latent_indices:
+        if "fm_available" in feature_cols:
+            raise ValueError(f"{path}: fm_available present without latent_N features")
+        return []
+    unique_indices = sorted(set(latent_indices))
+    expected = list(range(unique_indices[-1] + 1))
+    if unique_indices != expected:
+        raise ValueError(
+            f"{path}: FM latent feature columns must be contiguous from latent_0; "
+            f"got {unique_indices}",
+        )
+    return unique_indices
+
+
+def _required_fm_n_latents(
+    models: list[XGBStockModel],
+    model_paths: list[Path],
+) -> int | None:
+    required = 0
+    for model, path in zip(models, model_paths, strict=True):
+        latent_indices = _fm_latent_columns_from_model(model, path)
+        if latent_indices:
+            required = max(required, latent_indices[-1] + 1)
+    return required or None
+
+
+def _fm_artifact_n_latents(fm_df: pd.DataFrame) -> int:
+    latent_indices = []
+    for col in fm_df.columns:
+        col_name = str(col)
+        if not col_name.startswith("latent_"):
+            continue
+        suffix = col_name.removeprefix("latent_")
+        if suffix.isdigit():
+            latent_indices.append(int(suffix))
+    return len(set(latent_indices))
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _bucket_symbols(
@@ -198,7 +257,7 @@ def _run_cell(
             continue
         w_scores = local_scores.loc[w_df.index]
         res = simulate(w_df, dummy, cfg, precomputed_scores=w_scores)
-        n_days = int(len(pd.unique(w_df["date"])))
+        n_days = len(pd.unique(w_df["date"]))
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
         monthlies.append(monthly)
         sortinos.append(res.sortino_ratio)
@@ -248,6 +307,8 @@ def run_kfold(
     n_buckets: int, bucket_mode: str,
     blend_mode: str = "mean",
     chronos_cache_path: Path | None = None,
+    fm_latents_path: Path | None = None,
+    fm_n_latents: int = 32,
     min_dollar_vol: float = 5_000_000.0,
 ) -> list[LOBOResult]:
     chronos_cache = {}
@@ -256,6 +317,28 @@ def run_kfold(
 
     models = [XGBStockModel.load(p) for p in model_paths]
     logger.info("loaded %d ensemble members", len(models))
+
+    required_fm_n_latents = _required_fm_n_latents(models, model_paths)
+    fm_latents_df = None
+    if required_fm_n_latents is not None and fm_latents_path is None:
+        raise ValueError("model feature_cols require FM latents; pass --fm-latents-path")
+    if fm_latents_path is not None:
+        if int(fm_n_latents) <= 0:
+            raise ValueError("--fm-n-latents must be positive")
+        if required_fm_n_latents is not None and int(fm_n_latents) < required_fm_n_latents:
+            raise ValueError(
+                f"--fm-n-latents={fm_n_latents} is smaller than model feature_cols "
+                f"require ({required_fm_n_latents})",
+            )
+        fm_latents_df = load_fm_latents(fm_latents_path)
+        if fm_latents_df is None:
+            raise ValueError(f"--fm-latents-path not found: {fm_latents_path}")
+        artifact_n_latents = _fm_artifact_n_latents(fm_latents_df)
+        if int(fm_n_latents) > artifact_n_latents:
+            raise ValueError(
+                f"--fm-n-latents={fm_n_latents} exceeds artifact latent columns "
+                f"({artifact_n_latents})",
+            )
 
     def _has_ranks(m) -> bool:
         fc = getattr(m, "feature_cols", None) or []
@@ -275,6 +358,8 @@ def run_kfold(
         min_dollar_vol=min_dollar_vol,
         fast_features=False,
         include_cross_sectional_ranks=needs_ranks,
+        fm_latents=fm_latents_df,
+        fm_n_latents=int(fm_n_latents) if fm_latents_df is not None else None,
     )
     logger.info("oos rows=%d unique_symbols=%d",
                 len(oos_df), oos_df["symbol"].nunique())
@@ -374,6 +459,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--data-root",    type=Path, default=Path("trainingdata"))
     p.add_argument("--chronos-cache", type=Path,
                    default=Path("analysis/xgbnew_daily/chronos_cache.parquet"))
+    p.add_argument("--fm-latents-path", type=Path, default=None,
+                   help="Optional FM latents parquet for models with latent_N features.")
+    p.add_argument("--fm-n-latents", type=int, default=32,
+                   help="Number of latent_N columns to attach from --fm-latents-path.")
     p.add_argument("--model-paths", type=str, required=True,
                    help="Comma-sep paths; globs OK")
     p.add_argument("--blend-mode", choices=["mean", "median"], default="mean")
@@ -410,7 +499,11 @@ def main(argv=None) -> int:
         print("ERROR: no model paths resolved", file=sys.stderr)
         return 1
 
-    oos_end = date.fromisoformat(args.oos_end) if args.oos_end else date.today()
+    oos_end = (
+        date.fromisoformat(args.oos_end)
+        if args.oos_end
+        else datetime.now(UTC).date()
+    )
     t0 = time.perf_counter()
     results = run_kfold(
         symbols=symbols,
@@ -427,6 +520,8 @@ def main(argv=None) -> int:
         n_buckets=int(args.n_buckets), bucket_mode=str(args.bucket_mode),
         blend_mode=str(args.blend_mode),
         chronos_cache_path=args.chronos_cache,
+        fm_latents_path=args.fm_latents_path,
+        fm_n_latents=int(args.fm_n_latents),
         min_dollar_vol=float(args.min_dollar_vol),
     )
     logger.info("total walltime %.1fs", time.perf_counter() - t0)
@@ -440,6 +535,11 @@ def main(argv=None) -> int:
         "leverage": args.leverage, "min_score": args.min_score,
         "hold_through": args.hold_through, "top_n": args.top_n,
         "fee_regime": args.fee_regime,
+        "fm_latents_path": str(args.fm_latents_path) if args.fm_latents_path else None,
+        "fm_latents_sha256": (
+            _file_sha256(args.fm_latents_path) if args.fm_latents_path else None
+        ),
+        "fm_n_latents": int(args.fm_n_latents) if args.fm_latents_path else 0,
         "n_buckets": args.n_buckets, "bucket_mode": args.bucket_mode,
         "results": _rows(results),
     }, indent=2))

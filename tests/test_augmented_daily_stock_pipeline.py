@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from pufferlib_market.export_data_daily import export_binary as export_daily_binary
 from pufferlib_market.hourly_replay import read_mktd
@@ -161,6 +162,32 @@ def test_build_eval_command_uses_hourly_intrabar_defaults() -> None:
     assert cmd[cmd.index("--daily-start-date") + 1] == "2025-07-29T00:00:00+00:00"
 
 
+def test_build_eval_command_requires_hourly_inputs_for_promotion() -> None:
+    with pytest.raises(ValueError, match="promotion requires hourly_data_root"):
+        build_eval_command(
+            checkpoint=Path("ckpts/best.pt"),
+            val_data=Path("val.bin"),
+            out_dir=Path("eval"),
+            hourly_data_root=None,
+            daily_start_date=None,
+            extra_args=[],
+        )
+
+
+def test_build_eval_command_allows_explicit_daily_smoke_override() -> None:
+    cmd = build_eval_command(
+        checkpoint=Path("ckpts/best.pt"),
+        val_data=Path("val.bin"),
+        out_dir=Path("eval"),
+        hourly_data_root=None,
+        daily_start_date=None,
+        extra_args=["--allow-daily-promotion"],
+    )
+
+    assert "--execution-granularity" not in cmd
+    assert "--allow-daily-promotion" in cmd
+
+
 def test_wandboard_c_dashboard_renders_local_manifests(tmp_path: Path) -> None:
     run_root = tmp_path / "runs"
     manifest_dir = run_root / "run_one"
@@ -178,7 +205,10 @@ def test_wandboard_c_dashboard_renders_local_manifests(tmp_path: Path) -> None:
                     "val_days": 30,
                 },
                 "wandb": {"run_id": "wandb123"},
-                "eval_100d": {"aggregate": {"worst_slip_monthly": 0.31}},
+                "eval_100d": {
+                    "aggregate": {"worst_slip_monthly": 0.31},
+                    "promotion_gate": {"passed": True, "failures": []},
+                },
             },
             indent=2,
         ),
@@ -190,8 +220,120 @@ def test_wandboard_c_dashboard_renders_local_manifests(tmp_path: Path) -> None:
 
     assert len(runs) == 1
     assert "run_one" in table
+    assert "promotion_gate" in table
+    assert "pass" in table
     assert "+31.00%" in table
     assert "wandb123" in table
+
+
+def test_wandboard_c_dashboard_prioritizes_passing_promotion_gate(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    pass_dir = run_root / "pass_run"
+    fail_dir = run_root / "fail_run"
+    pass_dir.mkdir(parents=True)
+    fail_dir.mkdir(parents=True)
+    (pass_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_name": "pass_run",
+                "status": "completed",
+                "symbols": ["AAPL"],
+                "window": {"val_days": 30},
+                "eval_100d": {
+                    "aggregate": {"worst_slip_monthly": 0.27},
+                    "promotion_gate": {"passed": True, "failures": []},
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (fail_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_name": "fail_run",
+                "status": "completed",
+                "symbols": ["AAPL"],
+                "window": {"val_days": 30},
+                "eval_100d": {
+                    "aggregate": {"worst_slip_monthly": 0.60},
+                    "promotion_gate": {
+                        "passed": False,
+                        "failures": ["execution_granularity daily is not promotable"],
+                    },
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    table = render_runs_table(load_pipeline_runs(run_root))
+    data_rows = [line for line in table.splitlines() if line.startswith(("pass_run", "fail_run"))]
+
+    assert data_rows[0].startswith("pass_run")
+    assert "pass" in data_rows[0]
+    assert data_rows[1].startswith("fail_run")
+    assert "fail" in data_rows[1]
+    assert "1" in data_rows[1]
+
+
+def test_wandboard_c_dashboard_supports_legacy_promotion_pass_key(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    manifest_dir = run_root / "legacy_run"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_name": "legacy_run",
+                "status": "completed",
+                "symbols": ["AAPL"],
+                "window": {"val_days": 30},
+                "eval_100d": {
+                    "aggregate": {"worst_slip_monthly": 0.28},
+                    "promotion_gate": {"pass": True, "failures": []},
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    table = render_runs_table(load_pipeline_runs(run_root))
+
+    assert "legacy_run" in table
+    assert "pass" in table
+
+
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "not-a-number", None])
+def test_wandboard_c_dashboard_handles_bad_worst_slip_monthly(
+    tmp_path: Path,
+    bad_value: object,
+) -> None:
+    run_root = tmp_path / "runs"
+    manifest_dir = run_root / "bad_metric"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_name": "bad_metric",
+                "status": "completed",
+                "symbols": ["AAPL"],
+                "window": {"val_days": 30},
+                "eval_100d": {
+                    "aggregate": {"worst_slip_monthly": bad_value},
+                    "promotion_gate": {"passed": False, "failures": ["bad metric"]},
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    table = render_runs_table(load_pipeline_runs(run_root))
+
+    assert "bad_metric" in table
+    assert "—" in table
 
 
 def test_resolve_eval_checkpoint_falls_back_to_final(tmp_path: Path) -> None:

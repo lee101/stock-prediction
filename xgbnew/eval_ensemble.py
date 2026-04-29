@@ -29,20 +29,22 @@ import json
 import logging
 import sys
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.backtest import BacktestConfig, simulate
-from xgbnew.dataset import build_daily_dataset, load_chronos_cache
-from xgbnew.features import DAILY_FEATURE_COLS
-from xgbnew.model import XGBStockModel
+from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate  # noqa: E402
+from xgbnew.dataset import build_daily_dataset, load_chronos_cache  # noqa: E402
+from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
+from xgbnew.model import XGBStockModel  # noqa: E402
+
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +97,12 @@ def parse_args(argv=None):
     p.add_argument("--xgb-weight", type=float, default=1.0)
     p.add_argument("--commission-bps", type=float, default=0.0)
     p.add_argument("--fill-buffer-bps", type=float, default=5.0)
-    p.add_argument("--fee-rate", type=float, default=0.0000278,
-                   help="Per-side fee fraction (stocks default ≈ 2.78bps).")
+    p.add_argument(
+        "--fee-rate",
+        type=float,
+        default=PRODUCTION_STOCK_FEE_RATE,
+        help="Per-side fee fraction. Default 0.001 = 10 bps production-realism stress fee.",
+    )
     p.add_argument("--min-dollar-vol", type=float, default=5_000_000.0)
 
     p.add_argument("--n-estimators", type=int, default=400)
@@ -140,14 +146,14 @@ def main(argv=None) -> int:
 
     symbols = _load_symbols(args.symbols_file)
     oos_start = date.fromisoformat(args.oos_start)
-    oos_end = date.fromisoformat(args.oos_end or date.today().isoformat())
+    oos_end = date.fromisoformat(args.oos_end) if args.oos_end else datetime.now(UTC).date()
 
     chronos_cache = {}
     if args.chronos_cache.exists():
         chronos_cache = load_chronos_cache(args.chronos_cache)
 
-    print(f"[xgb-ens] {len(symbols)} symbols | train {args.train_start}–{args.train_end} | "
-          f"OOS {args.oos_start}–{oos_end} | windows={args.window_days}d stride={args.stride_days}d | "
+    print(f"[xgb-ens] {len(symbols)} symbols | train {args.train_start}-{args.train_end} | "
+          f"OOS {args.oos_start}-{oos_end} | windows={args.window_days}d stride={args.stride_days}d | "
           f"seeds={seeds} blend={args.blend_mode} device={args.device}", flush=True)
 
     t0 = time.perf_counter()
@@ -244,7 +250,7 @@ def main(argv=None) -> int:
             continue
         w_scores = ensemble_scores.loc[w_df.index]
         res = simulate(w_df, dummy, cfg, precomputed_scores=w_scores)
-        n_days = int(len(pd.unique(w_df["date"])))
+        n_days = len(pd.unique(w_df["date"]))
         n_active_days = len(res.day_results)
         monthly = _monthly_return(res.total_return_pct, max(n_days, 1)) * 100.0
         window_rows.append({

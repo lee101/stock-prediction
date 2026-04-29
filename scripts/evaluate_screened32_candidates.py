@@ -38,6 +38,16 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def require_safe_component(value: str, *, field_name: str = "description") -> str:
+    text = str(value).strip()
+    if not text:
+        raise ValueError(f"{field_name} must be non-empty")
+    path = Path(text)
+    if path.name != text or path.is_absolute() or text in {".", ".."}:
+        raise ValueError(f"{field_name} must be a single safe path component, got {value!r}")
+    return text
+
+
 def load_ranked_rows(
     *,
     leaderboard_path: Path,
@@ -64,7 +74,8 @@ def load_ranked_rows(
 
 
 def resolve_candidate_checkpoint(checkpoint_root: Path, description: str) -> Path:
-    trial_dir = checkpoint_root / str(description)
+    safe_description = require_safe_component(description)
+    trial_dir = checkpoint_root / safe_description
     candidates = [
         trial_dir / "val_best.pt",
         trial_dir / "best.pt",
@@ -110,6 +121,8 @@ def _run_candidate_eval(
         str(float(args.fee_rate)),
         "--fill-buffer-bps",
         str(float(args.fill_buffer_bps)),
+        "--short-borrow-apr",
+        str(float(args.short_borrow_apr)),
         "--decision-lag",
         str(int(args.decision_lag)),
         "--out",
@@ -147,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recent-within-days", type=int, default=140)
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=0.0625)
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--disable-shorts", action="store_true", default=True)
     parser.add_argument("--exhaustive", action="store_true")
@@ -173,6 +187,15 @@ def main(argv: list[str] | None = None) -> int:
         require_blank_error=bool(args.require_blank_error),
     )
     selected_rows = ranked_rows[: max(int(args.top_k), 0)]
+    try:
+        selected_descriptions = [
+            require_safe_component(str(row.get("description", "")))
+            for row in selected_rows
+        ]
+    except ValueError as exc:
+        print(f"evaluate_screened32_candidates: {exc}", file=sys.stderr)
+        return 2
+
     summary: dict[str, Any] = {
         "leaderboard": str(leaderboard_path),
         "checkpoint_root": str(checkpoint_root),
@@ -181,10 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         "candidates": [],
     }
 
-    for index, row in enumerate(selected_rows, start=1):
-        description = str(row.get("description", "")).strip()
-        if not description:
-            continue
+    for index, (row, description) in enumerate(zip(selected_rows, selected_descriptions, strict=True), start=1):
         checkpoint_path = resolve_candidate_checkpoint(checkpoint_root, description)
         output_path = out_dir / f"{index:02d}_{description}.json"
         report = _run_candidate_eval(

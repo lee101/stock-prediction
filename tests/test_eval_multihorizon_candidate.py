@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
+import json
 import sys
+from pathlib import Path
+
+import pytest
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -121,3 +124,80 @@ def test_choose_recommendation_rejects_unproven_candidate():
     }
     rec = module.choose_recommendation(report)
     assert rec["status"] == "not_proven"
+
+
+def test_run_holdout_forwards_short_borrow_apr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    data_path = tmp_path / "data.bin"
+    data_path.write_bytes(b"stub")
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(part) for part in cmd])
+        out_path = Path(cmd[cmd.index("--out") + 1])
+        out_path.write_text(
+            json.dumps(
+                {
+                    "summary": {
+                        "median_total_return": 0.1,
+                        "p10_total_return": 0.05,
+                        "negative_windows": 0,
+                        "median_sortino": 2.0,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    summary = module._run_holdout(
+        scenario=module.Scenario(name="candidate", checkpoint="candidate.pt", extra_checkpoints=("extra.pt",)),
+        data_path=data_path,
+        eval_days=100,
+        start_indices=[0, 1],
+        fee_rate=0.001,
+        slippage_bps=20,
+        fill_buffer_bps=5.0,
+        short_borrow_apr=0.0625,
+        decision_lag=2,
+        disable_shorts=True,
+    )
+
+    assert summary["slippage_bps"] == 20
+    assert len(commands) == 1
+    cmd = commands[0]
+    assert cmd[cmd.index("--short-borrow-apr") + 1] == "0.0625"
+    assert "--disable-shorts" in cmd
+    assert cmd[cmd.index("--extra-checkpoints") + 1] == "extra.pt"
+
+
+@pytest.mark.parametrize("bad_apr", ["nan", "-0.1"])
+def test_main_rejects_invalid_short_borrow_apr_before_data_load(
+    bad_apr: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    module = _load_module()
+    read_calls = 0
+
+    def fail_if_called(path):
+        nonlocal read_calls
+        read_calls += 1
+        raise AssertionError("read_mktd should not be called")
+
+    monkeypatch.setattr(module, "read_mktd", fail_if_called)
+
+    rc = module.main(
+        [
+            "--data-path",
+            str(tmp_path / "missing.bin"),
+            "--short-borrow-apr",
+            bad_apr,
+            "--out",
+            str(tmp_path / "out.json"),
+        ]
+    )
+
+    assert rc == 2
+    assert read_calls == 0

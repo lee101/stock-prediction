@@ -5,8 +5,8 @@ Output per swap:
   - delta_med, delta_p10, delta_neg vs baseline
   - verdict: win / break-even / worse
 
-Any positive delta_med with delta_neg ≤ 0 is a win (the swap improves the
-ensemble on the deploy-gate cell).
+Any positive worst-cell delta_med with delta_neg <= 0 is a win (the swap
+improves the ensemble across the production slippage grid).
 
 Usage::
 
@@ -22,12 +22,14 @@ import argparse
 import collections
 import json
 import math
+import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import torch
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -39,6 +41,7 @@ from pufferlib_market.evaluate_holdout import (  # noqa: E402
     load_policy,
 )
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy  # noqa: E402
+
 from src.daily_stock_defaults import (  # noqa: E402
     DEFAULT_CHECKPOINT,
     DEFAULT_EXTRA_CHECKPOINTS,
@@ -58,6 +61,113 @@ def _monthly_from_total(total, days, trading_days_per_month=21.0):
         return math.expm1(math.log1p(float(total)) * (trading_days_per_month / float(days)))
     except (ValueError, OverflowError):
         return 0.0
+
+
+def _require_finite_float(value: float, *, name: str, min_value: float | None = None) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if min_value is not None and parsed < float(min_value):
+        raise ValueError(f"{name} must be >= {float(min_value):g}, got {parsed!r}")
+    return parsed
+
+
+def _parse_float_grid(raw: str, *, name: str, min_value: float | None = None) -> list[float]:
+    values: list[float] = []
+    seen: set[float] = set()
+    for part in str(raw).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            parsed = _require_finite_float(float(text), name=name, min_value=min_value)
+        except ValueError as exc:
+            raise ValueError(f"{name} contains invalid value {text!r}: {exc}") from exc
+        if parsed in seen:
+            raise ValueError(f"{name} contains duplicate value {parsed:g}")
+        seen.add(parsed)
+        values.append(parsed)
+    if not values:
+        raise ValueError(f"{name} must contain at least one value")
+    return values
+
+
+def _slippage_values(args: argparse.Namespace) -> list[float]:
+    if args.slippage_bps is not None:
+        return [
+            _require_finite_float(
+                float(args.slippage_bps),
+                name="slippage_bps",
+                min_value=0.0,
+            )
+        ]
+    return _parse_float_grid(str(args.slippage_bps_grid), name="slippage_bps_grid", min_value=0.0)
+
+
+def _slip_key(slippage_bps: float) -> str:
+    return f"{float(slippage_bps):g}"
+
+
+def _summarize_by_slippage(by_slippage: dict[str, dict]) -> dict:
+    if not by_slippage:
+        return {"by_slippage": {}, "worst_cell": None}
+    worst_key, worst = min(
+        by_slippage.items(),
+        key=lambda item: float(item[1].get("median_monthly", 0.0)),
+    )
+    return {
+        "by_slippage": by_slippage,
+        "worst_cell": {"slippage_bps": float(worst_key), **{k: v for k, v in worst.items() if k != "keep_indices"}},
+    }
+
+
+def _delta_row(*, slippage_bps: float, candidate: dict, baseline: dict) -> dict:
+    return {
+        "slippage_bps": float(slippage_bps),
+        "median_monthly": float(candidate["median_monthly"]),
+        "p10_monthly": float(candidate["p10_monthly"]),
+        "n_neg": int(candidate["n_neg"]),
+        "median_sortino": float(candidate["median_sortino"]),
+        "delta_median": float(candidate["median_monthly"]) - float(baseline["median_monthly"]),
+        "delta_p10": float(candidate["p10_monthly"]) - float(baseline["p10_monthly"]),
+        "delta_neg": int(candidate["n_neg"]) - int(baseline["n_neg"]),
+        "delta_sortino": float(candidate["median_sortino"]) - float(baseline["median_sortino"]),
+    }
+
+
+def _classify_swap(deltas: Sequence[dict]) -> tuple[str, dict]:
+    if not deltas:
+        return "worse", {
+            "worst_delta_median": 0.0,
+            "worst_delta_p10": 0.0,
+            "max_delta_neg": 0,
+            "mean_delta_sortino": 0.0,
+        }
+    worst_delta_median = min(float(row["delta_median"]) for row in deltas)
+    worst_delta_p10 = min(float(row["delta_p10"]) for row in deltas)
+    max_delta_neg = max(int(row["delta_neg"]) for row in deltas)
+    mean_delta_sortino = sum(float(row["delta_sortino"]) for row in deltas) / float(len(deltas))
+    verdict = (
+        "win" if (worst_delta_median > 0.001 and max_delta_neg <= 0 and worst_delta_p10 >= -0.002)
+        else "break-even" if (abs(worst_delta_median) <= 0.002 and max_delta_neg <= 0)
+        else "worse"
+    )
+    return verdict, {
+        "worst_delta_median": worst_delta_median,
+        "worst_delta_p10": worst_delta_p10,
+        "max_delta_neg": int(max_delta_neg),
+        "mean_delta_sortino": mean_delta_sortino,
+    }
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _build_subset_policy_fn(
@@ -100,7 +210,7 @@ def _build_subset_policy_fn(
 def evaluate_subset(
     *, data, policies, head, keep_indices, num_symbols, per_symbol_actions,
     decision_lag, disable_shorts, device, fill_buffer_bps, max_leverage,
-    fee_rate, slippage_bps, window_days, start_indices, label="",
+    fee_rate, slippage_bps, short_borrow_apr, window_days, start_indices, label="",
 ):
     policy_fn, reset_buffer = _build_subset_policy_fn(
         policies=policies, keep_indices=keep_indices,
@@ -117,6 +227,7 @@ def evaluate_subset(
             fee_rate=float(fee_rate), slippage_bps=float(slippage_bps),
             max_leverage=float(max_leverage), periods_per_year=365.0,
             fill_buffer_bps=float(fill_buffer_bps),
+            short_borrow_apr=float(short_borrow_apr),
             action_allocation_bins=int(head.action_allocation_bins),
             action_level_bins=int(head.action_level_bins),
             action_max_offset_bps=float(head.action_max_offset_bps),
@@ -138,6 +249,7 @@ def evaluate_subset(
         "median_max_dd": _percentile(maxdds, 50),
         "n_neg": sum(1 for v in rets if v < 0),
         "n_windows": n,
+        "slippage_bps": float(slippage_bps),
         "keep_indices": list(keep_indices),
     }
 
@@ -150,20 +262,41 @@ def main(argv=None):
     ap.add_argument("--fill-buffer-bps", type=float, default=5.0)
     ap.add_argument("--max-leverage", type=float, default=1.0)
     ap.add_argument("--fee-rate", type=float, default=0.001)
-    ap.add_argument("--slippage-bps", type=float, default=5.0)
+    ap.add_argument(
+        "--slippage-bps-grid",
+        default="0,5,10,20",
+        help="Production slippage grid. Ignored when --slippage-bps is supplied.",
+    )
+    ap.add_argument("--slippage-bps", type=float, default=None, help="Single-cell smoke/legacy override")
+    ap.add_argument("--short-borrow-apr", type=float, default=0.0625)
     ap.add_argument("--decision-lag", type=int, default=2)
     ap.add_argument("--disable-shorts", action="store_true", default=True)
     ap.add_argument("--no-disable-shorts", dest="disable_shorts", action="store_false")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", default="docs/swap_in/result.json")
     args = ap.parse_args(argv)
+    try:
+        slippages = _slippage_values(args)
+        fill_buffer_bps = _require_finite_float(args.fill_buffer_bps, name="fill_buffer_bps", min_value=0.0)
+        max_leverage = _require_finite_float(args.max_leverage, name="max_leverage", min_value=0.0)
+        fee_rate = _require_finite_float(args.fee_rate, name="fee_rate", min_value=0.0)
+        short_borrow_apr = _require_finite_float(args.short_borrow_apr, name="short_borrow_apr", min_value=0.0)
+        if int(args.window_days) < 1:
+            raise ValueError("window_days must be >= 1")
+        if int(args.decision_lag) < 0:
+            raise ValueError("decision_lag must be >= 0")
+    except ValueError as exc:
+        print(f"swap: {exc}", file=sys.stderr)
+        return 2
 
     val_path = Path(args.val_data).resolve()
     if not val_path.exists():
-        print(f"swap: val data not found: {val_path}", file=sys.stderr); return 2
+        print(f"swap: val data not found: {val_path}", file=sys.stderr)
+        return 2
     cand_path = Path(args.candidate).resolve()
     if not cand_path.exists():
-        print(f"swap: candidate not found: {cand_path}", file=sys.stderr); return 2
+        print(f"swap: candidate not found: {cand_path}", file=sys.stderr)
+        return 2
 
     out = Path(args.out)
     if not out.is_absolute():
@@ -197,23 +330,39 @@ def main(argv=None):
     policies = [lp.policy for lp in loaded] + [cand_loaded.policy]
     CAND = N  # index of candidate in the extended list
 
-    common = dict(
-        data=data, policies=policies, head=head, num_symbols=num_symbols,
-        per_symbol_actions=per_symbol_actions,
-        decision_lag=int(args.decision_lag),
-        disable_shorts=bool(args.disable_shorts), device=device,
-        fill_buffer_bps=float(args.fill_buffer_bps),
-        max_leverage=float(args.max_leverage),
-        fee_rate=float(args.fee_rate),
-        slippage_bps=float(args.slippage_bps),
-        window_days=int(args.window_days), start_indices=start_indices,
-    )
+    common = {
+        "data": data,
+        "policies": policies,
+        "head": head,
+        "num_symbols": num_symbols,
+        "per_symbol_actions": per_symbol_actions,
+        "decision_lag": int(args.decision_lag),
+        "disable_shorts": bool(args.disable_shorts),
+        "device": device,
+        "fill_buffer_bps": fill_buffer_bps,
+        "max_leverage": max_leverage,
+        "fee_rate": fee_rate,
+        "short_borrow_apr": short_borrow_apr,
+        "window_days": int(args.window_days),
+        "start_indices": start_indices,
+    }
 
     print(f"\n=== Baseline ({N}-model) ===")
-    baseline = evaluate_subset(keep_indices=list(range(N)), label="baseline", **common)
+    baseline_by_slippage = {}
+    for slip in slippages:
+        baseline_by_slippage[_slip_key(slip)] = evaluate_subset(
+            keep_indices=list(range(N)),
+            slippage_bps=float(slip),
+            label=f"baseline-{_slip_key(slip)}bps",
+            **common,
+        )
+    baseline = _summarize_by_slippage(baseline_by_slippage)
+    baseline_worst = baseline["worst_cell"]
     print(
-        f"  med={baseline['median_monthly']:+.4f}  p10={baseline['p10_monthly']:+.4f}  "
-        f"neg={baseline['n_neg']}/{baseline['n_windows']}  sortino={baseline['median_sortino']:.2f}"
+        f"  worst_slip={baseline_worst['slippage_bps']:g}bps  "
+        f"med={baseline_worst['median_monthly']:+.4f}  p10={baseline_worst['p10_monthly']:+.4f}  "
+        f"neg={baseline_worst['n_neg']}/{baseline_worst['n_windows']}  "
+        f"sortino={baseline_worst['median_sortino']:.2f}"
     )
 
     rows = []
@@ -221,30 +370,42 @@ def main(argv=None):
         keep = [i for i in range(N) if i != drop_idx] + [CAND]
         name = member_names[drop_idx]
         print(f"\n=== SWAP: replace[{drop_idx}]={name} with candidate ===")
-        r = evaluate_subset(keep_indices=keep, label=f"swap-{drop_idx}", **common)
-        dmed = r["median_monthly"] - baseline["median_monthly"]
-        dp10 = r["p10_monthly"] - baseline["p10_monthly"]
-        dneg = r["n_neg"] - baseline["n_neg"]
-        dsort = r["median_sortino"] - baseline["median_sortino"]
-        verdict = (
-            "win" if (dmed > 0.001 and dneg <= 0 and dp10 >= -0.002)
-            else "break-even" if (abs(dmed) <= 0.002 and dneg <= 0)
-            else "worse"
-        )
+        by_slippage = {}
+        deltas = []
+        for slip in slippages:
+            slip_key = _slip_key(slip)
+            r = evaluate_subset(
+                keep_indices=keep,
+                slippage_bps=float(slip),
+                label=f"swap-{drop_idx}-{slip_key}bps",
+                **common,
+            )
+            by_slippage[slip_key] = r
+            deltas.append(_delta_row(slippage_bps=float(slip), candidate=r, baseline=baseline_by_slippage[slip_key]))
+        verdict, delta_summary = _classify_swap(deltas)
+        worst_result = _summarize_by_slippage(by_slippage)["worst_cell"]
         rows.append({
             "drop_idx": drop_idx, "dropped_member": name,
-            "median_monthly": r["median_monthly"],
-            "p10_monthly": r["p10_monthly"],
-            "n_neg": r["n_neg"],
-            "median_sortino": r["median_sortino"],
-            "delta_median": dmed, "delta_p10": dp10,
-            "delta_neg": dneg, "delta_sortino": dsort,
+            "worst_slippage_bps": worst_result["slippage_bps"],
+            "worst_median_monthly": worst_result["median_monthly"],
+            "worst_p10_monthly": worst_result["p10_monthly"],
+            "max_delta_neg": delta_summary["max_delta_neg"],
+            "worst_delta_median": delta_summary["worst_delta_median"],
+            "worst_delta_p10": delta_summary["worst_delta_p10"],
+            "mean_delta_sortino": delta_summary["mean_delta_sortino"],
+            "by_slippage": {
+                k: {m: v for m, v in result.items() if m != "keep_indices"}
+                for k, result in by_slippage.items()
+            },
+            "deltas_by_slippage": deltas,
             "verdict": verdict,
         })
         print(
-            f"  med={r['median_monthly']:+.4f} ({dmed:+.4f})  "
-            f"p10={r['p10_monthly']:+.4f} ({dp10:+.4f})  "
-            f"neg={r['n_neg']} ({dneg:+d})  sort={r['median_sortino']:.2f} ({dsort:+.2f})  "
+            f"  worst_slip={worst_result['slippage_bps']:g}bps  "
+            f"worst_dmed={delta_summary['worst_delta_median']:+.4f}  "
+            f"worst_dp10={delta_summary['worst_delta_p10']:+.4f}  "
+            f"max_dneg={delta_summary['max_delta_neg']:+d}  "
+            f"mean_dsort={delta_summary['mean_delta_sortino']:+.2f}  "
             f"VERDICT={verdict}"
         )
 
@@ -253,24 +414,33 @@ def main(argv=None):
         "baseline_members": member_names,
         "cell": {
             "window_days": int(args.window_days),
-            "fill_buffer_bps": float(args.fill_buffer_bps),
-            "max_leverage": float(args.max_leverage),
+            "fill_buffer_bps": fill_buffer_bps,
+            "max_leverage": max_leverage,
             "decision_lag": int(args.decision_lag),
-            "slippage_bps": float(args.slippage_bps),
+            "slippage_bps_grid": [float(v) for v in slippages],
+            "short_borrow_apr": short_borrow_apr,
+            "fee_rate": fee_rate,
         },
-        "baseline": {k: v for k, v in baseline.items() if k != "keep_indices"},
+        "baseline": {
+            "by_slippage": {
+                k: {m: v for m, v in result.items() if m != "keep_indices"}
+                for k, result in baseline_by_slippage.items()
+            },
+            "worst_cell": baseline["worst_cell"],
+        },
         "swaps": rows,
         "wins": [r for r in rows if r["verdict"] == "win"],
     }
-    out.write_text(json.dumps(summary, indent=2))
+    _write_json_atomic(out, summary)
     print(f"\n[saved] {out}")
 
     n_wins = len(summary["wins"])
     print(f"\n=== SUMMARY: {n_wins} swap wins ===")
     for w in summary["wins"]:
-        print(f"  drop {w['dropped_member']} → swap in candidate:  "
-              f"dmed={w['delta_median']:+.4f}  dneg={w['delta_neg']:+d}  "
-              f"dsort={w['delta_sortino']:+.2f}")
+        print(f"  drop {w['dropped_member']} -> swap in candidate:  "
+              f"worst_dmed={w['worst_delta_median']:+.4f}  "
+              f"max_dneg={w['max_delta_neg']:+d}  "
+              f"mean_dsort={w['mean_delta_sortino']:+.2f}")
     return 0
 
 
