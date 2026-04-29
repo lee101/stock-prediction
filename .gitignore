@@ -191,6 +191,11 @@ kronostraining/artifacts
 # Model/data directories
 toto
 models
+# Track our cross-attention transformer experiment files inside models/
+!models/cross_attn_transformer_v1.py
+!models/cross_attn_data.py
+!models/cross_attn_train.py
+!models/cross_attn_eval.py
 predictions/
 predictions
 data
