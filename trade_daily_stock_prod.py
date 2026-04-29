@@ -498,6 +498,10 @@ class CliRuntimeConfig:
     meta_lookback: int = 3
     ensemble_mode: str = "softmax_avg"
     min_agree_count: int = 0
+    eod_deleverage: bool = False
+    eod_max_gross_leverage: float = 2.0
+    eod_deleverage_window_minutes: float = 60.0
+    eod_force_market_minutes: float = 5.0
     removed_duplicate_symbols: list[str] = field(default_factory=list)
     ignored_symbol_inputs: list[str] = field(default_factory=list)
 
@@ -2395,6 +2399,286 @@ def submit_limit_order(
         limit_price=round(float(limit_price), 2),
     )
     return client.submit_order(request)
+
+
+# ── EOD overnight deleverage (Reg-T parity with xgbnew/live_trader) ────────
+#
+# The xgb live trader runs ``_eod_deleverage_tick`` between sessions to force
+# account gross exposure <= equity * eod_max_gross_leverage before market
+# close (Reg-T overnight requirement: 4x intraday is fine, 2x overnight is
+# the cap). The RL daemon previously had no analog, which left
+# ``allocation_pct=250`` candidates non-prod-realizable: the simulator scored
+# them at 2.5x carry but Alpaca would force-flatten them overnight.
+#
+# These helpers mirror the xgbnew names so behavior is line-for-line
+# auditable and tests can be reused. Crypto positions are skipped because
+# the RL bot does not trade them (and the embedded weekend sleeve in the
+# xgb bot owns its lock anyway).
+
+
+def _eod_position_market_value(position) -> float:
+    try:
+        return abs(float(getattr(position, "market_value", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _eod_position_qty(position) -> float:
+    try:
+        return abs(float(getattr(position, "qty", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _eod_position_current_price(position) -> float:
+    for attr in ("current_price", "market_price", "avg_entry_price"):
+        try:
+            value = float(getattr(position, attr, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    qty = _eod_position_qty(position)
+    if qty > 0:
+        return _eod_position_market_value(position) / qty
+    return 0.0
+
+
+def _eod_position_close_side(position) -> str:
+    side = str(getattr(position, "side", "long") or "long").lower()
+    return "buy" if "short" in side else "sell"
+
+
+def _eod_equity_positions_for_deleverage(client) -> list:
+    """Filter positions to those eligible for the equity deleverage tick.
+
+    Skips crypto symbols (cash-margined separately and not held by this bot)
+    and zero-qty / zero-value rows.
+    """
+    out: list = []
+    for pos in client.get_all_positions():
+        sym = str(getattr(pos, "symbol", "") or "")
+        if not sym:
+            continue
+        compact = sym.upper().replace("/", "")
+        if compact.endswith("USD") and any(
+            compact.startswith(prefix)
+            for prefix in ("BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "USDC", "USDT")
+        ):
+            continue
+        if _eod_position_qty(pos) <= 0 or _eod_position_market_value(pos) <= 0:
+            continue
+        out.append(pos)
+    return out
+
+
+def _eod_minutes_to_market_close(client) -> float | None:
+    """Minutes until the regular session close, or None if market is closed."""
+    try:
+        clock = client.get_clock()
+    except Exception as exc:
+        logger.warning("EOD deleverage clock query failed: %s", exc)
+        return None
+    if not bool(getattr(clock, "is_open", False)):
+        return None
+    next_close = getattr(clock, "next_close", None)
+    if next_close is None:
+        return None
+    if getattr(next_close, "tzinfo", None) is None:
+        next_close = next_close.replace(tzinfo=timezone.utc)
+    else:
+        next_close = next_close.astimezone(timezone.utc)
+    return max((next_close - datetime.now(timezone.utc)).total_seconds() / 60.0, 0.0)
+
+
+def _eod_latest_stock_bid_ask(symbol: str) -> tuple[float, float]:
+    """Best-effort latest stock quote for explicit-price order placement."""
+    try:
+        import alpaca_wrapper as aw
+
+        quote = aw.latest_data(symbol)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("EOD deleverage quote lookup failed for %s: %s", symbol, exc)
+        return 0.0, 0.0
+    try:
+        bid_price = float(getattr(quote, "bid_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        bid_price = 0.0
+    try:
+        ask_price = float(getattr(quote, "ask_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        ask_price = 0.0
+    return bid_price, ask_price
+
+
+def _eod_stock_limit_price_near_market(
+    symbol: str,
+    *,
+    side: str,
+    reference_price: float,
+    aggressiveness_bps: float,
+) -> float:
+    """Bounded marketable limit price near the current touch.
+
+    Buys use the ask plus a small bps buffer; sells use the bid minus the
+    same. This is the same shape as ``xgbnew/live_trader._stock_limit_price_near_market``.
+    """
+    try:
+        reference_price = float(reference_price or 0.0)
+    except (TypeError, ValueError):
+        reference_price = 0.0
+    bps = max(float(aggressiveness_bps or 0.0), 0.0) / 10_000.0
+    bid_price, ask_price = _eod_latest_stock_bid_ask(symbol)
+    side_norm = str(side or "").strip().lower()
+
+    if side_norm == "buy":
+        if ask_price > 0:
+            return ask_price * (1.0 + bps)
+        if bid_price > 0:
+            return bid_price * (1.0 + bps)
+        return reference_price
+
+    if side_norm == "sell":
+        if bid_price > 0:
+            return max(bid_price * (1.0 - bps), 0.01)
+        if ask_price > 0:
+            return max(ask_price * (1.0 - bps), 0.01)
+        return reference_price
+
+    return reference_price
+
+
+def eod_deleverage_tick(
+    client,
+    *,
+    enabled: bool,
+    target_leverage: float,
+    window_minutes: float,
+    force_market_minutes: float,
+    now: datetime | None = None,
+) -> dict:
+    """Reduce equity gross exposure toward ``target_leverage`` before close.
+
+    Mirrors ``xgbnew/live_trader._eod_deleverage_tick``: progressive
+    submission ramps from ``window_minutes`` until ``force_market_minutes``
+    where it submits the entire remaining excess at the most aggressive
+    limit. Returns a status dict suitable for jsonl logging.
+
+    Behaviour contract (asserted in tests):
+      * ``enabled=False`` or no client => ``{"action": "disabled"}``
+      * Market closed => ``{"action": "closed"}``
+      * Outside the window => ``{"action": "outside_window", ...}``
+      * Already at/under target => ``{"action": "already_ok", ...}``
+      * Otherwise submit limit orders, return ``submitted`` count
+    """
+    if not enabled or client is None:
+        return {"action": "disabled"}
+
+    mtc = _eod_minutes_to_market_close(client)
+    window = float(window_minutes or 60.0)
+    if mtc is None:
+        return {"action": "closed"}
+    if mtc > window:
+        return {"action": "outside_window", "minutes_to_close": mtc}
+
+    try:
+        account = client.get_account()
+        equity = float(getattr(account, "equity", 0.0) or 0.0)
+    except Exception as exc:
+        logger.warning("EOD deleverage account query failed: %s", exc)
+        return {"action": "account_error", "error": str(exc)}
+    if equity <= 0:
+        return {"action": "bad_equity", "equity": equity}
+
+    try:
+        positions = _eod_equity_positions_for_deleverage(client)
+    except Exception as exc:
+        logger.warning("EOD deleverage position query failed: %s", exc)
+        return {"action": "positions_error", "error": str(exc)}
+
+    exposure = sum(_eod_position_market_value(p) for p in positions)
+    target_lev = float(target_leverage or 2.0)
+    target_exposure = max(0.0, equity * target_lev)
+    if exposure <= target_exposure:
+        return {
+            "action": "already_ok",
+            "minutes_to_close": mtc,
+            "equity": equity,
+            "exposure": exposure,
+            "leverage": (exposure / equity) if equity > 0 else 0.0,
+            "target_leverage": target_lev,
+        }
+
+    excess = exposure - target_exposure
+    force_minutes = float(force_market_minutes or 5.0)
+    force_window = mtc <= force_minutes
+    span = max(window - force_minutes, 1.0)
+    progress = 1.0 if force_window else min(max((window - mtc) / span, 0.0), 1.0)
+    progressive_excess = excess if force_window else max(excess * progress, min(excess, 500.0))
+
+    remaining = progressive_excess
+    submitted = 0
+    errors: list[str] = []
+    ordered = sorted(positions, key=_eod_position_market_value, reverse=True)
+    for pos in ordered:
+        if remaining <= 25.0:
+            break
+        sym = str(getattr(pos, "symbol", "") or "")
+        qty_total = _eod_position_qty(pos)
+        px = _eod_position_current_price(pos)
+        if not sym or qty_total <= 0 or px <= 0:
+            continue
+        value = _eod_position_market_value(pos)
+        reduce_value = min(value, remaining)
+        qty = math.floor((reduce_value / px) * 10_000) / 10_000
+        qty = min(qty, qty_total)
+        if qty <= 0:
+            continue
+        side = _eod_position_close_side(pos)
+        try:
+            aggressive_bps = 25.0 if force_window else (5.0 + 20.0 * progress)
+            limit_price = _eod_stock_limit_price_near_market(
+                sym,
+                side=side,
+                reference_price=px,
+                aggressiveness_bps=aggressive_bps,
+            )
+            order = submit_limit_order(
+                client, symbol=sym, qty=qty, side=side, limit_price=limit_price
+            )
+            submitted += 1
+            remaining -= qty * px
+            print(
+                "[daily-rl/eod] deleverage "
+                f"{side.upper()} {sym} qty={qty:.4f} px={px:.2f} "
+                f"limit=${limit_price:.2f} mode=limit "
+                f"order_id={getattr(order, 'id', '?')}",
+                flush=True,
+            )
+        except Exception as exc:
+            msg = f"{sym}: {exc}"
+            logger.error("EOD deleverage order failed: %s", msg)
+            errors.append(msg)
+
+    status = {
+        "action": "submitted" if submitted else "no_actionable_orders",
+        "submitted": submitted,
+        "errors": errors,
+        "minutes_to_close": mtc,
+        "equity": equity,
+        "exposure": exposure,
+        "leverage": (exposure / equity) if equity > 0 else 0.0,
+        "target_leverage": target_lev,
+        "target_exposure": target_exposure,
+        "requested_reduction": progressive_excess,
+        "force_window": force_window,
+    }
+    print(
+        "[daily-rl/eod] "
+        + json.dumps(status, separators=(",", ":"), default=str),
+        flush=True,
+    )
+    return status
 
 
 def compute_target_qty(*, account, price: float, allocation_pct: float) -> float:
@@ -4452,6 +4736,10 @@ def run_daemon(
     meta_lookback: int = 3,
     ensemble_mode: str = "softmax_avg",
     min_agree_count: int = 0,
+    eod_deleverage: bool = False,
+    eod_max_gross_leverage: float = 2.0,
+    eod_deleverage_window_minutes: float = 60.0,
+    eod_force_market_minutes: float = 5.0,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
@@ -4522,6 +4810,28 @@ def run_daemon(
                 )
                 continue
         now = datetime.now(timezone.utc)
+
+        # Reg-T overnight deleverage tick. Runs every loop iteration the
+        # market is open; helper is a no-op outside the configured window
+        # so it is safe to call unconditionally. Uses the same TradingClient
+        # that owns the Alpaca singleton lock — must NOT spawn a second
+        # client in live mode.
+        if eod_deleverage:
+            try:
+                eod_status = eod_deleverage_tick(
+                    clock_client,
+                    enabled=True,
+                    target_leverage=eod_max_gross_leverage,
+                    window_minutes=eod_deleverage_window_minutes,
+                    force_market_minutes=eod_force_market_minutes,
+                    now=now,
+                )
+                action = str(eod_status.get("action", "?"))
+                if action not in ("disabled", "closed", "outside_window"):
+                    logger.info("EOD deleverage tick: %s", eod_status)
+            except Exception as exc:
+                logger.warning("EOD deleverage tick raised: %s", exc)
+
         if should_run_today(
             now=now,
             is_market_open=bool(getattr(clock, "is_open", False)),
@@ -4692,6 +5002,45 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "p10+sortino at lev=1.25; see docs/agreement_gate/)."
         ),
     )
+    parser.add_argument(
+        "--eod-deleverage",
+        action="store_true",
+        help=(
+            "Enable Reg-T overnight deleverage tick. When set, the daemon "
+            "polls account exposure during the final ``--eod-deleverage-window-minutes`` "
+            "of the regular session and submits limit-order sells to bring "
+            "gross exposure <= equity * --eod-max-gross-leverage before close. "
+            "Mirrors xgbnew/live_trader._eod_deleverage_tick. REQUIRED before "
+            "deploying any --allocation-pct > 200 candidate (e.g. D_s16 lev=2.5/3.0)."
+        ),
+    )
+    parser.add_argument(
+        "--eod-max-gross-leverage",
+        type=float,
+        default=2.0,
+        help=(
+            "Reg-T overnight gross-leverage cap. Default 2.0 matches Alpaca's "
+            "overnight margin requirement. Only consulted when --eod-deleverage is set."
+        ),
+    )
+    parser.add_argument(
+        "--eod-deleverage-window-minutes",
+        type=float,
+        default=60.0,
+        help=(
+            "Window before close (minutes) during which the deleverage tick is "
+            "active. Submission ramps from this point until --eod-force-market-minutes."
+        ),
+    )
+    parser.add_argument(
+        "--eod-force-market-minutes",
+        type=float,
+        default=5.0,
+        help=(
+            "Within this window before close, submit the full remaining excess at "
+            "the most aggressive marketable limit (25 bps through the touch)."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.check_config_text and not args.check_config:
         parser.error("--check-config-text requires --check-config")
@@ -4764,6 +5113,10 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         meta_lookback=int(args.meta_lookback),
         ensemble_mode=str(args.ensemble_mode),
         min_agree_count=int(args.min_agree_count),
+        eod_deleverage=bool(args.eod_deleverage),
+        eod_max_gross_leverage=float(args.eod_max_gross_leverage),
+        eod_deleverage_window_minutes=float(args.eod_deleverage_window_minutes),
+        eod_force_market_minutes=float(args.eod_force_market_minutes),
     )
 
 
@@ -6135,6 +6488,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             meta_lookback=config.meta_lookback,
             ensemble_mode=config.ensemble_mode,
             min_agree_count=config.min_agree_count,
+            eod_deleverage=config.eod_deleverage,
+            eod_max_gross_leverage=config.eod_max_gross_leverage,
+            eod_deleverage_window_minutes=config.eod_deleverage_window_minutes,
+            eod_force_market_minutes=config.eod_force_market_minutes,
         )
         return
 
