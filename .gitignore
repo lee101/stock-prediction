@@ -196,6 +196,7 @@ models
 !models/cross_attn_data.py
 !models/cross_attn_train.py
 !models/cross_attn_eval.py
+!models/cross_attn_summary.py
 predictions/
 predictions
 data
