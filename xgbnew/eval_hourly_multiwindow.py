@@ -8,8 +8,8 @@ sortino, max-DD and negative-window count — same metrics as the daily
 driver so results are apples-to-apples (modulo the time horizon).
 
 Annualisation is universe-aware:
-    stocks-only:  252 × 6.5  = 1,638 bars/yr   (monthly ≈ 136.5 bars)
-    crypto-only:  365 × 24   = 8,760 bars/yr   (monthly ≈ 730 bars)
+    stocks-only:  252 x 6.5  = 1,638 bars/yr   (monthly approx 136.5 bars)
+    crypto-only:  365 x 24   = 8,760 bars/yr   (monthly approx 730 bars)
 
 ``--universe both`` builds one combined dataset but still reports
 universe-segmented metrics so you can see which side is paying PnL.
@@ -38,21 +38,23 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.backtest import (
-    BacktestConfig,
+from xgbnew.backtest import (  # noqa: E402
     CRYPTO_HOURS_PER_MONTH,
     CRYPTO_HOURS_PER_YEAR,
+    PRODUCTION_STOCK_FEE_RATE,
     STOCK_HOURS_PER_MONTH,
     STOCK_HOURS_PER_YEAR,
+    BacktestConfig,
     simulate_hourly,
 )
-from xgbnew.dataset import build_hourly_dataset
-from xgbnew.features import HOURLY_FEATURE_COLS
-from xgbnew.model import XGBStockModel
+from xgbnew.dataset import build_hourly_dataset  # noqa: E402
+from xgbnew.features import HOURLY_FEATURE_COLS  # noqa: E402
+from xgbnew.model import XGBStockModel  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -131,8 +133,8 @@ def parse_args(argv=None):
     p.add_argument(
         "--fee-rate",
         type=float,
-        default=None,
-        help="Per-side fee fraction. Default: per-symbol (stocks ~5bps, crypto 8-15bps).",
+        default=PRODUCTION_STOCK_FEE_RATE,
+        help="Per-side fee fraction. Default 0.001 = 10 bps production-realism stress fee.",
     )
     p.add_argument("--min-score", type=float, default=0.0)
     p.add_argument(
@@ -199,6 +201,23 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _validate_realism_args(args: argparse.Namespace) -> list[str]:
+    failures: list[str] = []
+    for attr, label in (
+        ("fee_rate", "fee_rate"),
+        ("fill_buffer_bps", "fill_buffer_bps"),
+        ("commission_bps", "commission_bps"),
+    ):
+        try:
+            value = float(getattr(args, attr))
+        except (TypeError, ValueError):
+            failures.append(f"{label} must be finite and non-negative")
+            continue
+        if not np.isfinite(value) or value < 0.0:
+            failures.append(f"{label} must be finite and non-negative")
+    return failures
+
+
 def _apply_session_filter(df: pd.DataFrame, mode: str) -> pd.DataFrame:
     """Return rows whose timestamp falls in the requested trading session.
 
@@ -240,10 +259,17 @@ def main(argv=None) -> int:
         level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s %(message)s",
     )
-
+    preflight_exit_code = 0
+    validation_failures = _validate_realism_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        preflight_exit_code = 2
     if not args.data_root.exists():
         print(f"ERROR: data root not found: {args.data_root}", file=sys.stderr)
-        return 1
+        preflight_exit_code = preflight_exit_code or 1
+    if preflight_exit_code:
+        return preflight_exit_code
 
     # Parse dates / symbols
     train_end_ts = pd.Timestamp(args.train_end, tz="UTC")
@@ -327,13 +353,11 @@ def main(argv=None) -> int:
             xgb_weight=float(args.xgb_weight),
             commission_bps=float(args.commission_bps),
             fill_buffer_bps=float(args.fill_buffer_bps),
-            fee_rate=float(args.fee_rate) if args.fee_rate is not None else None,
+            fee_rate=float(args.fee_rate),
             min_score=ms,
             min_dollar_vol=float(args.min_dollar_vol),
             max_spread_bps=float(args.max_spread_bps),
         )
-
-    cfg = _make_cfg(ms_list[0])
 
     bpy = _bars_per_year(args.universe)
     bpm = _bars_per_month(args.universe)
@@ -380,7 +404,7 @@ def main(argv=None) -> int:
         print("ERROR: no OOS windows could be built", file=sys.stderr)
         return 1
 
-    print(f"[xgb-hourly-mw] running {len(windows)} window(s) × {len(ms_list)} min-score value(s) "
+    print(f"[xgb-hourly-mw] running {len(windows)} window(s) x {len(ms_list)} min-score value(s) "
           f"({int(args.window_bars)} bars each)...", flush=True)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -459,7 +483,7 @@ def main(argv=None) -> int:
                 "xgb_weight": float(args.xgb_weight),
                 "commission_bps": float(args.commission_bps),
                 "fill_buffer_bps": float(args.fill_buffer_bps),
-                "fee_rate": float(args.fee_rate) if args.fee_rate is not None else None,
+                "fee_rate": float(args.fee_rate),
                 "min_score": ms,
                 "n_estimators": int(args.n_estimators),
                 "max_depth": int(args.max_depth),
@@ -482,7 +506,7 @@ def main(argv=None) -> int:
             },
             "windows": window_results,
         }
-        ms_tag = f"_ms{int(round(ms*100)):03d}" if ms > 0 else ""
+        ms_tag = f"_ms{round(ms * 100):03d}" if ms > 0 else ""
         out_path = args.output_dir / f"hourly_multiwindow_{args.universe}_{ts}{ms_tag}.json"
         out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
         print(f"\n  Results → {out_path}")
