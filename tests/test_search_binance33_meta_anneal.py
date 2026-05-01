@@ -6,6 +6,7 @@ from pufferlib_market.hourly_replay import MktdData, P_CLOSE, P_HIGH, P_LOW
 from scripts.search_binance33_meta_anneal import (
     Candidate,
     ScoreBank,
+    _apply_excluded_symbols,
     _apply_binary_fills,
     _apply_short_binary_fills,
     _combine_scores,
@@ -13,6 +14,7 @@ from scripts.search_binance33_meta_anneal import (
     _evolve_weights_after_return,
     _normalize_score_matrix,
     _normalise_alloc,
+    _summarise_results,
 )
 
 
@@ -180,3 +182,65 @@ def test_evolve_weights_after_return_zeros_bankrupt_candidate() -> None:
     )
 
     assert np.all(weights == 0.0)
+
+
+def test_apply_excluded_symbols_nans_all_channels_for_symbol() -> None:
+    data = MktdData(
+        version=2,
+        symbols=["AAA", "BBB"],
+        features=np.zeros((2, 2, 16), dtype=np.float32),
+        prices=np.ones((2, 2, 5), dtype=np.float32),
+        tradable=None,
+    )
+    bank = ScoreBank(names=["a", "b"], scores=np.ones((2, 2, 2), dtype=np.float64))
+
+    filtered = _apply_excluded_symbols(bank, data, ["bbb"])
+
+    assert np.all(np.isfinite(filtered.scores[:, :, 0]))
+    assert np.all(np.isnan(filtered.scores[:, :, 1]))
+
+
+def test_summarise_results_reports_worst_drawdown() -> None:
+    candidate = Candidate(
+        candidate_id="x",
+        logits=np.zeros(1, dtype=np.float64),
+        threshold=0.0,
+        max_gross=1.0,
+        max_weight=1.0,
+        top_k=1,
+        book_mode="portfolio",
+        score_temp=1.0,
+        btc_gate=-99.0,
+        market_gate=-99.0,
+        rebalance_days=1,
+    )
+    results = [
+        {
+            "total_return": 0.10,
+            "max_drawdown": 0.05,
+            "sortino": 1.0,
+            "trades": 2,
+            "equity_curve": np.asarray([1.0, 1.1]),
+        },
+        {
+            "total_return": 0.20,
+            "max_drawdown": 0.22,
+            "sortino": 2.0,
+            "trades": 3,
+            "equity_curve": np.asarray([1.0, 1.2]),
+        },
+    ]
+
+    row = _summarise_results(
+        results,
+        candidate=candidate,
+        phase="test",
+        eval_days=30,
+        slippage_bps=20.0,
+        fill_buffer_bps=5.0,
+        target_monthly_pct=30.0,
+        target_max_dd_pct=20.0,
+        channel_weights={"a": 1.0},
+    )
+
+    assert row["worst_dd_pct"] == 22.0

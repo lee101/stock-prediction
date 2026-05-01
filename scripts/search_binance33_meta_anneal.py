@@ -132,7 +132,7 @@ def _load_rule_rows(path: Path, *, configs: Sequence[str], max_rules: int) -> li
         selected = [row for name in wanted for row in rows if row.get("config") == name]
     else:
         def key(row: dict[str, str]) -> float:
-            dd = float(row.get("p90_dd_pct") or 100.0)
+            dd = float(row.get("worst_dd_pct") or row.get("p90_dd_pct") or 100.0)
             median = float(row.get("median_monthly_pct") or -999.0)
             p10 = float(row.get("p10_monthly_pct") or -999.0)
             neg = int(float(row.get("neg_windows") or 99))
@@ -283,6 +283,21 @@ def _build_bank(
     names = [name for name, _scores in channels]
     scores = np.stack([scores for _name, scores in channels], axis=0).astype(np.float64, copy=False)
     return ScoreBank(names=names, scores=scores)
+
+
+def _apply_excluded_symbols(bank: ScoreBank, data: MktdData, excluded_symbols: Sequence[str]) -> ScoreBank:
+    excluded = {str(symbol).strip().upper() for symbol in excluded_symbols if str(symbol).strip()}
+    if not excluded:
+        return bank
+    symbols = [str(symbol).upper() for symbol in data.symbols]
+    missing = sorted(excluded - set(symbols))
+    if missing:
+        raise ValueError(f"excluded symbols not present in data: {', '.join(missing)}")
+    scores = np.asarray(bank.scores, dtype=np.float64).copy()
+    for idx, symbol in enumerate(symbols):
+        if symbol in excluded:
+            scores[:, :, idx] = np.nan
+    return ScoreBank(names=list(bank.names), scores=scores)
 
 
 def _combine_scores(bank: ScoreBank, candidate: Candidate) -> np.ndarray:
@@ -760,6 +775,7 @@ def _summarise_results(
         "neg_windows": int(np.sum(returns < 0.0)),
         "windows": int(returns.size),
         "p90_dd_pct": float(100.0 * np.percentile(maxdds, 90)),
+        "worst_dd_pct": float(100.0 * np.max(maxdds)) if maxdds.size else 0.0,
         "median_smooth": float(np.percentile(np.asarray(smooths, dtype=np.float64), 50)),
         "median_ulcer": float(np.percentile(np.asarray(ulcers, dtype=np.float64), 50)),
         "median_sortino": float(np.percentile(sortinos, 50)),
@@ -1479,6 +1495,7 @@ def _fieldnames() -> list[str]:
         "neg_windows",
         "windows",
         "p90_dd_pct",
+        "worst_dd_pct",
         "median_smooth",
         "median_ulcer",
         "median_sortino",
@@ -1509,6 +1526,11 @@ def main() -> int:
     parser.add_argument("--xgb-rounds", type=int, default=80)
     parser.add_argument("--xgb-device", default="cuda")
     parser.add_argument("--xgb-model-dir", type=Path, default=None)
+    parser.add_argument(
+        "--exclude-symbols",
+        default="",
+        help="Comma-separated symbols to remove from all score channels before search/evaluation.",
+    )
     parser.add_argument("--no-handcrafted", action="store_true")
     parser.add_argument("--out", type=Path, default=Path("analysis/binance33_meta_anneal.csv"))
     parser.add_argument("--eval-days", type=int, default=120)
@@ -1580,6 +1602,10 @@ def main() -> int:
     )
     if train_bank.names != val_bank.names:
         raise RuntimeError("train/validation score banks have different channels")
+    excluded_symbols = _parse_str_list(args.exclude_symbols)
+    if excluded_symbols:
+        train_bank = _apply_excluded_symbols(train_bank, train_data, excluded_symbols)
+        val_bank = _apply_excluded_symbols(val_bank, val_data, excluded_symbols)
 
     gross_grid = _parse_float_list(args.gross_grid)
     max_weight_grid = _parse_float_list(args.max_weight_grid)
