@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
@@ -86,6 +87,13 @@ def _parse_int_list(value: str) -> list[int]:
 
 def _parse_str_list(value: str) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _file_cache_tag(path: Path) -> str:
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    raw = f"{resolved}:{stat.st_size}:{int(stat.st_mtime)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def _softmax(values: np.ndarray, *, temp: float = 1.0) -> np.ndarray:
@@ -208,26 +216,53 @@ def _linear_channels(data: MktdData, rules: Sequence[LinearRule]) -> list[tuple[
     return out
 
 
-def _xgb_channels(
+def _train_xgb_channel_models(
     train_data: MktdData,
-    data: MktdData,
     *,
     experiment_names: Sequence[str],
     rounds: int,
     device: str,
-) -> list[tuple[str, np.ndarray]]:
+    model_dir: Path | None = None,
+    cache_tag: str = "",
+) -> list[tuple[str, object]]:
     if not experiment_names:
         return []
     by_name = {exp.name: exp for exp in _experiments()}
     missing = sorted(set(experiment_names) - set(by_name))
     if missing:
         raise ValueError(f"unknown XGB experiments: {', '.join(missing)}")
-    out: list[tuple[str, np.ndarray]] = []
-    valid = _valid_mask(data)
-    for name in experiment_names:
+    out: list[tuple[str, object]] = []
+    if model_dir is not None:
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
+    for idx, name in enumerate(experiment_names, start=1):
         exp = by_name[name]
+        cache_path = (
+            Path(model_dir) / f"{name}_rounds{int(rounds)}_{str(device)}_{cache_tag}.json"
+            if model_dir is not None
+            else None
+        )
+        if cache_path is not None and cache_path.exists():
+            print(f"xgb load {idx}/{len(experiment_names)} {name} {cache_path}", flush=True)
+            import xgboost as xgb
+
+            model = xgb.Booster()
+            model.load_model(str(cache_path))
+            out.append((name, model))
+            continue
+        print(f"xgb train {idx}/{len(experiment_names)} {name} horizon={exp.horizon} label={exp.label}", flush=True)
         x_train, y_train = _build_dataset(train_data, horizon=exp.horizon, label=exp.label)
         model = _train_xgb(x_train, y_train, exp, rounds=int(rounds), device=str(device))
+        if cache_path is not None:
+            model.save_model(str(cache_path))
+        out.append((name, model))
+    return out
+
+
+def _xgb_channels(data: MktdData, models: Sequence[tuple[str, object]]) -> list[tuple[str, np.ndarray]]:
+    valid = _valid_mask(data)
+    out: list[tuple[str, np.ndarray]] = []
+    for idx, (name, model) in enumerate(models, start=1):
+        print(f"xgb score {idx}/{len(models)} {name} T={data.num_timesteps}", flush=True)
         out.append((f"xgb_in_sample:{name}", _normalize_score_matrix(_precompute_scores(data, model), valid)))
     return out
 
@@ -236,28 +271,15 @@ def _build_bank(
     data: MktdData,
     *,
     rules: Sequence[LinearRule],
-    xgb_train_data: MktdData | None,
-    xgb_experiment_names: Sequence[str],
-    xgb_rounds: int,
-    xgb_device: str,
+    xgb_models: Sequence[tuple[str, object]],
     include_handcrafted: bool,
 ) -> ScoreBank:
     channels: list[tuple[str, np.ndarray]] = []
     channels.extend(_linear_channels(data, rules))
     if include_handcrafted:
         channels.extend(_handcrafted_channels(data))
-    if xgb_experiment_names:
-        if xgb_train_data is None:
-            raise ValueError("xgb_train_data is required when XGB channels are requested")
-        channels.extend(
-            _xgb_channels(
-                xgb_train_data,
-                data,
-                experiment_names=xgb_experiment_names,
-                rounds=int(xgb_rounds),
-                device=str(xgb_device),
-            )
-        )
+    if xgb_models:
+        channels.extend(_xgb_channels(data, xgb_models))
     names = [name for name, _scores in channels]
     scores = np.stack([scores for _name, scores in channels], axis=0).astype(np.float64, copy=False)
     return ScoreBank(names=names, scores=scores)
@@ -603,6 +625,18 @@ def _sortino_from_equity(equity: np.ndarray, *, periods_per_year: float = 365.0)
     return float(returns.mean() / denom * np.sqrt(float(periods_per_year)))
 
 
+def _evolve_weights_after_return(target: np.ndarray, gross_return: np.ndarray, growth: float) -> np.ndarray:
+    if not np.isfinite(growth) or float(growth) <= 1e-8:
+        return np.zeros_like(np.asarray(target, dtype=np.float64), dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        weights = np.where(np.abs(target) > 1e-12, np.asarray(target, dtype=np.float64) * gross_return / growth, 0.0)
+    weights = np.where(np.isfinite(weights), weights, 0.0)
+    gross = float(np.abs(weights).sum())
+    if gross > 10.0:
+        weights *= 10.0 / gross
+    return weights
+
+
 def _simulate_vector_window(
     data: MktdData,
     scores_by_t: np.ndarray,
@@ -657,7 +691,7 @@ def _simulate_vector_window(
         growth = max(1e-9, 1.0 + pnl - cost - borrow)
         equity = max(1e-9, equity * growth)
         gross_return = np.where(valid, 1.0 + day_ret, 1.0)
-        weights = np.where(np.abs(target) > 1e-12, target * gross_return / growth, 0.0)
+        weights = _evolve_weights_after_return(target, gross_return, growth)
         curve.append(equity)
     final_turnover = float(np.abs(weights).sum())
     if final_turnover > 1e-9:
@@ -1031,7 +1065,7 @@ def _simulate_vector_trace(
         growth = max(1e-9, 1.0 + pnl - cost - borrow)
         equity = max(1e-9, equity * growth)
         gross_return = np.where(valid, 1.0 + day_ret, 1.0)
-        weights = np.where(np.abs(target) > 1e-12, target * gross_return / growth, 0.0)
+        weights = _evolve_weights_after_return(target, gross_return, growth)
         curve.append(float(equity * initial_cash))
         positions_by_bar.append(
             _position_rows_for_weights(
@@ -1474,6 +1508,7 @@ def main() -> int:
     parser.add_argument("--xgb-experiment-names", default="")
     parser.add_argument("--xgb-rounds", type=int, default=80)
     parser.add_argument("--xgb-device", default="cuda")
+    parser.add_argument("--xgb-model-dir", type=Path, default=None)
     parser.add_argument("--no-handcrafted", action="store_true")
     parser.add_argument("--out", type=Path, default=Path("analysis/binance33_meta_anneal.csv"))
     parser.add_argument("--eval-days", type=int, default=120)
@@ -1523,22 +1558,24 @@ def main() -> int:
         max_rules=int(args.max_linear_rules),
     )
     xgb_names = _parse_str_list(args.xgb_experiment_names)
+    xgb_models = _train_xgb_channel_models(
+        full_train_data,
+        experiment_names=xgb_names,
+        rounds=int(args.xgb_rounds),
+        device=str(args.xgb_device),
+        model_dir=args.xgb_model_dir,
+        cache_tag=_file_cache_tag(args.train_data) if xgb_names else "",
+    )
     train_bank = _build_bank(
         train_data,
         rules=rules,
-        xgb_train_data=full_train_data,
-        xgb_experiment_names=xgb_names,
-        xgb_rounds=int(args.xgb_rounds),
-        xgb_device=str(args.xgb_device),
+        xgb_models=xgb_models,
         include_handcrafted=not bool(args.no_handcrafted),
     )
     val_bank = _build_bank(
         val_data,
         rules=rules,
-        xgb_train_data=full_train_data if xgb_names else None,
-        xgb_experiment_names=xgb_names,
-        xgb_rounds=int(args.xgb_rounds),
-        xgb_device=str(args.xgb_device),
+        xgb_models=xgb_models,
         include_handcrafted=not bool(args.no_handcrafted),
     )
     if train_bank.names != val_bank.names:

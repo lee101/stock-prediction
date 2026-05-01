@@ -10,6 +10,7 @@ from scripts.search_binance33_meta_anneal import (
     _apply_short_binary_fills,
     _combine_scores,
     _desired_weights,
+    _evolve_weights_after_return,
     _normalize_score_matrix,
     _normalise_alloc,
 )
@@ -169,3 +170,13 @@ def test_longshort_portfolio_top_one_keeps_single_slot() -> None:
     weights = _desired_weights(data, scores_by_t, candidate, t=0, btc_idx=0)
 
     assert np.count_nonzero(np.abs(weights) > 1e-12) == 1
+
+
+def test_evolve_weights_after_return_zeros_bankrupt_candidate() -> None:
+    weights = _evolve_weights_after_return(
+        np.asarray([3.0, -2.0], dtype=np.float64),
+        np.asarray([2.0, 0.5], dtype=np.float64),
+        growth=0.0,
+    )
+
+    assert np.all(weights == 0.0)
