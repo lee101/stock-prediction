@@ -29,6 +29,7 @@ from src.fees import get_fee_for_symbol
 from .features import cross_sectional_regime_keep_by_date
 from .model import XGBStockModel, combined_scores
 
+
 logger = logging.getLogger(__name__)
 
 ANNUAL_MARGIN_RATE = 0.0625   # 6.25% per year (Alpaca rate)
@@ -39,6 +40,13 @@ PRODUCTION_STOCK_FEE_RATE = 0.001  # 10 bps production-realism stress fee
 @dataclass
 class BacktestConfig:
     top_n: int = 2
+    # Optional long/short packing. ``top_n`` remains the long-slot count for
+    # backward compatibility; ``short_n`` adds bottom-ranked short slots.
+    # Short candidates must have score <= max_short_score unless that ceiling
+    # is set to >= 1.0 for "always short the weakest names" experiments.
+    short_n: int = 0
+    max_short_score: float = 0.45
+    short_allocation_scale: float = 0.5
     # Aggressive packing floor. When >0, each day fills at least this many
     # valid pick slots from the best-ranked names even if their score is below
     # ``min_score``. This is bounded by ``top_n`` and only applies after the
@@ -123,7 +131,16 @@ class BacktestConfig:
     # sweep iqr alone, both, or skew alone. NaN days keep the pre-filter
     # behaviour (no gate).
     regime_cs_skew_min: float = -1e9    # effectively disabled default
-    allocation_mode: str = "equal"      # equal | softmax | score_norm — how we
+    # Pairwise correlation-aware packing. When corr_window_days > 0 and
+    # corr_max_signed < 1.0, candidate selection skips any symbol whose trailing
+    # signed correlation to an already selected same-day pick is above the
+    # threshold. Signed correlation is side_i * side_j * corr(i,j), so long/long
+    # and short/short positive correlations are risky, and long/short negative
+    # correlations are also risky because both legs can lose together.
+    corr_window_days: int = 0
+    corr_min_periods: int = 20
+    corr_max_signed: float = 1.0
+    allocation_mode: str = "equal"      # equal | softmax | score_norm | worksteal — how we
                                         # weight the top_n picks within a day
     allocation_temp: float = 1.0        # softmax temperature (lower = more concentrated)
     hold_through: bool = False          # if tomorrow's picks intersect today's,
@@ -208,6 +225,7 @@ class DayTrade:
     # Zero when actual_high / actual_low are missing from the row.
     intraday_worst_dd_pct:  float = 0.0
     intraday_best_runup_pct: float = 0.0
+    side: int = 1
 
 
 @dataclass
@@ -349,10 +367,20 @@ def _resolve_fee_rate(symbol: str, config: BacktestConfig) -> float:
     return float(get_fee_for_symbol(symbol))
 
 
-def _fill_prices(open_price: float, close_price: float, *, fill_buffer_bps: float) -> tuple[float, float]:
+def _fill_prices(
+    open_price: float,
+    close_price: float,
+    *,
+    fill_buffer_bps: float,
+    side: int = 1,
+) -> tuple[float, float]:
     buffer_frac = max(float(fill_buffer_bps), 0.0) / 10_000.0
-    entry_fill = float(open_price) * (1.0 + buffer_frac)
-    exit_fill = float(close_price) * (1.0 - buffer_frac)
+    if int(side) < 0:
+        entry_fill = float(open_price) * (1.0 - buffer_frac)
+        exit_fill = float(close_price) * (1.0 + buffer_frac)
+    else:
+        entry_fill = float(open_price) * (1.0 + buffer_frac)
+        exit_fill = float(close_price) * (1.0 - buffer_frac)
     return entry_fill, exit_fill
 
 
@@ -361,30 +389,39 @@ def _limit_entry_fill_price(
     *,
     discount_bps: float,
     fill_buffer_bps: float,
+    side: int = 1,
 ) -> float | None:
     """Return a conservative explicit-limit entry fill, or None if unfilled.
 
-    The limit is placed at ``open * (1 - discount_bps)``. To avoid the common
-    OHLC look-ahead optimism where a one-tick touch is treated as certain
-    execution, the bar low must move through the limit by ``fill_buffer_bps``.
-    If it does, the fill price is the posted limit price, not a better low.
+    Long limits are placed below the open; short limits are placed above the
+    open. To avoid common OHLC optimism where a one-tick touch is treated as
+    certain execution, the bar must move through the limit by
+    ``fill_buffer_bps``. If it does, the fill price is the posted limit price,
+    not a better intrabar extreme.
     """
     try:
         open_price = float(row.get("actual_open", 0.0) or 0.0)
+        high_price = float(row.get("actual_high", 0.0) or 0.0)
         low_price = float(row.get("actual_low", 0.0) or 0.0)
     except (TypeError, ValueError):
         return None
-    if not (np.isfinite(open_price) and np.isfinite(low_price)):
+    if not (np.isfinite(open_price) and np.isfinite(high_price) and np.isfinite(low_price)):
         return None
-    if open_price <= 0.0 or low_price <= 0.0:
+    if open_price <= 0.0 or high_price <= 0.0 or low_price <= 0.0:
         return None
 
     discount = max(float(discount_bps), 0.0) / 10_000.0
     buffer_frac = max(float(fill_buffer_bps), 0.0) / 10_000.0
-    limit_price = open_price * (1.0 - discount)
-    required_low = limit_price * (1.0 - buffer_frac)
-    if low_price <= required_low:
-        return float(limit_price)
+    if int(side) < 0:
+        limit_price = open_price * (1.0 + discount)
+        required_high = limit_price * (1.0 + buffer_frac)
+        if high_price >= required_high:
+            return float(limit_price)
+    else:
+        limit_price = open_price * (1.0 - discount)
+        required_low = limit_price * (1.0 - buffer_frac)
+        if low_price <= required_low:
+            return float(limit_price)
     return None
 
 
@@ -392,8 +429,9 @@ def _intraday_excursion_pct(
     row: pd.Series,
     entry_ref: float,
     leverage: float,
+    side: int = 1,
 ) -> tuple[float, float]:
-    """Return (worst_dd_pct, best_runup_pct) for one long trade.
+    """Return (worst_dd_pct, best_runup_pct) for one directional trade.
 
     ``entry_ref`` is the price from which we measure excursions — usually
     the entry fill (open-side) or the prior close on a continuation day.
@@ -402,10 +440,8 @@ def _intraday_excursion_pct(
     downstream aggregates are a proxy of "what we observed" and not an
     accidental floor.
 
-    Long-direction only (XGB daily picks are always long). The returned
-    values are POSITIVE percentages at the requested leverage:
-      worst_dd  = max(0, (entry_ref - bar_low ) / entry_ref * L * 100)
-      best_runup = max(0, (bar_high - entry_ref) / entry_ref * L * 100)
+    Values are POSITIVE percentages at the requested leverage. For shorts,
+    high is adverse and low is favourable.
     """
     if entry_ref <= 0:
         return (0.0, 0.0)
@@ -413,8 +449,12 @@ def _intraday_excursion_pct(
     lo = float(row.get("actual_low",  0.0) or 0.0)
     if not (np.isfinite(hi) and np.isfinite(lo)) or hi <= 0 or lo <= 0:
         return (0.0, 0.0)
-    worst = max(0.0, (entry_ref - lo) / entry_ref) * float(leverage) * 100.0
-    runup = max(0.0, (hi - entry_ref) / entry_ref) * float(leverage) * 100.0
+    if int(side) < 0:
+        worst = max(0.0, (hi - entry_ref) / entry_ref) * float(leverage) * 100.0
+        runup = max(0.0, (entry_ref - lo) / entry_ref) * float(leverage) * 100.0
+    else:
+        worst = max(0.0, (entry_ref - lo) / entry_ref) * float(leverage) * 100.0
+        runup = max(0.0, (hi - entry_ref) / entry_ref) * float(leverage) * 100.0
     return (float(worst), float(runup))
 
 
@@ -500,6 +540,9 @@ def _allocation_weights(
     * ``"softmax"``    — exp(score / temperature) / sum(...)  (temperature>0)
     * ``"score_norm"`` — score / sum(score) with a non-negativity floor;
                          all-zero / all-negative → falls back to equal weights.
+    * ``"worksteal"``  — first filled trade gets 75% of gross exposure and
+                         remaining fills split 25%; with 2x leverage and two
+                         fills this matches the BitbankGo-style 150% + 50% book.
 
     The helper is deliberately total so callers don't have to branch on K==0
     or NaN scores — it always returns a valid non-negative distribution.
@@ -528,9 +571,139 @@ def _allocation_weights(
         if not np.isfinite(s) or s <= 0:
             return np.full(n, 1.0 / n)
         return pos / s
+    if mode == "worksteal":
+        if n == 1:
+            return np.ones(1, dtype=np.float64)
+        weights = np.full(n, 0.25 / float(n - 1), dtype=np.float64)
+        weights[0] = 0.75
+        return weights
     raise ValueError(
-        f"Unknown allocation_mode={mode!r}; expected equal|softmax|score_norm"
+        f"Unknown allocation_mode={mode!r}; expected equal|softmax|score_norm|worksteal"
     )
+
+
+def _trade_edge_score(trade: DayTrade) -> float:
+    """Return the allocation edge score for long and short trades."""
+    score = float(trade.score)
+    if not np.isfinite(score):
+        return 0.0
+    return score if int(trade.side) >= 0 else 1.0 - score
+
+
+def _trade_allocation_weights(
+    trades: list[DayTrade],
+    *,
+    mode: str,
+    temperature: float,
+    short_allocation_scale: float,
+) -> np.ndarray:
+    short_scale = max(float(short_allocation_scale), 0.0)
+    if not trades:
+        return np.asarray([], dtype=np.float64)
+    if str(mode or "equal").lower() == "worksteal":
+        base = _allocation_weights(
+            range(len(trades)), mode="worksteal", temperature=temperature,
+        )
+        side_scale = np.asarray(
+            [1.0 if int(t.side) >= 0 else short_scale for t in trades],
+            dtype=np.float64,
+        )
+        arr = base * side_scale
+        total = float(arr.sum())
+        if total > 0.0 and np.isfinite(total):
+            return arr / total
+        return np.full(len(trades), 1.0 / len(trades))
+    if str(mode or "equal").lower() == "equal":
+        base = [1.0 if int(t.side) >= 0 else short_scale for t in trades]
+        arr = np.asarray(base, dtype=np.float64)
+        total = float(arr.sum())
+        if total > 0.0 and np.isfinite(total):
+            return arr / total
+        return np.full(len(trades), 1.0 / len(trades))
+    edges = [
+        _trade_edge_score(t) * (1.0 if int(t.side) >= 0 else short_scale)
+        for t in trades
+    ]
+    return _allocation_weights(edges, mode=mode, temperature=temperature)
+
+
+def _build_trailing_corr_by_date(
+    df: pd.DataFrame,
+    dates: pd.Index,
+    *,
+    window_days: int,
+    min_periods: int,
+) -> dict[date, pd.DataFrame]:
+    """Build leak-free trailing return correlations available at each open.
+
+    Prefer ``ret_1d`` because XGB daily features define it as a lagged return
+    already knowable at day open. Synthetic or legacy frames may not include it;
+    then fall back to actual close-to-close returns shifted by one day so day T
+    never sees close[T].
+    """
+    window = max(int(window_days), 0)
+    if window <= 1 or df.empty:
+        return {}
+    minp = max(int(min_periods), 2)
+    work = df[["date", "symbol"]].copy()
+    if "ret_1d" in df.columns:
+        work["_ret"] = pd.to_numeric(df["ret_1d"], errors="coerce")
+    elif "actual_close" in df.columns:
+        close = (
+            df[["date", "symbol", "actual_close"]]
+            .assign(actual_close=lambda x: pd.to_numeric(x["actual_close"], errors="coerce"))
+            .pivot_table(index="date", columns="symbol", values="actual_close", aggfunc="last")
+            .sort_index()
+        )
+        returns = close.pct_change().shift(1)
+        return {
+            day: returns.loc[:day].tail(window).corr(min_periods=minp).fillna(0.0)
+            for day in dates
+            if len(returns.loc[:day].tail(window).dropna(how="all")) >= minp
+        }
+    else:
+        return {}
+
+    returns = (
+        work.pivot_table(index="date", columns="symbol", values="_ret", aggfunc="last")
+        .sort_index()
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    out: dict[date, pd.DataFrame] = {}
+    for day in dates:
+        hist = returns.loc[:day].tail(window)
+        if len(hist.dropna(how="all")) < minp:
+            continue
+        out[day] = hist.corr(min_periods=minp).fillna(0.0)
+    return out
+
+
+def _candidate_passes_corr_gate(
+    symbol: str,
+    side: int,
+    selected: list[tuple[str, int]],
+    corr_matrix: pd.DataFrame | None,
+    max_signed_corr: float,
+) -> bool:
+    if corr_matrix is None or not selected:
+        return True
+    threshold = float(max_signed_corr)
+    if threshold >= 1.0:
+        return True
+    if symbol not in corr_matrix.index or symbol not in corr_matrix.columns:
+        return True
+    candidate_side = 1 if int(side) >= 0 else -1
+    for other_symbol, other_side_raw in selected:
+        if other_symbol not in corr_matrix.index or other_symbol not in corr_matrix.columns:
+            continue
+        corr = float(corr_matrix.at[symbol, other_symbol])
+        if not np.isfinite(corr):
+            continue
+        other_side = 1 if int(other_side_raw) >= 0 else -1
+        signed_corr = candidate_side * other_side * corr
+        if signed_corr > threshold:
+            return False
+    return True
 
 
 def simulate(
@@ -616,6 +789,8 @@ def simulate(
             )
         }
 
+    corr_source_df = test_df.copy()
+
     # Liquidity filter
     min_dolvol_log = np.log1p(config.min_dollar_vol)
     if "dolvol_20d_log" in test_df.columns:
@@ -677,6 +852,12 @@ def simulate(
     unique_dates = pd.Index(sorted(test_df["date"].unique()))
     if fallback_lookup is not None:
         unique_dates = pd.Index(sorted(set(unique_dates).union(fallback_lookup.keys())))
+    corr_by_date = _build_trailing_corr_by_date(
+        corr_source_df,
+        unique_dates,
+        window_days=int(config.corr_window_days),
+        min_periods=int(config.corr_min_periods),
+    )
     regime_closed = _build_regime_flags(
         spy_close_by_date,
         unique_dates,
@@ -699,7 +880,7 @@ def simulate(
     # today's pick set equals yesterday's (as a set), we carry the positions
     # instead of sell-at-close + buy-at-open. The carry day's return is
     # close-to-close with zero fees/buffer (no trade happens).
-    prev_pick_set: frozenset[str] | None = None
+    prev_pick_set: frozenset[tuple[str, int]] | None = None
     prev_close_by_sym: dict[str, float] = {}
 
     # Missed-order RNG — seeded once at entry so the whole sim is
@@ -734,7 +915,11 @@ def simulate(
 
         # Materialize today's pick rows up to top_n (skipping invalid prices).
         pick_rows: list[pd.Series] = []
-        opportunistic_entries: dict[str, float] = {}
+        side_by_symbol: dict[str, int] = {}
+        selected_for_corr: list[tuple[str, int]] = []
+        day_corr = corr_by_date.get(day)
+        corr_max_signed = float(config.corr_max_signed)
+        opportunistic_entries: dict[tuple[str, int], float] = {}
         min_pick_floor = min(max(int(config.min_picks), 0), int(config.top_n))
         opportunistic_watch_n = max(int(config.opportunistic_watch_n), 0)
         opportunistic_discount_bps = max(
@@ -761,11 +946,19 @@ def simulate(
                     row,
                     discount_bps=opportunistic_discount_bps,
                     fill_buffer_bps=config.fill_buffer_bps,
+                    side=1,
                 )
                 if entry_limit is None:
                     continue
+                symbol = str(row["symbol"])
+                if not _candidate_passes_corr_gate(
+                    symbol, 1, selected_for_corr, day_corr, corr_max_signed,
+                ):
+                    continue
                 pick_rows.append(row)
-                opportunistic_entries[str(row["symbol"])] = entry_limit
+                side_by_symbol[symbol] = 1
+                selected_for_corr.append((symbol, 1))
+                opportunistic_entries[(symbol, 1)] = entry_limit
         else:
             for _, row in day_df.iterrows():
                 if len(pick_rows) >= config.top_n:
@@ -777,10 +970,71 @@ def simulate(
                 c = float(row["actual_close"])
                 if o <= 0 or c <= 0:
                     continue
+                symbol = str(row["symbol"])
+                if not _candidate_passes_corr_gate(
+                    symbol, 1, selected_for_corr, day_corr, corr_max_signed,
+                ):
+                    continue
                 pick_rows.append(row)
+                side_by_symbol[symbol] = 1
+                selected_for_corr.append((symbol, 1))
+
+        short_n = max(int(config.short_n), 0)
+        if short_n > 0:
+            short_sort_cols = ["_score"]
+            short_ascending = [True]
+            if config.chronos_col in day_df.columns:
+                short_sort_cols.append(config.chronos_col)
+                short_ascending.append(True)
+            short_df = day_df.sort_values(
+                short_sort_cols, ascending=short_ascending, kind="mergesort"
+            )
+            short_watch_n = opportunistic_watch_n if opportunistic_watch_n > 0 else short_n
+            short_watch_rows: list[pd.Series] = []
+            max_short_score = float(config.max_short_score)
+            for _, row in short_df.iterrows():
+                symbol = str(row["symbol"])
+                if symbol in side_by_symbol:
+                    continue
+                raw_score = row.get("_score", 1.0)
+                score = 1.0 if pd.isna(raw_score) else float(raw_score)
+                if score > max_short_score and max_short_score < 1.0:
+                    continue
+                o = float(row["actual_open"])
+                c = float(row["actual_close"])
+                if o <= 0 or c <= 0:
+                    continue
+                if len(short_watch_rows) >= short_watch_n:
+                    break
+                short_watch_rows.append(row)
+
+            for row in short_watch_rows:
+                current_shorts = sum(1 for side in side_by_symbol.values() if side < 0)
+                if current_shorts >= short_n:
+                    break
+                symbol = str(row["symbol"])
+                if not _candidate_passes_corr_gate(
+                    symbol, -1, selected_for_corr, day_corr, corr_max_signed,
+                ):
+                    continue
+                if opportunistic_watch_n > 0 and opportunistic_discount_bps > 0.0:
+                    entry_limit = _limit_entry_fill_price(
+                        row,
+                        discount_bps=opportunistic_discount_bps,
+                        fill_buffer_bps=config.fill_buffer_bps,
+                        side=-1,
+                    )
+                    if entry_limit is None:
+                        continue
+                    opportunistic_entries[(symbol, -1)] = entry_limit
+                pick_rows.append(row)
+                side_by_symbol[symbol] = -1
+                selected_for_corr.append((symbol, -1))
 
         today_sym_list = [str(r["symbol"]) for r in pick_rows]
-        today_pick_set = frozenset(today_sym_list)
+        today_pick_set = frozenset(
+            (sym, int(side_by_symbol.get(sym, 1))) for sym in today_sym_list
+        )
 
         is_continuation = (
             bool(config.hold_through)
@@ -804,7 +1058,9 @@ def simulate(
             ]
             pick_rows = surviving
             today_sym_list = [str(r["symbol"]) for r in pick_rows]
-            today_pick_set = frozenset(today_sym_list)
+            today_pick_set = frozenset(
+                (sym, int(side_by_symbol.get(sym, 1))) for sym in today_sym_list
+            )
 
         # Conviction-scaled allocation — sizes today's exposure by the
         # top-of-pool score. Computed from the DAY's top score before any
@@ -842,7 +1098,8 @@ def simulate(
         ):
             held_rows: list[pd.Series] = []
             missing_held = False
-            for sym in sorted(prev_pick_set):
+            held_side_by_symbol: dict[str, int] = {}
+            for sym, side in sorted(prev_pick_set):
                 row = hold_lookup.get((day, sym))
                 if row is None:
                     missing_held = True
@@ -852,10 +1109,17 @@ def simulate(
                     missing_held = True
                     break
                 held_rows.append(row)
+                held_side_by_symbol[sym] = int(side)
             if not missing_held and held_rows:
                 pick_rows = held_rows
+                side_by_symbol = {
+                    str(r["symbol"]): int(held_side_by_symbol.get(str(r["symbol"]), 1))
+                    for r in pick_rows
+                }
                 today_sym_list = [str(r["symbol"]) for r in pick_rows]
-                today_pick_set = frozenset(today_sym_list)
+                today_pick_set = frozenset(
+                    (sym, int(side_by_symbol.get(sym, 1))) for sym in today_sym_list
+                )
                 is_continuation = True
 
         trades: list[DayTrade] = []
@@ -866,6 +1130,7 @@ def simulate(
             if not np.isfinite(spread) or spread <= 0:
                 spread = 25.0
             symbol = str(row["symbol"])
+            side = int(side_by_symbol.get(symbol, 1))
 
             pick_scale = _inv_vol_pick_scale(
                 float(row.get("vol_20d", 0.0)),
@@ -885,17 +1150,20 @@ def simulate(
                 # today. PnL is close-to-close (captures overnight + intraday).
                 prev_c = prev_close_by_sym[symbol]
                 gross_oc = (c - prev_c) / prev_c
+                if side < 0:
+                    gross_oc *= -1.0
                 gross_leveraged = eff_lev * gross_oc
                 # Only the intraday margin-hold cost applies (no fees, no
                 # fill buffer since there's no trade).
                 cost_frac = _day_margin_cost(eff_lev)
                 net = gross_leveraged - cost_frac
                 worst_dd, best_runup = _intraday_excursion_pct(
-                    row, prev_c, eff_lev,
+                    row, prev_c, eff_lev, side=side,
                 )
                 trades.append(DayTrade(
                     symbol=symbol,
                     score=float(row["_score"]),
+                    side=side,
                     actual_open=o,
                     actual_close=c,
                     entry_fill_price=prev_c,
@@ -914,20 +1182,28 @@ def simulate(
 
             # Churn day — full open-to-close round-trip with fees + buffer.
             fee_rate = symbol_fee_rates.get(symbol, _resolve_fee_rate(symbol, config))
-            entry_fill = opportunistic_entries.get(symbol)
+            entry_fill = opportunistic_entries.get((symbol, side))
             if entry_fill is None:
                 entry_fill, exit_fill = _fill_prices(
-                    o, c, fill_buffer_bps=config.fill_buffer_bps
+                    o, c, fill_buffer_bps=config.fill_buffer_bps, side=side
                 )
             else:
-                exit_fill = c * (
-                    1.0 - max(float(config.fill_buffer_bps), 0.0) / 10_000.0
-                )
+                buffer_frac = max(float(config.fill_buffer_bps), 0.0) / 10_000.0
+                exit_fill = c * (1.0 + buffer_frac if side < 0 else 1.0 - buffer_frac)
             if entry_fill <= 0 or exit_fill <= 0:
                 continue
 
-            gross_oc = (exit_fill - entry_fill) / entry_fill
-            round_trip_return = (exit_fill * (1.0 - fee_rate) / (entry_fill * (1.0 + fee_rate))) - 1.0
+            if side < 0:
+                gross_oc = (entry_fill - exit_fill) / entry_fill
+                round_trip_return = (
+                    entry_fill * (1.0 - fee_rate)
+                    - exit_fill * (1.0 + fee_rate)
+                ) / entry_fill
+            else:
+                gross_oc = (exit_fill - entry_fill) / entry_fill
+                round_trip_return = (
+                    exit_fill * (1.0 - fee_rate) / (entry_fill * (1.0 + fee_rate))
+                ) - 1.0
             gross_leveraged = eff_lev * round_trip_return
 
             cost_frac = (
@@ -937,11 +1213,12 @@ def simulate(
             net = gross_leveraged - cost_frac
 
             worst_dd, best_runup = _intraday_excursion_pct(
-                row, entry_fill, eff_lev,
+                row, entry_fill, eff_lev, side=side,
             )
             trades.append(DayTrade(
                 symbol=symbol,
                 score=float(row["_score"]),
+                side=side,
                 actual_open=o,
                 actual_close=c,
                 entry_fill_price=entry_fill,
@@ -990,7 +1267,7 @@ def simulate(
                         )
                     fb_fee = _resolve_fee_rate(fallback_sym, config)
                     fb_entry, fb_exit = _fill_prices(
-                        fb_o, fb_c, fill_buffer_bps=config.fill_buffer_bps
+                        fb_o, fb_c, fill_buffer_bps=config.fill_buffer_bps, side=1
                     )
                     if fb_entry > 0 and fb_exit > 0:
                         fb_gross_oc = (fb_exit - fb_entry) / fb_entry
@@ -1004,11 +1281,12 @@ def simulate(
                         )
                         fb_net = fb_gross_lev - fb_cost
                         fb_worst, fb_runup = _intraday_excursion_pct(
-                            fb_row, fb_entry, fb_lev,
+                            fb_row, fb_entry, fb_lev, side=1,
                         )
                         trades.append(DayTrade(
                             symbol=fallback_sym,
                             score=0.0,
+                            side=1,
                             actual_open=fb_o,
                             actual_close=fb_c,
                             entry_fill_price=fb_entry,
@@ -1029,7 +1307,10 @@ def simulate(
         # flatten the hold state — the fallback symbol isn't "held
         # through" tomorrow.
         if config.hold_through and trades and not fell_back:
-            prev_pick_set = today_pick_set
+            # Carry the positions actually represented in today's result, not
+            # the pre-trade pick candidates. Selection state can be trimmed by
+            # fill/missed-order/price validity paths before a trade exists.
+            prev_pick_set = frozenset((t.symbol, int(t.side)) for t in trades)
             prev_close_by_sym = {t.symbol: float(t.actual_close) for t in trades}
         else:
             prev_pick_set = None
@@ -1038,10 +1319,11 @@ def simulate(
         if not trades:
             continue
 
-        weights = _allocation_weights(
-            [t.score for t in trades],
+        weights = _trade_allocation_weights(
+            trades,
             mode=config.allocation_mode,
             temperature=config.allocation_temp,
+            short_allocation_scale=config.short_allocation_scale,
         )
         rets = np.asarray([t.net_return_pct for t in trades], dtype=np.float64)
         daily_ret_pct = float(np.dot(weights, rets))
