@@ -332,6 +332,7 @@ def _window_symbol_contributions(
             mode=config.allocation_mode,
             temperature=config.allocation_temp,
             short_allocation_scale=config.short_allocation_scale,
+            min_secondary_allocation=config.min_secondary_allocation,
         )
         for trade, weight in zip(trades, weights, strict=True):
             symbol = str(trade.symbol)
@@ -495,6 +496,7 @@ def _build_config(args: argparse.Namespace) -> BacktestConfig:
         conviction_alloc_high=float(args.conviction_alloc_high),
         allocation_mode=str(args.allocation_mode),
         allocation_temp=float(args.allocation_temp),
+        min_secondary_allocation=float(args.min_secondary_allocation),
         overnight_max_gross_leverage=(
             None
             if args.overnight_max_gross_leverage is None
@@ -624,8 +626,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--conviction-scaled-alloc", action="store_true")
     parser.add_argument("--conviction-alloc-low", type=float, default=0.55)
     parser.add_argument("--conviction-alloc-high", type=float, default=0.85)
-    parser.add_argument("--allocation-mode", choices=["equal", "score_norm", "softmax"], default="equal")
+    parser.add_argument("--allocation-mode", choices=["equal", "score_norm", "softmax", "worksteal"], default="equal")
     parser.add_argument("--allocation-temp", type=float, default=1.0)
+    parser.add_argument("--min-secondary-allocation", type=float, default=0.0)
     parser.add_argument("--score-uncertainty-penalty", type=float, default=0.0)
     parser.add_argument("--overnight-max-gross-leverage", type=float, default=None)
     parser.add_argument("--fast-features", action="store_true")
@@ -670,6 +673,13 @@ def _validate_args(args: argparse.Namespace) -> tuple[date, date, date, date]:
     if float(args.skip_prob) > 1.0:
         raise ValueError("--skip-prob must be <= 1")
     _finite_float_arg("allocation-temp", args.allocation_temp, min_value=1e-12)
+    min_secondary = _finite_float_arg(
+        "min-secondary-allocation",
+        args.min_secondary_allocation,
+        min_value=0.0,
+    )
+    if min_secondary > 1.0:
+        raise ValueError("--min-secondary-allocation must be <= 1")
     _finite_float_arg("score-uncertainty-penalty", args.score_uncertainty_penalty, min_value=0.0)
     _finite_float_arg("inv-vol-floor", args.inv_vol_floor, min_value=1e-12)
     _finite_float_arg("inv-vol-cap", args.inv_vol_cap, min_value=1e-12)

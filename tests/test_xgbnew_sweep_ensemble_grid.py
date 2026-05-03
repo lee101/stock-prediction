@@ -13,8 +13,8 @@ panel + fake model, then verify:
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -435,7 +436,7 @@ def test_run_sweep_rejects_duplicate_model_paths(tmp_path):
         )
 
 
-def test_run_sweep_rejects_duplicate_alltrain_seed_paths(tmp_path):
+def test_validate_model_paths_allows_same_seed_in_distinct_paths(tmp_path):
     left = tmp_path / "left"
     right = tmp_path / "right"
     left.mkdir()
@@ -445,18 +446,7 @@ def test_run_sweep_rejects_duplicate_alltrain_seed_paths(tmp_path):
     path0_left.write_bytes(b"fake")
     path0_right.write_bytes(b"fake")
 
-    with pytest.raises(ValueError, match="model path seeds contain duplicates"):
-        sweep.run_sweep(
-            symbols=["SYM0"],
-            data_root=Path("/tmp"),
-            model_paths=[path0_left, path0_right],
-            train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
-            oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
-            window_days=10, stride_days=5,
-            leverage_grid=[1.0], min_score_grid=[0.0],
-            hold_through_grid=[False], top_n_grid=[1],
-            fee_regimes=["deploy"],
-        )
+    sweep._validate_model_paths_for_sweep([path0_left, path0_right])
 
 
 def test_run_sweep_rejects_malformed_alltrain_seed_path(tmp_path):
@@ -495,6 +485,7 @@ def test_run_sweep_rejects_malformed_alltrain_seed_path(tmp_path):
         ({"fill_buffer_bps_grid": [-0.5]}, "fill_buffer_bps_grid values must be -1 or >= 0"),
         ({"inference_max_spread_bps_grid": [-1.0]}, "inference_max_spread_bps_grid values"),
         ({"allocation_temp_grid": [0.0]}, "allocation_temp_grid values must be > 0"),
+        ({"min_secondary_allocation_grid": [1.2]}, "min_secondary_allocation_grid values"),
         ({"max_ret_20d_rank_pct_grid": [1.5]}, "max_ret_20d_rank_pct_grid values"),
         ({"inv_vol_floor": float("nan")}, "inv_vol_floor must be finite and > 0"),
         ({"inv_vol_cap": 0.5}, "inv_vol_cap must be finite and >= 1"),
@@ -1411,17 +1402,18 @@ def test_allocation_mode_axes_match_grid_product(monkeypatch, tmp_path):
         hold_through_grid=[False],
         top_n_grid=[2],
         fee_regimes=["deploy"],
-        allocation_mode_grid=["equal", "score_norm", "softmax"],
+        allocation_mode_grid=["equal", "score_norm", "softmax", "worksteal"],
         allocation_temp_grid=[0.25, 1.0],
     )
 
-    assert len(cells) == 4
+    assert len(cells) == 5
     pairs = [(c.allocation_mode, c.allocation_temp) for c in cells]
     assert pairs == [
         ("equal", 1.0),
         ("score_norm", 1.0),
         ("softmax", 0.25),
         ("softmax", 1.0),
+        ("worksteal", 1.0),
     ]
 
 
@@ -1444,6 +1436,107 @@ def test_allocation_mode_rejects_unknown_value(monkeypatch, tmp_path):
             fee_regimes=["deploy"],
             allocation_mode_grid=["martingale"],
         )
+
+
+def test_min_secondary_allocation_axis_matches_grid_product(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    calls: list[float] = []
+
+    def _fake_run_cell(**kwargs):
+        calls.append(float(kwargs["min_secondary_allocation"]))
+        return sweep.CellResult(
+            leverage=float(kwargs["leverage"]),
+            min_score=float(kwargs["min_score"]),
+            hold_through=bool(kwargs["hold_through"]),
+            top_n=int(kwargs["top_n"]),
+            fee_regime=str(kwargs["fee_regime"]),
+            n_windows=5,
+            median_monthly_pct=1.0,
+            p10_monthly_pct=1.0,
+            median_sortino=1.0,
+            worst_dd_pct=1.0,
+            n_neg=0,
+            allocation_mode=str(kwargs["allocation_mode"]),
+            allocation_temp=float(kwargs["allocation_temp"]),
+            min_secondary_allocation=float(kwargs["min_secondary_allocation"]),
+        )
+
+    monkeypatch.setattr(sweep, "_run_cell", _fake_run_cell)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[2],
+        fee_regimes=["deploy"],
+        allocation_mode_grid=["softmax"],
+        allocation_temp_grid=[0.25],
+        min_secondary_allocation_grid=[0.0, 0.2],
+    )
+
+    assert calls == [0.0, 0.2]
+    rows = sweep._cells_to_rows(cells)
+    assert [r["min_secondary_allocation"] for r in rows] == [0.0, 0.2]
+
+
+def test_corr_gate_axes_match_grid_product(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+
+    calls: list[tuple[int, int, float]] = []
+
+    def _fake_run_cell(**kwargs):
+        calls.append((
+            int(kwargs["corr_window_days"]),
+            int(kwargs["corr_min_periods"]),
+            float(kwargs["corr_max_signed"]),
+        ))
+        return sweep.CellResult(
+            leverage=float(kwargs["leverage"]),
+            min_score=float(kwargs["min_score"]),
+            hold_through=bool(kwargs["hold_through"]),
+            top_n=int(kwargs["top_n"]),
+            fee_regime=str(kwargs["fee_regime"]),
+            n_windows=5,
+            median_monthly_pct=1.0,
+            p10_monthly_pct=1.0,
+            median_sortino=1.0,
+            worst_dd_pct=1.0,
+            n_neg=0,
+            corr_window_days=int(kwargs["corr_window_days"]),
+            corr_min_periods=int(kwargs["corr_min_periods"]),
+            corr_max_signed=float(kwargs["corr_max_signed"]),
+        )
+
+    monkeypatch.setattr(sweep, "_run_cell", _fake_run_cell)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[2],
+        fee_regimes=["deploy"],
+        corr_window_days_grid=[0, 60],
+        corr_min_periods=12,
+        corr_max_signed_grid=[1.0, 0.6],
+    )
+
+    assert calls == [(0, 12, 1.0), (0, 12, 0.6), (60, 12, 1.0), (60, 12, 0.6)]
+    rows = sweep._cells_to_rows(cells)
+    assert rows[-1]["corr_window_days"] == 60
+    assert rows[-1]["corr_min_periods"] == 12
+    assert rows[-1]["corr_max_signed"] == 0.6
 
 
 def test_goodness_score_formula():

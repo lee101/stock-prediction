@@ -143,6 +143,11 @@ class BacktestConfig:
     allocation_mode: str = "equal"      # equal | softmax | score_norm | worksteal — how we
                                         # weight the top_n picks within a day
     allocation_temp: float = 1.0        # softmax temperature (lower = more concentrated)
+    # Concentration guard. When two or more trades fill, cap the largest
+    # allocation weight at (1 - min_secondary_allocation) and move any excess
+    # to the other filled trades. Example: 0.20 forces at least 20% of gross
+    # exposure outside the main/top pick. 0 disables.
+    min_secondary_allocation: float = 0.0
     hold_through: bool = False          # if tomorrow's picks intersect today's,
                                         # hold the overlap (skip sell-close+buy-open
                                         # round-trip). Saves 2x(fee+buffer) per held
@@ -582,6 +587,45 @@ def _allocation_weights(
     )
 
 
+def _enforce_min_secondary_allocation(
+    weights: np.ndarray,
+    min_secondary_allocation: float,
+) -> np.ndarray:
+    """Cap the largest weight so some allocation remains outside the main pick."""
+    arr = np.asarray(weights, dtype=np.float64)
+    if arr.size < 2:
+        return arr
+    floor = float(min_secondary_allocation or 0.0)
+    if floor <= 0.0:
+        return arr
+    floor = min(max(floor, 0.0), 1.0)
+    max_main = 1.0 - floor
+    if max_main <= 0.0:
+        return np.full(arr.size, 1.0 / arr.size, dtype=np.float64)
+
+    out = arr.copy()
+    total = float(out.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        out = np.full(out.size, 1.0 / out.size, dtype=np.float64)
+    else:
+        out /= total
+
+    main_idx = int(np.argmax(out))
+    main_weight = float(out[main_idx])
+    if main_weight <= max_main:
+        return out
+
+    excess = main_weight - max_main
+    out[main_idx] = max_main
+    other_idx = np.asarray([i for i in range(out.size) if i != main_idx])
+    other_sum = float(out[other_idx].sum())
+    if other_sum > 0.0 and np.isfinite(other_sum):
+        out[other_idx] += excess * out[other_idx] / other_sum
+    else:
+        out[other_idx] += excess / float(len(other_idx))
+    return out
+
+
 def _trade_edge_score(trade: DayTrade) -> float:
     """Return the allocation edge score for long and short trades."""
     score = float(trade.score)
@@ -596,6 +640,7 @@ def _trade_allocation_weights(
     mode: str,
     temperature: float,
     short_allocation_scale: float,
+    min_secondary_allocation: float = 0.0,
 ) -> np.ndarray:
     short_scale = max(float(short_allocation_scale), 0.0)
     if not trades:
@@ -611,20 +656,33 @@ def _trade_allocation_weights(
         arr = base * side_scale
         total = float(arr.sum())
         if total > 0.0 and np.isfinite(total):
-            return arr / total
-        return np.full(len(trades), 1.0 / len(trades))
+            return _enforce_min_secondary_allocation(
+                arr / total, min_secondary_allocation,
+            )
+        return _enforce_min_secondary_allocation(
+            np.full(len(trades), 1.0 / len(trades)),
+            min_secondary_allocation,
+        )
     if str(mode or "equal").lower() == "equal":
         base = [1.0 if int(t.side) >= 0 else short_scale for t in trades]
         arr = np.asarray(base, dtype=np.float64)
         total = float(arr.sum())
         if total > 0.0 and np.isfinite(total):
-            return arr / total
-        return np.full(len(trades), 1.0 / len(trades))
+            return _enforce_min_secondary_allocation(
+                arr / total, min_secondary_allocation,
+            )
+        return _enforce_min_secondary_allocation(
+            np.full(len(trades), 1.0 / len(trades)),
+            min_secondary_allocation,
+        )
     edges = [
         _trade_edge_score(t) * (1.0 if int(t.side) >= 0 else short_scale)
         for t in trades
     ]
-    return _allocation_weights(edges, mode=mode, temperature=temperature)
+    return _enforce_min_secondary_allocation(
+        _allocation_weights(edges, mode=mode, temperature=temperature),
+        min_secondary_allocation,
+    )
 
 
 def _build_trailing_corr_by_date(
@@ -1324,6 +1382,7 @@ def simulate(
             mode=config.allocation_mode,
             temperature=config.allocation_temp,
             short_allocation_scale=config.short_allocation_scale,
+            min_secondary_allocation=config.min_secondary_allocation,
         )
         rets = np.asarray([t.net_return_pct for t in trades], dtype=np.float64)
         daily_ret_pct = float(np.dot(weights, rets))
@@ -1678,10 +1737,13 @@ def simulate_hourly(
         if not trades:
             continue
 
-        weights = _allocation_weights(
-            [t.score for t in trades],
-            mode=config.allocation_mode,
-            temperature=config.allocation_temp,
+        weights = _enforce_min_secondary_allocation(
+            _allocation_weights(
+                [t.score for t in trades],
+                mode=config.allocation_mode,
+                temperature=config.allocation_temp,
+            ),
+            config.min_secondary_allocation,
         )
         rets = np.asarray([t.net_return_pct for t in trades], dtype=np.float64)
         bar_ret_pct = float(np.dot(weights, rets))

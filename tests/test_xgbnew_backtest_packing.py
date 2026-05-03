@@ -16,13 +16,13 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import pytest
-
 from xgbnew.backtest import (
     BacktestConfig,
+    DayTrade,
     _allocation_weights,
+    _trade_allocation_weights,
     simulate,
 )
-from xgbnew.model import XGBStockModel
 
 
 def test_allocation_mode_default_is_equal():
@@ -35,6 +35,11 @@ def test_allocation_mode_knobs_settable():
     cfg = BacktestConfig(allocation_mode="softmax", allocation_temp=0.5)
     assert cfg.allocation_mode == "softmax"
     assert cfg.allocation_temp == 0.5
+
+
+def test_min_secondary_allocation_default_is_disabled():
+    cfg = BacktestConfig()
+    assert cfg.min_secondary_allocation == 0.0
 
 
 def test_min_picks_default_preserves_confidence_gate():
@@ -93,9 +98,161 @@ def test_score_norm_degenerate_all_nonpositive_falls_back_to_equal():
     np.testing.assert_allclose(w, 1.0 / 3)
 
 
+def test_short_allocation_scale_reduces_short_weight_under_equal_mode():
+    long = DayTrade(
+        symbol="LONG",
+        score=0.9,
+        actual_open=100.0,
+        actual_close=101.0,
+        entry_fill_price=100.0,
+        exit_fill_price=101.0,
+        spread_bps=1.0,
+        commission_bps=0.0,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        leverage=1.0,
+        gross_return_pct=1.0,
+        net_return_pct=1.0,
+        side=1,
+    )
+    short = DayTrade(
+        symbol="SHORT",
+        score=0.1,
+        actual_open=100.0,
+        actual_close=99.0,
+        entry_fill_price=100.0,
+        exit_fill_price=99.0,
+        spread_bps=1.0,
+        commission_bps=0.0,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        leverage=1.0,
+        gross_return_pct=1.0,
+        net_return_pct=1.0,
+        side=-1,
+    )
+
+    weights = _trade_allocation_weights(
+        [long, short],
+        mode="equal",
+        temperature=1.0,
+        short_allocation_scale=0.5,
+    )
+
+    np.testing.assert_allclose(weights, [2.0 / 3.0, 1.0 / 3.0])
+
+
+def test_min_secondary_allocation_caps_concentrated_learned_weights():
+    winner = DayTrade(
+        symbol="WIN",
+        score=0.99,
+        actual_open=100.0,
+        actual_close=101.0,
+        entry_fill_price=100.0,
+        exit_fill_price=101.0,
+        spread_bps=1.0,
+        commission_bps=0.0,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        leverage=1.0,
+        gross_return_pct=1.0,
+        net_return_pct=1.0,
+        side=1,
+    )
+    hedge = DayTrade(
+        symbol="HEDGE",
+        score=0.01,
+        actual_open=100.0,
+        actual_close=99.0,
+        entry_fill_price=100.0,
+        exit_fill_price=99.0,
+        spread_bps=1.0,
+        commission_bps=0.0,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        leverage=1.0,
+        gross_return_pct=-1.0,
+        net_return_pct=-1.0,
+        side=1,
+    )
+
+    unconstrained = _trade_allocation_weights(
+        [winner, hedge],
+        mode="softmax",
+        temperature=0.01,
+        short_allocation_scale=1.0,
+    )
+    constrained = _trade_allocation_weights(
+        [winner, hedge],
+        mode="softmax",
+        temperature=0.01,
+        short_allocation_scale=1.0,
+        min_secondary_allocation=0.20,
+    )
+
+    assert unconstrained[0] > 0.99
+    np.testing.assert_allclose(constrained, [0.80, 0.20])
+
+
 def test_unknown_allocation_mode_raises():
     with pytest.raises(ValueError, match="allocation_mode"):
         _allocation_weights([1.0, 0.5], mode="kelly_gauss")
+
+
+def test_corr_gate_skips_redundant_same_side_pick():
+    rows = []
+    scores = []
+    start = date(2025, 1, 2)
+    ret_hist = {
+        "AAA": [0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+        "BBB": [0.011, 0.021, 0.031, 0.041, 0.051, 0.061],
+        "CCC": [0.03, -0.02, 0.01, -0.01, 0.02, -0.03],
+    }
+    for d in range(6):
+        day = start + timedelta(days=d)
+        for sym in ("AAA", "BBB", "CCC"):
+            rows.append({
+                "date": day,
+                "symbol": sym,
+                "actual_open": 100.0,
+                "actual_close": 101.0 if sym != "CCC" else 102.0,
+                "spread_bps": 1.0,
+                "dolvol_20d_log": np.log1p(1e9),
+                "ret_1d": ret_hist[sym][d],
+            })
+            if d == 5:
+                scores.append({"AAA": 0.90, "BBB": 0.85, "CCC": 0.80}[sym])
+            else:
+                scores.append(0.10)
+    df = pd.DataFrame(rows)
+
+    base_cfg = BacktestConfig(
+        top_n=2,
+        min_score=0.50,
+        fill_buffer_bps=0.0,
+        commission_bps=0.0,
+        fee_rate=0.0,
+        min_dollar_vol=0.0,
+        max_spread_bps=100.0,
+        xgb_weight=1.0,
+    )
+    ungated = simulate(df, model=None, config=base_cfg, precomputed_scores=pd.Series(scores, index=df.index))  # type: ignore[arg-type]
+    gated = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            **{
+                **base_cfg.__dict__,
+                "corr_window_days": 6,
+                "corr_min_periods": 3,
+                "corr_max_signed": 0.50,
+            }
+        ),
+        precomputed_scores=pd.Series(scores, index=df.index),
+    )  # type: ignore[arg-type]
+
+    assert [t.symbol for t in ungated.day_results[-1].trades] == ["AAA", "BBB"]
+    assert [t.symbol for t in gated.day_results[-1].trades] == ["AAA", "CCC"]
 
 
 # ---- simulate() end-to-end regression -------------------------------------

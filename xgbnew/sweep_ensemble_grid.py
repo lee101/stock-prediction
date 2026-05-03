@@ -54,6 +54,7 @@ from xgbnew.features import (
 from xgbnew.model import XGBStockModel
 from xgbnew.model_registry import load_any_model
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,6 +122,9 @@ class CellResult:
     window_avg_intraday_dd_pcts: list[float] = field(default_factory=list)
     window_start_dates: list[str] = field(default_factory=list)
     window_end_dates: list[str] = field(default_factory=list)
+    short_n: int = 0
+    max_short_score: float = 0.45
+    short_allocation_scale: float = 0.5
     # Aggressive packing floor. 0 means classic min_score-gated behavior.
     min_picks: int = 0
     # Opportunistic work-stealing entries: watch more names than top_n and
@@ -205,6 +209,10 @@ class CellResult:
     # for skew.
     regime_cs_iqr_max:  float = 0.0
     regime_cs_skew_min: float = -1e9
+    # Correlation-aware packing gate — see BacktestConfig.corr_*.
+    corr_window_days: int = 0
+    corr_min_periods: int = 20
+    corr_max_signed: float = 1.0
     # No-picks fallback — see BacktestConfig.no_picks_fallback_*.
     # Empty symbol = disabled (legacy hold-cash behaviour). When set,
     # sim buys this symbol at leverage * alloc_scale on days where no
@@ -220,9 +228,13 @@ class CellResult:
     conviction_alloc_high: float = 0.85
     # Per-day allocation weights across the selected top-N names.
     # equal = legacy; score_norm/softmax concentrate more capital into
-    # higher-confidence names when top_n > 1.
+    # higher-confidence names when top_n > 1; worksteal gives the first
+    # executed fill 75% of gross exposure and later fills split the rest.
     allocation_mode: str = "equal"
     allocation_temp: float = 1.0
+    # Cap largest allocation so at least this fraction of gross exposure is
+    # outside the main pick when two or more trades fill.
+    min_secondary_allocation: float = 0.0
     # Full rolling-window count available to this cell before fail-fast or
     # simulator early-stop pruning. Older checkpoint rows may omit this and
     # keep the legacy minimum-window compatibility path.
@@ -285,6 +297,9 @@ STRATEGY_PARAM_FIELDS = (
     "min_score",
     "hold_through",
     "top_n",
+    "short_n",
+    "max_short_score",
+    "short_allocation_scale",
     "min_picks",
     "opportunistic_watch_n",
     "opportunistic_entry_discount_bps",
@@ -302,6 +317,9 @@ STRATEGY_PARAM_FIELDS = (
     "min_ret_5d_rank_pct",
     "regime_cs_iqr_max",
     "regime_cs_skew_min",
+    "corr_window_days",
+    "corr_min_periods",
+    "corr_max_signed",
     "no_picks_fallback_symbol",
     "no_picks_fallback_alloc_scale",
     "conviction_scaled_alloc",
@@ -309,6 +327,7 @@ STRATEGY_PARAM_FIELDS = (
     "conviction_alloc_high",
     "allocation_mode",
     "allocation_temp",
+    "min_secondary_allocation",
 )
 
 
@@ -543,6 +562,9 @@ def _cell_key_from_mapping(row: dict) -> tuple:
         _key_float(row.get("min_score", 0.0)),
         bool(row.get("hold_through", False)),
         int(row.get("top_n", 0)),
+        int(row.get("short_n", 0)),
+        _key_float(row.get("max_short_score", 0.45)),
+        _key_float(row.get("short_allocation_scale", 0.5)),
         int(row.get("min_picks", 0)),
         int(row.get("opportunistic_watch_n", 0)),
         _key_float(row.get("opportunistic_entry_discount_bps", 0.0)),
@@ -564,6 +586,9 @@ def _cell_key_from_mapping(row: dict) -> tuple:
         _key_float(row.get("min_ret_5d_rank_pct", 0.0)),
         _key_float(row.get("regime_cs_iqr_max", 0.0)),
         _key_float(row.get("regime_cs_skew_min", -1e9)),
+        int(row.get("corr_window_days", 0)),
+        int(row.get("corr_min_periods", 20)),
+        _key_float(row.get("corr_max_signed", 1.0)),
         str(row.get("no_picks_fallback_symbol", "") or ""),
         _key_float(row.get("no_picks_fallback_alloc_scale", 0.0)),
         bool(row.get("conviction_scaled_alloc", False)),
@@ -571,6 +596,7 @@ def _cell_key_from_mapping(row: dict) -> tuple:
         _key_float(row.get("conviction_alloc_high", 0.85)),
         str(row.get("allocation_mode", "equal") or "equal"),
         _key_float(row.get("allocation_temp", 1.0)),
+        _key_float(row.get("min_secondary_allocation", 0.0)),
     )
 
 
@@ -578,7 +604,8 @@ def _strategy_key_from_mapping(row: dict) -> tuple:
     """Stable identity for deployable strategy knobs, excluding stress axes."""
     out = []
     for param_name in STRATEGY_PARAM_FIELDS:
-        value = row.get(param_name, 0 if param_name == "min_picks" else None)
+        default = 0 if param_name in {"min_picks", "min_secondary_allocation"} else None
+        value = row.get(param_name, default)
         if isinstance(value, float):
             out.append(_key_float(value))
         else:
@@ -592,6 +619,9 @@ def _cell_key_from_values(
     min_score: float,
     hold_through: bool,
     top_n: int,
+    short_n: int,
+    max_short_score: float,
+    short_allocation_scale: float,
     min_picks: int,
     opportunistic_watch_n: int,
     opportunistic_entry_discount_bps: float,
@@ -613,6 +643,9 @@ def _cell_key_from_values(
     min_ret_5d_rank_pct: float,
     regime_cs_iqr_max: float,
     regime_cs_skew_min: float,
+    corr_window_days: int,
+    corr_min_periods: int,
+    corr_max_signed: float,
     no_picks_fallback_symbol: str,
     no_picks_fallback_alloc_scale: float,
     conviction_scaled_alloc: bool,
@@ -620,6 +653,7 @@ def _cell_key_from_values(
     conviction_alloc_high: float,
     allocation_mode: str,
     allocation_temp: float,
+    min_secondary_allocation: float,
 ) -> tuple:
     return _cell_key_from_mapping(
         {
@@ -627,6 +661,9 @@ def _cell_key_from_values(
             "min_score": min_score,
             "hold_through": hold_through,
             "top_n": top_n,
+            "short_n": short_n,
+            "max_short_score": max_short_score,
+            "short_allocation_scale": short_allocation_scale,
             "min_picks": min_picks,
             "opportunistic_watch_n": opportunistic_watch_n,
             "opportunistic_entry_discount_bps": opportunistic_entry_discount_bps,
@@ -648,6 +685,9 @@ def _cell_key_from_values(
             "min_ret_5d_rank_pct": min_ret_5d_rank_pct,
             "regime_cs_iqr_max": regime_cs_iqr_max,
             "regime_cs_skew_min": regime_cs_skew_min,
+            "corr_window_days": corr_window_days,
+            "corr_min_periods": corr_min_periods,
+            "corr_max_signed": corr_max_signed,
             "no_picks_fallback_symbol": no_picks_fallback_symbol,
             "no_picks_fallback_alloc_scale": no_picks_fallback_alloc_scale,
             "conviction_scaled_alloc": conviction_scaled_alloc,
@@ -655,6 +695,7 @@ def _cell_key_from_values(
             "conviction_alloc_high": conviction_alloc_high,
             "allocation_mode": allocation_mode,
             "allocation_temp": allocation_temp,
+            "min_secondary_allocation": min_secondary_allocation,
         }
     )
 
@@ -689,6 +730,9 @@ def _run_cell(
     hold_through: bool,
     top_n: int,
     fee_regime: str,
+    short_n: int = 0,
+    max_short_score: float = 0.45,
+    short_allocation_scale: float = 0.5,
     min_picks: int = 0,
     opportunistic_watch_n: int = 0,
     opportunistic_entry_discount_bps: float = 0.0,
@@ -710,6 +754,9 @@ def _run_cell(
     min_ret_5d_rank_pct: float = 0.0,
     regime_cs_iqr_max: float = 0.0,
     regime_cs_skew_min: float = -1e9,
+    corr_window_days: int = 0,
+    corr_min_periods: int = 20,
+    corr_max_signed: float = 1.0,
     no_picks_fallback_symbol: str = "",
     no_picks_fallback_alloc_scale: float = 0.0,
     conviction_scaled_alloc: bool = False,
@@ -717,6 +764,7 @@ def _run_cell(
     conviction_alloc_high: float = 0.85,
     allocation_mode: str = "equal",
     allocation_temp: float = 1.0,
+    min_secondary_allocation: float = 0.0,
     fail_fast_max_dd_pct: float = 0.0,
     fail_fast_max_intraday_dd_pct: float = 0.0,
     fail_fast_neg_windows: int = 0,
@@ -732,6 +780,9 @@ def _run_cell(
     )
     cfg = BacktestConfig(
         top_n=int(top_n),
+        short_n=int(short_n),
+        max_short_score=float(max_short_score),
+        short_allocation_scale=float(short_allocation_scale),
         min_picks=int(min_picks),
         opportunistic_watch_n=int(opportunistic_watch_n),
         opportunistic_entry_discount_bps=float(opportunistic_entry_discount_bps),
@@ -757,6 +808,9 @@ def _run_cell(
         min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
         regime_cs_iqr_max=float(regime_cs_iqr_max),
         regime_cs_skew_min=float(regime_cs_skew_min),
+        corr_window_days=int(corr_window_days),
+        corr_min_periods=int(corr_min_periods),
+        corr_max_signed=float(corr_max_signed),
         no_picks_fallback_symbol=str(no_picks_fallback_symbol or ""),
         no_picks_fallback_alloc_scale=float(no_picks_fallback_alloc_scale),
         conviction_scaled_alloc=bool(conviction_scaled_alloc),
@@ -764,6 +818,7 @@ def _run_cell(
         conviction_alloc_high=float(conviction_alloc_high),
         allocation_mode=str(allocation_mode or "equal"),
         allocation_temp=float(allocation_temp),
+        min_secondary_allocation=float(min_secondary_allocation),
         stop_on_drawdown_pct=max(float(fail_fast_max_dd_pct), 0.0),
         stop_on_intraday_drawdown_pct=max(float(fail_fast_max_intraday_dd_pct), 0.0),
         overnight_max_gross_leverage=(
@@ -829,6 +884,9 @@ def _run_cell(
             min_score=min_score,
             hold_through=hold_through,
             top_n=top_n,
+            short_n=int(short_n),
+            max_short_score=float(max_short_score),
+            short_allocation_scale=float(short_allocation_scale),
             fee_regime=fee_regime,
             n_windows=0,
             median_monthly_pct=0.0,
@@ -838,6 +896,9 @@ def _run_cell(
             n_neg=0,
         )
         empty.min_picks = int(min_picks)
+        empty.short_n = int(short_n)
+        empty.max_short_score = float(max_short_score)
+        empty.short_allocation_scale = float(short_allocation_scale)
         empty.opportunistic_watch_n = int(opportunistic_watch_n)
         empty.opportunistic_entry_discount_bps = float(opportunistic_entry_discount_bps)
         empty.score_uncertainty_penalty = float(score_uncertainty_penalty)
@@ -848,6 +909,10 @@ def _run_cell(
         empty.fill_buffer_bps = fb_resolved
         empty.allocation_mode = str(allocation_mode or "equal")
         empty.allocation_temp = float(allocation_temp)
+        empty.min_secondary_allocation = float(min_secondary_allocation)
+        empty.corr_window_days = int(corr_window_days)
+        empty.corr_min_periods = int(corr_min_periods)
+        empty.corr_max_signed = float(corr_max_signed)
         empty.expected_n_windows = int(len(windows))
         return empty
 
@@ -879,6 +944,9 @@ def _run_cell(
         min_score=min_score,
         hold_through=hold_through,
         top_n=top_n,
+        short_n=int(short_n),
+        max_short_score=float(max_short_score),
+        short_allocation_scale=float(short_allocation_scale),
         fee_regime=fee_regime,
         n_windows=n,
         median_monthly_pct=float(np.median(arr)),
@@ -928,6 +996,9 @@ def _run_cell(
         min_ret_5d_rank_pct=float(min_ret_5d_rank_pct),
         regime_cs_iqr_max=float(regime_cs_iqr_max),
         regime_cs_skew_min=float(regime_cs_skew_min),
+        corr_window_days=int(corr_window_days),
+        corr_min_periods=int(corr_min_periods),
+        corr_max_signed=float(corr_max_signed),
         no_picks_fallback_symbol=str(no_picks_fallback_symbol or ""),
         no_picks_fallback_alloc_scale=float(no_picks_fallback_alloc_scale),
         conviction_scaled_alloc=bool(conviction_scaled_alloc),
@@ -935,6 +1006,7 @@ def _run_cell(
         conviction_alloc_high=float(conviction_alloc_high),
         allocation_mode=str(allocation_mode or "equal"),
         allocation_temp=float(allocation_temp),
+        min_secondary_allocation=float(min_secondary_allocation),
         expected_n_windows=int(len(windows)),
     )
 
@@ -957,18 +1029,8 @@ def _validate_model_paths_for_sweep(model_paths: list[Path]) -> None:
     normalized_paths = [path.expanduser().resolve(strict=False) for path in model_paths]
     if len(set(normalized_paths)) != len(normalized_paths):
         raise ValueError("model path list contains duplicates")
-    seen_seeds: dict[int, Path] = {}
     for path in model_paths:
-        seed = _alltrain_seed_from_path(path)
-        if seed is None:
-            continue
-        previous = seen_seeds.get(seed)
-        if previous is not None:
-            raise ValueError(
-                f"model path seeds contain duplicates: seed {seed} "
-                f"appears in {previous} and {path}"
-            )
-        seen_seeds[seed] = path
+        _alltrain_seed_from_path(path)
 
 
 def _float_grid(name: str, values: list[float] | None, default: list[float]) -> list[float]:
@@ -1003,6 +1065,9 @@ def _validate_sweep_grid_domains(
     leverage_grid: list[float],
     min_score_grid: list[float],
     top_n_grid: list[int],
+    short_n_grid: list[int] | None,
+    max_short_score_grid: list[float] | None,
+    short_allocation_scale_grid: list[float] | None,
     min_picks_grid: list[int] | None,
     opportunistic_watch_n_grid: list[int] | None,
     opportunistic_entry_discount_bps_grid: list[float] | None,
@@ -1027,6 +1092,7 @@ def _validate_sweep_grid_domains(
     conviction_alloc_low: float,
     conviction_alloc_high: float,
     allocation_temp_grid: list[float] | None,
+    min_secondary_allocation_grid: list[float] | None,
     score_uncertainty_penalty_grid: list[float] | None,
     fail_fast_max_dd_pct: float,
     fail_fast_max_intraday_dd_pct: float,
@@ -1048,6 +1114,15 @@ def _validate_sweep_grid_domains(
     topn = _int_grid("top_n_grid", top_n_grid, [1])
     if any(x < 1 for x in topn):
         raise ValueError("top_n_grid values must be >= 1")
+    shortn = _int_grid("short_n_grid", short_n_grid, [0])
+    if any(x < 0 for x in shortn):
+        raise ValueError("short_n_grid values must be >= 0")
+    max_short_scores = _float_grid("max_short_score_grid", max_short_score_grid, [0.45])
+    if any(x < 0.0 or x > 1.0 for x in max_short_scores):
+        raise ValueError("max_short_score_grid values must be between 0 and 1")
+    short_alloc_scales = _float_grid("short_allocation_scale_grid", short_allocation_scale_grid, [0.5])
+    if any(x < 0.0 for x in short_alloc_scales):
+        raise ValueError("short_allocation_scale_grid values must be >= 0")
     minp = _int_grid("min_picks_grid", min_picks_grid, [0])
     if any(x < 0 for x in minp):
         raise ValueError("min_picks_grid values must be >= 0")
@@ -1056,8 +1131,8 @@ def _validate_sweep_grid_domains(
     opp_watch = _int_grid("opportunistic_watch_n_grid", opportunistic_watch_n_grid, [0])
     if any(x < 0 for x in opp_watch):
         raise ValueError("opportunistic_watch_n_grid values must be >= 0")
-    if any(w > 0 and w < top_n for w, top_n in product(opp_watch, topn)):
-        raise ValueError("positive opportunistic_watch_n_grid values must be >= top_n_grid values")
+    if any(w > 0 and w < top_n + short_n for w, top_n, short_n in product(opp_watch, topn, shortn)):
+        raise ValueError("positive opportunistic_watch_n_grid values must be >= top_n_grid + short_n_grid values")
 
     base_min_dollar_vol = float(min_dollar_vol)
     if not np.isfinite(base_min_dollar_vol) or base_min_dollar_vol < 0.0:
@@ -1079,6 +1154,11 @@ def _validate_sweep_grid_domains(
         "inv_vol_target_grid": _float_grid("inv_vol_target_grid", inv_vol_target_grid, [0.0]),
         "regime_cs_iqr_max_grid": _float_grid("regime_cs_iqr_max_grid", regime_cs_iqr_max_grid, [0.0]),
         "allocation_temp_grid": _float_grid("allocation_temp_grid", allocation_temp_grid, [1.0]),
+        "min_secondary_allocation_grid": _float_grid(
+            "min_secondary_allocation_grid",
+            min_secondary_allocation_grid,
+            [0.0],
+        ),
         "score_uncertainty_penalty_grid": _float_grid(
             "score_uncertainty_penalty_grid",
             score_uncertainty_penalty_grid,
@@ -1102,6 +1182,8 @@ def _validate_sweep_grid_domains(
             raise ValueError(f"{name} values must be >= 0")
     if any(x <= 0.0 for x in nonnegative_grids["allocation_temp_grid"]):
         raise ValueError("allocation_temp_grid values must be > 0")
+    if any(x > 1.0 for x in nonnegative_grids["min_secondary_allocation_grid"]):
+        raise ValueError("min_secondary_allocation_grid values must be between 0 and 1")
 
     skip_probs = _float_grid("skip_prob_grid", skip_prob_grid, [0.0])
     if any(x < 0.0 or x > 1.0 for x in skip_probs):
@@ -1168,6 +1250,9 @@ def run_sweep(
     hold_through_grid: list[bool],
     top_n_grid: list[int],
     fee_regimes: list[str],
+    short_n_grid: list[int] | None = None,
+    max_short_score_grid: list[float] | None = None,
+    short_allocation_scale_grid: list[float] | None = None,
     min_picks_grid: list[int] | None = None,
     opportunistic_watch_n_grid: list[int] | None = None,
     opportunistic_entry_discount_bps_grid: list[float] | None = None,
@@ -1192,6 +1277,9 @@ def run_sweep(
     min_ret_5d_rank_pct_grid: list[float] | None = None,
     regime_cs_iqr_max_grid: list[float] | None = None,
     regime_cs_skew_min_grid: list[float] | None = None,
+    corr_window_days_grid: list[int] | None = None,
+    corr_min_periods: int = 20,
+    corr_max_signed_grid: list[float] | None = None,
     no_picks_fallback_symbol: str = "",
     no_picks_fallback_alloc_grid: list[float] | None = None,
     conviction_scaled_alloc_grid: list[bool] | None = None,
@@ -1199,6 +1287,7 @@ def run_sweep(
     conviction_alloc_high: float = 0.85,
     allocation_mode_grid: list[str] | None = None,
     allocation_temp_grid: list[float] | None = None,
+    min_secondary_allocation_grid: list[float] | None = None,
     score_uncertainty_penalty_grid: list[float] | None = None,
     fail_fast_max_dd_pct: float = 0.0,
     fail_fast_max_intraday_dd_pct: float = 0.0,
@@ -1225,6 +1314,9 @@ def run_sweep(
         leverage_grid=leverage_grid,
         min_score_grid=min_score_grid,
         top_n_grid=top_n_grid,
+        short_n_grid=short_n_grid,
+        max_short_score_grid=max_short_score_grid,
+        short_allocation_scale_grid=short_allocation_scale_grid,
         min_picks_grid=min_picks_grid,
         opportunistic_watch_n_grid=opportunistic_watch_n_grid,
         opportunistic_entry_discount_bps_grid=opportunistic_entry_discount_bps_grid,
@@ -1249,6 +1341,7 @@ def run_sweep(
         conviction_alloc_low=conviction_alloc_low,
         conviction_alloc_high=conviction_alloc_high,
         allocation_temp_grid=allocation_temp_grid,
+        min_secondary_allocation_grid=min_secondary_allocation_grid,
         score_uncertainty_penalty_grid=score_uncertainty_penalty_grid,
         fail_fast_max_dd_pct=fail_fast_max_dd_pct,
         fail_fast_max_intraday_dd_pct=fail_fast_max_intraday_dd_pct,
@@ -1384,6 +1477,9 @@ def run_sweep(
     opp_discount_grid = [
         float(x) for x in (opportunistic_entry_discount_bps_grid or [0.0])
     ]
+    shortn_grid = [int(x) for x in (short_n_grid or [0])]
+    max_short_score_grid = [float(x) for x in (max_short_score_grid or [0.45])]
+    short_alloc_scale_grid = [float(x) for x in (short_allocation_scale_grid or [0.5])]
     rgw_grid = [int(x) for x in (regime_gate_window_grid or [0])]
     vta_grid = [float(x) for x in (vol_target_ann_grid or [0.0])]
     ivt_grid = [float(x) for x in (inv_vol_target_grid or [0.0])]
@@ -1391,6 +1487,8 @@ def run_sweep(
     r5g_grid  = [float(x) for x in (min_ret_5d_rank_pct_grid or [0.0])]
     rgiqr_grid  = [float(x) for x in (regime_cs_iqr_max_grid  or [0.0])]
     rgskew_grid = [float(x) for x in (regime_cs_skew_min_grid or [-1e9])]
+    corr_window_grid = [int(x) for x in (corr_window_days_grid or [0])]
+    corr_max_grid = [float(x) for x in (corr_max_signed_grid or [1.0])]
     minp_grid = [int(x) for x in (min_picks_grid or [0])]
     # No-picks fallback axis — 0.0 means "no fallback" for legacy parity.
     # When the symbol is empty, alloc_grid is forced to [0.0] (no fallback
@@ -1403,16 +1501,23 @@ def run_sweep(
     conv_grid = list(conviction_scaled_alloc_grid or [False])
     alloc_mode_grid = [str(x or "equal").strip().lower() for x in (allocation_mode_grid or ["equal"])]
     alloc_temp_grid = [float(x) for x in (allocation_temp_grid or [1.0])]
+    msa_grid = [float(x) for x in (min_secondary_allocation_grid or [0.0])]
     sup_grid = [float(x) for x in (score_uncertainty_penalty_grid or [0.0])]
     if any(x < 0.0 for x in sup_grid):
         raise ValueError("score_uncertainty_penalty_grid values must be >= 0")
-    valid_alloc_modes = {"equal", "score_norm", "softmax"}
+    valid_alloc_modes = {"equal", "score_norm", "softmax", "worksteal"}
     bad_alloc_modes = sorted(set(alloc_mode_grid) - valid_alloc_modes)
     if bad_alloc_modes:
         raise ValueError(
             f"Unknown allocation_mode values {bad_alloc_modes}; "
-            "expected equal|score_norm|softmax"
+            "expected equal|score_norm|softmax|worksteal"
         )
+    if int(corr_min_periods) < 2:
+        raise ValueError("corr_min_periods must be >= 2")
+    if any(x < 0 for x in corr_window_grid):
+        raise ValueError("corr_window_days_grid values must be >= 0")
+    if any((x < -1.0 or x > 1.0) for x in corr_max_grid):
+        raise ValueError("corr_max_signed_grid values must be in [-1, 1]")
     alloc_pairs = _allocation_grid_pairs(alloc_mode_grid, alloc_temp_grid)
     dropped_alloc_cells = len(alloc_mode_grid) * len(alloc_temp_grid) - len(alloc_pairs)
     if dropped_alloc_cells > 0:
@@ -1455,28 +1560,35 @@ def run_sweep(
     ]
     total = (
         len(leverage_grid) * len(min_score_grid)
-        * len(hold_through_grid) * len(top_n_grid) * len(minp_grid) * len(fee_regimes)
+        * len(hold_through_grid) * len(top_n_grid) * len(shortn_grid)
+        * len(max_short_score_grid) * len(short_alloc_scale_grid)
+        * len(minp_grid) * len(fee_regimes)
         * len(opp_watch_grid) * len(opp_discount_grid)
         * len(inf_grid) * len(spread_grid) * len(vol_grid) * len(maxvol_grid)
         * len(skip_pairs) * len(fb_grid)
         * len(rgw_grid) * len(vta_grid) * len(ivt_grid)
         * len(r20g_grid) * len(r5g_grid)
         * len(rgiqr_grid) * len(rgskew_grid)
+        * len(corr_window_grid) * len(corr_max_grid)
         * len(fb_alloc_grid) * len(conv_grid)
-        * len(alloc_pairs) * len(sup_grid)
+        * len(alloc_pairs) * len(msa_grid) * len(sup_grid)
     )
     i = 0
     for (
-        lev, ms, ht, tn, minp, opp_watch, opp_disc, reg, inf_dv,
+        lev, ms, ht, tn, shortn, max_short_score, short_alloc_scale, minp,
+        opp_watch, opp_disc, reg, inf_dv,
         inf_spread, inf_vol, inf_maxvol, skip_pair, fb, rgw, vta, ivt,
         r20g, r5g, rgiqr, rgskew,
-        fb_alloc, conv, alloc_pair, sup,
+        corr_window, corr_max,
+        fb_alloc, conv, alloc_pair, min_secondary_alloc, sup,
     ) in product(
-        leverage_grid, min_score_grid, hold_through_grid, top_n_grid, minp_grid,
+        leverage_grid, min_score_grid, hold_through_grid, top_n_grid,
+        shortn_grid, max_short_score_grid, short_alloc_scale_grid, minp_grid,
         opp_watch_grid, opp_discount_grid, fee_regimes, inf_grid, spread_grid,
         vol_grid, maxvol_grid, skip_pairs, fb_grid, rgw_grid, vta_grid, ivt_grid,
-        r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid, fb_alloc_grid, conv_grid,
-        alloc_pairs, sup_grid,
+        r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid,
+        corr_window_grid, corr_max_grid, fb_alloc_grid, conv_grid,
+        alloc_pairs, msa_grid, sup_grid,
     ):
         alloc_mode, alloc_temp = alloc_pair
         sp, sseed = skip_pair
@@ -1487,6 +1599,9 @@ def run_sweep(
             min_score=ms,
             hold_through=ht,
             top_n=tn,
+            short_n=shortn,
+            max_short_score=max_short_score,
+            short_allocation_scale=short_alloc_scale,
             min_picks=minp,
             opportunistic_watch_n=opp_watch,
             opportunistic_entry_discount_bps=opp_disc,
@@ -1508,6 +1623,9 @@ def run_sweep(
             min_ret_5d_rank_pct=r5g,
             regime_cs_iqr_max=rgiqr,
             regime_cs_skew_min=rgskew,
+            corr_window_days=corr_window,
+            corr_min_periods=int(corr_min_periods),
+            corr_max_signed=corr_max,
             no_picks_fallback_symbol=fb_sym if fb_alloc != 0.0 else "",
             no_picks_fallback_alloc_scale=fb_alloc,
             conviction_scaled_alloc=bool(conv),
@@ -1515,16 +1633,19 @@ def run_sweep(
             conviction_alloc_high=conviction_alloc_high,
             allocation_mode=alloc_mode,
             allocation_temp=alloc_temp,
+            min_secondary_allocation=min_secondary_alloc,
         )
         resumed_cell = resume_by_key.get(cell_key)
         if resumed_cell is not None:
             resumed_cell.ensemble_needs_ranks = bool(needs_ranks)
             resumed_cell.ensemble_needs_dispersion = bool(needs_disp)
             logger.info(
-                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d "
+                "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d sn=%d sms=%.2f sas=%.2f minp=%d "
                 "opp=%d/%.1fbps up=%.2f reg=%s "
                 "alloc=%s/%.2f resumed from checkpoint",
-                i, total, lev, ms, ht, tn, minp, opp_watch, opp_disc, sup, reg,
+                i, total, lev, ms, ht, tn, shortn, max_short_score,
+                short_alloc_scale, minp,
+                opp_watch, opp_disc, sup, reg,
                 alloc_mode, alloc_temp,
             )
             cells.append(resumed_cell)
@@ -1534,7 +1655,9 @@ def run_sweep(
         cell = _run_cell(
             oos_df=oos_df, scores=cell_scores, windows=windows,
             leverage=lev, min_score=ms, hold_through=ht,
-            top_n=tn, min_picks=minp,
+            top_n=tn, short_n=shortn, max_short_score=max_short_score,
+            short_allocation_scale=short_alloc_scale,
+            min_picks=minp,
             opportunistic_watch_n=opp_watch,
             opportunistic_entry_discount_bps=opp_disc,
             score_uncertainty_penalty=sup,
@@ -1555,6 +1678,9 @@ def run_sweep(
             min_ret_5d_rank_pct=r5g,
             regime_cs_iqr_max=rgiqr,
             regime_cs_skew_min=rgskew,
+            corr_window_days=corr_window,
+            corr_min_periods=int(corr_min_periods),
+            corr_max_signed=corr_max,
             no_picks_fallback_symbol=fb_sym if fb_alloc != 0.0 else "",
             no_picks_fallback_alloc_scale=fb_alloc,
             conviction_scaled_alloc=bool(conv),
@@ -1562,6 +1688,7 @@ def run_sweep(
             conviction_alloc_high=conviction_alloc_high,
             allocation_mode=alloc_mode,
             allocation_temp=alloc_temp,
+            min_secondary_allocation=min_secondary_alloc,
             fail_fast_max_dd_pct=float(fail_fast_max_dd_pct),
             fail_fast_max_intraday_dd_pct=float(fail_fast_max_intraday_dd_pct),
             fail_fast_neg_windows=int(fail_fast_neg_windows),
@@ -1570,7 +1697,7 @@ def run_sweep(
         cell.ensemble_needs_ranks = bool(needs_ranks)
         cell.ensemble_needs_dispersion = bool(needs_disp)
         logger.info(
-            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d minp=%d "
+            "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d sn=%d sms=%.2f sas=%.2f minp=%d "
             "opp=%d/%.1fbps up=%.2f reg=%s "
             "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
             "spread<=%.1f "
@@ -1578,7 +1705,9 @@ def run_sweep(
             "rgiqr=%.3f rgskew=%+.2f "
             "fb_sym=%s fb_alloc=%.2f conv=%s alloc=%s/%.2f "
             "med=%+.2f%% p10=%+.2f%% neg=%d/%d%s",
-            i, total, lev, ms, ht, tn, minp, opp_watch, opp_disc, sup, reg,
+            i, total, lev, ms, ht, tn, shortn, max_short_score,
+            short_alloc_scale, minp,
+            opp_watch, opp_disc, sup, reg,
             inf_dv, inf_vol, inf_maxvol, sp, sseed,
             cell.fill_buffer_bps,
             inf_spread,
@@ -1601,6 +1730,9 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
         {
             "leverage": c.leverage, "min_score": c.min_score,
             "hold_through": c.hold_through, "top_n": c.top_n,
+            "short_n": c.short_n,
+            "max_short_score": c.max_short_score,
+            "short_allocation_scale": c.short_allocation_scale,
             "min_picks": c.min_picks,
             "opportunistic_watch_n": c.opportunistic_watch_n,
             "opportunistic_entry_discount_bps": c.opportunistic_entry_discount_bps,
@@ -1650,6 +1782,9 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "min_ret_5d_rank_pct":   c.min_ret_5d_rank_pct,
             "regime_cs_iqr_max":     c.regime_cs_iqr_max,
             "regime_cs_skew_min":    c.regime_cs_skew_min,
+            "corr_window_days":       c.corr_window_days,
+            "corr_min_periods":       c.corr_min_periods,
+            "corr_max_signed":        c.corr_max_signed,
             "no_picks_fallback_symbol":     c.no_picks_fallback_symbol,
             "no_picks_fallback_alloc_scale": c.no_picks_fallback_alloc_scale,
             "conviction_scaled_alloc":      c.conviction_scaled_alloc,
@@ -1657,6 +1792,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "conviction_alloc_high":        c.conviction_alloc_high,
             "allocation_mode":              c.allocation_mode,
             "allocation_temp":              c.allocation_temp,
+            "min_secondary_allocation":     c.min_secondary_allocation,
             "expected_n_windows":           c.expected_n_windows,
             "ensemble_needs_ranks":         c.ensemble_needs_ranks,
             "ensemble_needs_dispersion":    c.ensemble_needs_dispersion,
@@ -1984,6 +2120,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--leverage-grid", type=str, default="2.0")
     p.add_argument("--min-score-grid", type=str, default="0.0")
     p.add_argument("--top-n-grid", type=str, default="1")
+    p.add_argument("--short-n-grid", type=str, default="",
+                   help="Optional bottom-ranked short slots per day. Empty "
+                        "or 0 preserves long-only behavior.")
+    p.add_argument("--max-short-score-grid", type=str, default="",
+                   help="Maximum score eligible for short candidates. "
+                        "Example: 0.45 shorts only low-upside names; 1.0 "
+                        "always shorts the weakest names when short_n>0.")
+    p.add_argument("--short-allocation-scale-grid", type=str, default="",
+                   help="Relative allocation weight for short picks. 0.5 "
+                        "means one short gets half the capital weight of one "
+                        "long under equal allocation.")
     p.add_argument("--min-picks-grid", type=str, default="",
                    help="Aggressive packing floor grid. Comma-separated "
                         "integers; values greater than top_n are rejected. "
@@ -2108,6 +2255,19 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "universe. Very negative disables (defaults to -1e9). "
                         "Positive values keep only right-skew days (few "
                         "winners dominate the panel).")
+    p.add_argument("--corr-window-days-grid", type=str, default="",
+                   help="Correlation-aware packing windows in trading days. "
+                        "0 or empty disables. Positive values compute a "
+                        "leak-free trailing pairwise return correlation matrix "
+                        "available at the open and skip redundant picks.")
+    p.add_argument("--corr-min-periods", type=int, default=20,
+                   help="Minimum overlapping return observations for "
+                        "--corr-window-days-grid. Default 20.")
+    p.add_argument("--corr-max-signed-grid", type=str, default="",
+                   help="Maximum allowed signed correlation to an already "
+                        "selected same-day pick. 1.0 disables. Example 0.6 "
+                        "blocks long/long highly positive pairs and long/short "
+                        "highly negative pairs that can lose together.")
     p.add_argument("--no-picks-fallback", type=str, default="",
                    help="Symbol to buy on days where no scored candidate "
                         "clears min_score (or conviction-scaling sizes to "
@@ -2137,15 +2297,22 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "Default 0.85.")
     p.add_argument("--allocation-mode-grid", type=str, default="",
                    help="Comma-separated allocation weighting modes for "
-                        "top_n>1: equal, score_norm, softmax. Empty = "
+                        "top_n>1: equal, score_norm, softmax, worksteal. Empty = "
                         "equal only. This changes sizing across selected "
-                        "pairs without changing the pick set.")
+                        "pairs without changing the pick set. worksteal "
+                        "allocates 75%% of gross exposure to the first fill "
+                        "and splits 25%% across later fills.")
     p.add_argument("--allocation-temp-grid", type=str, default="",
                    help="Comma-separated softmax temperatures for "
                         "--allocation-mode-grid softmax cells. Lower is "
                         "more concentrated. Ignored for equal/score_norm "
                         "because those modes are temperature-invariant. "
                         "Empty = 1.0.")
+    p.add_argument("--min-secondary-allocation-grid", type=str, default="",
+                   help="Comma-separated minimum non-main allocation floors. "
+                        "0 disables. 0.20 caps the largest filled position at "
+                        "80%% weight so top-2/top-3 packing keeps at least "
+                        "20%% gross exposure outside the main pick.")
     p.add_argument("--score-uncertainty-penalty-grid", type=str, default="",
                    help="Comma-separated penalties for uncertainty-adjusted "
                         "sorting: adjusted_score = ensemble_mean - penalty "
@@ -2185,8 +2352,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--require-production-target", action="store_true",
                    help="Exit nonzero after writing output if no friction-robust "
                         "strategy clears the project production target "
-                        f"(median>={PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT:g}% "
-                        f"and dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}% on the "
+                        f"(median>={PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT:g}%% "
+                        f"and dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}%% on the "
                         "worst fee/fill cell). Default research mode still "
                         "exits 0 even when all cells fail.")
     p.add_argument("--invert-scores", action="store_true",
@@ -2338,6 +2505,18 @@ def main(argv=None) -> int:
         min_score_grid=_parse_float_list(args.min_score_grid),
         hold_through_grid=ht_grid,
         top_n_grid=_parse_int_list(args.top_n_grid),
+        short_n_grid=(
+            _parse_int_list(args.short_n_grid)
+            if args.short_n_grid else None
+        ),
+        max_short_score_grid=(
+            _parse_float_list(args.max_short_score_grid)
+            if args.max_short_score_grid else None
+        ),
+        short_allocation_scale_grid=(
+            _parse_float_list(args.short_allocation_scale_grid)
+            if args.short_allocation_scale_grid else None
+        ),
         fee_regimes=fee_regime_names,
         min_picks_grid=(
             _parse_int_list(args.min_picks_grid)
@@ -2411,6 +2590,15 @@ def main(argv=None) -> int:
             _parse_float_list(args.regime_cs_skew_min_grid)
             if args.regime_cs_skew_min_grid else None
         ),
+        corr_window_days_grid=(
+            _parse_int_list(args.corr_window_days_grid)
+            if args.corr_window_days_grid else None
+        ),
+        corr_min_periods=int(args.corr_min_periods),
+        corr_max_signed_grid=(
+            _parse_float_list(args.corr_max_signed_grid)
+            if args.corr_max_signed_grid else None
+        ),
         no_picks_fallback_symbol=str(args.no_picks_fallback or "").strip().upper(),
         no_picks_fallback_alloc_grid=(
             _parse_float_list(args.no_picks_fallback_alloc_grid)
@@ -2429,6 +2617,10 @@ def main(argv=None) -> int:
         allocation_temp_grid=(
             _parse_float_list(args.allocation_temp_grid)
             if args.allocation_temp_grid else None
+        ),
+        min_secondary_allocation_grid=(
+            _parse_float_list(args.min_secondary_allocation_grid)
+            if args.min_secondary_allocation_grid else None
         ),
         score_uncertainty_penalty_grid=(
             _parse_float_list(args.score_uncertainty_penalty_grid)
@@ -2493,6 +2685,7 @@ def main(argv=None) -> int:
         len({r["allocation_mode"] for r in rows}) > 1
         or len({r["allocation_temp"] for r in rows}) > 1
     )
+    secondary_grid_active = len({r.get("min_secondary_allocation", 0.0) for r in rows}) > 1
     uncertainty_grid_active = len({r.get("score_uncertainty_penalty", 0.0) for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} {'reg':>10} "
            f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
@@ -2502,6 +2695,8 @@ def main(argv=None) -> int:
         hdr += f" {'ff':>2}"
     if alloc_grid_active:
         hdr += f" {'alloc':>10} {'tmp':>5}"
+    if secondary_grid_active:
+        hdr += f" {'sec%':>5}"
     if uncertainty_grid_active:
         hdr += f" {'uPen':>5}"
     if inf_grid_active:
@@ -2516,6 +2711,7 @@ def main(argv=None) -> int:
     print("-" * (115
                  + (3 if ff_active else 0)
                  + (17 if alloc_grid_active else 0)
+                 + (6 if secondary_grid_active else 0)
                  + (6 if uncertainty_grid_active else 0)
                  + (9 if inf_grid_active else 0)
                  + (8 if vol_grid_active else 0)
@@ -2540,6 +2736,8 @@ def main(argv=None) -> int:
             line += f" {'Y' if r['fail_fast_triggered'] else 'N':>2}"
         if alloc_grid_active:
             line += f" {r['allocation_mode']:>10} {r['allocation_temp']:5.2f}"
+        if secondary_grid_active:
+            line += f" {float(r.get('min_secondary_allocation', 0.0)) * 100.0:5.1f}"
         if uncertainty_grid_active:
             line += f" {float(r.get('score_uncertainty_penalty', 0.0)):5.2f}"
         if inf_grid_active:
