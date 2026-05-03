@@ -211,7 +211,7 @@ class ProfitTracker:
                 exit_cost = actual_price * (1 + self.commission + self.slippage)
                 
                 # Calculate return (reversed for short)
-                trade_return = (entry_credit - exit_cost) / entry_credit
+                trade_return = (entry_credit - exit_cost) / current_price
                 
                 # Apply stop loss and take profit
                 if trade_return < -self.stop_loss:
