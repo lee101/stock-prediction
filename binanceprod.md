@@ -1,8 +1,45 @@
 # Binance Production Systems
 
+## Hourly XGB Margin-Pack Paused After Fresh Revalidation (2026-05-04 NZ / 2026-05-04 UTC)
+
+No new Binance XGB entries are currently running.
+
+Operational state:
+
+- `binance-hourly-xgb-margin-pack` is `STOPPED`.
+- Binance live process audit reports no live writer processes.
+- Existing actionable margin positions are still covered:
+  `positions=6`, `covered=6`, `missing=0`, `partial=0`.
+- The FET/ONDO entry orders from the prior live cycle were canceled at `0`
+  fill before further research sweeps.
+
+Fresh current-code revalidation:
+
+- The deployed config on the current live non-stable universe replays at only
+  `+5.80%/mo`, `+25.17%` total, `26.85%` max DD, Sortino `1.96`, `116` exits.
+  This invalidates the old deploy assumption for the live universe.
+- Broad short-only sweep best sampled row:
+  `+26.06%/mo`, `+151.54%` total, `37.68%` max DD.
+- Best smoother broad row:
+  `+24.63%/mo`, `+140.35%` total, `21.48%` max DD, Sortino `3.65`.
+- Exact leverage replay of that smoother row:
+  `2.4x` -> `22.54%/mo`, `19.58%` DD;
+  `2.8x` -> `24.63%/mo`, `21.48%` DD;
+  `3.4x` -> `27.77%/mo`, `25.92%` DD.
+- Stricter drawdown scaling did not fix the frontier:
+  `3.4x` dropped to `15.51%/mo` while DD stayed `25.92%`.
+- `side_mode=both` was worse in sampled testing; the current XGB signal remains
+  a one-sided short edge, not a robust hedged long/short book.
+
+Decision: hold paused. The exact `3.4x` replay crosses the monthly PnL target,
+but drawdown remains above the desired cap and the strategy is still short-only.
+Do not restart or promote this runner until a current-code candidate clears the
+return gate with materially better drawdown behavior.
+
 ## Hourly XGB Margin-Pack Live Rollout (2026-05-04 NZ / 2026-05-04 07:20 UTC)
 
-Live deployment is active under the single Binance writer surface:
+Historical rollout note, now superseded by the paused revalidation section
+above. At the time, the live deployment used the single Binance writer surface:
 
 - Supervisor program: `binance-hourly-xgb-margin-pack`
 - Launch: `deployments/binance-hourly-xgb-margin-pack/launch.sh`

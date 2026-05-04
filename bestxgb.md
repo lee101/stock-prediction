@@ -2,9 +2,47 @@
 
 Last updated: 2026-05-04
 
-## Current Frontier
+## 2026-05-04 Revalidation Update
 
-The current deployed frontier is the aggressive correlation-packed variant:
+Fresh current-code replays on the live non-stable Binance universe did **not**
+reproduce the earlier deployed `27.77%/mo` artifact. The live runner was paused
+and the unfilled FET/ONDO entry orders were canceled at `0` fill while existing
+margin exits stayed covered.
+
+Current-code findings:
+
+- Deployed config exact live-universe replay:
+  `+5.80%/mo`, `+25.17%` total, `26.85%` max DD, Sortino `1.96`, `116` exits.
+- Best broad short-only live-universe row sampled:
+  `+26.06%/mo`, `+151.54%` total, `37.68%` max DD, `244` exits.
+- Best row with DD near the desired cap:
+  `+24.63%/mo`, `+140.35%` total, `21.48%` max DD, Sortino `3.65`,
+  `212` exits.
+- Exact leverage replay of that row reached the monthly target only at `3.4x`:
+  `+27.77%/mo`, `+165.45%` total, `25.92%` max DD, Sortino `3.66`,
+  `212` exits.
+- Stricter drawdown scaling preserved the drawdown level but cut return badly:
+  `3.4x` fell to `+15.51%/mo` with the same `25.92%` max DD.
+- A sampled `side_mode=both` pass was refuted early: best sampled row was still
+  negative (`-3.09%/mo`, `27.56%` DD). The current signal is not a balanced
+  long/short edge.
+
+Decision: do not promote a new Binance XGB config yet. The `3.4x` replay hits
+the monthly target, but it is still short-only and above the desired drawdown
+cap. Production remains paused until a current-code row clears the return gate
+without relying on excessive drawdown.
+
+Artifacts:
+
+- `analysis/binance_hourly_prod_live_universe_fine_sweep_20260504.csv`
+- `analysis/binance_hourly_prod_live_universe_both_sweep_20260504.csv`
+- `analysis/binance_hourly_prod_live_universe_focused_risk_sweep_20260504.csv`
+- `analysis/binance_hourly_prod_live_universe_row21_leverage_replay_20260504.csv`
+- `analysis/binance_hourly_prod_live_universe_row21_strict_dd_replay_20260504.csv`
+
+## Historical Frontier Superseded By Revalidation
+
+The previously deployed frontier was the aggressive correlation-packed variant:
 
 - Label: `h12_short_corr168_08_aggr2777_dd1998_20260504`
 - Eval window: 2026-01-04 to 2026-05-04, about 120 days
