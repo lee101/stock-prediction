@@ -1,6 +1,7 @@
 #!/bin/bash
 # XGBoost daily open-to-close LIVE trader — 5-seed alltrain ensemble.
-# FULL-STACK DEPLOY (2026-04-19): hold_through + min_score 0.85 + lev 2.0.
+# FULL-STACK DEPLOY (2026-05-04): stock-only hold_through + min_score 0.85
+# + lev 2.0. Forced low-confidence packing was tested and rejected.
 #
 # Validated by:
 #   - CPU bonferroni 5-seed 2020-train (OOS 2025-01→2026-04-10): +39-42%/mo
@@ -55,6 +56,14 @@ export PYTHONPATH=/nvme0n1-disk/code/stock-prediction
 export ALP_PAPER=0
 export ALLOW_ALPACA_LIVE_TRADING=1
 
+# This process is kept under Supervisor for history, but it must not hold the
+# single live Alpaca writer unless it is explicitly promoted again. The current
+# stock production path is daily-rl-trader through trading-server.
+if [ "${XGB_DAILY_TRADER_ENABLE:-0}" != "1" ]; then
+  echo "xgb-daily-trader-live disabled: set XGB_DAILY_TRADER_ENABLE=1 to run"
+  exec sleep infinity
+fi
+
 MODEL_DIR="analysis/xgbnew_daily/alltrain_ensemble_gpu"
 MODEL_PATHS="${MODEL_DIR}/alltrain_seed0.pkl,${MODEL_DIR}/alltrain_seed7.pkl,${MODEL_DIR}/alltrain_seed42.pkl,${MODEL_DIR}/alltrain_seed73.pkl,${MODEL_DIR}/alltrain_seed197.pkl"
 
@@ -68,9 +77,6 @@ exec python -u -m xgbnew.live_trader \
   --min-dollar-vol 50000000 \
   --min-vol-20d 0.12 \
   --trade-log-dir analysis/xgb_live_trade_log \
-  --crypto-weekend \
-  --crypto-poll-seconds 300 \
-  --crypto-max-gross 0.5 \
   --eod-deleverage \
   --eod-max-gross-leverage 2.0 \
   --eod-deleverage-window-minutes 60 \

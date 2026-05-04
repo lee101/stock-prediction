@@ -141,3 +141,58 @@ near 30% and writer isolation had not yet been cleaned up.
   simulator PnL.
 - Explore fast retrain/test-time adaptation over 1-2 day windows as part of the
   simulated algorithm, not as offline leakage.
+
+## 2026-05-04 Local Reproduction Check
+
+After pulling `origin/main`, the local checkout could not reproduce the
+documented `+27.77%/mo` frontier row.
+
+Fixes made during the check:
+
+- `scripts/sweep_binance_hourly_portfolio_pack.py` now tolerates simulator
+  config skew by filtering kwargs against the installed `PortfolioConfig`
+  signature.
+- `unified_hourly_experiment/marketsimulator/portfolio_simulator.py` now
+  includes the Python-path controls the sweep expected:
+  - `entry_allocator_min_second_position_fraction`
+  - drawdown-based entry budget scaling
+  - direct trailing signed-correlation entry gating
+  - optional diversify-bucket gating
+- `scripts/eval_hourly_level_optimizer.py` now works when run directly from the
+  shell; it inserts the repo root before importing `xgbnew.artifacts`.
+- The 48-bar hourly level optimizer is now side-aware (`long`, `short`, or
+  train-window choose-best), but it remains a weak standalone edge.
+
+Local artifacts:
+
+- `analysis/binance_hourly_replicate_frontier_20260504.csv`
+- `analysis/binance_hourly_replicate_frontier_full_20260504.csv`
+- `analysis/binance_hourly_replicate_live_universe_20260504.csv`
+- `analysis/binance_hourly_replicate_nocontrols_20260504.csv`
+- `analysis/binance_hourly_local_rescue_sweep_20260504.csv`
+- `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_074917.json`
+
+Local results:
+
+- Documented frontier config with restored controls and fail-fast enabled:
+  `+4.79%/mo`, `+13.04%` total, `13.61%` DD.
+- Same config with fail-fast disabled:
+  `+4.59%/mo`, `+12.47%` total, `15.25%` DD.
+- Same shape on the live-tradable universe:
+  `+2.41%/mo`, `+6.44%` total, `23.26%` DD.
+- A 16-config local rescue sweep over risk penalty, CVaR, vol gate, and leverage
+  topped out at `+5.15%/mo`, `+14.08%` total, `18.97%` DD.
+- Side-aware 48-bar short-only level fitting on BTCUSDT/ETHUSDT/SOLUSDT over the
+  same 120-day window was negative: aggregate mean window return `-0.30%`, p10
+  `-1.76%`.
+
+Conclusion:
+
+- The local data/checkpoint/simulator stack does not currently reproduce the
+  frontier row, so this should be treated as an unresolved reproduction gap
+  rather than a confirmed deployable improvement.
+- The most useful next debug step is to compare the missing upstream artifact
+  (`analysis/binance_hourly_aggressive_sweep_20260504.csv/json`) against this
+  local row: symbol universe, model predictions, selected candidates, and trade
+  trace. Without that artifact, broad hyperparameter sweeps around the local
+  signal are unlikely to jump from `~5%/mo` to `27%/mo`.

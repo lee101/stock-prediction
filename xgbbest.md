@@ -372,6 +372,76 @@ Working conclusion:
   chronological intraday worksteal sim, so the algorithm can reduce gross
   exposure when the first filled leg is already showing regime stress.
 
+## 2026-05-04 - Hourly 48-bar test-time level optimizer
+
+Motivation:
+
+- The likely missing edge is combining daily selection with hourly execution:
+  fit explicit limit entry/take-profit levels on a very short recent window,
+  then deploy them for only the next one or two days before retraining.
+- This mirrors the older `trade_stock_e2e_gemini_hourly.py` SciPy maxdiff
+  idea, but makes the level replay vectorized over a torch grid so it can be
+  run inside a larger market simulation loop.
+
+Implemented:
+
+- Added `src/tradinglib/hourly_level_optimizer.py`.
+- It optimizes long-only entry bps and take-profit bps on the trailing
+  `lookback_bars` window, then walk-forward replays the selected levels on the
+  next `forward_bars` window.
+- Fill realism: explicit limit entries require low penetration through the
+  entry by `fill_buffer_bps`; take-profit exits require high penetration
+  through the exit by the same buffer; fees apply on both sides.
+- Added optional deployment gates using train-window return, train-window
+  win-rate, and minimum trades so the test-time learner can choose not to
+  deploy for the next 48 bars.
+- Added optional fixed stop-loss bps. A stop exit prevents same-bar re-entry.
+- Added `scripts/eval_hourly_level_optimizer.py` for reproducible hourly CSV
+  sweeps with date filters.
+- Tests: `tests/test_hourly_level_optimizer.py`.
+
+Artifacts:
+
+- Ungated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_015443.json`
+- Gated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_015737.json`
+  and `..._015843.json`
+- Strict gated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_015943.json`
+- Stop-loss gated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_021236.json`
+- Recent validation slice:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_021336.json`
+- NVDA recent threshold probes:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_021408.json`,
+  `..._021431.json`, `..._021453.json`
+
+Results:
+
+- Ungated 48-bar level fitting overtraded and lost after realistic 10 bps fees
+  and 5 bps fills: AAPL/MSFT/SPY/QQQ were negative; NVDA had positive median
+  active windows but still poor total compounding.
+- Train-window deployment gates reduced losses but mostly made the strategy
+  flat, which means the recent fitted maxdiff profile alone is not a stable
+  enough edge.
+- Adding a 100 bps stop-loss helped materially. Full-history stopped/gated
+  NVDA reached `+122.82%` total over the hourly file, but broad symbols stayed
+  weak or negative.
+- On the recent 2025-07-01 through 2026-04-30 validation slice, the same
+  stopped/gated family was not strong enough: NVDA was only `+10%` to `+13%`
+  total across the 10-month slice depending on gate, and the five-symbol
+  aggregate stayed roughly flat/slightly negative.
+
+Working conclusion:
+
+- The torch 48-bar retrain/replay primitive is useful and should be kept.
+- As a standalone level learner it is not a deployable edge for stocks.
+- The more promising next step is to use this as an execution layer under a
+  stronger daily selector: only run the hourly level retrainer for names/days
+  already passing XGB/Chronos/correlation filters, then let the hourly learner
+  choose the actual explicit order levels and whether to skip.
+
 ## 2026-05-03 - Minimum secondary allocation floor
 
 Motivation:
@@ -491,3 +561,39 @@ Conclusion:
   one comparable scale.
 - The current worksteal XGB family is still rejected; the metric now makes
   that rejection automatic and visible in the sweep table.
+
+## 2026-05-04 - Alpaca stock production check
+
+Problem found:
+
+- The live XGB process was still launched with `--crypto-weekend`, which
+  explains the BTC exposure in an otherwise stock-named deployment.
+- It also held the single Alpaca live writer lock while carrying no stock
+  positions, so `trading-server` could not start and `daily-rl-trader` failed
+  at `claim_trading_server_writer`.
+- Recent XGB live logs showed stock `no_picks`: top live scores were only about
+  `0.53` to `0.70` under `--min-score 0.85`.
+
+Rejected production experiments:
+
+- Forced XGB stock packing with `--min-picks 1` did make the dry-run pick one
+  stock on 2026-05-04 (`LCID`, score `0.5993`) instead of sitting out.
+- The same setting failed the 120-day stock stress sweep:
+  `analysis/xgbnew_stock_prod_forced_minpicks_20260504/sweep_20260504_094613.json`
+  reported `-2.94%/mo` median and `79.22%` worst drawdown.
+- SPY no-picks fallback was also rejected:
+  `analysis/xgbnew_stock_prod_fallback_20260504/sweep_20260504_095402.json`
+  was negative across `0.25x`, `0.5x`, and `1.0x` fallback allocation scales.
+
+Production action:
+
+- Removed the crypto weekend path from `deployments/xgb-daily-trader-live/launch.sh`.
+- Left forced low-confidence XGB packing disabled; it is now measurable through
+  `xgbnew.eval_pretrained --min-picks`, but not deployed.
+- Made the XGB Supervisor launch inert by default unless
+  `XGB_DAILY_TRADER_ENABLE=1` is explicitly set, so it does not hold the live
+  writer lock while rejected.
+- Restored the stock production path manually for this session:
+  `trading-server` owns the Alpaca live writer on `127.0.0.1:8050`, and
+  `daily-rl-trader` is running live against 32 Alpaca stock symbols, waiting
+  for the next market window.

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import itertools
 import json
 import math
@@ -72,6 +73,11 @@ CS_FEATURE_BASE = [
 ]
 
 HOURS_PER_YEAR = 24.0 * 365.25
+
+
+def _build_portfolio_config(**kwargs: Any) -> PortfolioConfig:
+    accepted = set(inspect.signature(PortfolioConfig).parameters)
+    return PortfolioConfig(**{key: value for key, value in kwargs.items() if key in accepted})
 
 
 @dataclass(frozen=True)
@@ -785,7 +791,7 @@ def evaluate_pack(
     )
     symbols = sorted(scored["symbol"].astype(str).str.upper().unique())
     side_mode = _normalize_side_mode(str(args.side_mode))
-    sim_cfg = PortfolioConfig(
+    sim_cfg = _build_portfolio_config(
         initial_cash=float(args.initial_cash),
         max_positions=int(cfg.max_positions),
         min_edge=float(cfg.edge_threshold),

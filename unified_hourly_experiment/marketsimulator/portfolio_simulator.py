@@ -80,6 +80,18 @@ class PortfolioConfig:
     entry_allocator_edge_power: float = 2.0
     entry_allocator_max_single_position_fraction: float = 0.6
     entry_allocator_reserve_fraction: float = 0.1
+    entry_allocator_min_active_positions: int = 0
+    entry_allocator_min_second_position_fraction: float = 0.0
+    entry_drawdown_pause_threshold: float = 0.0
+    entry_drawdown_resume_threshold: float = 0.0
+    entry_drawdown_cooldown_hours: int = 0
+    entry_drawdown_scale_start: float = 0.0
+    entry_drawdown_scale_full: float = 0.0
+    entry_drawdown_scale_floor: float = 1.0
+    entry_diversify_bucket_column: str = ""
+    entry_corr_window_bars: int = 0
+    entry_corr_min_periods: int = 24
+    entry_corr_max_signed: float = 1.0
     max_pending_entries: Optional[int] = None
     apply_leverage_to_crypto: bool = False
     allow_crypto_shorts: bool = False
@@ -218,6 +230,47 @@ def _get_numeric_column(frame: pd.DataFrame, name: str, *, default: float) -> np
     if name in frame.columns:
         return frame[name].to_numpy(dtype=np.float64, copy=False)
     return np.full(len(frame), default, dtype=np.float64)
+
+
+def _enforce_min_second_share(values: list[float], min_fraction: float) -> list[float]:
+    if len(values) < 2:
+        return values
+    total = sum(max(0.0, float(v)) for v in values)
+    if total <= 0.0:
+        return values
+    floor = min(max(float(min_fraction), 0.0), 0.5) * total
+    ordered = sorted(range(len(values)), key=lambda idx: values[idx], reverse=True)
+    first, second = ordered[0], ordered[1]
+    if values[second] >= floor:
+        return values
+    needed = floor - values[second]
+    take = min(needed, max(0.0, values[first] - floor))
+    if take <= 0.0:
+        return values
+    adjusted = list(values)
+    adjusted[first] -= take
+    adjusted[second] += take
+    return adjusted
+
+
+def _drawdown_entry_scale(
+    *,
+    equity: float,
+    peak_equity: float,
+    start: float,
+    full: float,
+    floor: float,
+) -> float:
+    if start <= 0.0 or full <= start or peak_equity <= 0.0:
+        return 1.0
+    drawdown = max(0.0, 1.0 - float(equity) / float(peak_equity))
+    if drawdown <= start:
+        return 1.0
+    bounded_floor = min(max(float(floor), 0.0), 1.0)
+    if drawdown >= full:
+        return bounded_floor
+    progress = (drawdown - start) / max(full - start, 1e-12)
+    return 1.0 - progress * (1.0 - bounded_floor)
 
 
 def _first_drawdown_profit_early_exit_index(
@@ -548,6 +601,7 @@ def run_portfolio_simulation(
     equity_values: List[Tuple[pd.Timestamp, float]] = []
     trades: List[UnifiedTradeRecord] = []
     force_exit_hours = _normalized_force_exit_hours(cfg.force_exit_hours_utc)
+    peak_equity = float(cfg.initial_cash)
 
     def _mtm():
         total = 0
@@ -578,6 +632,48 @@ def run_portfolio_simulation(
 
     groups = merged.groupby("timestamp", sort=True)
     total_steps = int(merged["timestamp"].nunique())
+    corr_returns: pd.DataFrame | None = None
+    corr_ts_pos: dict[pd.Timestamp, int] = {}
+    if int(cfg.entry_corr_window_bars) > 0 and float(cfg.entry_corr_max_signed) < 1.0:
+        close_wide = (
+            merged.pivot_table(index="timestamp", columns="symbol", values="close", aggfunc="last")
+            .sort_index()
+            .astype(float)
+        )
+        corr_returns = close_wide.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+        corr_ts_pos = {pd.Timestamp(ts): idx for idx, ts in enumerate(corr_returns.index)}
+
+    def _candidate_direction_sign(candidate: dict[str, Any]) -> float:
+        return -1.0 if str(candidate.get("direction", "long")) == "short" else 1.0
+
+    def _signed_corr_passes(candidate: dict[str, Any], selected: list[dict[str, Any]], ts: pd.Timestamp) -> bool:
+        if corr_returns is None or not selected:
+            return True
+        max_signed = float(cfg.entry_corr_max_signed)
+        pos = corr_ts_pos.get(pd.Timestamp(ts))
+        if pos is None or pos <= 1:
+            return True
+        window = corr_returns.iloc[max(0, pos - int(cfg.entry_corr_window_bars)) : pos]
+        if len(window) < int(cfg.entry_corr_min_periods):
+            return True
+        sym = str(candidate["symbol"])
+        if sym not in window.columns:
+            return True
+        cand_sign = _candidate_direction_sign(candidate)
+        for other in selected:
+            other_sym = str(other["symbol"])
+            if other_sym not in window.columns:
+                continue
+            pair = window[[sym, other_sym]].dropna()
+            if len(pair) < int(cfg.entry_corr_min_periods):
+                continue
+            corr = float(pair.iloc[:, 0].corr(pair.iloc[:, 1]))
+            if not np.isfinite(corr):
+                continue
+            signed_corr = cand_sign * _candidate_direction_sign(other) * corr
+            if signed_corr > max_signed:
+                return False
+        return True
 
     def _append_equity_snapshot(ts: pd.Timestamp) -> bool:
         equity_values.append((ts, _equity()))
@@ -600,6 +696,7 @@ def run_portfolio_simulation(
             last_close[row.symbol] = float(row.close)
 
         equity_before = _equity()
+        peak_equity = max(peak_equity, equity_before)
 
         # Margin interest: charge hourly rate on borrowed amount
         if cfg.margin_annual_rate > 0:
@@ -893,19 +990,44 @@ def run_portfolio_simulation(
                 ),
                 "slot_budget": (equity_for_entries * symbol_leverage) / cfg.max_positions,
                 "fee_rate": fee,
+                "diversify_bucket": (
+                    getattr(row, str(cfg.entry_diversify_bucket_column))
+                    if str(cfg.entry_diversify_bucket_column) and hasattr(row, str(cfg.entry_diversify_bucket_column))
+                    else None
+                ),
             })
 
         if cfg.entry_selection_mode == "first_trigger":
             candidates.sort(key=lambda x: (x["required_move_frac"], -x["edge"]))
         else:
             candidates.sort(key=lambda x: x["edge"], reverse=True)
-        selected_candidates = candidates[:candidate_slots]
+        selected_candidates: list[dict[str, Any]] = []
+        selected_buckets: set[Any] = set()
+        for cand in candidates:
+            if len(selected_candidates) >= candidate_slots:
+                break
+            bucket = cand.get("diversify_bucket")
+            if str(cfg.entry_diversify_bucket_column) and bucket is not None:
+                if bucket in selected_buckets:
+                    continue
+            if not _signed_corr_passes(cand, selected_candidates, ts):
+                continue
+            selected_candidates.append(cand)
+            if str(cfg.entry_diversify_bucket_column) and bucket is not None:
+                selected_buckets.add(bucket)
         allocator_mode = normalize_entry_allocator_mode(cfg.entry_allocator_mode)
         ready_candidates: list[dict[str, Any]] = []
 
         if allocator_mode == "concentrated" and selected_candidates:
             reserve_fraction = min(max(float(cfg.entry_allocator_reserve_fraction), 0.0), 1.0)
-            deployable_budget = max(0.0, equity_for_entries) * (1.0 - reserve_fraction)
+            dd_scale = _drawdown_entry_scale(
+                equity=equity_for_entries,
+                peak_equity=peak_equity,
+                start=float(cfg.entry_drawdown_scale_start),
+                full=float(cfg.entry_drawdown_scale_full),
+                floor=float(cfg.entry_drawdown_scale_floor),
+            )
+            deployable_budget = max(0.0, equity_for_entries) * (1.0 - reserve_fraction) * dd_scale
             target_values = allocate_concentrated_entry_budget(
                 [
                     EntryAllocationCandidate(
@@ -920,6 +1042,10 @@ def run_portfolio_simulation(
                 deployable_budget=deployable_budget,
                 edge_power=float(cfg.entry_allocator_edge_power),
                 max_single_position_fraction=float(cfg.entry_allocator_max_single_position_fraction),
+            )
+            target_values = _enforce_min_second_share(
+                list(target_values),
+                float(cfg.entry_allocator_min_second_position_fraction),
             )
             for cand, target_value in zip(selected_candidates, target_values, strict=False):
                 fee = float(cand["fee_rate"])
