@@ -655,3 +655,46 @@ Decision:
   risk. The next useful work is either a deployable regime selector or a
   different model family that improves p10 and interval loss, not more leverage
   above the overnight cap.
+
+### Buying-power graceful fallback + heldout stress refine
+
+Live-code improvement:
+
+- `xgbnew/live_trader.py` now clips requested BUY notional to Alpaca
+  `buying_power`/`cash` before order quantities are computed.
+- This makes aggressive allocation settings degrade to the actually available
+  broker capacity instead of submitting an over-sized order and relying on
+  broker rejection.
+- BUY quantities are sized from the actual limit price and floored to four
+  decimals so rounding/min-size logic cannot push the submitted value above
+  budget.
+- Hold-through rotations allocate the clipped buy budget only across newly
+  added symbols; sell-only rotations no longer compute a buy budget.
+- The change does not introduce market orders; stock entries still submit
+  explicit-priced limit orders.
+
+Validation:
+
+- `.venv313/bin/python -m py_compile xgbnew/live_trader.py`
+- `.venv313/bin/pytest -q tests/test_xgbnew_live_trader_helpers.py`
+  (`69 passed`)
+
+Narrow heldout stress sweep:
+
+- Artifact:
+  `analysis/xgbnew_daily/top1_buyingpower_clip_refine_narrow_20260504/sweep_20260504_112910.json`
+- Models: `heldout2025h2_xgb`, trained only through `2025-06-30`.
+- OOS: `2025-07-01 -> 2026-04-17`.
+- Grid: top-1 hold-through, stress36x, 10 bps fill buffer,
+  `min_score in {0.55,0.60}`, `leverage in {1.5,1.75,2.0}`,
+  `inference_max_vol in {0,1.25,1.5}`, CS IQR/skew overlays.
+- Result: `0/108` cells survived fail-fast.
+- Best median cell: `2.0x`, `min_score=0.60`, `max_vol_20d=1.5`,
+  `regime_cs_skew_min=0.5`, median `+17.99%/mo`, p10 `-6.73%`,
+  drawdown `19.39%`, failed after `1/4` negative windows.
+- Best p10 cells only reached about `+0.20%` p10 and had median near
+  `+6.20%/mo`, also fail-fast.
+
+Decision: no deploy. The buying-power fallback is a production-safety
+improvement, but the strategy candidate still misses the 27% monthly target
+and fails the no-negative/tail-risk gate on honest heldout stress.

@@ -650,7 +650,7 @@ def test_buy_notional_by_symbol_uses_softmax_weights():
     assert notionals["AAA"] == pytest.approx(9525.741, rel=1e-5)
 
 
-def test_buy_notional_by_symbol_applies_inverse_vol_pick_scale():
+def test_buy_notional_by_symbol_caps_inverse_vol_pick_scale_to_total_budget():
     picks = pd.DataFrame([
         {"symbol": "LOWVOL", "score": 0.90, "vol_20d": 0.10},
         {"symbol": "HIGHVOL", "score": 0.80, "vol_20d": 0.40},
@@ -665,8 +665,29 @@ def test_buy_notional_by_symbol_applies_inverse_vol_pick_scale():
         inv_vol_cap=3.0,
     )
 
-    assert notionals["LOWVOL"] == pytest.approx(10_000.0)
-    assert notionals["HIGHVOL"] == pytest.approx(2_500.0)
+    assert sum(notionals.values()) == pytest.approx(10_000.0)
+    assert notionals["LOWVOL"] == pytest.approx(8_000.0)
+    assert notionals["HIGHVOL"] == pytest.approx(2_000.0)
+
+
+def test_buy_notional_by_symbol_keeps_sub_budget_inverse_vol_scale():
+    picks = pd.DataFrame([
+        {"symbol": "LOWVOL", "score": 0.90, "vol_20d": 0.40},
+        {"symbol": "HIGHVOL", "score": 0.80, "vol_20d": 0.80},
+    ])
+
+    notionals = live_trader._buy_notional_by_symbol(
+        picks,
+        total_notional=10_000,
+        allocation_mode="equal",
+        inv_vol_target_ann=0.20,
+        inv_vol_floor=0.05,
+        inv_vol_cap=3.0,
+    )
+
+    assert sum(notionals.values()) == pytest.approx(3_750.0)
+    assert notionals["LOWVOL"] == pytest.approx(2_500.0)
+    assert notionals["HIGHVOL"] == pytest.approx(1_250.0)
 
 
 def test_buy_notional_by_symbol_bad_vol_uses_identity_scale():
@@ -681,6 +702,56 @@ def test_buy_notional_by_symbol_bad_vol_uses_identity_scale():
     )
 
     assert notionals["MISSING"] == pytest.approx(10_000.0)
+
+
+def test_clip_total_buy_notional_to_buying_power_logs_clip():
+    tlog = _CapturingTlog()
+    account = SimpleNamespace(portfolio_value="100000", buying_power="75000")
+
+    clipped = live_trader._clip_total_buy_notional_to_buying_power(
+        225_000,
+        account,
+        tlog=tlog,
+        context="test",
+    )
+
+    assert clipped == pytest.approx(75_000.0)
+    assert tlog.events == [
+        (
+            "buy_notional_clipped",
+            {
+                "requested_notional": 225_000.0,
+                "available_buy_notional": 75_000.0,
+                "clipped_notional": 75_000.0,
+                "context": "test",
+            },
+        )
+    ]
+
+
+def test_clip_total_buy_notional_missing_buying_power_preserves_request():
+    account = SimpleNamespace(portfolio_value="100000")
+
+    clipped = live_trader._clip_total_buy_notional_to_buying_power(
+        225_000,
+        account,
+        tlog=_CapturingTlog(),
+    )
+
+    assert clipped == pytest.approx(225_000.0)
+
+
+def test_target_buy_qty_never_exceeds_notional_budget():
+    qty = live_trader._target_buy_qty(buy_notional=10.00999, price=1.0)
+
+    assert qty == pytest.approx(10.0099)
+    assert qty * 1.0 <= 10.00999
+
+
+def test_target_buy_qty_skips_when_min_fractional_qty_would_exceed_budget():
+    qty = live_trader._target_buy_qty(buy_notional=0.005, price=100.0)
+
+    assert qty == 0.0
 
 
 def test_execute_buys_uses_per_symbol_notional_map(monkeypatch):
@@ -711,9 +782,13 @@ def test_execute_buys_uses_per_symbol_notional_map(monkeypatch):
         notional_by_symbol={"AAA": 20_000.0, "BBB": 5_000.0},
     )
 
-    assert submitted == [("AAA", 200.0), ("BBB", 100.0)]
+    assert submitted == [("AAA", 199.7004), ("BBB", 49.9251)]
     submitted_events = [fields for event, fields in tlog.events if event == "buy_submitted"]
     assert [event["target_notional"] for event in submitted_events] == [20_000.0, 5_000.0]
+    assert [
+        event["qty"] * event["expected_price"] <= event["target_notional"]
+        for event in submitted_events
+    ] == [True, True]
 
 
 def test_conviction_allocation_scale_drops_zero_conviction_picks():
@@ -1056,6 +1131,175 @@ def test_run_session_scales_notional_by_conviction(monkeypatch):
 
     expected_scale = (0.70 - 0.55) / (0.85 - 0.55)
     assert captured == {"AAA": pytest.approx(100_000.0 * 2.0 * expected_scale)}
+
+
+def test_run_session_clips_aggressive_notional_to_buying_power(monkeypatch):
+    picks = pd.DataFrame([
+        {"symbol": "AAA", "score": 0.90, "last_close": 100.0, "spread_bps": 1.0},
+    ])
+    monkeypatch.setattr(live_trader, "_score_and_pick", lambda *a, **k: (picks, picks))
+    monkeypatch.setattr(live_trader, "_is_today_trading_day", lambda _client: (True, "open"))
+    monkeypatch.setattr(live_trader, "_wait_for_market_open", lambda: None)
+    monkeypatch.setattr(live_trader, "_wait_until", lambda *a, **k: None)
+    monkeypatch.setattr(
+        live_trader,
+        "_get_account",
+        lambda _client: SimpleNamespace(portfolio_value="100000", buying_power="75000"),
+    )
+    monkeypatch.setattr(live_trader, "_get_position_details", lambda _client: {})
+    monkeypatch.setattr(live_trader, "_execute_sells", lambda *a, **k: None)
+
+    captured: dict[str, float] = {}
+
+    def _capture_buys(client, picks, buy_notional, tlog, *, notional_by_symbol=None, **kwargs):
+        captured.update(notional_by_symbol or {})
+
+    monkeypatch.setattr(live_trader, "_execute_buys", _capture_buys)
+    tlog = _CapturingTlog()
+
+    args = SimpleNamespace(
+        live=True,
+        dry_run=False,
+        hold_through=False,
+        top_n=1,
+        allocation=2.25,
+        allocation_mode="equal",
+        allocation_temp=1.0,
+        min_score=0.0,
+        min_dollar_vol=0.0,
+        min_vol_20d=0.0,
+        no_picks_fallback="",
+        no_picks_fallback_alloc=0.0,
+        _trade_logger=tlog,
+    )
+
+    live_trader.run_session(["AAA"], Path("."), MagicMock(), MagicMock(), args)
+
+    assert captured == {"AAA": pytest.approx(75_000.0)}
+    clip_events = [fields for event, fields in tlog.events if event == "buy_notional_clipped"]
+    assert clip_events == [
+        {
+            "requested_notional": 225_000.0,
+            "available_buy_notional": 75_000.0,
+            "clipped_notional": 75_000.0,
+            "context": "open_to_close",
+        }
+    ]
+
+
+def test_hold_through_allocates_clipped_budget_only_to_new_buys(monkeypatch):
+    picks = pd.DataFrame([
+        {"symbol": "AAA", "score": 0.95, "last_close": 100.0, "spread_bps": 1.0},
+        {"symbol": "BBB", "score": 0.90, "last_close": 50.0, "spread_bps": 1.0},
+    ])
+    monkeypatch.setattr(live_trader, "_emit_session_start", lambda *a, **k: None)
+    monkeypatch.setattr(live_trader, "_live_spy_regime_gate_closed", lambda *a, **k: False)
+    monkeypatch.setattr(live_trader, "_live_spy_vol_target_scale", lambda *a, **k: 1.0)
+    monkeypatch.setattr(live_trader, "_score_and_pick", lambda *a, **k: (picks, picks))
+    monkeypatch.setattr(live_trader, "_is_today_trading_day", lambda _client: (True, "open"))
+    monkeypatch.setattr(live_trader, "_wait_for_market_open", lambda: None)
+    monkeypatch.setattr(
+        live_trader,
+        "_get_position_details",
+        lambda _client: {
+            "AAA": {"qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+        },
+    )
+    monkeypatch.setattr(live_trader, "_execute_sells", lambda *a, **k: None)
+    monkeypatch.setattr(
+        live_trader,
+        "_get_account",
+        lambda _client: SimpleNamespace(portfolio_value="100000", buying_power="100000"),
+    )
+
+    captured: dict[str, float] = {}
+    bought_pick_symbols: list[str] = []
+
+    def _capture_buys(client, picks, buy_notional, tlog, *, notional_by_symbol=None, **kwargs):
+        captured.update(notional_by_symbol or {})
+        bought_pick_symbols.extend(picks["symbol"].astype(str).tolist())
+
+    monkeypatch.setattr(live_trader, "_execute_buys", _capture_buys)
+    tlog = _CapturingTlog()
+
+    args = SimpleNamespace(
+        live=True,
+        dry_run=False,
+        hold_through=True,
+        top_n=2,
+        allocation=2.0,
+        allocation_mode="equal",
+        allocation_temp=1.0,
+        min_score=0.0,
+        min_dollar_vol=0.0,
+        min_vol_20d=0.0,
+        no_picks_fallback="",
+        no_picks_fallback_alloc=0.0,
+        inv_vol_target_ann=0.0,
+        inv_vol_floor=0.05,
+        inv_vol_cap=3.0,
+        _trade_logger=tlog,
+    )
+
+    live_trader.run_session_hold_through(["AAA", "BBB"], Path("."), MagicMock(), MagicMock(), args)
+
+    assert bought_pick_symbols == ["BBB"]
+    assert captured == {"BBB": pytest.approx(100_000.0)}
+    clip_events = [fields for event, fields in tlog.events if event == "buy_notional_clipped"]
+    assert clip_events == [
+        {
+            "requested_notional": 200_000.0,
+            "available_buy_notional": 100_000.0,
+            "clipped_notional": 100_000.0,
+            "context": "hold_through",
+        }
+    ]
+
+
+def test_hold_through_sell_only_rotation_does_not_compute_buy_budget(monkeypatch):
+    picks = pd.DataFrame([
+        {"symbol": "AAA", "score": 0.95, "last_close": 100.0, "spread_bps": 1.0},
+    ])
+    monkeypatch.setattr(live_trader, "_emit_session_start", lambda *a, **k: None)
+    monkeypatch.setattr(live_trader, "_live_spy_regime_gate_closed", lambda *a, **k: False)
+    monkeypatch.setattr(live_trader, "_live_spy_vol_target_scale", lambda *a, **k: 1.0)
+    monkeypatch.setattr(live_trader, "_score_and_pick", lambda *a, **k: (picks, picks))
+    monkeypatch.setattr(live_trader, "_is_today_trading_day", lambda _client: (True, "open"))
+    monkeypatch.setattr(live_trader, "_wait_for_market_open", lambda: None)
+    monkeypatch.setattr(
+        live_trader,
+        "_get_position_details",
+        lambda _client: {
+            "AAA": {"qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0},
+            "BBB": {"qty": 1.0, "current_price": 50.0, "avg_entry_price": 50.0},
+        },
+    )
+    sold: list[set[str]] = []
+    monkeypatch.setattr(live_trader, "_execute_sells", lambda _c, _p, syms, _t: sold.append(set(syms)))
+    monkeypatch.setattr(live_trader, "_get_account", MagicMock(side_effect=AssertionError))
+    monkeypatch.setattr(live_trader, "_execute_buys", MagicMock(side_effect=AssertionError))
+    tlog = _CapturingTlog()
+
+    args = SimpleNamespace(
+        live=True,
+        dry_run=False,
+        hold_through=True,
+        top_n=1,
+        allocation=2.0,
+        allocation_mode="equal",
+        allocation_temp=1.0,
+        min_score=0.0,
+        min_dollar_vol=0.0,
+        min_vol_20d=0.0,
+        no_picks_fallback="",
+        no_picks_fallback_alloc=0.0,
+        _trade_logger=tlog,
+    )
+
+    live_trader.run_session_hold_through(["AAA", "BBB"], Path("."), MagicMock(), MagicMock(), args)
+
+    assert sold == [{"BBB"}]
+    assert [event for event, _fields in tlog.events if event == "buy_notional_clipped"] == []
 
 
 # ── _wait_for_market_open ─────────────────────────────────────────────────────

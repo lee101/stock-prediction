@@ -925,10 +925,63 @@ def _wait_until(hour: int, minute: int, tz: ZoneInfo, poll_secs: float = 10.0) -
 def _target_buy_qty(*, buy_notional: float, price: float) -> float:
     if not np.isfinite(buy_notional) or not np.isfinite(price) or buy_notional <= 0 or price <= 0:
         return 0.0
-    qty = round(float(buy_notional) / float(price), 4)
-    if qty <= 0:
+    qty = math.floor((float(buy_notional) / float(price)) * 10_000.0) / 10_000.0
+    if qty < MIN_FRACTIONAL_QTY:
         return 0.0
-    return max(qty, MIN_FRACTIONAL_QTY)
+    return qty
+
+
+def _account_available_buy_notional(account) -> float | None:
+    """Return broker-reported buying power/cash, or None when unavailable."""
+    if account is None:
+        return None
+    for field in ("buying_power", "cash"):
+        if not hasattr(account, field):
+            continue
+        try:
+            value = float(getattr(account, field) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            return max(0.0, value)
+    return None
+
+
+def _clip_total_buy_notional_to_buying_power(
+    total_notional: float,
+    account,
+    *,
+    tlog: TradeLogger | None = None,
+    context: str = "session",
+) -> float:
+    """Use aggressive requested leverage, but never ask Alpaca for more than BP."""
+    try:
+        requested = float(total_notional or 0.0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if not math.isfinite(requested) or requested <= 0.0:
+        return 0.0
+
+    available = _account_available_buy_notional(account)
+    if available is None:
+        return requested
+    clipped = min(requested, available)
+    if clipped + 1e-6 < requested:
+        msg = (
+            f"[xgb-live] Clipping BUY notional from ${requested:,.0f} "
+            f"to broker buying power ${available:,.0f} ({context})."
+        )
+        print(msg, flush=True)
+        logger.warning(msg)
+        if tlog is not None:
+            tlog.log(
+                "buy_notional_clipped",
+                requested_notional=requested,
+                available_buy_notional=available,
+                clipped_notional=clipped,
+                context=context,
+            )
+    return clipped
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> argparse.Namespace:
@@ -1445,7 +1498,7 @@ def _buy_notional_by_symbol(
     inv_vol_floor: float = 0.05,
     inv_vol_cap: float = 3.0,
 ) -> dict[str, float]:
-    """Allocate BUY notional across picks using simulator-matched weights."""
+    """Allocate BUY notional across picks without exceeding ``total_notional``."""
     if len(picks) == 0 or not np.isfinite(total_notional) or total_notional <= 0:
         return {}
     scores = pd.to_numeric(picks["score"], errors="coerce").fillna(0.0).to_numpy()
@@ -1471,6 +1524,10 @@ def _buy_notional_by_symbol(
             out.get(sym, 0.0)
             + float(total_notional) * float(weight) * float(pick_scale)
         )
+    used_notional = sum(v for v in out.values() if np.isfinite(v) and v > 0.0)
+    if used_notional > float(total_notional):
+        scale = float(total_notional) / used_notional
+        out = {sym: val * scale for sym, val in out.items()}
     return out
 
 
@@ -1504,11 +1561,6 @@ def _execute_buys(
         if price <= 0:
             logger.warning("Skipping BUY %s — invalid last_close %s", sym, price)
             continue
-        qty = _target_buy_qty(buy_notional=row_notional, price=price)
-        if qty <= 0:
-            logger.warning("Skipping BUY %s — invalid target qty for price=%s "
-                           "notional=%s", sym, price, row_notional)
-            continue
         limit_price = _stock_limit_price_near_market(
             sym,
             side="buy",
@@ -1517,6 +1569,11 @@ def _execute_buys(
         )
         if limit_price <= 0:
             logger.warning("Skipping BUY %s — invalid limit price %s", sym, limit_price)
+            continue
+        qty = _target_buy_qty(buy_notional=row_notional, price=limit_price)
+        if qty <= 0:
+            logger.warning("Skipping BUY %s — invalid target qty for limit_price=%s "
+                           "notional=%s", sym, limit_price, row_notional)
             continue
         try:
             order = _submit_limit_order(
@@ -1529,7 +1586,7 @@ def _execute_buys(
             order_id = str(getattr(order, "id", "") or "")
             print(
                 f"  BUY  {sym:<8}  qty={qty:.2f}  limit=${limit_price:.2f}  "
-                f"~${qty*price:,.0f}  order_id={order_id or '?'}",
+                f"~${qty*limit_price:,.0f}  order_id={order_id or '?'}",
                 flush=True,
             )
             tlog.log("buy_submitted", symbol=sym, qty=float(qty),
@@ -1908,6 +1965,12 @@ def run_session_hold_through(
 
     # SELL dropped-out names FIRST (frees up buying power before buys).
     _execute_sells(client, position_details, to_sell, tlog)
+    if not to_buy:
+        print(f"[xgb-live/hold-through] Rotation complete: "
+              f"sold {len(to_sell)}, bought 0, held across "
+              f"{len(held_syms & pick_syms)}.", flush=True)
+        _log_session_end(tlog, client, equity_pre)
+        return
 
     account = _get_account(client)
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
@@ -1916,8 +1979,16 @@ def run_session_hold_through(
     total_notional = (
         portfolio_value * alloc * (1.0 if used_fallback else conviction_scale) * spy_vol_scale
     )
+    requested_total_notional = total_notional
+    total_notional = _clip_total_buy_notional_to_buying_power(
+        total_notional,
+        account,
+        tlog=tlog,
+        context="hold_through",
+    )
+    buy_picks = picks[picks["symbol"].astype(str).isin(to_buy)].copy()
     notionals = _buy_notional_by_symbol(
-        picks,
+        buy_picks,
         total_notional=total_notional,
         allocation_mode=getattr(args, "allocation_mode", "equal"),
         allocation_temp=getattr(args, "allocation_temp", 1.0),
@@ -1928,12 +1999,13 @@ def run_session_hold_through(
         inv_vol_cap=getattr(args, "inv_vol_cap", 3.0),
     )
     print(f"[xgb-live/hold-through] BUY total=${total_notional:,.0f} "
+          f"requested=${requested_total_notional:,.0f} "
           f"alloc={alloc:.2%} "
           f"mode={getattr(args, 'allocation_mode', 'equal')} "
           f"(portfolio=${portfolio_value:,.0f})", flush=True)
     _execute_buys(
         client,
-        picks,
+        buy_picks,
         None,
         tlog,
         notional_by_symbol=notionals,
@@ -2041,6 +2113,13 @@ def run_session(
     total_notional = (
         portfolio_value * alloc * (1.0 if used_fallback else conviction_scale) * spy_vol_scale
     )
+    requested_total_notional = total_notional
+    total_notional = _clip_total_buy_notional_to_buying_power(
+        total_notional,
+        account,
+        tlog=tlog,
+        context="open_to_close",
+    )
     notionals = _buy_notional_by_symbol(
         picks,
         total_notional=total_notional,
@@ -2054,6 +2133,7 @@ def run_session(
     )
     print(f"\n[xgb-live] Placing BUY orders  portfolio=${portfolio_value:,.0f}  "
           f"alloc={alloc:.2%}  total=${total_notional:,.0f}  "
+          f"requested=${requested_total_notional:,.0f}  "
           f"mode={getattr(args, 'allocation_mode', 'equal')}", flush=True)
     _execute_buys(client, picks, None, tlog, notional_by_symbol=notionals)
 

@@ -2,6 +2,36 @@
 
 ## Active Deployments
 
+### 2026-05-04 11:26 UTC -- XGB aggressive sizing guard
+
+**Code change prepared, not a strategy promotion**:
+- `xgbnew/live_trader.py` now clips requested BUY notional to Alpaca's
+  reported `buying_power`/`cash` before per-symbol order quantities are
+  computed.
+- This lets an aggressive setting such as `--allocation 2.25` degrade
+  gracefully to the actual broker-allowed buying power instead of submitting
+  over-sized orders and relying on broker rejection.
+- Per-symbol BUY quantities are sized from the actual aggressive limit price
+  and floored to four decimals, so fractional rounding/min-size handling cannot
+  push submitted order value above the clipped budget.
+- Hold-through rotations split the clipped buy budget only across newly-added
+  symbols, not picks already held across the session.
+- Stock orders still go through `_submit_limit_order` with explicit
+  `limit_price`; no stock market-order path was introduced.
+- Trade logs emit `buy_notional_clipped` with requested, available, and
+  clipped notional when the cap activates.
+
+**Validation**:
+- `.venv313/bin/python -m py_compile xgbnew/live_trader.py`
+- `.venv313/bin/pytest -q tests/test_xgbnew_live_trader_helpers.py`
+  (`69 passed`)
+
+**Production status**:
+- No model/threshold/leverage promotion from this change. The active live
+  writer remains the manually running `trading-server` plus `daily-rl-trader`
+  path described below; `xgb-daily-trader-live` remains intentionally inert
+  until a candidate clears the heldout/stress gate.
+
 ### 2026-05-04 11:15 UTC -- Alpaca-stock prod status + Codex monitors
 
 **Current live writer**:
