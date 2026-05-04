@@ -19,6 +19,7 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
+from pufferlib_market.artifacts import write_json_atomic
 from pufferlib_market.checkpoint_loader import (
     extract_checkpoint_state_dict,
     load_checkpoint_payload,
@@ -26,6 +27,11 @@ from pufferlib_market.checkpoint_loader import (
 )
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import (
+    PRODUCTION_DECISION_LAG,
+    PRODUCTION_SHORT_BORROW_APR,
+    require_production_decision_lag,
+)
 from src.robust_trading_metrics import compute_pnl_smoothness_from_equity, compute_ulcer_index
 
 
@@ -464,7 +470,7 @@ def main() -> None:
         ),
     )
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument("--shortable-symbols", type=str, default=None)
     parser.add_argument(
@@ -473,7 +479,12 @@ def main() -> None:
         default=None,
         help="Comma-separated live tradable symbol subset; masks all other long/short actions.",
     )
-    parser.add_argument("--decision-lag", type=int, default=0)
+    parser.add_argument("--decision-lag", type=int, default=PRODUCTION_DECISION_LAG)
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow lag 0/1 diagnostic runs; not production-realistic.",
+    )
     parser.add_argument("--deterministic", action="store_true", help="Argmax actions (recommended)")
     parser.add_argument("--no-early-stop", action="store_true", help="Disable drawdown-vs-profit early exit (run full window)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -520,9 +531,10 @@ def main() -> None:
     n_windows = int(args.n_windows)
     if n_windows < 1:
         raise ValueError("--n-windows must be >= 1")
-    decision_lag = int(args.decision_lag)
-    if decision_lag < 0:
-        raise ValueError("--decision-lag must be >= 0")
+    decision_lag = require_production_decision_lag(
+        args.decision_lag,
+        allow_low_lag_diagnostics=getattr(args, "allow_low_lag_diagnostics", False),
+    )
 
     device = torch.device(args.device)
     data = read_mktd(Path(args.data_path))
@@ -548,7 +560,7 @@ def main() -> None:
     for extra_ckpt in (args.extra_checkpoints or []):
         extra_loaded = load_policy(extra_ckpt, num_symbols, features_per_sym=features_per_sym, device=device)
         extra_policies.append(extra_loaded.policy)
-    all_policies = [policy] + extra_policies
+    all_policies = [policy, *extra_policies]
     n_ensemble = len(all_policies)
 
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)
@@ -562,6 +574,7 @@ def main() -> None:
 
     min_top_prob = float(args.min_top_prob)
     min_member_agreement = int(args.min_member_agreement)
+    overnight_max_gross_leverage = getattr(args, "overnight_max_gross_leverage", None)
 
     def _policy_fn(obs: np.ndarray) -> int:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
@@ -708,8 +721,8 @@ def main() -> None:
             death_spiral_overnight_tolerance_bps=float(args.death_spiral_overnight_tolerance_bps),
             death_spiral_stale_after_bars=int(args.death_spiral_stale_after_bars),
             overnight_max_gross_leverage=(
-                None if args.overnight_max_gross_leverage is None
-                else float(args.overnight_max_gross_leverage)
+                None if overnight_max_gross_leverage is None
+                else float(overnight_max_gross_leverage)
             ),
         )
         annualized_return = annualize_total_return(
@@ -768,8 +781,8 @@ def main() -> None:
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "max_leverage": float(args.max_leverage),
         "overnight_max_gross_leverage": (
-            None if args.overnight_max_gross_leverage is None
-            else float(args.overnight_max_gross_leverage)
+            None if overnight_max_gross_leverage is None
+            else float(overnight_max_gross_leverage)
         ),
         "short_borrow_apr": float(args.short_borrow_apr),
         "periods_per_year": float(args.periods_per_year),
@@ -803,8 +816,7 @@ def main() -> None:
 
     if args.out:
         out_path = Path(args.out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(out, indent=2, sort_keys=True))
+        write_json_atomic(out_path, out, sort_keys=True)
 
     print(json.dumps(out["summary"], indent=2, sort_keys=True))
 

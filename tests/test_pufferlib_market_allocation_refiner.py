@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import pufferlib_market.allocation_refiner as module
 import pytest
 import torch
-
 from pufferlib_market.allocation_refiner import (
     FrozenTrace,
     RefinerConfig,
@@ -15,6 +18,7 @@ from pufferlib_market.allocation_refiner import (
     simulate_daily_actions_with_allocations,
 )
 from pufferlib_market.hourly_replay import FEATURES_PER_SYM, HourlyMarket, MktdData
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 
 
 def _dummy_trace(*, signed_returns: list[float], target_ids: list[int]) -> FrozenTrace:
@@ -61,6 +65,10 @@ def test_compute_refiner_objective_penalizes_drawdown_excess() -> None:
     assert aggressive_summary.max_drawdown > conservative_summary.max_drawdown
     assert aggressive_summary.drawdown_excess > 0.0
     assert aggressive_summary.objective < conservative_summary.objective
+
+
+def test_refiner_config_defaults_to_production_borrow_apr() -> None:
+    assert RefinerConfig().short_borrow_apr == pytest.approx(PRODUCTION_SHORT_BORROW_APR)
 
 
 def _single_symbol_data(prices: list[float]) -> MktdData:
@@ -173,3 +181,62 @@ def test_fit_refiner_improves_positive_trace_and_respects_inactive_actions() -> 
     assert predicted[0] > config.init_allocation_pct
     assert predicted[1] > config.init_allocation_pct
     assert predicted[2] == pytest.approx(0.0)
+
+
+def test_main_writes_model_and_reports_atomically(monkeypatch, tmp_path: Path, capsys) -> None:
+    trace = _dummy_trace(signed_returns=[0.02, -0.01], target_ids=[0, 0])
+    model = module.ResidualExposureHead(
+        input_dim=trace.observations.shape[1],
+        hidden_size=8,
+        init_allocation_pct=0.2,
+    )
+    torch_writes: list[tuple[object, Path]] = []
+    json_writes: list[tuple[Path, dict[str, object], dict[str, object]]] = []
+
+    monkeypatch.setattr(module, "collect_frozen_trace", lambda **kwargs: trace)
+    monkeypatch.setattr(module, "fit_refiner", lambda **kwargs: (model, {"epoch": 3, "best_val_objective": 1.25}))
+    monkeypatch.setattr(
+        module,
+        "_evaluate_refined_trace",
+        lambda **kwargs: {
+            "daily": {"total_return": 0.05},
+            "hourly_replay": {"sortino": 1.5},
+            "allocation_summary": {"mean_alloc_pct": 0.4},
+        },
+    )
+    monkeypatch.setattr(module, "save_torch_atomic", lambda payload, path: torch_writes.append((payload, Path(path))))
+    monkeypatch.setattr(
+        module,
+        "write_json_atomic",
+        lambda path, payload, **kwargs: json_writes.append((Path(path), payload, kwargs)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "allocation_refiner.py",
+            "--checkpoint",
+            str(tmp_path / "policy.pt"),
+            "--train-data",
+            str(tmp_path / "train.bin"),
+            "--val-data",
+            str(tmp_path / "val.bin"),
+            "--val-start-date",
+            "2026-01-01",
+            "--val-end-date",
+            "2026-01-10",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--cpu",
+        ],
+    )
+
+    module.main()
+
+    captured = capsys.readouterr()
+    assert '"val_report"' in captured.out
+    assert [path.name for _, path in torch_writes] == ["refiner.pt"]
+    assert torch_writes[0][0]["checkpoint"] == str(tmp_path / "policy.pt")
+    assert torch_writes[0][0]["config"]["short_borrow_apr"] == pytest.approx(PRODUCTION_SHORT_BORROW_APR)
+    assert [path.name for path, _, _ in json_writes] == ["train_metrics.json", "val_report.json"]
+    assert all(kwargs == {"sort_keys": True} for _, _, kwargs in json_writes)

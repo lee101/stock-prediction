@@ -28,6 +28,9 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+from xgbnew.artifacts import write_pickle_atomic
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -106,8 +109,7 @@ class BaseBinaryDailyModel:
             "device": self.device,
             "state": self._extra_state(),
         }
-        with open(path, "wb") as f:
-            pickle.dump(payload, f)
+        write_pickle_atomic(path, payload)
         logger.info("%s model saved to %s", self.family, path)
 
     @classmethod

@@ -22,7 +22,6 @@ from scripts.screened32_realism_gate import (
     _parse_float_grid,
     _percentile,
     _promotion_gate,
-    _write_text_atomic,
 )
 
 
@@ -65,37 +64,6 @@ def test_parse_float_grid_rejects_non_finite_duplicate_and_invalid_values():
         _parse_float_grid("0,1.5", name="max_leverage_grid", strictly_positive=True)
     with pytest.raises(ValueError, match="at least one"):
         _parse_float_grid(" , ", name="fill_buffer_bps_grid", min_value=0.0)
-
-
-def test_write_text_atomic_creates_parent_and_overwrites(tmp_path: Path) -> None:
-    path = tmp_path / "nested" / "gate.json"
-
-    _write_text_atomic(path, "old")
-    _write_text_atomic(path, "new")
-
-    assert path.read_text(encoding="utf-8") == "new"
-    assert not list(path.parent.glob(".*.tmp"))
-
-
-def test_write_text_atomic_cleans_temp_file_on_replace_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "gate.json"
-    original_replace = Path.replace
-
-    def fail_replace(self: Path, target: Path) -> Path:
-        if self.name.startswith(".gate.json."):
-            raise OSError("simulated replace failure")
-        return original_replace(self, target)
-
-    monkeypatch.setattr(Path, "replace", fail_replace)
-
-    with pytest.raises(OSError, match="simulated replace failure"):
-        _write_text_atomic(path, "body")
-
-    assert not path.exists()
-    assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_gpu_path_is_disabled_when_borrow_apr_is_charged(monkeypatch) -> None:
@@ -250,6 +218,7 @@ def test_realism_gate_returns_3_after_writing_artifacts_when_enforced_gate_fails
         ["--slippage-bps", "inf"],
         ["--short-borrow-apr", "-0.1"],
         ["--decision-lag", "-1"],
+        ["--decision-lag", "1"],
         ["--window-days", "0"],
         ["--max-windows", "0"],
     ],
@@ -274,6 +243,33 @@ def test_realism_gate_rejects_invalid_numeric_inputs_before_data_load(
     assert result.returncode == 2
     assert "realism_gate:" in result.stderr
     assert "val data not found" not in result.stderr
+
+
+def test_low_lag_diagnostic_opt_in_reaches_data_validation(tmp_path: Path) -> None:
+    missing_val = tmp_path / "missing.bin"
+    cmd = [
+        sys.executable,
+        str(SCRIPT),
+        "--val-data",
+        str(missing_val),
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--decision-lag",
+        "1",
+        "--allow-low-lag-diagnostics",
+    ]
+
+    result = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False)
+
+    assert result.returncode == 2
+    assert "val data not found" in result.stderr
+
+
+def test_realism_gate_uses_shared_atomic_artifact_writers() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "from xgbnew.artifacts import write_json_atomic, write_text_atomic" in source
+    assert "def _write_text_atomic" not in source
 
 
 @pytest.mark.skipif(not VAL_PATH.exists(), reason="prod val data missing")

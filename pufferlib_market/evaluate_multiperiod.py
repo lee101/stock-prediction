@@ -51,6 +51,11 @@ from pufferlib_market.evaluate_tail import (
 )
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import (
+    PRODUCTION_DECISION_LAG,
+    PRODUCTION_SHORT_BORROW_APR,
+    require_production_decision_lag,
+)
 
 
 PERIODS = {
@@ -411,16 +416,26 @@ def main() -> None:
     )
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--arch", choices=["auto", "mlp", "resmlp"], default="auto")
     parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument("--shortable-symbols", type=str, default=None)
-    parser.add_argument("--decision-lag", type=int, default=0)
+    parser.add_argument("--decision-lag", type=int, default=PRODUCTION_DECISION_LAG)
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow lag 0/1 diagnostic runs; not production-realistic.",
+    )
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--json", action="store_true", help="Output JSON instead of table")
     args = parser.parse_args()
+
+    decision_lag = require_production_decision_lag(
+        args.decision_lag,
+        allow_low_lag_diagnostics=getattr(args, "allow_low_lag_diagnostics", False),
+    )
 
     # Parse periods
     periods = {}
@@ -467,7 +482,7 @@ def main() -> None:
                 disable_shorts=args.disable_shorts,
                 shortable_symbols=args.shortable_symbols,
                 deterministic=args.deterministic,
-                decision_lag=args.decision_lag,
+                decision_lag=decision_lag,
                 device_str=args.device,
             )
         all_results.append(results)

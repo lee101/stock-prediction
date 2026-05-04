@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
+
 try:
+    import pufferlib_market.train as train_module
+    import train as root_train
+    from pufferlib_market.realism import PRODUCTION_DECISION_LAG, PRODUCTION_SHORT_BORROW_APR
     from pufferlib_market.train import ResumeState, _checkpoint_payload, _load_resume_checkpoint
 except (ImportError, ModuleNotFoundError):
     pytest.skip("Required module pufferlib_market.train not available", allow_module_level=True)
@@ -156,3 +164,76 @@ def test_load_resume_checkpoint_allows_short_mask_change(tmp_path) -> None:
     )
 
     assert resume_state == ResumeState(update=3, global_step=512, best_return=0.75)
+
+
+def test_train_writes_checkpoints_with_atomic_torch_helper() -> None:
+    source = Path("pufferlib_market/train.py").read_text(encoding="utf-8")
+
+    assert "save_torch_atomic(" in source
+    assert "torch.save(" not in source
+
+
+def test_root_train_py_is_compatibility_wrapper() -> None:
+    source = Path("train.py").read_text(encoding="utf-8")
+
+    assert root_train.main is train_module.main
+    assert root_train.TradingPolicy is train_module.TradingPolicy
+    assert root_train._checkpoint_payload is train_module._checkpoint_payload
+    assert "torch.save(" not in source
+    assert "def train(" not in source
+
+
+def test_train_cli_defaults_to_production_realism(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_train(args):
+        captured["args"] = args
+
+    monkeypatch.setattr(train_module, "train", fake_train)
+    monkeypatch.setattr(sys, "argv", ["train.py"])
+
+    train_module.main()
+
+    args = captured["args"]
+    assert args.decision_lag == PRODUCTION_DECISION_LAG
+    assert args.val_decision_lag == PRODUCTION_DECISION_LAG
+    assert args.short_borrow_apr == PRODUCTION_SHORT_BORROW_APR
+
+
+@pytest.mark.parametrize("flag", ["--decision-lag", "--val-decision-lag"])
+def test_train_cli_rejects_low_lag_before_training(monkeypatch: pytest.MonkeyPatch, flag: str) -> None:
+    called = False
+
+    def fake_train(_args):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(train_module, "train", fake_train)
+    monkeypatch.setattr(sys, "argv", ["train.py", flag, "1"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        train_module.main()
+
+    assert exc_info.value.code == 2
+    assert not called
+
+
+def test_train_cli_allows_explicit_low_lag_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_train(args):
+        captured["args"] = args
+
+    monkeypatch.setattr(train_module, "train", fake_train)
+    monkeypatch.setattr(sys, "argv", ["train.py", "--decision-lag", "1", "--allow-low-lag-diagnostics"])
+
+    train_module.main()
+
+    assert captured["args"].decision_lag == 1
+
+
+def test_train_direct_call_rejects_low_lag_before_pufferlib_import() -> None:
+    args = SimpleNamespace(decision_lag=1, val_decision_lag=2, allow_low_lag_diagnostics=False)
+
+    with pytest.raises(ValueError, match="decision_lag below 2 requires --allow-low-lag-diagnostics"):
+        train_module.train(args)

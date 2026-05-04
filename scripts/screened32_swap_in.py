@@ -20,9 +20,7 @@ from __future__ import annotations
 
 import argparse
 import collections
-import json
 import math
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -41,6 +39,11 @@ from pufferlib_market.evaluate_holdout import (  # noqa: E402
     load_policy,
 )
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy  # noqa: E402
+from pufferlib_market.realism import (  # noqa: E402
+    PRODUCTION_DECISION_LAG,
+    require_production_decision_lag,
+)
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
 
 from src.daily_stock_defaults import (  # noqa: E402
     DEFAULT_CHECKPOINT,
@@ -160,16 +163,6 @@ def _classify_swap(deltas: Sequence[dict]) -> tuple[str, dict]:
     }
 
 
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
 def _build_subset_policy_fn(
     *, policies, keep_indices, num_symbols, per_symbol_actions,
     decision_lag, disable_shorts, device,
@@ -269,7 +262,12 @@ def main(argv=None):
     )
     ap.add_argument("--slippage-bps", type=float, default=None, help="Single-cell smoke/legacy override")
     ap.add_argument("--short-borrow-apr", type=float, default=0.0625)
-    ap.add_argument("--decision-lag", type=int, default=2)
+    ap.add_argument("--decision-lag", type=int, default=PRODUCTION_DECISION_LAG)
+    ap.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow decision_lag < 2 for explicit smoke/diagnostic runs only.",
+    )
     ap.add_argument("--disable-shorts", action="store_true", default=True)
     ap.add_argument("--no-disable-shorts", dest="disable_shorts", action="store_false")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -279,12 +277,16 @@ def main(argv=None):
         slippages = _slippage_values(args)
         fill_buffer_bps = _require_finite_float(args.fill_buffer_bps, name="fill_buffer_bps", min_value=0.0)
         max_leverage = _require_finite_float(args.max_leverage, name="max_leverage", min_value=0.0)
+        if max_leverage <= 0.0:
+            raise ValueError("max_leverage must be > 0")
         fee_rate = _require_finite_float(args.fee_rate, name="fee_rate", min_value=0.0)
         short_borrow_apr = _require_finite_float(args.short_borrow_apr, name="short_borrow_apr", min_value=0.0)
         if int(args.window_days) < 1:
             raise ValueError("window_days must be >= 1")
-        if int(args.decision_lag) < 0:
-            raise ValueError("decision_lag must be >= 0")
+        decision_lag = require_production_decision_lag(
+            int(args.decision_lag),
+            allow_low_lag_diagnostics=bool(args.allow_low_lag_diagnostics),
+        )
     except ValueError as exc:
         print(f"swap: {exc}", file=sys.stderr)
         return 2
@@ -336,7 +338,7 @@ def main(argv=None):
         "head": head,
         "num_symbols": num_symbols,
         "per_symbol_actions": per_symbol_actions,
-        "decision_lag": int(args.decision_lag),
+        "decision_lag": decision_lag,
         "disable_shorts": bool(args.disable_shorts),
         "device": device,
         "fill_buffer_bps": fill_buffer_bps,
@@ -416,7 +418,7 @@ def main(argv=None):
             "window_days": int(args.window_days),
             "fill_buffer_bps": fill_buffer_bps,
             "max_leverage": max_leverage,
-            "decision_lag": int(args.decision_lag),
+            "decision_lag": decision_lag,
             "slippage_bps_grid": [float(v) for v in slippages],
             "short_borrow_apr": short_borrow_apr,
             "fee_rate": fee_rate,
@@ -431,7 +433,7 @@ def main(argv=None):
         "swaps": rows,
         "wins": [r for r in rows if r["verdict"] == "win"],
     }
-    _write_json_atomic(out, summary)
+    write_json_atomic(out, summary, sort_keys=True)
     print(f"\n[saved] {out}")
 
     n_wins = len(summary["wins"])

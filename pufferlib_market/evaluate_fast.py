@@ -33,6 +33,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from pufferlib_market.artifacts import write_json_atomic
 from pufferlib_market.checkpoint_loader import (
     extract_checkpoint_state_dict,
     infer_resmlp_blocks_from_state_dict,
@@ -40,6 +41,7 @@ from pufferlib_market.checkpoint_loader import (
     resolve_checkpoint_action_grid_config,
     resolve_checkpoint_policy_details,
 )
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +587,7 @@ def main():
     parser.add_argument("--fill-slippage-bps", type=float, default=8.0)
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument("--arch", choices=["auto", "mlp", "resmlp"], default="auto")
@@ -624,8 +626,7 @@ def main():
         )
         if args.out:
             out_path = Path(args.out)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(result, indent=2))
+            write_json_atomic(out_path, result)
         print(json.dumps(result, indent=2))
         return
 
@@ -653,8 +654,7 @@ def main():
 
     if args.out:
         out_path = Path(args.out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(result, indent=2))
+        write_json_atomic(out_path, result)
 
     print(json.dumps(_build_cli_summary_payload(result), indent=2))
     if "elapsed_s" in result:

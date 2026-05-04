@@ -21,18 +21,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.checkpoint_loader import (
     build_action_grid_summary_line,
-    format_action_grid_override_note,
     build_checkpoint_summary_lines,
     build_cli_policy_config_line,
     build_runtime_summary_line,
+    format_action_grid_override_note,
     load_checkpoint_payload,
     load_policy_from_checkpoint,
     resolve_checkpoint_action_grid_config,
 )
+from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +356,7 @@ def print_sliding_results(
     print(f"Trades:     mean={stats['mean_trades']:.1f}  win_rate={stats['mean_win_rate']:.4f}")
 
     returns = np.array([r.total_return for r in results])
-    print(f"\nReturn percentiles:")
+    print("\nReturn percentiles:")
     for p in [5, 25, 50, 75, 95]:
         v = float(np.percentile(returns, p))
         print(f"  p{p:02d}: {v:+.4f}")
@@ -408,7 +409,7 @@ def main():
     parser.add_argument("--slippage-bps", type=float, default=0.0,
                         help="Adverse fill slippage in bps (realistic: 5-12)")
     parser.add_argument("--max-leverage", type=float, default=1.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--periods-per-year", type=float, default=8760.0,
                         help="Annualisation factor (8760=hourly, 365=daily, 252=trading days)")
     parser.add_argument("--action-allocation-bins", type=int, default=1)

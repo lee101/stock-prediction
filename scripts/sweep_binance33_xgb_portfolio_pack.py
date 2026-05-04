@@ -17,22 +17,25 @@ from pathlib import Path
 
 import numpy as np
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from pufferlib_market.hourly_replay import MktdData, P_CLOSE, read_mktd
+from pufferlib_market.hourly_replay import P_CLOSE, MktdData, read_mktd
+
 from scripts.sweep_binance33_xgb import (
     FEATURES,
     Experiment,
     _build_dataset,
     _candidate_starts,
-    _experiments,
     _monthly_equivalent_return,
     _passes_production_target,
     _precompute_scores,
+    _resolve_experiments,
     _slice_window,
     _train_xgb,
+    _validate_common_sweep_args,
 )
 from src.robust_trading_metrics import compute_pnl_smoothness_from_equity, compute_ulcer_index
 
@@ -67,6 +70,35 @@ def _parse_str_list(value: str) -> list[str]:
     if not parsed:
         raise ValueError(f"expected at least one value in {value!r}")
     return parsed
+
+
+def _validate_float_grid(raw: str, *, label: str, min_value: float = 0.0, positive: bool = False) -> list[str]:
+    try:
+        values = _parse_float_list(raw)
+    except ValueError as exc:
+        return [f"{label} {exc}"]
+    failures: list[str] = []
+    for value in values:
+        if not np.isfinite(float(value)):
+            failures.append(f"{label} entries must be finite")
+            break
+        if positive and float(value) <= 0.0:
+            failures.append(f"{label} entries must be positive")
+            break
+        if not positive and float(value) < float(min_value):
+            failures.append(f"{label} entries must be finite and >= {float(min_value):g}")
+            break
+    return failures
+
+
+def _validate_int_grid(raw: str, *, label: str) -> list[str]:
+    try:
+        values = _parse_int_list(raw)
+    except ValueError as exc:
+        return [f"{label} {exc}"]
+    if any(int(value) <= 0 for value in values):
+        return [f"{label} entries must be positive integers"]
+    return []
 
 
 def _max_drawdown(equity: np.ndarray) -> float:
@@ -347,7 +379,7 @@ def _eval_pack(
     }
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sweep Binance33 XGB daily multi-position portfolio packs.")
     parser.add_argument("--train-data", type=Path, default=Path("pufferlib_market/data/binance33_daily_train.bin"))
     parser.add_argument("--eval-data", type=Path, default=Path("pufferlib_market/data/binance33_daily_val.bin"))
@@ -371,17 +403,45 @@ def main() -> int:
     parser.add_argument("--target-monthly-pct", type=float, default=27.0)
     parser.add_argument("--target-max-dd-pct", type=float, default=20.0)
     parser.add_argument("--require-production-target", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> list[str]:
+    failures = _validate_common_sweep_args(args)
+    failures.extend(_validate_int_grid(str(args.top_n_grid), label="top_n_grid"))
+    failures.extend(_validate_float_grid(str(args.min_abs_score_grid), label="min_abs_score_grid"))
+    failures.extend(_validate_float_grid(str(args.score_temp_grid), label="score_temp_grid", positive=True))
+    failures.extend(_validate_float_grid(str(args.target_vol_grid), label="target_vol_grid"))
+    failures.extend(_validate_float_grid(str(args.max_weight_grid), label="max_weight_grid", positive=True))
+    failures.extend(_validate_float_grid(str(args.max_gross_grid), label="max_gross_grid", positive=True))
+    try:
+        _parse_str_list(str(args.allocation_modes))
+    except ValueError as exc:
+        failures.append(f"allocation_modes {exc}")
+    _, experiment_failures = _resolve_experiments(
+        experiment_names=str(args.experiment_names),
+        allow_all=False,
+    )
+    failures.extend(experiment_failures)
+    return failures
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    failures = _validate_args(args)
+    if failures:
+        print("ERROR: invalid portfolio-pack sweep configuration:", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 2
 
     train_data = read_mktd(args.train_data)
     eval_data = read_mktd(args.eval_data)
-    experiments = _experiments()
-    requested = [part.strip() for part in str(args.experiment_names).split(",") if part.strip()]
-    by_name = {exp.name: exp for exp in experiments}
-    missing = sorted(set(requested) - set(by_name))
-    if missing:
-        raise ValueError(f"unknown experiment names: {', '.join(missing)}")
-    experiments = [by_name[name] for name in requested]
+    experiments, _experiment_failures = _resolve_experiments(
+        experiment_names=str(args.experiment_names),
+        allow_all=False,
+    )
 
     eval_days = _parse_int_list(args.eval_days)
     slippages = _parse_float_list(args.slippage_bps)

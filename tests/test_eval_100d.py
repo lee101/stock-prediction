@@ -6,13 +6,15 @@ raw ``_run_slippage_sweep`` output into a 27%/month-target report.
 """
 from __future__ import annotations
 
-import importlib.util
 import hashlib
-import math
-from pathlib import Path
+import importlib.util
 import json
+import math
+import re
+from pathlib import Path
 
 import pytest
+
 
 _REPO = Path(__file__).resolve().parents[1]
 _MOD_PATH = _REPO / "scripts" / "eval_100d.py"
@@ -77,6 +79,14 @@ def test_module_usage_documents_promotable_hourly_eval_command():
     assert "--daily-start-date" in doc
     assert "--allow-daily-promotion" in doc
     assert "retained for smoke/legacy inspection" in doc
+
+
+def test_eval100d_artifacts_use_shared_atomic_writers():
+    source = _MOD_PATH.read_text(encoding="utf-8")
+
+    assert "write_json_atomic" in source
+    assert "write_text_atomic" in source
+    assert not re.search(r"_eval100d\.(?:json|md).*?\.write_text\(", source, re.DOTALL)
 
 
 def test_monthly_from_total_zero_and_neg_window():
@@ -234,7 +244,6 @@ def test_eval_generic_slippage_sweep_forwards_borrow_apr(tmp_path: Path, monkeyp
     import struct
 
     import torch
-
     from fp4.bench import eval_generic
     from pufferlib_market import binding
 

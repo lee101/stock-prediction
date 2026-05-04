@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Trading Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0d1117; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 22px;
+      border-bottom: 1px solid #28313d;
+      background: #111821;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    h2 { margin: 0 0 10px; font-size: 15px; color: #c9d1d9; letter-spacing: 0; }
+    main { padding: 16px; display: grid; gap: 14px; }
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) 160px 160px auto;
+      gap: 10px;
+      align-items: end;
+    }
+    label { display: grid; gap: 5px; font-size: 12px; color: #8b949e; }
+    select, input, button {
+      height: 36px;
+      border-radius: 6px;
+      border: 1px solid #303b49;
+      background: #161b22;
+      color: #e6edf3;
+      padding: 0 10px;
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      background: #238636;
+      border-color: #2ea043;
+      font-weight: 700;
+    }
+    .grid { display: grid; grid-template-columns: 1fr 340px; gap: 14px; }
+    .panel {
+      background: #111821;
+      border: 1px solid #28313d;
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .metric {
+      background: #0d1117;
+      border: 1px solid #28313d;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .metric span { display: block; font-size: 11px; color: #8b949e; }
+    .metric strong { display: block; margin-top: 4px; font-size: 20px; }
+    .positive { color: #56d364; }
+    .negative { color: #ff7b72; }
+    .muted { color: #8b949e; }
+    #priceChart, #equityChart, #windowChart { width: 100%; height: 620px; }
+    #equityChart, #windowChart { height: 300px; }
+    #portfolioTimeline { width: 100%; height: 620px; }
+    .replay-controls {
+      display: grid;
+      grid-template-columns: auto auto auto minmax(220px, 1fr) minmax(220px, auto);
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .replay-controls button {
+      width: 42px;
+      padding: 0;
+      font-size: 18px;
+      line-height: 1;
+    }
+    #replayToggle { width: 72px; font-size: 13px; }
+    input[type="range"] {
+      padding: 0;
+      accent-color: #2ea043;
+    }
+    .replay-time {
+      color: #c9d1d9;
+      font-size: 13px;
+      text-align: right;
+      white-space: nowrap;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid #28313d; padding: 7px 6px; text-align: left; }
+    th { color: #8b949e; font-weight: 600; }
+    tr:hover td { background: #151d28; }
+    .status-list { display: grid; gap: 8px; font-size: 12px; }
+    .status-line { padding: 8px; background: #0d1117; border-radius: 6px; border: 1px solid #28313d; }
+    @media (max-width: 1020px) {
+      .toolbar, .grid, .metrics { grid-template-columns: 1fr; }
+      .replay-controls { grid-template-columns: auto auto auto 1fr; }
+      .replay-time { grid-column: 1 / -1; text-align: left; }
+      header { position: static; align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Stock Trading Dashboard</h1>
+      <div class="muted" id="stamp">Loading experiments...</div>
+    </div>
+    <div class="muted">Read-only research and live status</div>
+  </header>
+  <main>
+    <section class="panel toolbar">
+      <label>Experiment artifact
+        <select id="artifactSelect"></select>
+      </label>
+      <label>Symbol
+        <input id="symbolInput" value="AAPL" autocomplete="off">
+      </label>
+      <label>Overlay
+        <select id="overlaySelect">
+          <option value="trades">Backtest trades</option>
+          <option value="none">Price only</option>
+        </select>
+      </label>
+      <button id="refreshBtn">Refresh</button>
+    </section>
+
+    <section class="metrics" id="metrics"></section>
+
+    <section class="panel">
+      <h2>Portfolio Replay Across Traded Stocks</h2>
+      <div class="replay-controls">
+        <button id="replayBack" title="Step back" type="button">‹</button>
+        <button id="replayToggle" type="button">Play</button>
+        <button id="replayForward" title="Step forward" type="button">›</button>
+        <input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="Portfolio replay time">
+        <div class="replay-time" id="replayTime">Loading replay...</div>
+      </div>
+      <div id="portfolioTimeline"></div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Symbol Price With Entries, Exits, And Position Chunks</h2>
+        <div id="priceChart"></div>
+      </div>
+      <aside class="panel">
+        <h2>Live System</h2>
+        <div class="status-list" id="liveStatus"></div>
+        <h2 style="margin-top:16px">Recent Trades</h2>
+        <div style="max-height:430px; overflow:auto">
+          <table>
+            <thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Edge</th></tr></thead>
+            <tbody id="tradeRows"></tbody>
+          </table>
+        </div>
+      </aside>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Backtest Window Returns</h2>
+        <div id="windowChart"></div>
+      </div>
+      <div class="panel">
+        <h2>Account Equity</h2>
+        <div id="equityChart"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      overview: null,
+      artifact: null,
+      symbol: null,
+      portfolio: null,
+      replayIndex: 0,
+      replayTimer: null
+    };
+    const el = id => document.getElementById(id);
+    const pct = v => Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '--';
+    const money = v => Number.isFinite(v) ? `$${v.toLocaleString(undefined, {maximumFractionDigits: 0})}` : '--';
+
+    async function getJSON(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`${url} ${res.status}`);
+      return await res.json();
+    }
+
+    function updateMetrics() {
+      const artifact = state.artifact || {};
+      const worst = artifact.worst_slippage_cell || {};
+      const selected = (artifact.selected_configs || [])[0] || {};
+      const trades = artifact.candidate_trades || [];
+      const live = (state.overview && state.overview.live) || {};
+      const latestEquity = (live.equity_points || []).slice(-1)[0];
+      const cards = [
+        ['Worst Median Monthly', pct(worst.median_monthly_return), worst.median_monthly_return >= 0 ? 'positive' : 'negative'],
+        ['Worst Max Drawdown', pct(worst.max_drawdown), 'negative'],
+        ['Negative Windows', `${worst.negative_windows || 0}/${worst.n_windows || 0}`, worst.negative_windows ? 'negative' : 'positive'],
+        ['Candidate Trades', String(trades.length || 0), ''],
+        ['Live Equity', money(latestEquity && latestEquity.equity), '']
+      ];
+      el('metrics').innerHTML = cards.map(([k, v, cls]) =>
+        `<div class="metric"><span>${k}</span><strong class="${cls}">${v}</strong></div>`
+      ).join('');
+      if (selected.val_median_short_fraction !== undefined) {
+        el('stamp').textContent = `Selected ${artifact.strategy || 'strategy'} | short fraction ${(selected.val_median_short_fraction * 100).toFixed(1)}%`;
+      }
+    }
+
+    function updateLiveStatus() {
+      const live = (state.overview && state.overview.live) || {};
+      const lock = live.lock || {};
+      const lines = [
+        `Host: ${live.hostname || '--'}`,
+        `Writer PID: ${lock.pid || '--'}`,
+        `Service: ${lock.service_name || '--'}`,
+        `Started: ${lock.started_at || '--'}`,
+        ...(live.supervisor || [])
+      ];
+      el('liveStatus').innerHTML = lines.map(line => `<div class="status-line">${line}</div>`).join('');
+    }
+
+    function plotWindows() {
+      const artifact = state.artifact || {};
+      const worst = artifact.worst_slippage_cell || {};
+      const key = String(Number(worst.slippage_bps || 20));
+      const windows = ((artifact.window_results || {})[key]) || [];
+      const trace = {
+        type: 'bar',
+        x: windows.map(w => w.start),
+        y: windows.map(w => (w.monthly_return || 0) * 100),
+        marker: { color: windows.map(w => (w.monthly_return || 0) >= 0 ? '#56d364' : '#ff7b72') },
+        name: 'Monthly return %'
+      };
+      Plotly.newPlot('windowChart', [trace], {
+        margin: {l: 48, r: 16, t: 8, b: 48},
+        paper_bgcolor: '#111821',
+        plot_bgcolor: '#0d1117',
+        font: {color: '#c9d1d9'},
+        yaxis: {title: '%'},
+        xaxis: {title: 'Window start'}
+      }, {responsive: true});
+    }
+
+    function plotEquity() {
+      const live = (state.overview && state.overview.live) || {};
+      const livePoints = live.equity_points || [];
+      const replayPoints = (state.portfolio && state.portfolio.equity_points) || [];
+      const traces = [{
+        type: 'scatter',
+        mode: 'lines+markers',
+        x: livePoints.map(p => p.ts),
+        y: livePoints.map(p => p.equity),
+        line: {color: '#58a6ff', width: 2},
+        name: 'Live equity'
+      }];
+      if (replayPoints.length) {
+        traces.push({
+          type: 'scatter',
+          mode: 'lines',
+          x: replayPoints.map(p => p.ts),
+          y: replayPoints.map(p => p.equity),
+          line: {color: '#f2cc60', width: 2},
+          name: 'Backtest replay equity',
+          yaxis: livePoints.length ? 'y2' : 'y'
+        });
+      }
+      const layout = {
+        margin: {l: 58, r: 16, t: 8, b: 48},
+        paper_bgcolor: '#111821',
+        plot_bgcolor: '#0d1117',
+        font: {color: '#c9d1d9'},
+        yaxis: {title: livePoints.length ? '$ live' : 'equity multiple'},
+        xaxis: {title: 'Time'}
+      };
+      if (livePoints.length && replayPoints.length) {
+        layout.yaxis2 = {title: 'backtest x', overlaying: 'y', side: 'right'};
+      }
+      Plotly.newPlot('equityChart', traces, layout, {responsive: true});
+    }
+
+    function tradeShapes(trades, ymin, ymax) {
+      const shapes = [];
+      for (const trade of trades) {
+        const color = trade.side < 0 ? 'rgba(151, 87, 255, 0.22)' : 'rgba(46, 160, 67, 0.22)';
+        shapes.push({
+          type: 'rect',
+          xref: 'x',
+          yref: 'y',
+          x0: trade.entry_ts,
+          x1: trade.exit_ts,
+          y0: ymin,
+          y1: ymax,
+          fillcolor: color,
+          line: {width: 0},
+          layer: 'below'
+        });
+      }
+      return shapes;
+    }
+
+    function plotSymbol() {
+      const data = state.symbol || {};
+      const bars = data.bars || [];
+      const trades = data.trades || [];
+      const x = bars.map(b => b.timestamp);
+      const highs = bars.map(b => b.high).filter(Number.isFinite);
+      const lows = bars.map(b => b.low).filter(Number.isFinite);
+      const ymin = lows.length ? Math.min(...lows) : 0;
+      const ymax = highs.length ? Math.max(...highs) : 1;
+      const traces = [{
+        type: 'candlestick',
+        x,
+        open: bars.map(b => b.open),
+        high: bars.map(b => b.high),
+        low: bars.map(b => b.low),
+        close: bars.map(b => b.close),
+        name: data.symbol || 'symbol',
+        increasing: {line: {color: '#56d364'}},
+        decreasing: {line: {color: '#ff7b72'}}
+      }];
+      if (el('overlaySelect').value !== 'none') {
+        traces.push({
+          type: 'scatter',
+          mode: 'markers',
+          x: trades.map(t => t.entry_ts),
+          y: trades.map(t => t.entry_open),
+          marker: {
+            symbol: trades.map(t => t.side < 0 ? 'triangle-down' : 'triangle-up'),
+            size: 9,
+            color: trades.map(t => t.side < 0 ? '#bf8cff' : '#56d364'),
+            line: {color: '#ffffff', width: 0.5}
+          },
+          text: trades.map(t => `${t.side < 0 ? 'SHORT' : 'LONG'} entry edge=${Number(t.edge || 0).toFixed(4)}`),
+          name: 'entries'
+        });
+        traces.push({
+          type: 'scatter',
+          mode: 'markers',
+          x: trades.map(t => t.exit_ts),
+          y: trades.map(t => t.exit_close),
+          marker: {symbol: 'x', size: 8, color: '#f2cc60'},
+          text: trades.map(t => `${t.side < 0 ? 'SHORT' : 'LONG'} exit`),
+          name: 'exits'
+        });
+      }
+      Plotly.newPlot('priceChart', traces, {
+        margin: {l: 58, r: 20, t: 8, b: 48},
+        paper_bgcolor: '#111821',
+        plot_bgcolor: '#0d1117',
+        font: {color: '#c9d1d9'},
+        xaxis: {rangeslider: {visible: false}},
+        yaxis: {title: 'Price'},
+        shapes: el('overlaySelect').value === 'none' ? [] : tradeShapes(trades, ymin, ymax)
+      }, {responsive: true});
+
+      el('tradeRows').innerHTML = trades.slice(-80).reverse().map(t =>
+        `<tr><td class="${t.side < 0 ? 'negative' : 'positive'}">${t.side < 0 ? 'SHORT' : 'LONG'}</td><td>${t.entry_ts}</td><td>${t.exit_ts}</td><td>${Number(t.edge || 0).toFixed(4)}</td></tr>`
+      ).join('');
+    }
+
+    function toMs(ts) {
+      const ms = Date.parse(ts);
+      return Number.isFinite(ms) ? ms : 0;
+    }
+
+    function replayCutoff() {
+      const times = (state.portfolio && state.portfolio.times) || [];
+      if (!times.length) return null;
+      return times[Math.max(0, Math.min(times.length - 1, state.replayIndex))];
+    }
+
+    function activeTradesAt(cutoff) {
+      const cutoffMs = toMs(cutoff);
+      const trades = (state.portfolio && state.portfolio.trades) || [];
+      return trades.filter(t => toMs(t.entry_ts) <= cutoffMs && toMs(t.exit_ts) > cutoffMs);
+    }
+
+    function visibleReplayTrades(cutoff) {
+      const cutoffMs = toMs(cutoff);
+      const trades = (state.portfolio && state.portfolio.trades) || [];
+      return trades.filter(t => toMs(t.entry_ts) <= cutoffMs);
+    }
+
+    function replayShapes(trades, symbols, cutoff) {
+      const cutoffMs = toMs(cutoff);
+      const yBySymbol = new Map(symbols.map((s, idx) => [s.symbol, idx]));
+      const shapes = [];
+      for (const t of trades) {
+        const y = yBySymbol.get(t.symbol);
+        if (y === undefined) continue;
+        const endMs = Math.min(toMs(t.exit_ts), cutoffMs);
+        if (!endMs || endMs < toMs(t.entry_ts)) continue;
+        shapes.push({
+          type: 'rect',
+          xref: 'x',
+          yref: 'y',
+          x0: t.entry_ts,
+          x1: new Date(endMs).toISOString(),
+          y0: y - 0.36,
+          y1: y + 0.36,
+          fillcolor: t.side < 0 ? 'rgba(151, 87, 255, 0.46)' : 'rgba(46, 160, 67, 0.46)',
+          line: {width: 0},
+          layer: 'below'
+        });
+      }
+      shapes.push({
+        type: 'line',
+        xref: 'x',
+        yref: 'paper',
+        x0: cutoff,
+        x1: cutoff,
+        y0: 0,
+        y1: 1,
+        line: {color: '#f2cc60', width: 2, dash: 'dot'}
+      });
+      return shapes;
+    }
+
+    function plotPortfolioReplay() {
+      const data = state.portfolio || {};
+      const symbols = data.symbols || [];
+      const times = data.times || [];
+      if (!symbols.length || !times.length) {
+        el('replayTime').textContent = 'No multi-stock replay data in this artifact';
+        Plotly.newPlot('portfolioTimeline', [], {
+          paper_bgcolor: '#111821',
+          plot_bgcolor: '#0d1117',
+          font: {color: '#c9d1d9'},
+          xaxis: {visible: false},
+          yaxis: {visible: false},
+          annotations: [{text: 'No candidate_trades available', showarrow: false, font: {color: '#8b949e', size: 16}}]
+        }, {responsive: true});
+        return;
+      }
+      state.replayIndex = Math.max(0, Math.min(times.length - 1, state.replayIndex));
+      const cutoff = replayCutoff();
+      const cutoffMs = toMs(cutoff);
+      const visible = visibleReplayTrades(cutoff);
+      const active = activeTradesAt(cutoff);
+      const yBySymbol = new Map(symbols.map((s, idx) => [s.symbol, idx]));
+      const entries = visible.filter(t => yBySymbol.has(t.symbol));
+      const exits = entries.filter(t => toMs(t.exit_ts) <= cutoffMs);
+      const longVisible = entries.filter(t => t.side > 0).length;
+      const shortVisible = entries.length - longVisible;
+      const slider = el('replaySlider');
+      slider.max = String(Math.max(0, times.length - 1));
+      slider.value = String(state.replayIndex);
+      el('replayTime').textContent =
+        `${new Date(cutoffMs).toLocaleString()} | active ${active.length}/${data.max_positions || '--'} | trades ${entries.length} | long ${longVisible} short ${shortVisible}`;
+
+      const yFor = t => yBySymbol.get(t.symbol);
+      const traces = [
+        {
+          type: 'scatter',
+          mode: 'markers',
+          name: 'Entries',
+          x: entries.map(t => t.entry_ts),
+          y: entries.map(yFor),
+          customdata: entries.map(t => t.symbol),
+          text: entries.map(t => `${t.symbol} ${t.side > 0 ? 'LONG' : 'SHORT'} entry ${Number(t.entry_open || 0).toFixed(2)} edge=${Number(t.edge || 0).toFixed(5)}`),
+          marker: {
+            symbol: entries.map(t => t.side > 0 ? 'triangle-up' : 'triangle-down'),
+            size: 9,
+            color: entries.map(t => t.side > 0 ? '#56d364' : '#bf8cff'),
+            line: {color: '#ffffff', width: 0.5}
+          },
+          hovertemplate: '%{text}<br>%{x}<extra></extra>'
+        },
+        {
+          type: 'scatter',
+          mode: 'markers',
+          name: 'Exits',
+          x: exits.map(t => t.exit_ts),
+          y: exits.map(yFor),
+          customdata: exits.map(t => t.symbol),
+          text: exits.map(t => `${t.symbol} exit ${Number(t.exit_close || 0).toFixed(2)} gross=${pct(t.return_pct || 0)}`),
+          marker: {symbol: 'x', size: 8, color: '#f2cc60'},
+          hovertemplate: '%{text}<br>%{x}<extra></extra>'
+        },
+        {
+          type: 'scatter',
+          mode: 'markers',
+          name: 'Active at cursor',
+          x: active.map(() => cutoff),
+          y: active.map(yFor),
+          customdata: active.map(t => t.symbol),
+          text: active.map(t => `${t.symbol} active ${t.side > 0 ? 'LONG' : 'SHORT'}`),
+          marker: {
+            symbol: 'diamond',
+            size: 10,
+            color: active.map(t => t.side > 0 ? '#2ea043' : '#8957e5'),
+            line: {color: '#f7fafc', width: 1}
+          },
+          hovertemplate: '%{text}<extra></extra>'
+        }
+      ];
+      Plotly.react('portfolioTimeline', traces, {
+        margin: {l: 72, r: 20, t: 10, b: 44},
+        paper_bgcolor: '#111821',
+        plot_bgcolor: '#0d1117',
+        font: {color: '#c9d1d9'},
+        hovermode: 'closest',
+        xaxis: {
+          type: 'date',
+          title: 'Backtest time',
+          range: [times[0], times[times.length - 1]],
+          rangeslider: {visible: false},
+          gridcolor: '#28313d'
+        },
+        yaxis: {
+          tickmode: 'array',
+          tickvals: symbols.map((_, idx) => idx),
+          ticktext: symbols.map(s => `${s.symbol} (${s.trade_count})`),
+          range: [symbols.length - 0.5, -0.5],
+          gridcolor: '#28313d',
+          fixedrange: true
+        },
+        legend: {orientation: 'h', x: 0, y: 1.08},
+        shapes: replayShapes(entries, symbols, cutoff)
+      }, {responsive: true, displaylogo: false});
+      const chart = el('portfolioTimeline');
+      if (!chart.dataset.boundClick) {
+        chart.on('plotly_click', ev => {
+          const point = ev.points && ev.points[0];
+          const symbol = point && point.customdata;
+          if (symbol) {
+            el('symbolInput').value = symbol;
+            loadSymbol();
+          }
+        });
+        chart.dataset.boundClick = '1';
+      }
+    }
+
+    function setReplayPlaying(playing) {
+      if (state.replayTimer) {
+        clearInterval(state.replayTimer);
+        state.replayTimer = null;
+      }
+      if (playing) {
+        const times = (state.portfolio && state.portfolio.times) || [];
+        if (!times.length) return;
+        if (state.replayIndex >= times.length - 1) state.replayIndex = 0;
+        state.replayTimer = setInterval(() => {
+          const latestTimes = (state.portfolio && state.portfolio.times) || [];
+          if (state.replayIndex >= latestTimes.length - 1) {
+            setReplayPlaying(false);
+            return;
+          }
+          state.replayIndex += 1;
+          plotPortfolioReplay();
+        }, 650);
+        el('replayToggle').textContent = 'Pause';
+      } else {
+        el('replayToggle').textContent = 'Play';
+      }
+    }
+
+    function stepReplay(delta) {
+      setReplayPlaying(false);
+      const times = (state.portfolio && state.portfolio.times) || [];
+      if (!times.length) return;
+      state.replayIndex = Math.max(0, Math.min(times.length - 1, state.replayIndex + delta));
+      plotPortfolioReplay();
+    }
+
+    async function loadPortfolio() {
+      const artifactPath = el('artifactSelect').value;
+      state.portfolio = await getJSON(`/api/portfolio?artifact=${encodeURIComponent(artifactPath)}`);
+      const times = state.portfolio.times || [];
+      state.replayIndex = Math.max(0, times.length - 1);
+      plotPortfolioReplay();
+      plotEquity();
+    }
+
+    async function loadArtifact() {
+      const artifactPath = el('artifactSelect').value;
+      state.artifact = await getJSON(`/api/artifact?path=${encodeURIComponent(artifactPath)}`);
+      const trades = state.artifact.candidate_trades || [];
+      const current = el('symbolInput').value.trim().toUpperCase();
+      if (!current && trades.length) el('symbolInput').value = trades[0].symbol;
+      await loadPortfolio();
+      await loadSymbol();
+      updateMetrics();
+      plotWindows();
+    }
+
+    async function loadSymbol() {
+      const symbol = el('symbolInput').value.trim().toUpperCase();
+      const artifactPath = el('artifactSelect').value;
+      state.symbol = await getJSON(`/api/symbol?symbol=${encodeURIComponent(symbol)}&artifact=${encodeURIComponent(artifactPath)}`);
+      plotSymbol();
+    }
+
+    async function init() {
+      state.overview = await getJSON('/api/overview');
+      const artifacts = state.overview.artifacts || [];
+      el('artifactSelect').innerHTML = artifacts.map(a => {
+        const worst = a.worst_slippage || {};
+        const label = `${a.path} | med ${pct(worst.median_monthly_return)} | trades ${a.candidate_trade_count}`;
+        return `<option value="${a.path}">${label}</option>`;
+      }).join('');
+      updateLiveStatus();
+      plotEquity();
+      if (artifacts.length) await loadArtifact();
+    }
+
+    el('refreshBtn').addEventListener('click', async () => {
+      state.overview = await getJSON('/api/overview');
+      updateLiveStatus();
+      plotEquity();
+      await loadArtifact();
+    });
+    el('artifactSelect').addEventListener('change', loadArtifact);
+    el('symbolInput').addEventListener('change', loadSymbol);
+    el('overlaySelect').addEventListener('change', plotSymbol);
+    el('replaySlider').addEventListener('input', function () {
+      setReplayPlaying(false);
+      state.replayIndex = Number(this.value) || 0;
+      plotPortfolioReplay();
+    });
+    el('replayBack').addEventListener('click', () => stepReplay(-1));
+    el('replayForward').addEventListener('click', () => stepReplay(1));
+    el('replayToggle').addEventListener('click', () => setReplayPlaying(!state.replayTimer));
+    init().catch(err => {
+      el('stamp').textContent = `Dashboard error: ${err.message}`;
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

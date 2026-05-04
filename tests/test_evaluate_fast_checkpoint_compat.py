@@ -5,6 +5,7 @@ import struct
 import sys
 from types import SimpleNamespace
 
+import pufferlib_market.evaluate_fast as eval_fast_mod
 import pytest
 import torch
 from pufferlib_market.evaluate_fast import (
@@ -449,3 +450,87 @@ def test_main_prints_self_describing_single_run_summary(tmp_path, monkeypatch, c
     assert summary["positive_window_count"] == 3
     assert elapsed_line == "Elapsed: 1.25s (4/5 windows)"
     assert json.loads(out_path.read_text()) == fake_result
+
+
+@pytest.mark.unit
+def test_main_writes_single_run_with_atomic_json_writer(tmp_path, monkeypatch):
+    out_path = tmp_path / "fast-summary.json"
+    fake_args = SimpleNamespace(
+        checkpoint="fake.pt",
+        data_path="val.bin",
+        eval_hours=24,
+        n_windows=5,
+        seed=1337,
+        fee_rate=0.001,
+        fill_slippage_bps=8.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+        short_borrow_apr=0.0,
+        deterministic=True,
+        disable_shorts=False,
+        arch="auto",
+        hidden_size=None,
+        device="cpu",
+        no_compile=True,
+        early_exit_after=5,
+        early_exit_threshold=-0.15,
+        verbose=False,
+        multi_windows=None,
+        n_windows_per_size=8,
+        out=str(out_path),
+    )
+    fake_result = {
+        "checkpoint": "fake.pt",
+        "data_path": "val.bin",
+        "summary": {"median_total_return": 0.1},
+    }
+    writes = []
+
+    monkeypatch.setattr(eval_fast_mod.argparse.ArgumentParser, "parse_args", lambda self: fake_args)
+    monkeypatch.setattr(eval_fast_mod, "fast_holdout_eval", lambda *args, **kwargs: fake_result)
+    monkeypatch.setattr(eval_fast_mod, "write_json_atomic", lambda path, payload: writes.append((path, payload)))
+
+    main()
+
+    assert writes == [(out_path, fake_result)]
+    assert not out_path.exists()
+
+
+@pytest.mark.unit
+def test_main_writes_multi_period_with_atomic_json_writer(tmp_path, monkeypatch):
+    out_path = tmp_path / "multi-summary.json"
+    fake_args = SimpleNamespace(
+        checkpoint="fake.pt",
+        data_path="val.bin",
+        eval_hours=24,
+        n_windows=5,
+        seed=1337,
+        fee_rate=0.001,
+        fill_slippage_bps=8.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+        short_borrow_apr=0.0,
+        deterministic=True,
+        disable_shorts=False,
+        arch="auto",
+        hidden_size=None,
+        device="cpu",
+        no_compile=True,
+        early_exit_after=5,
+        early_exit_threshold=-0.15,
+        verbose=False,
+        multi_windows="5,15",
+        n_windows_per_size=8,
+        out=str(out_path),
+    )
+    fake_result = {"periods": {"5": {"summary": {"median_total_return": 0.1}}}}
+    writes = []
+
+    monkeypatch.setattr(eval_fast_mod.argparse.ArgumentParser, "parse_args", lambda self: fake_args)
+    monkeypatch.setattr(eval_fast_mod, "multi_period_eval", lambda *args, **kwargs: fake_result)
+    monkeypatch.setattr(eval_fast_mod, "write_json_atomic", lambda path, payload: writes.append((path, payload)))
+
+    main()
+
+    assert writes == [(out_path, fake_result)]
+    assert not out_path.exists()

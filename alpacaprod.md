@@ -2,6 +2,39 @@
 
 ## Active Deployments
 
+### 2026-04-30 23:13 UTC -- production hygiene + XGB live restart
+
+**Action**: after `git pull` + review/test pass, checked supervisor state and found:
+- `xgb-daily-trader-live` RUNNING pid=1819224 and holding `strategy_state/account_locks/alpaca_live_writer.lock`.
+- `daily-rl-trader` RUNNING pid=1819027 as a `trading_server` client.
+- `trading-server` FATAL after singleton exit 42 because XGB already holds the Alpaca writer lock.
+
+Stopped the stale RL client with `sudo supervisorctl stop daily-rl-trader trading-server || true`. `trading-server` was already not running.
+
+Then ran controlled XGB restart through `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live` because preflight reported `xgbnew/live_trader.py` newer than the running process. The code delta is live-model loading only; no model recipe or launch flags changed.
+
+**Post-action state**:
+- `xgb-daily-trader-live`: RUNNING pid=3667969, singleton lock holder pid=3667969.
+- `daily-rl-trader`: STOPPED.
+- `trading-server`: FATAL/not running.
+- Post-restart preflight: `safe_to_apply=true`, `restart_reasons=[]`, `stale_files=[]`, `xgb_ensemble_train_end=2026-04-26`.
+- Trade log: 2026-04-30 is closed; next regular stock session scheduled for 2026-05-01 09:20 ET. No order was placed during restart.
+
+**Why**: restores the intended single active live path while the XGB daily/crypto trader is champion. The RL client cannot trade without `trading-server`, and leaving it running made production health ambiguous.
+
+### 2026-04-30 23:38 UTC -- disabled stale sidecar autostart
+
+**Action**: changed both repo-local and active Supervisor configs for `daily-rl-trader` and `trading-server` to `autostart=false` and `autorestart=false`, then ran `sudo supervisorctl reread && sudo supervisorctl update`.
+
+**Post-action state**:
+- `xgb-daily-trader-live`: RUNNING pid=3667969 and still the singleton lock holder.
+- `daily-rl-trader`: STOPPED / Not started.
+- `trading-server`: STOPPED / Not started.
+
+**Why**: prevents a Supervisor restart or reboot from resurrecting the stale RL client/server pair while XGB is the champion live Alpaca writer. `daily-rl-trader`/`trading-server` can still be started intentionally through `scripts/deploy_live_trader.sh daily-rl-trader`.
+
+---
+
 ### 🟢 2026-04-27 22:03 UTC — monitor-agent health snapshot
 
 - supervisor `xgb-daily-trader-live` RUNNING pid=2370763, uptime 6h54m, lock holder pid=2370763 — singleton OK.
@@ -2317,6 +2350,20 @@ bash scripts/deploy_crypto_model.sh --remove-rl
 sudo supervisorctl status binance-hybrid-spot
 sudo tail -50 /var/log/supervisor/binance-hybrid-spot.log
 sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
+```
+
+## Stock Dashboard (2026-05-01)
+- Public URL: `https://stock.app.nz/`
+- Service: `stock-dashboard` under Supervisor, served by `stock_dashboard.server` on `127.0.0.1:8899`.
+- Configs: `deployments/stock-dashboard/supervisor.conf` and `deployments/stock-dashboard/nginx.conf`; active copies are installed in `/etc/supervisor/conf.d/stock-dashboard.conf` and `/etc/nginx/sites-available/stock.app.nz`.
+- DNS: Cloudflare `A stock.app.nz -> 93.127.141.100`, proxied.
+- 2026-05-01 update: dashboard now includes `/api/portfolio` and a Plotly replay slider showing all traded symbols as rows with green long spans, purple short spans, entry/exit markers, active positions, and approximate backtest equity.
+- Safety: read-only dashboard. It reads local artifacts, `analysis/xgb_live_trade_log`, and `strategy_state`; it must not import Alpaca trading modules or place orders.
+- Health checks:
+```bash
+sudo supervisorctl status stock-dashboard
+curl -fsS http://127.0.0.1:8899/healthz
+curl -fsS https://stock.app.nz/healthz
 ```
 
 ## Incidents

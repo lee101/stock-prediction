@@ -19,6 +19,9 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+from xgbnew.artifacts import write_pickle_atomic
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -208,13 +211,16 @@ class XGBStockModel:
 
     def save(self, path: Path) -> None:
         """Save model to disk."""
-        import pickle
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump({"clf": self.clf, "feature_cols": self.feature_cols,
-                         "col_medians": self._col_medians,
-                         "device": getattr(self, "device", None)}, f)
+        write_pickle_atomic(
+            path,
+            {
+                "clf": self.clf,
+                "feature_cols": self.feature_cols,
+                "col_medians": self._col_medians,
+                "device": getattr(self, "device", None),
+            },
+        )
         logger.info("Model saved to %s", path)
 
     @classmethod

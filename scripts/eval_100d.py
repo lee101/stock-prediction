@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import math
 import sys
 from pathlib import Path
@@ -39,9 +38,12 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+
+from xgbnew.artifacts import write_json_atomic, write_text_atomic  # noqa: E402
 
 
 def _monthly_from_total(total_return: float, window_days: int,
@@ -312,39 +314,43 @@ def _write_static_preflight_artifacts(
         f"- required_slippage_bps: {','.join(str(x) for x in required_slippages)}\n"
         "- promotion_gate: FAIL\n"
     )
-    (out_dir / f"{ckpt.stem}_eval100d.md").write_text(md)
-    (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
-        "checkpoint": str(ckpt),
-        "checkpoint_sha256": checkpoint_sha256,
-        "val_data": str(val),
-        "raw": {"status": "static_promotion_preflight_failed"},
-        "aggregate": aggregate,
-        "promotion_gate": gate,
-        "monthly_target": float(args.monthly_target),
-        "max_dd_target": float(args.max_dd_target),
-        "min_window_days": int(args.min_window_days),
-        "decision_lag": int(args.decision_lag),
-        "min_decision_lag": int(args.min_decision_lag),
-        "fee_rate": float(args.fee_rate),
-        "min_fee_rate": float(args.min_fee_rate),
-        "short_borrow_apr": float(args.short_borrow_apr),
-        "min_short_borrow_apr": float(args.min_short_borrow_apr),
-        "max_leverage": float(args.max_leverage),
-        "max_leverage_target": float(args.max_leverage_target),
-        "execution_granularity": str(args.execution_granularity),
-        "require_hourly_intrabar": not bool(args.allow_daily_promotion),
-        "min_max_slippage_bps": int(args.min_max_slippage_bps),
-        "required_slippage_bps": required_slippages,
-        "hourly_fill_buffer_bps": gate["hourly_fill_buffer_bps"],
-        "min_hourly_fill_buffer_bps": gate["min_hourly_fill_buffer_bps"],
-        "hourly_max_hold_hours": gate["hourly_max_hold_hours"],
-        "max_hourly_hold_hours": gate["max_hourly_hold_hours"],
-        "max_negative_windows": int(args.max_negative_windows),
-        "min_completed_windows": int(min_completed_windows),
-        "n_windows": int(args.n_windows),
-        "window_days": int(args.window_days),
-        "slippage_bps": slippages,
-    }, indent=2, default=str))
+    write_text_atomic(out_dir / f"{ckpt.stem}_eval100d.md", md)
+    write_json_atomic(
+        out_dir / f"{ckpt.stem}_eval100d.json",
+        {
+            "checkpoint": str(ckpt),
+            "checkpoint_sha256": checkpoint_sha256,
+            "val_data": str(val),
+            "raw": {"status": "static_promotion_preflight_failed"},
+            "aggregate": aggregate,
+            "promotion_gate": gate,
+            "monthly_target": float(args.monthly_target),
+            "max_dd_target": float(args.max_dd_target),
+            "min_window_days": int(args.min_window_days),
+            "decision_lag": int(args.decision_lag),
+            "min_decision_lag": int(args.min_decision_lag),
+            "fee_rate": float(args.fee_rate),
+            "min_fee_rate": float(args.min_fee_rate),
+            "short_borrow_apr": float(args.short_borrow_apr),
+            "min_short_borrow_apr": float(args.min_short_borrow_apr),
+            "max_leverage": float(args.max_leverage),
+            "max_leverage_target": float(args.max_leverage_target),
+            "execution_granularity": str(args.execution_granularity),
+            "require_hourly_intrabar": not bool(args.allow_daily_promotion),
+            "min_max_slippage_bps": int(args.min_max_slippage_bps),
+            "required_slippage_bps": required_slippages,
+            "hourly_fill_buffer_bps": gate["hourly_fill_buffer_bps"],
+            "min_hourly_fill_buffer_bps": gate["min_hourly_fill_buffer_bps"],
+            "hourly_max_hold_hours": gate["hourly_max_hold_hours"],
+            "max_hourly_hold_hours": gate["max_hourly_hold_hours"],
+            "max_negative_windows": int(args.max_negative_windows),
+            "min_completed_windows": int(min_completed_windows),
+            "n_windows": int(args.n_windows),
+            "window_days": int(args.window_days),
+            "slippage_bps": slippages,
+        },
+        default=str,
+    )
     return md
 
 
@@ -929,7 +935,6 @@ def _evaluate_intrabar_hourly(
     fail_fast_min_completed: int,
 ):
     import torch
-
     from pufferlib_market.evaluate_multiperiod import load_policy, make_policy_fn
     from pufferlib_market.hourly_replay import read_mktd
     from pufferlib_market.intrabar_replay import load_hourly_ohlc, simulate_daily_policy_intrabar
@@ -1350,8 +1355,8 @@ def main(argv: list[str] | None = None) -> int:
             f"- execution_granularity: {args.execution_granularity}\n"
             f"- backend: {result.get('backend', 'unknown')}\n"
         )
-        (out_dir / f"{ckpt.stem}_eval100d.md").write_text(md)
-        (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
+        write_text_atomic(out_dir / f"{ckpt.stem}_eval100d.md", md)
+        write_json_atomic(out_dir / f"{ckpt.stem}_eval100d.json", {
             "checkpoint": str(ckpt),
             "checkpoint_sha256": checkpoint_sha256,
             "val_data": str(val),
@@ -1382,7 +1387,7 @@ def main(argv: list[str] | None = None) -> int:
             "raw": result,
             "aggregate": aggregate,
             "promotion_gate": gate,
-        }, indent=2, default=str))
+        }, default=str)
         return 1
     if result.get("status") == "failed_fast":
         # Still emit JSON + a short MD so the leaderboard can record the dud
@@ -1429,8 +1434,8 @@ def main(argv: list[str] | None = None) -> int:
             f"- promotion_gate: FAIL\n"
             f"- backend: {result.get('backend', 'pufferlib_market')}\n"
         )
-        (out_dir / f"{ckpt.stem}_eval100d.md").write_text(bail_md)
-        (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
+        write_text_atomic(out_dir / f"{ckpt.stem}_eval100d.md", bail_md)
+        write_json_atomic(out_dir / f"{ckpt.stem}_eval100d.json", {
             "checkpoint": str(ckpt),
             "checkpoint_sha256": checkpoint_sha256,
             "val_data": str(val), "raw": result,
@@ -1459,7 +1464,7 @@ def main(argv: list[str] | None = None) -> int:
             "min_completed_windows": int(min_completed_windows),
             "n_windows": int(args.n_windows), "window_days": int(args.window_days),
             "slippage_bps": slippages,
-        }, indent=2, default=str))
+        }, default=str)
         print(bail_md)
         return 3
 
@@ -1525,7 +1530,7 @@ def main(argv: list[str] | None = None) -> int:
         "aggregate": aggregate,
         "promotion_gate": gate,
     }
-    (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps(full, indent=2, default=str))
+    write_json_atomic(out_dir / f"{ckpt.stem}_eval100d.json", full, default=str)
     md = _render_md(
         ckpt=ckpt, checkpoint_sha256=checkpoint_sha256, aggregate=aggregate,
         window_days=int(args.window_days), n_windows=int(args.n_windows),
@@ -1553,7 +1558,7 @@ def main(argv: list[str] | None = None) -> int:
         max_negative_windows=int(args.max_negative_windows),
         min_completed_windows=int(min_completed_windows),
     )
-    (out_dir / f"{ckpt.stem}_eval100d.md").write_text(md)
+    write_text_atomic(out_dir / f"{ckpt.stem}_eval100d.md", md)
     print(md)
 
     return 0 if bool(gate["passed"]) else 3

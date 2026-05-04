@@ -23,28 +23,29 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.checkpoint_loader import (
     build_action_grid_summary_line,
-    format_action_grid_override_note,
     build_checkpoint_summary_lines,
     build_cli_policy_config_line,
     build_ensemble_member_summary_lines,
-    ensure_checkpoint_action_grid_compatible,
     build_runtime_summary_line,
-    load_policy_from_resolved_metadata,
+    ensure_checkpoint_action_grid_compatible,
+    format_action_grid_override_note,
     load_checkpoint_payload,
+    load_policy_from_resolved_metadata,
     resolve_checkpoint_action_grid_config,
     resolve_checkpoint_policy_details,
 )
 from pufferlib_market.evaluate_sliding import (
-    compute_calmar,
-    sliding_window_eval,
-    aggregate_sliding_results,
-    print_sliding_results,
     _build_policy_fn,
+    aggregate_sliding_results,
+    compute_calmar,
+    print_sliding_results,
+    sliding_window_eval,
 )
 from pufferlib_market.hourly_replay import read_mktd
+from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 
 
 def _act(name: str) -> nn.Module:
@@ -461,7 +462,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=720, help="Episode length (hours)")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--periods-per-year", type=float, default=8760.0,
                         help="Annualisation factor for Sortino (8760=hourly, 365=daily, 252=trading days)")
     parser.add_argument("--action-allocation-bins", type=int, default=1)
@@ -756,19 +757,19 @@ def main():
 
     # Distribution of returns
     percentiles = [5, 25, 50, 75, 95]
-    print(f"\nReturn percentiles:")
+    print("\nReturn percentiles:")
     for p in percentiles:
         v = np.percentile(returns, p)
         print(f"  p{p:02d}: {v:+.4f} ({(1+v)*10000:.0f} from 10k)")
 
     # Best / worst episodes
-    print(f"\nTop 5 episodes:")
+    print("\nTop 5 episodes:")
     top_idx = np.argsort(returns)[-5:][::-1]
     for i, idx in enumerate(top_idx):
         print(f"  {i+1}. return={returns[idx]:+.4f} ({(1+returns[idx])*10000:.0f} from 10k) "
               f"trades={trades[idx]:.0f} wr={win_rates[idx]:.2f}")
 
-    print(f"\nBottom 5 episodes:")
+    print("\nBottom 5 episodes:")
     bot_idx = np.argsort(returns)[:5]
     for i, idx in enumerate(bot_idx):
         print(f"  {i+1}. return={returns[idx]:+.4f} ({(1+returns[idx])*10000:.0f} from 10k) "

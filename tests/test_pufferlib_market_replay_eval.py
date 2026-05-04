@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from pufferlib_market.hourly_replay import (
     InitialPositionSpec,
     MktdData,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _build_test_data() -> tuple[MktdData, HourlyMarket]:
@@ -42,6 +46,30 @@ def _build_test_data() -> tuple[MktdData, HourlyMarket]:
         tradable={"AAA": np.ones((len(market_index),), dtype=bool)},
     )
     return data, market
+
+
+def test_root_replay_eval_is_compatibility_wrapper() -> None:
+    import replay_eval as root_replay
+
+    source = (ROOT / "replay_eval.py").read_text(encoding="utf-8")
+
+    assert root_replay.main is module.main
+    assert root_replay._order_day_stats is module._order_day_stats
+    assert root_replay._section_metrics is module._section_metrics
+    assert "write_text(" not in source
+
+
+def test_root_replay_eval_help_runs() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "replay_eval.py"), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "output-json" in result.stdout
+
 
 
 def test_replay_eval_main_passes_dataset_feature_width_to_load_policy(monkeypatch, tmp_path: Path) -> None:
@@ -120,6 +148,79 @@ def test_replay_eval_main_passes_dataset_feature_width_to_load_policy(monkeypatc
     module.main()
 
     assert seen["features_per_sym"] == 28
+
+
+def test_replay_eval_main_writes_output_atomically(monkeypatch, tmp_path: Path) -> None:
+    data, market = _build_test_data()
+    writes = []
+
+    monkeypatch.setattr(module, "read_mktd", lambda path: data)
+    monkeypatch.setattr(module, "load_hourly_market", lambda *args, **kwargs: market)
+    monkeypatch.setattr(module, "load_policy", lambda *args, **kwargs: (object(), {}, 3))
+    monkeypatch.setattr(module, "make_policy_fn", lambda *args, **kwargs: (lambda obs: 1))
+    monkeypatch.setattr(module, "annualize_total_return", lambda total_return, periods, periods_per_year: total_return)
+    monkeypatch.setattr(module, "write_json_atomic", lambda path, payload, **kwargs: writes.append((path, payload, kwargs)))
+    monkeypatch.setattr(
+        module,
+        "simulate_daily_policy",
+        lambda *args, **kwargs: DailySimResult(
+            actions=np.asarray([1, 1], dtype=np.int32),
+            total_return=0.10,
+            sortino=1.0,
+            max_drawdown=0.05,
+            num_trades=1,
+            win_rate=1.0,
+            avg_hold_steps=1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "replay_hourly_frozen_daily_actions",
+        lambda **kwargs: HourlyReplayResult(
+            total_return=0.08,
+            sortino=0.8,
+            max_drawdown=0.04,
+            num_trades=1,
+            num_orders=1,
+            win_rate=1.0,
+            equity_curve=np.full((len(market.index),), 10_000.0, dtype=np.float64),
+            orders_by_day={},
+        ),
+    )
+
+    output_json = tmp_path / "report.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "replay_eval.py",
+            "--checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--daily-data-path",
+            str(tmp_path / "daily.bin"),
+            "--hourly-data-root",
+            str(tmp_path / "hourly"),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-03",
+            "--max-steps",
+            "2",
+            "--cpu",
+            "--output-json",
+            str(output_json),
+        ],
+    )
+
+    module.main()
+
+    assert len(writes) == 1
+    path, payload, kwargs = writes[0]
+    assert path == output_json
+    assert kwargs == {"sort_keys": True}
+    assert payload["daily"]["total_return"] == pytest.approx(0.10)
+    assert payload["hourly_replay"]["total_return"] == pytest.approx(0.08)
+    assert not output_json.exists()
 
 
 def test_replay_eval_main_forwards_fill_buffer_and_slippage_bps_and_caps_steps(monkeypatch, tmp_path: Path) -> None:

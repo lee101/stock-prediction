@@ -19,17 +19,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
+
+try:
+    from scripts._gpu_env_bootstrap import ensure_gpu_trading_env
+except ModuleNotFoundError:
+    from _gpu_env_bootstrap import ensure_gpu_trading_env
+
+GPU_ENV_PYTHON = ensure_gpu_trading_env(sys_module=sys)
+
 import gpu_trading_env
 from gpu_trading_env.ppo_trainer import (
-    PortfolioBracketActor, PPOConfig,
-    collect_rollout, compute_gae, ppo_update,
+    PortfolioBracketActor,
+    PPOConfig,
+    collect_rollout,
+    compute_gae,
+    ppo_update,
 )
+from pufferlib_market.artifacts import save_torch_atomic, write_json_atomic
+from pufferlib_market.realism import PRODUCTION_FEE_BPS, PRODUCTION_FILL_BUFFER_BPS
 
 
 def deterministic_eval(env, policy, num_steps: int = 21,
@@ -81,7 +96,49 @@ def deterministic_eval(env, policy, num_steps: int = 21,
     }
 
 
-def main():
+def _validate_args(args: argparse.Namespace) -> list[str]:
+    errors: list[str] = []
+    if not Path(args.bin).exists():
+        errors.append(f"--bin not found: {args.bin}")
+    if args.val_bin and not Path(args.val_bin).exists():
+        errors.append(f"--val-bin not found: {args.val_bin}")
+    for name, minimum in (
+        ("B", 1),
+        ("rollout_steps", 1),
+        ("iters", 1),
+        ("epochs", 1),
+        ("episode_len", 2),
+        ("val_B", 1),
+        ("val_steps", 1),
+    ):
+        value = int(getattr(args, name))
+        if value < minimum:
+            errors.append(f"--{name.replace('_', '-')} must be >= {minimum}, got {value}")
+    for name, minimum in (
+        ("lr", 0.0),
+        ("reward_scale", 0.0),
+        ("max_leverage", 0.0),
+        ("bps_scale", 0.0),
+        ("qty_scale", 0.0),
+        ("target_kl", 0.0),
+    ):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value <= minimum:
+            errors.append(f"--{name.replace('_', '-')} must be finite and > {minimum:g}, got {value!r}")
+    for name in ("ent_coef", "fee_bps", "fb_bps"):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0.0:
+            errors.append(f"--{name.replace('_', '-')} must be finite and >= 0, got {value!r}")
+    if args.val_bin is None and not 0.0 < float(args.val_frac) < 1.0:
+        errors.append(f"--val-frac must be in (0, 1), got {args.val_frac!r}")
+    if int(args.val_every) < 0:
+        errors.append(f"--val-every must be >= 0, got {args.val_every}")
+    if not math.isfinite(float(args.log_std_init)):
+        errors.append(f"--log-std-init must be finite, got {args.log_std_init!r}")
+    return errors
+
+
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--bin", required=True, help="train .bin path")
     p.add_argument("--val-bin", default=None, help="val .bin (optional, defaults to train tail)")
@@ -95,8 +152,8 @@ def main():
     p.add_argument("--reward-scale", type=float, default=1.0)
     p.add_argument("--episode-len", type=int, default=126)
     p.add_argument("--max-leverage", type=float, default=2.0)
-    p.add_argument("--fee-bps", type=float, default=0.278)
-    p.add_argument("--fb-bps", type=float, default=5.0)
+    p.add_argument("--fee-bps", type=float, default=PRODUCTION_FEE_BPS)
+    p.add_argument("--fb-bps", type=float, default=PRODUCTION_FILL_BUFFER_BPS)
     p.add_argument("--out-dir", default="experiments/portfolio_bracket_ppo_v1")
     p.add_argument("--bps-scale", type=float, default=30.0,
                    help="max |limit-offset| in bps from prev_close")
@@ -109,7 +166,13 @@ def main():
                    help="val eval + best-ckpt check every N iters (0 = off)")
     p.add_argument("--val-B", type=int, default=512)
     p.add_argument("--val-steps", type=int, default=21)
-    args = p.parse_args()
+    args = p.parse_args(argv)
+
+    errors = _validate_args(args)
+    if errors:
+        for error in errors:
+            print(f"train_portfolio_bracket_real: {error}", file=sys.stderr)
+        return 2
 
     if not torch.cuda.is_available():
         raise RuntimeError("Need CUDA")
@@ -237,7 +300,7 @@ def main():
             if improved:
                 best_val = {"median": val_stats["median_return"],
                             "iter": it, "stats": val_stats}
-                torch.save(
+                save_torch_atomic(
                     {"policy_state": policy.state_dict(), "cfg": cfg.__dict__,
                      "obs_dim": obs_dim, "num_symbols": S, "args": vars(args),
                      "val_stats": val_stats, "iter": it},
@@ -269,14 +332,15 @@ def main():
     # Persist artifacts.
     ckpt = {"policy_state": policy.state_dict(), "cfg": cfg.__dict__,
             "obs_dim": obs_dim, "num_symbols": S, "args": vars(args)}
-    torch.save(ckpt, out / "policy.pt")
-    (out / "history.json").write_text(json.dumps(hist, indent=2))
-    (out / "eval.json").write_text(json.dumps(eval_stats, indent=2))
+    save_torch_atomic(ckpt, out / "policy.pt")
+    write_json_atomic(out / "history.json", hist)
+    write_json_atomic(out / "eval.json", eval_stats)
     if best_val["stats"] is not None:
-        (out / "eval_best.json").write_text(json.dumps(best_val["stats"], indent=2))
+        write_json_atomic(out / "eval_best.json", best_val["stats"])
     print(f"[saved] {out}/policy.pt + history.json + eval.json "
           f"(+ policy_best.pt, eval_best.json if val_every>0)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

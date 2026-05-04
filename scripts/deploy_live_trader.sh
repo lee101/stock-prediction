@@ -8,7 +8,7 @@
 # Valid <unit_name>:
 #   xgb-daily-trader-live    (current champion — 5-seed XGB daily)
 #   trading-server           (broker-boundary server; other bots delegate here)
-#   daily-rl-trader          (legacy RL ensemble trader)
+#   daily-rl-trader          (RL ensemble client + trading-server broker boundary)
 #   none                     (special: stop ALL live writers)
 #
 # Why this script exists
@@ -29,8 +29,9 @@
 #    currently RUNNING (so the lock is free).
 # 4. Waits for the lock file to disappear or lose its holder, then
 #    starts the requested unit.
-# 5. Polls /health (trading-server) AND the lock file and confirms the
-#    holder PID matches the newly started process (or its child).
+# 5. Polls the lock file and confirms the holder PID matches the newly
+#    started writer process or one of its descendants. For daily-rl-trader,
+#    the writer process is trading-server and daily-rl-trader is started as its client.
 # 6. Appends a line to deployments/live_trader_history.log with
 #    TIMESTAMP, operator, chosen unit, pid — an audit trail of who
 #    was live at any given moment.
@@ -82,28 +83,31 @@ _show_report_file() {
 
 _post_preflight_has_unresolved_findings() {
   local path="$1"
-  local expected_service="$2"
-  python3 - "$path" "$expected_service" <<'PY'
+  shift
+  python3 - "$path" "$@" <<'PY'
 import json
 import sys
 
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
-expected_service = sys.argv[2]
+expected_services = set(sys.argv[2:])
+if not expected_services:
+    print("preflight expected service list is empty")
+    raise SystemExit(1)
 reports = payload.get("reports")
 if not isinstance(reports, list) or not reports:
     print("preflight report missing non-empty reports list")
     raise SystemExit(1)
 bad = []
-seen_expected = False
+seen_services = set()
 for report in reports:
     if not isinstance(report, dict):
         bad.append(f"malformed report entry: {type(report).__name__}")
         continue
     service = report.get("service", "unknown")
-    if service != expected_service:
+    if service not in expected_services:
         bad.append(f"unexpected service in preflight report: {service!r}")
         continue
-    seen_expected = True
+    seen_services.add(service)
     blockers = report.get("apply_blockers") or []
     reasons = report.get("restart_reasons") or []
     safe_to_apply = report.get("safe_to_apply")
@@ -114,8 +118,9 @@ for report in reports:
             f"{service}: apply_blockers={blockers or 'none'} "
             f"restart_reasons={reasons or 'none'}"
         )
-if not seen_expected:
-    bad.append(f"missing expected service in preflight report: {expected_service}")
+missing = sorted(expected_services - seen_services)
+if missing:
+    bad.append(f"missing expected service(s) in preflight report: {', '.join(missing)}")
 if bad:
     print("\n".join(bad))
     raise SystemExit(1)
@@ -157,6 +162,45 @@ _unit_pid() {
 _lock_pid() {
   [ -f "$LOCK_PATH" ] || { echo ""; return 0; }
   python3 -c 'import json, sys; d=json.load(open("'"$LOCK_PATH"'")); print(d.get("pid",""))' 2>/dev/null || echo ""
+}
+
+_pid_is_descendant_of() {
+  local candidate="$1"
+  local ancestor="$2"
+  local frontier
+  local next_frontier
+  local parent
+  local child
+
+  [ -n "$candidate" ] || return 1
+  [ -n "$ancestor" ] || return 1
+  frontier="$ancestor"
+  while [ -n "$frontier" ]; do
+    next_frontier=""
+    for parent in $frontier; do
+      for child in $(ps -o pid= --ppid "$parent" 2>/dev/null || true); do
+        [ "$candidate" = "$child" ] && return 0
+        next_frontier="${next_frontier} ${child}"
+      done
+    done
+    frontier="$next_frontier"
+  done
+  return 1
+}
+
+_lock_matches_unit() {
+  local unit="$1"
+  local sup_pid
+  local lock_pid
+
+  sup_pid=$(_unit_pid "$unit")
+  [ -n "$sup_pid" ] || return 1
+  [ -f "$LOCK_PATH" ] || return 1
+  lock_pid=$(_lock_pid)
+  [ "$lock_pid" = "$sup_pid" ] && return 0
+
+  # Lock may be held by the supervisor pid OR by a wrapped descendant process.
+  _pid_is_descendant_of "$lock_pid" "$sup_pid"
 }
 
 _pid_is_alive() {
@@ -256,6 +300,30 @@ if [ "$TARGET" != "none" ] && ! _unit_in_registry "$TARGET"; then
   exit 2
 fi
 
+LOCK_TARGET="$TARGET"
+PREFLIGHT_SERVICES=("$TARGET")
+STOP_PHASE_EXEMPT_UNITS=("$TARGET")
+POST_LOCK_START_UNITS=()
+
+if [ "$TARGET" = "daily-rl-trader" ]; then
+  # daily-rl-trader delegates all Alpaca writes through trading-server. The
+  # broker boundary owns the singleton lock; the RL process is a client that
+  # should be restarted only after the server is healthy and holding the lock.
+  LOCK_TARGET="trading-server"
+  PREFLIGHT_SERVICES=("trading-server" "daily-rl-trader")
+  STOP_PHASE_EXEMPT_UNITS=("trading-server")
+  POST_LOCK_START_UNITS=("daily-rl-trader")
+fi
+
+_unit_is_stop_phase_exempt() {
+  local unit="$1"
+  local exempt
+  for exempt in "${STOP_PHASE_EXEMPT_UNITS[@]}"; do
+    [ "$unit" = "$exempt" ] && return 0
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------- pre-flight
 log "deploy_live_trader: requested=$TARGET operator=${USER:-$(id -un)}"
 log "registry: ${LIVE_WRITER_UNITS[*]}"
@@ -265,7 +333,11 @@ if [ "$TARGET" != "none" ]; then
   safe_target="${TARGET//[^A-Za-z0-9_.-]/_}"
   PREFLIGHT_REPORT_PATH="${PREFLIGHT_REPORT_DIR}/$(date -u +%Y%m%dT%H%M%SZ)_${safe_target}_$$.json"
 
-  preflight_args=(python3 "$PREFLIGHT" --service "$TARGET" --fail-on-unsafe --json)
+  preflight_args=(python3 "$PREFLIGHT")
+  for service in "${PREFLIGHT_SERVICES[@]}"; do
+    preflight_args+=(--service "$service")
+  done
+  preflight_args+=(--fail-on-unsafe --json)
   if [ "$ALLOW_DIRTY" = "1" ]; then
     preflight_args+=(--allow-dirty)
   fi
@@ -299,7 +371,7 @@ log "  pre: lock holder pid=${lock_pid_before:-none}  alive=$(_pid_is_alive "$lo
 
 # --------------------------------------------------------------- stop others
 for unit in "${LIVE_WRITER_UNITS[@]}"; do
-  if [ "$unit" = "$TARGET" ]; then
+  if _unit_is_stop_phase_exempt "$unit"; then
     continue
   fi
   state=$(_unit_state "$unit")
@@ -338,49 +410,69 @@ if [ "$TARGET" = "none" ]; then
 fi
 
 # ---------------------------------------------------------------- start target
-state=$(_unit_state "$TARGET")
+state=$(_unit_state "$LOCK_TARGET")
 if [ "$state" = "RUNNING" ]; then
-  log "$TARGET already RUNNING (pid=$(_unit_pid "$TARGET")) — restart to pick up new config"
-  if ! sudo -n supervisorctl restart "$TARGET" 2>&1 | sed 's/^/  supervisorctl> /'; then
-    log "FAIL: could not restart $TARGET"
-    _append_history "restart_failed" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
+  log "$LOCK_TARGET already RUNNING (pid=$(_unit_pid "$LOCK_TARGET")) — restart to pick up new config"
+  if ! sudo -n supervisorctl restart "$LOCK_TARGET" 2>&1 | sed 's/^/  supervisorctl> /'; then
+    log "FAIL: could not restart $LOCK_TARGET"
+    _append_history "restart_failed" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
     exit 4
   fi
 else
-  log "START $TARGET (prev state=$state)"
-  if ! sudo -n supervisorctl start "$TARGET" 2>&1 | sed 's/^/  supervisorctl> /'; then
-    log "FAIL: could not start $TARGET"
-    _append_history "start_failed" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
+  log "START $LOCK_TARGET (prev state=$state)"
+  if ! sudo -n supervisorctl start "$LOCK_TARGET" 2>&1 | sed 's/^/  supervisorctl> /'; then
+    log "FAIL: could not start $LOCK_TARGET"
+    _append_history "start_failed" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
     exit 4
   fi
 fi
 
 # ---------------------------------------------------------------- verify
-log "waiting up to 30s for $TARGET to claim the Alpaca live-writer lock..."
-if ! _wait_until 30 bash -c '
-  sup_pid=$(sudo -n supervisorctl status "'"$TARGET"'" 2>/dev/null | grep -oE "pid [0-9]+" | awk "{print \$2}")
-  [ -z "$sup_pid" ] && exit 1
-  [ ! -f "'"$LOCK_PATH"'" ] && exit 1
-  lp=$(python3 -c "import json,sys; print(json.load(open(\"'"$LOCK_PATH"'\")).get(\"pid\",\"\"))" 2>/dev/null)
-  # Lock may be held by the supervisor pid OR by a child (python process).
-  # Accept either the supervisor-reported pid or any descendant.
-  [ "$lp" = "$sup_pid" ] && exit 0
-  # descendant check
-  for pid in $(pgrep -P "$sup_pid" 2>/dev/null); do
-    [ "$lp" = "$pid" ] && exit 0
-  done
-  exit 1
-'; then
-  log "FAIL: $TARGET did not claim the Alpaca live-writer lock within 30s"
-  log "      lock_holder_now=$(_lock_pid)  supervisor_pid=$(_unit_pid "$TARGET")"
-  _append_history "lock_mismatch" "$(_unit_pid "$TARGET")" "$(_lock_pid)"
+log "waiting up to 30s for $LOCK_TARGET to claim the Alpaca live-writer lock..."
+if ! _wait_until 30 _lock_matches_unit "$LOCK_TARGET"; then
+  log "FAIL: $LOCK_TARGET did not claim the Alpaca live-writer lock within 30s"
+  log "      lock_holder_now=$(_lock_pid)  supervisor_pid=$(_unit_pid "$LOCK_TARGET")"
+  _append_history "lock_mismatch" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
   exit 5
 fi
 
+for unit in "${POST_LOCK_START_UNITS[@]}"; do
+  state=$(_unit_state "$unit")
+  if [ "$state" = "RUNNING" ]; then
+    log "$unit already RUNNING (pid=$(_unit_pid "$unit")) — restart to pick up new config"
+    if ! sudo -n supervisorctl restart "$unit" 2>&1 | sed 's/^/  supervisorctl> /'; then
+      log "FAIL: could not restart $unit"
+      _append_history "restart_failed:$unit" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
+      exit 4
+    fi
+  else
+    log "START $unit (prev state=$state)"
+    if ! sudo -n supervisorctl start "$unit" 2>&1 | sed 's/^/  supervisorctl> /'; then
+      log "FAIL: could not start $unit"
+      _append_history "start_failed:$unit" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
+      exit 4
+    fi
+  fi
+  if ! _wait_until 15 bash -c '
+    state=$(sudo -n supervisorctl status "'"$unit"'" 2>/dev/null | awk "NR==1 {print \$2; exit}")
+    [ "$state" = "RUNNING" ]
+  '; then
+    log "FAIL: $unit did not reach RUNNING within 15s"
+    _append_history "start_failed:$unit" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
+    exit 4
+  fi
+  if ! _wait_until 5 _lock_matches_unit "$LOCK_TARGET"; then
+    log "FAIL: $unit start changed the Alpaca live-writer lock away from $LOCK_TARGET"
+    log "      lock_holder_now=$(_lock_pid)  supervisor_pid=$(_unit_pid "$LOCK_TARGET")"
+    _append_history "lock_mismatch_after_client:$unit" "$(_unit_pid "$LOCK_TARGET")" "$(_lock_pid)"
+    exit 5
+  fi
+done
+
 # ---------------------------------------------------------------- post-report
-final_pid=$(_unit_pid "$TARGET")
+final_pid=$(_unit_pid "$LOCK_TARGET")
 final_lock_pid=$(_lock_pid)
-log "OK: $TARGET RUNNING  supervisor_pid=$final_pid  lock_holder_pid=$final_lock_pid"
+log "OK: $TARGET RUNNING  writer_unit=$LOCK_TARGET  supervisor_pid=$final_pid  lock_holder_pid=$final_lock_pid"
 
 POST_PREFLIGHT_REPORT_PATH="${PREFLIGHT_REPORT_PATH%.json}_post.json"
 log "running post-restart preflight: ${preflight_args[*]}"
@@ -393,7 +485,7 @@ if ! "${preflight_args[@]}" > "$POST_PREFLIGHT_REPORT_PATH" 2> "${POST_PREFLIGHT
 fi
 _show_report_file "$POST_PREFLIGHT_REPORT_PATH"
 log "post-restart preflight report: $POST_PREFLIGHT_REPORT_PATH"
-if ! unresolved="$(_post_preflight_has_unresolved_findings "$POST_PREFLIGHT_REPORT_PATH" "$TARGET")"; then
+if ! unresolved="$(_post_preflight_has_unresolved_findings "$POST_PREFLIGHT_REPORT_PATH" "${PREFLIGHT_SERVICES[@]}")"; then
   printf '%s\n' "$unresolved" | sed 's/^/  preflight> /'
   log "FAIL: post-restart preflight still reports unresolved findings"
   _append_history "post_preflight_unresolved" "$final_pid" "$final_lock_pid"

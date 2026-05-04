@@ -284,3 +284,155 @@ def test_run_kfold_attaches_fm_latents(monkeypatch, tmp_path):
     assert build_calls
     assert build_calls[0]["fm_latents"] is fm_df
     assert build_calls[0]["fm_n_latents"] == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--window-days", "0"], "--window-days"),
+        (["--stride-days", "0"], "--stride-days"),
+        (["--leverage", "nan"], "--leverage"),
+        (["--leverage", "0"], "--leverage"),
+        (["--min-score", "inf"], "--min-score"),
+        (["--top-n", "0"], "--top-n"),
+        (["--n-buckets", "1"], "--n-buckets"),
+        (["--min-dollar-vol", "-1"], "--min-dollar-vol"),
+        (["--fm-n-latents", "0"], "--fm-n-latents"),
+        (["--train-start", "2025-01-02", "--train-end", "2025-01-01"], "--train-start"),
+        (["--oos-start", "bad-date"], "--oos-start"),
+    ],
+)
+def test_main_invalid_config_fails_before_symbol_or_model_work(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    argv,
+    expected,
+):
+    monkeypatch.setattr(
+        symbol_kfold,
+        "_parse_symbols_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("symbols loaded")),
+    )
+    monkeypatch.setattr(
+        symbol_kfold,
+        "_resolve_model_paths",
+        lambda _spec: (_ for _ in ()).throw(AssertionError("models resolved")),
+    )
+
+    rc = symbol_kfold.main(
+        [
+            "--symbols-file",
+            str(tmp_path / "missing_symbols.txt"),
+            "--model-paths",
+            str(tmp_path / "missing_model.pkl"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            *argv,
+        ]
+    )
+
+    assert rc == 2
+    assert expected in capsys.readouterr().err
+
+
+def test_main_rejects_missing_fm_latents_before_model_work(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        symbol_kfold,
+        "_parse_symbols_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("symbols loaded")),
+    )
+    monkeypatch.setattr(
+        symbol_kfold,
+        "_resolve_model_paths",
+        lambda _spec: (_ for _ in ()).throw(AssertionError("models resolved")),
+    )
+
+    rc = symbol_kfold.main(
+        [
+            "--symbols-file",
+            str(tmp_path / "missing_symbols.txt"),
+            "--model-paths",
+            str(tmp_path / "missing_model.pkl"),
+            "--fm-latents-path",
+            str(tmp_path / "missing_latents.parquet"),
+        ]
+    )
+
+    assert rc == 2
+    assert "--fm-latents-path not found" in capsys.readouterr().err
+
+
+def test_main_writes_kfold_result_atomically(monkeypatch, tmp_path):
+    symbols_path = tmp_path / "symbols.txt"
+    symbols_path.write_text("A\nB\n", encoding="utf-8")
+    model_path = tmp_path / "model.pkl"
+    model_path.write_bytes(b"model")
+    output_dir = tmp_path / "out"
+    writes = []
+
+    monkeypatch.setattr(symbol_kfold, "run_kfold", lambda **_kwargs: [])
+    monkeypatch.setattr(symbol_kfold, "_print_table", lambda _results: None)
+    monkeypatch.setattr(symbol_kfold, "_file_sha256", lambda _path: "abc123")
+    monkeypatch.setattr(symbol_kfold.time, "strftime", lambda _fmt: "20260102_030405")
+
+    def _capture_atomic(path, payload):
+        writes.append((path, payload))
+
+    monkeypatch.setattr(symbol_kfold, "write_json_atomic", _capture_atomic)
+
+    rc = symbol_kfold.main(
+        [
+            "--symbols-file",
+            str(symbols_path),
+            "--model-paths",
+            str(model_path),
+            "--fm-latents-path",
+            str(tmp_path / "latents.parquet"),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert rc == 2
+    assert writes == []
+
+    latents_path = tmp_path / "latents.parquet"
+    latents_path.write_bytes(b"latents")
+    rc = symbol_kfold.main(
+        [
+            "--symbols-file",
+            str(symbols_path),
+            "--model-paths",
+            str(model_path),
+            "--fm-latents-path",
+            str(latents_path),
+            "--oos-end",
+            "2026-01-31",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert rc == 0
+    assert writes == [
+        (
+            output_dir / "kfold_20260102_030405.json",
+            {
+                "model_paths": [str(model_path)],
+                "oos_start": "2025-01-02",
+                "oos_end": "2026-01-31",
+                "leverage": 2.0,
+                "min_score": 0.85,
+                "hold_through": False,
+                "top_n": 1,
+                "fee_regime": "deploy",
+                "fm_latents_path": str(latents_path),
+                "fm_latents_sha256": "abc123",
+                "fm_n_latents": 32,
+                "n_buckets": 4,
+                "bucket_mode": "liquidity",
+                "results": [],
+            },
+        )
+    ]

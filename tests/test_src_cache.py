@@ -6,10 +6,13 @@ from pathlib import Path
 
 import diskcache
 
-import src.cache as cache_mod
+
+def _cache_mod():
+    return importlib.import_module("src.cache")
 
 
 def test_cache_falls_back_to_memory_when_diskcache_init_fails(monkeypatch) -> None:
+    cache_mod = _cache_mod()
     original_cache_cls = diskcache.Cache
 
     class _FailingDiskCache:
@@ -38,6 +41,8 @@ def test_cache_falls_back_to_memory_when_diskcache_init_fails(monkeypatch) -> No
 
 
 def test_cache_switches_to_memory_after_runtime_storage_error(tmp_path: Path) -> None:
+    cache_mod = _cache_mod()
+
     class _FailingBackend:
         def set(self, *_args, **_kwargs):
             raise sqlite3.OperationalError("database or disk is full")

@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 import torch
-
 from pufferlib_market.autoresearch_rl import (
     EXPERIMENTS,
     TrialConfig,
@@ -18,12 +17,14 @@ from pufferlib_market.autoresearch_rl import (
     compute_eval_window_years,
     main,
     run_trial,
-    summarize_replay_eval_payload,
     select_experiments,
     select_rank_score,
     summarize_holdout_payload,
     summarize_market_validation_payload,
+    summarize_replay_eval_payload,
 )
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
+
 from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
 
 
@@ -121,6 +122,10 @@ def test_summarize_market_validation_payload_extracts_first_result() -> None:
         "market_trade_count": 7.0,
         "market_goodness_score": 3.6,
     }
+
+
+def test_trial_config_defaults_to_production_borrow_realism() -> None:
+    assert TrialConfig(description="default").short_borrow_apr == PRODUCTION_SHORT_BORROW_APR
 
 
 def test_summarize_replay_eval_payload_extracts_sections() -> None:
@@ -571,6 +576,7 @@ def test_run_trial_collects_replay_eval_metrics(monkeypatch, tmp_path: Path) -> 
     replay_cmd = next(cmd for cmd in commands if "pufferlib_market.replay_eval" in cmd)
     assert replay_cmd[replay_cmd.index("--hourly-data-root") + 1] == "trainingdatahourly"
     assert replay_cmd[replay_cmd.index("--fill-buffer-bps") + 1] == "5.0"
+    assert replay_cmd[replay_cmd.index("--short-borrow-apr") + 1] == str(PRODUCTION_SHORT_BORROW_APR)
     assert replay_cmd[replay_cmd.index("--tradable-symbols") + 1] == "AAA,BBB"
     assert replay_cmd[replay_cmd.index("--robust-start-states") + 1] == "flat,long:AAA:0.25"
     assert "--run-hourly-policy" in replay_cmd
@@ -859,6 +865,7 @@ def test_run_trial_passes_holdout_fill_buffer_bps(monkeypatch, tmp_path: Path) -
 
     holdout_cmd = next(cmd for cmd in commands if "pufferlib_market.evaluate_holdout" in cmd)
     assert holdout_cmd[holdout_cmd.index("--fill-buffer-bps") + 1] == "7.5"
+    assert holdout_cmd[holdout_cmd.index("--short-borrow-apr") + 1] == str(PRODUCTION_SHORT_BORROW_APR)
     assert holdout_cmd[holdout_cmd.index("--tradable-symbols") + 1] == "AAA,BBB"
     assert "--disable-shorts" in holdout_cmd
 
@@ -866,8 +873,10 @@ def test_run_trial_passes_holdout_fill_buffer_bps(monkeypatch, tmp_path: Path) -
 def test_main_creates_leaderboard_parent_directory(monkeypatch, tmp_path: Path) -> None:
     leaderboard = tmp_path / "nested" / "leaderboard.csv"
     checkpoint_root = tmp_path / "checkpoints"
+    captured_kwargs = {}
 
     def _fake_run_trial(*args, **kwargs) -> dict[str, object]:
+        captured_kwargs.update(kwargs)
         return {
             "rank_metric": "val_return",
             "rank_score": 1.0,
@@ -899,6 +908,7 @@ def test_main_creates_leaderboard_parent_directory(monkeypatch, tmp_path: Path) 
 
     assert leaderboard.exists()
     assert "replay_hourly_robust_worst_return_pct" in leaderboard.read_text()
+    assert captured_kwargs["holdout_short_borrow_apr"] == PRODUCTION_SHORT_BORROW_APR
 
 
 def test_run_trial_passes_risk_penalties_to_train_command(monkeypatch, tmp_path: Path) -> None:
@@ -972,6 +982,7 @@ def test_run_trial_passes_risk_penalties_to_train_command(monkeypatch, tmp_path:
     assert train_cmd[train_cmd.index("--group-relative-size") + 1] == "16"
     assert train_cmd[train_cmd.index("--group-relative-mix") + 1] == "0.25"
     assert train_cmd[train_cmd.index("--group-relative-clip") + 1] == "1.5"
+    assert train_cmd[train_cmd.index("--short-borrow-apr") + 1] == str(PRODUCTION_SHORT_BORROW_APR)
 
 
 def test_run_trial_caps_total_timesteps(monkeypatch, tmp_path: Path) -> None:

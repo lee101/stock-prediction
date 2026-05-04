@@ -44,10 +44,17 @@ import numpy as np
 import pandas as pd
 from pandas.tseries.offsets import BDay
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.backtest import (
+    _allocation_weights,
+    _build_regime_flags,
+    _build_vol_scale,
+    _inv_vol_pick_scale,
+)
 from xgbnew.dataset import _load_symbol_csv
 from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
@@ -60,14 +67,9 @@ from xgbnew.features import (
     build_features_for_symbol,
     evaluate_cross_sectional_regime_gate,
 )
-from xgbnew.backtest import (
-    _allocation_weights,
-    _build_regime_flags,
-    _build_vol_scale,
-    _inv_vol_pick_scale,
-)
 from xgbnew.model import XGBStockModel
 from xgbnew.trade_log import TradeLogger, slippage_bps
+
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -271,7 +273,7 @@ def _is_today_trading_day(client, now: datetime | None = None) -> tuple[bool, st
             except Exception:
                 next_open_date = None
     if is_open:
-        return True, f"market_open (is_open=true)"
+        return True, "market_open (is_open=true)"
     if next_open_date == now_et_date:
         return True, f"pre-open (next_open={next_open_date})"
     return False, f"closed (next_open={next_open_date}, today={now_et_date})"
@@ -370,7 +372,7 @@ def _get_latest_bars(
     try:
         import importlib
         env_real = importlib.import_module("env_real")
-        from alpaca.data import StockHistoricalDataClient, StockBarsRequest, TimeFrame
+        from alpaca.data import StockBarsRequest, StockHistoricalDataClient, TimeFrame
         from alpaca.data.enums import DataFeed
         candidate_keys = [
             (getattr(env_real, "ALP_KEY_ID_PAPER", ""),
@@ -1380,7 +1382,7 @@ def _apply_no_picks_fallback(
     min_score = float(getattr(args, "min_score", 0.0) or 0.0)
     if not (fb_sym and fb_alloc_frac > 0.0):
         print(
-            f"[xgb-live] No picks today — holding current positions (if any).",
+            "[xgb-live] No picks today — holding current positions (if any).",
             flush=True,
         )
         if trade_logger is not None:
@@ -2084,16 +2086,12 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
         if len(set(normalized_paths)) != len(normalized_paths):
             print("ERROR: --model-paths contains duplicate model paths", file=sys.stderr)
             return None
-        seeds: list[int] = []
         for path in paths:
             try:
-                seeds.append(_ensemble_model_path_seed(path))
+                _ensemble_model_path_seed(path)
             except ValueError as exc:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return None
-        if len(set(seeds)) != len(seeds):
-            print(f"ERROR: --model-paths contains duplicate model seeds: {seeds}", file=sys.stderr)
-            return None
         for mp in paths:
             if not mp.exists():
                 print(f"ERROR: Ensemble model not found at {mp}", file=sys.stderr)
@@ -2102,7 +2100,7 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
         for mp in paths:
             print(f"[xgb-live]   - {mp}", flush=True)
         try:
-            models = [XGBStockModel.load(mp) for mp in paths]
+            models = [_load_live_model(mp) for mp in paths]
         except Exception as exc:
             print(f"ERROR: Failed to load ensemble model: {exc}", file=sys.stderr)
             return None
@@ -2116,13 +2114,26 @@ def _load_models(args: argparse.Namespace) -> XGBStockModel | list[XGBStockModel
         return None
     print(f"[xgb-live] Loading model from {args.model_path}", flush=True)
     try:
-        model = XGBStockModel.load(args.model_path)
+        model = _load_live_model(args.model_path)
     except Exception as exc:
         print(f"ERROR: Failed to load model: {exc}", file=sys.stderr)
         return None
     if _validated_model_features(model, args.model_path) is None:
         return None
     return model
+
+
+def _load_live_model(path: Path):
+    """Load any live-supported daily model family, with legacy XGB fallback."""
+    try:
+        from xgbnew.model_registry import load_any_model
+
+        return load_any_model(path)
+    except Exception as registry_exc:
+        try:
+            return XGBStockModel.load(path)
+        except Exception as xgb_exc:
+            raise xgb_exc from registry_exc
 
 
 def _ensemble_model_path_seed(path: Path) -> int:

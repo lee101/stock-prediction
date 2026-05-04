@@ -10,14 +10,25 @@ Run: python scripts/bench_portfolio_ppo.py
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 
 import numpy as np
 import torch
 
+
+try:
+    from scripts._gpu_env_bootstrap import ensure_gpu_trading_env
+except ModuleNotFoundError:
+    from _gpu_env_bootstrap import ensure_gpu_trading_env
+
+GPU_ENV_PYTHON = ensure_gpu_trading_env(sys_module=sys)
+
 import gpu_trading_env
 from gpu_trading_env.ppo_trainer import (
-    PortfolioBracketActor, PPOConfig, train,
+    PortfolioBracketActor,
+    PPOConfig,
+    train,
 )
 
 
@@ -48,7 +59,7 @@ def main():
     p.add_argument("--no-bf16", dest="bf16", action="store_false")
     args = p.parse_args()
 
-    print(f"[bench] PortfolioBracketEnv PPO smoke run")
+    print("[bench] PortfolioBracketEnv PPO smoke run")
     print(f"  B={args.B} T={args.T} S={args.S} "
           f"rollout={args.rollout_steps} iters={args.iters} bf16={args.bf16}")
 
@@ -58,8 +69,12 @@ def main():
     prices = synth_prices(args.T, args.S, seed=0)
     env = gpu_trading_env.make_portfolio_bracket(
         B=args.B, prices=prices,
-        params={"episode_len": args.T - 2, "fee_bps": 0.278,
-                "max_leverage": 2.0},
+        params={
+            "episode_len": args.T - 2,
+            "fee_bps": gpu_trading_env.PRODUCTION_FEE_BPS,
+            "fill_buffer_bps": gpu_trading_env.PRODUCTION_FILL_BUFFER_BPS,
+            "max_leverage": 2.0,
+        },
     )
     obs_dim = env.obs().shape[-1]
     print(f"  obs_dim={obs_dim} action=[B, {args.S}, 4] env={type(env).__name__}")

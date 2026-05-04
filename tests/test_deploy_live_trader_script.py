@@ -10,6 +10,9 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "deploy_live_trader.sh"
 WEEKLY_RETRAIN = REPO / "scripts" / "xgb_weekly_retrain.sh"
 XGB_LAUNCH = REPO / "deployments" / "xgb-daily-trader-live" / "launch.sh"
+XGB_SUPERVISOR = REPO / "deployments" / "xgb-daily-trader-live" / "supervisor.conf"
+DAILY_RL_SUPERVISOR = REPO / "deployments" / "daily-rl-trader" / "supervisor.conf"
+TRADING_SERVER_SUPERVISOR = REPO / "deployments" / "trading-server" / "supervisor.conf"
 
 
 def test_deploy_live_trader_shell_syntax_is_valid() -> None:
@@ -30,6 +33,19 @@ def test_xgb_live_launch_sanitizes_break_glass_env_after_secrets() -> None:
 
     assert source_idx < unset_singleton_idx < live_enable_idx
     assert source_idx < unset_death_spiral_idx < live_enable_idx
+
+
+def test_only_current_champion_supervisor_unit_autostarts() -> None:
+    xgb = XGB_SUPERVISOR.read_text(encoding="utf-8")
+    daily_rl = DAILY_RL_SUPERVISOR.read_text(encoding="utf-8")
+    trading_server = TRADING_SERVER_SUPERVISOR.read_text(encoding="utf-8")
+
+    assert "autostart=true" in xgb
+    assert "autorestart=true" in xgb
+    assert "autostart=false" in daily_rl
+    assert "autorestart=false" in daily_rl
+    assert "autostart=false" in trading_server
+    assert "autorestart=false" in trading_server
 
 
 def test_deploy_live_trader_executes_happy_path_with_fake_supervisor(tmp_path: Path) -> None:
@@ -121,6 +137,325 @@ def test_deploy_live_trader_executes_happy_path_with_fake_supervisor(tmp_path: P
     assert f"post_preflight_report={post_report}" in history
     assert f"preflight report: {initial_report}" in result.stdout
     assert f"post-restart preflight report: {post_report}" in result.stdout
+
+
+def test_deploy_live_trader_daily_rl_starts_server_then_client(tmp_path: Path) -> None:
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    lock_path = tmp_path / "state" / "alpaca_live_writer.lock"
+    history_log = tmp_path / "history" / "live_trader_history.log"
+    report_dir = tmp_path / "reports"
+    preflight = tmp_path / "preflight.py"
+    state_dir = tmp_path / "supervisor_state"
+    state_dir.mkdir()
+
+    preflight.write_text(
+        "import json\n"
+        "print(json.dumps({'reports': [\n"
+        "  {'service': 'trading-server', 'safe_to_apply': True},\n"
+        "  {'service': 'daily-rl-trader', 'safe_to_apply': True},\n"
+        "]}))\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"-n\" ]; then shift; fi\n"
+        "exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    (fakebin / "supervisorctl").write_text(
+        "#!/usr/bin/env bash\n"
+        "cmd=\"${1:-}\"\n"
+        "unit=\"${2:-}\"\n"
+        "state_file=\"$SUPERVISOR_STATE_DIR/$unit.state\"\n"
+        "pid_file=\"$SUPERVISOR_STATE_DIR/$unit.pid\"\n"
+        "pid_for() {\n"
+        "  case \"$1\" in\n"
+        "    trading-server) echo 2222 ;;\n"
+        "    daily-rl-trader) echo 3333 ;;\n"
+        "    xgb-daily-trader-live) echo 1111 ;;\n"
+        "    *) echo 9999 ;;\n"
+        "  esac\n"
+        "}\n"
+        "case \"$cmd\" in\n"
+        "  status)\n"
+        "    state=\"STOPPED\"\n"
+        "    if [ -f \"$state_file\" ]; then state=\"$(cat \"$state_file\")\"; fi\n"
+        "    if [ \"$unit\" = \"xgb-daily-trader-live\" ] && [ ! -f \"$state_file\" ]; then state=\"RUNNING\"; fi\n"
+        "    if [ \"$state\" = \"RUNNING\" ]; then\n"
+        "      pid=\"$(pid_for \"$unit\")\"\n"
+        "      echo \"$unit RUNNING pid $pid, uptime 0:01:00\"\n"
+        "    else\n"
+        "      echo \"$unit STOPPED Not started\"\n"
+        "    fi\n"
+        "    ;;\n"
+        "  restart|start)\n"
+        "    mkdir -p \"$SUPERVISOR_STATE_DIR\" \"$(dirname \"$LOCK_PATH\")\"\n"
+        "    echo RUNNING > \"$state_file\"\n"
+        "    pid=\"$(pid_for \"$unit\")\"\n"
+        "    echo \"$pid\" > \"$pid_file\"\n"
+        "    if [ \"$unit\" = \"trading-server\" ]; then\n"
+        "      printf '{\"pid\":\"%s\"}\\n' \"$pid\" > \"$LOCK_PATH\"\n"
+        "    fi\n"
+        "    echo \"$unit: started\"\n"
+        "    ;;\n"
+        "  stop)\n"
+        "    mkdir -p \"$SUPERVISOR_STATE_DIR\"\n"
+        "    echo STOPPED > \"$state_file\"\n"
+        "    echo \"$unit: stopped\"\n"
+        "    ;;\n"
+        "  *)\n"
+        "    echo \"unexpected supervisorctl $*\" >&2\n"
+        "    exit 9\n"
+        "    ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").chmod(0o755)
+    (fakebin / "supervisorctl").chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "REPO": str(tmp_path),
+        "LOCK_PATH": str(lock_path),
+        "HISTORY_LOG": str(history_log),
+        "PREFLIGHT": str(preflight),
+        "PREFLIGHT_REPORT_DIR": str(report_dir),
+        "SUPERVISOR_STATE_DIR": str(state_dir),
+        "USER": "tester",
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--allow-unmodeled-live-sidecars", "daily-rl-trader"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "running preflight: python3" in result.stdout
+    assert "--service trading-server --service daily-rl-trader" in result.stdout
+    assert "START trading-server" in result.stdout
+    assert "START daily-rl-trader" in result.stdout
+    assert "writer_unit=trading-server" in result.stdout
+    assert result.stdout.index("START trading-server") < result.stdout.index("START daily-rl-trader")
+
+    reports = sorted(report_dir.glob("*.json"))
+    assert len(reports) == 2
+    for report in reports:
+        assert json.loads(report.read_text(encoding="utf-8")) == {
+            "reports": [
+                {"service": "trading-server", "safe_to_apply": True},
+                {"service": "daily-rl-trader", "safe_to_apply": True},
+            ],
+        }
+
+    history = history_log.read_text(encoding="utf-8")
+    assert "unit=daily-rl-trader" in history
+    assert "status=ok" in history
+    assert "supervisor_pid=2222" in history
+    assert "lock_pid=2222" in history
+
+
+def test_deploy_live_trader_daily_rl_fails_if_client_steals_lock(tmp_path: Path) -> None:
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    lock_path = tmp_path / "state" / "alpaca_live_writer.lock"
+    history_log = tmp_path / "history" / "live_trader_history.log"
+    report_dir = tmp_path / "reports"
+    preflight = tmp_path / "preflight.py"
+    state_dir = tmp_path / "supervisor_state"
+    state_dir.mkdir()
+
+    preflight.write_text(
+        "import json\n"
+        "print(json.dumps({'reports': [\n"
+        "  {'service': 'trading-server', 'safe_to_apply': True},\n"
+        "  {'service': 'daily-rl-trader', 'safe_to_apply': True},\n"
+        "]}))\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"-n\" ]; then shift; fi\n"
+        "exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    (fakebin / "supervisorctl").write_text(
+        "#!/usr/bin/env bash\n"
+        "cmd=\"${1:-}\"\n"
+        "unit=\"${2:-}\"\n"
+        "state_file=\"$SUPERVISOR_STATE_DIR/$unit.state\"\n"
+        "pid_for() {\n"
+        "  case \"$1\" in\n"
+        "    trading-server) echo 2222 ;;\n"
+        "    daily-rl-trader) echo 3333 ;;\n"
+        "    xgb-daily-trader-live) echo 1111 ;;\n"
+        "    *) echo 9999 ;;\n"
+        "  esac\n"
+        "}\n"
+        "case \"$cmd\" in\n"
+        "  status)\n"
+        "    state=\"STOPPED\"\n"
+        "    if [ -f \"$state_file\" ]; then state=\"$(cat \"$state_file\")\"; fi\n"
+        "    if [ \"$unit\" = \"xgb-daily-trader-live\" ] && [ ! -f \"$state_file\" ]; then state=\"RUNNING\"; fi\n"
+        "    if [ \"$state\" = \"RUNNING\" ]; then\n"
+        "      echo \"$unit RUNNING pid $(pid_for \"$unit\"), uptime 0:01:00\"\n"
+        "    else\n"
+        "      echo \"$unit STOPPED Not started\"\n"
+        "    fi\n"
+        "    ;;\n"
+        "  restart|start)\n"
+        "    mkdir -p \"$SUPERVISOR_STATE_DIR\" \"$(dirname \"$LOCK_PATH\")\"\n"
+        "    echo RUNNING > \"$state_file\"\n"
+        "    printf '{\"pid\":\"%s\"}\\n' \"$(pid_for \"$unit\")\" > \"$LOCK_PATH\"\n"
+        "    echo \"$unit: started\"\n"
+        "    ;;\n"
+        "  stop)\n"
+        "    mkdir -p \"$SUPERVISOR_STATE_DIR\"\n"
+        "    echo STOPPED > \"$state_file\"\n"
+        "    echo \"$unit: stopped\"\n"
+        "    ;;\n"
+        "  *)\n"
+        "    echo \"unexpected supervisorctl $*\" >&2\n"
+        "    exit 9\n"
+        "    ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").chmod(0o755)
+    (fakebin / "supervisorctl").chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "REPO": str(tmp_path),
+        "LOCK_PATH": str(lock_path),
+        "HISTORY_LOG": str(history_log),
+        "PREFLIGHT": str(preflight),
+        "PREFLIGHT_REPORT_DIR": str(report_dir),
+        "SUPERVISOR_STATE_DIR": str(state_dir),
+        "USER": "tester",
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--allow-unmodeled-live-sidecars", "daily-rl-trader"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 5
+    assert "START trading-server" in result.stdout
+    assert "START daily-rl-trader" in result.stdout
+    assert "daily-rl-trader start changed the Alpaca live-writer lock" in result.stdout
+    history = history_log.read_text(encoding="utf-8")
+    assert "status=lock_mismatch_after_client:daily-rl-trader" in history
+    assert "status=ok" not in history
+    assert "supervisor_pid=2222" in history
+    assert "lock_pid=3333" in history
+
+
+def test_deploy_live_trader_accepts_lock_held_by_supervisor_descendant(tmp_path: Path) -> None:
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    lock_path = tmp_path / "state" / "alpaca_live_writer.lock"
+    history_log = tmp_path / "history" / "live_trader_history.log"
+    report_dir = tmp_path / "reports"
+    preflight = tmp_path / "preflight.py"
+    state_dir = tmp_path / "supervisor_state"
+    state_dir.mkdir()
+
+    preflight.write_text(
+        "import json\n"
+        "print(json.dumps({'reports': ["
+        "{'service': 'trading-server', 'safe_to_apply': True}"
+        "]}))\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"-n\" ]; then shift; fi\n"
+        "exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    (fakebin / "ps").write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"-o\" ] && [ \"${2:-}\" = \"pid=\" ] && [ \"${3:-}\" = \"--ppid\" ]; then\n"
+        "  case \"${4:-}\" in\n"
+        "    2222) echo 3333 ;;\n"
+        "    3333) echo 4444 ;;\n"
+        "  esac\n"
+        "  exit 0\n"
+        "fi\n"
+        "exec /usr/bin/ps \"$@\"\n",
+        encoding="utf-8",
+    )
+    (fakebin / "supervisorctl").write_text(
+        "#!/usr/bin/env bash\n"
+        "cmd=\"${1:-}\"\n"
+        "unit=\"${2:-}\"\n"
+        "state_file=\"$SUPERVISOR_STATE_DIR/$unit.state\"\n"
+        "pid_file=\"$SUPERVISOR_STATE_DIR/$unit.pid\"\n"
+        "case \"$cmd\" in\n"
+        "  status)\n"
+        "    state=\"STOPPED\"\n"
+        "    if [ -f \"$state_file\" ]; then state=\"$(cat \"$state_file\")\"; fi\n"
+        "    if [ \"$state\" = \"RUNNING\" ]; then\n"
+        "      echo \"$unit RUNNING pid $(cat \"$pid_file\"), uptime 0:01:00\"\n"
+        "    else\n"
+        "      echo \"$unit STOPPED Not started\"\n"
+        "    fi\n"
+        "    ;;\n"
+        "  restart|start)\n"
+        "    mkdir -p \"$SUPERVISOR_STATE_DIR\" \"$(dirname \"$LOCK_PATH\")\"\n"
+        "    echo RUNNING > \"$state_file\"\n"
+        "    echo 2222 > \"$pid_file\"\n"
+        "    printf '{\"pid\":\"4444\"}\\n' > \"$LOCK_PATH\"\n"
+        "    echo \"$unit: started\"\n"
+        "    ;;\n"
+        "  stop)\n"
+        "    echo STOPPED > \"$state_file\"\n"
+        "    echo \"$unit: stopped\"\n"
+        "    ;;\n"
+        "  *)\n"
+        "    echo \"unexpected supervisorctl $*\" >&2\n"
+        "    exit 9\n"
+        "    ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").chmod(0o755)
+    (fakebin / "ps").chmod(0o755)
+    (fakebin / "supervisorctl").chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "REPO": str(tmp_path),
+        "LOCK_PATH": str(lock_path),
+        "HISTORY_LOG": str(history_log),
+        "PREFLIGHT": str(preflight),
+        "PREFLIGHT_REPORT_DIR": str(report_dir),
+        "SUPERVISOR_STATE_DIR": str(state_dir),
+        "USER": "tester",
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--allow-unmodeled-live-sidecars", "trading-server"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "OK: trading-server RUNNING" in result.stdout
+    history = history_log.read_text(encoding="utf-8")
+    assert "status=ok" in history
+    assert "supervisor_pid=2222" in history
+    assert "lock_pid=4444" in history
 
 
 def test_deploy_live_trader_fails_if_post_preflight_still_needs_restart(
@@ -318,7 +653,9 @@ def test_deploy_live_trader_runs_preflight_before_supervisor_mutations() -> None
     assert preflight_idx < stop_idx
     assert preflight_idx < restart_idx
     assert preflight_idx < start_idx
-    assert 'python3 "$PREFLIGHT" --service "$TARGET" --fail-on-unsafe --json' in text
+    assert 'preflight_args=(python3 "$PREFLIGHT")' in text
+    assert 'preflight_args+=(--service "$service")' in text
+    assert 'preflight_args+=(--fail-on-unsafe --json)' in text
     assert "--allow-unmodeled-live-sidecars" in text
     assert "--allow-invalid-xgb-ensemble" in text
     assert "[--allow-invalid-xgb-ensemble] <unit_name>" in text
@@ -348,9 +685,9 @@ def test_deploy_live_trader_post_preflight_parser_is_fail_closed() -> None:
     parser_idx = text.index("_post_preflight_has_unresolved_findings()")
 
     assert "if safe_to_apply is not True:" in text[parser_idx:]
-    assert "if service != expected_service:" in text[parser_idx:]
-    assert "missing expected service in preflight report" in text[parser_idx:]
-    assert '_post_preflight_has_unresolved_findings "$POST_PREFLIGHT_REPORT_PATH" "$TARGET"' in text
+    assert "if service not in expected_services:" in text[parser_idx:]
+    assert "missing expected service(s) in preflight report" in text[parser_idx:]
+    assert '_post_preflight_has_unresolved_findings "$POST_PREFLIGHT_REPORT_PATH" "${PREFLIGHT_SERVICES[@]}"' in text
 
 
 def test_deploy_live_trader_records_failed_mutation_attempts_in_history() -> None:

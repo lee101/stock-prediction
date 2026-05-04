@@ -38,8 +38,8 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
-import json
 import logging
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -49,6 +49,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from xgbnew.artifacts import write_json_atomic
 from xgbnew.backtest import BacktestConfig, simulate
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents
 from xgbnew.features import DAILY_FEATURE_COLS, DAILY_RANK_FEATURE_COLS
@@ -488,10 +489,84 @@ def parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _parse_date_arg(name: str, value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"--{name} must be an ISO date, got {value!r}") from exc
+
+
+def _validate_args(args: argparse.Namespace) -> tuple[date, date, date, date]:
+    train_start = _parse_date_arg("train-start", str(args.train_start))
+    train_end = _parse_date_arg("train-end", str(args.train_end))
+    oos_start = _parse_date_arg("oos-start", str(args.oos_start))
+    oos_end = (
+        _parse_date_arg("oos-end", str(args.oos_end))
+        if args.oos_end
+        else datetime.now(UTC).date()
+    )
+    if train_start > train_end:
+        raise ValueError("--train-start must be <= --train-end")
+    if oos_start > oos_end:
+        raise ValueError("--oos-start must be <= --oos-end")
+    if int(args.window_days) <= 0:
+        raise ValueError("--window-days must be positive")
+    if int(args.stride_days) <= 0:
+        raise ValueError("--stride-days must be positive")
+    if not math.isfinite(float(args.leverage)) or float(args.leverage) <= 0.0:
+        raise ValueError("--leverage must be finite and positive")
+    if not math.isfinite(float(args.min_score)):
+        raise ValueError("--min-score must be finite")
+    if int(args.top_n) <= 0:
+        raise ValueError("--top-n must be positive")
+    if int(args.n_buckets) < 2:
+        raise ValueError("--n-buckets must be >= 2")
+    if not math.isfinite(float(args.min_dollar_vol)) or float(args.min_dollar_vol) < 0.0:
+        raise ValueError("--min-dollar-vol must be finite and nonnegative")
+    if int(args.fm_n_latents) <= 0:
+        raise ValueError("--fm-n-latents must be positive")
+    if args.fm_latents_path is not None and not Path(args.fm_latents_path).exists():
+        raise ValueError(f"--fm-latents-path not found: {args.fm_latents_path}")
+    return train_start, train_end, oos_start, oos_end
+
+
+def _result_payload(
+    *,
+    args: argparse.Namespace,
+    model_paths: list[Path],
+    oos_end: date,
+    results: list[LOBOResult],
+) -> dict:
+    return {
+        "model_paths": [str(p) for p in model_paths],
+        "oos_start": args.oos_start,
+        "oos_end": str(oos_end),
+        "leverage": args.leverage,
+        "min_score": args.min_score,
+        "hold_through": args.hold_through,
+        "top_n": args.top_n,
+        "fee_regime": args.fee_regime,
+        "fm_latents_path": str(args.fm_latents_path) if args.fm_latents_path else None,
+        "fm_latents_sha256": (
+            _file_sha256(args.fm_latents_path) if args.fm_latents_path else None
+        ),
+        "fm_n_latents": int(args.fm_n_latents) if args.fm_latents_path else 0,
+        "n_buckets": args.n_buckets,
+        "bucket_mode": args.bucket_mode,
+        "results": _rows(results),
+    }
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
+
+    try:
+        train_start, train_end, oos_start, oos_end = _validate_args(args)
+    except ValueError as exc:
+        print(f"symbol_kfold: {exc}", file=sys.stderr)
+        return 2
 
     symbols = _parse_symbols_file(args.symbols_file)
     model_paths = _resolve_model_paths(args.model_paths)
@@ -499,19 +574,14 @@ def main(argv=None) -> int:
         print("ERROR: no model paths resolved", file=sys.stderr)
         return 1
 
-    oos_end = (
-        date.fromisoformat(args.oos_end)
-        if args.oos_end
-        else datetime.now(UTC).date()
-    )
     t0 = time.perf_counter()
     results = run_kfold(
         symbols=symbols,
         data_root=args.data_root,
         model_paths=model_paths,
-        train_start=date.fromisoformat(args.train_start),
-        train_end=date.fromisoformat(args.train_end),
-        oos_start=date.fromisoformat(args.oos_start),
+        train_start=train_start,
+        train_end=train_end,
+        oos_start=oos_start,
         oos_end=oos_end,
         window_days=int(args.window_days), stride_days=int(args.stride_days),
         leverage=float(args.leverage), min_score=float(args.min_score),
@@ -529,20 +599,10 @@ def main(argv=None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
     out = args.output_dir / f"kfold_{ts}.json"
-    out.write_text(json.dumps({
-        "model_paths": [str(p) for p in model_paths],
-        "oos_start": args.oos_start, "oos_end": str(oos_end),
-        "leverage": args.leverage, "min_score": args.min_score,
-        "hold_through": args.hold_through, "top_n": args.top_n,
-        "fee_regime": args.fee_regime,
-        "fm_latents_path": str(args.fm_latents_path) if args.fm_latents_path else None,
-        "fm_latents_sha256": (
-            _file_sha256(args.fm_latents_path) if args.fm_latents_path else None
-        ),
-        "fm_n_latents": int(args.fm_n_latents) if args.fm_latents_path else 0,
-        "n_buckets": args.n_buckets, "bucket_mode": args.bucket_mode,
-        "results": _rows(results),
-    }, indent=2))
+    write_json_atomic(
+        out,
+        _result_payload(args=args, model_paths=model_paths, oos_end=oos_end, results=results),
+    )
     print(f"[kfold] wrote {out}  ({len(results)} cells)", flush=True)
 
     _print_table(results)

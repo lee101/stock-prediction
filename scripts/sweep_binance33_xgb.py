@@ -17,11 +17,14 @@ from pathlib import Path
 
 import numpy as np
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from pufferlib_market.hourly_replay import MktdData, P_CLOSE, read_mktd, simulate_daily_policy
+from pufferlib_market.hourly_replay import P_CLOSE, MktdData, read_mktd, simulate_daily_policy
+from xgbnew.cli_realism import validate_nonnegative_realism_args
+
 from src.robust_trading_metrics import compute_pnl_smoothness_from_equity, compute_ulcer_index
 
 
@@ -496,12 +499,58 @@ def _parse_float_list(value: str) -> list[float]:
     return parsed
 
 
+def _parse_int_list(value: str) -> list[int]:
+    parsed = [int(part.strip()) for part in str(value).split(",") if part.strip()]
+    if not parsed:
+        raise ValueError(f"expected at least one int in {value!r}")
+    return parsed
+
+
 def _parse_str_list(value: str, *, default: list[str]) -> list[str]:
     parsed = [part.strip() for part in str(value or "").split(",") if part.strip()]
     return parsed or list(default)
 
 
-def main() -> int:
+def _resolve_experiments(
+    *,
+    experiment_names: str,
+    max_experiments: int = 0,
+    allow_all: bool = True,
+) -> tuple[list[Experiment], list[str]]:
+    experiments = _experiments()
+    requested = [part.strip() for part in str(experiment_names).split(",") if part.strip()]
+    if requested:
+        by_name = {exp.name: exp for exp in experiments}
+        missing = sorted(set(requested) - set(by_name))
+        if missing:
+            return [], [f"unknown experiment names: {', '.join(missing)}"]
+        return [by_name[name] for name in requested], []
+    if not allow_all:
+        return [], ["experiment_names must contain at least one experiment"]
+    if max_experiments > 0:
+        experiments = experiments[: int(max_experiments)]
+    return experiments, []
+
+
+def _finite_values(values: list[float], *, label: str, min_value: float = 0.0) -> list[str]:
+    failures: list[str] = []
+    for value in values:
+        if not np.isfinite(float(value)) or float(value) < float(min_value):
+            failures.append(f"{label} entries must be finite and >= {float(min_value):g}")
+            break
+    return failures
+
+
+def _positive_int_values(values: list[int], *, label: str) -> list[str]:
+    failures: list[str] = []
+    for value in values:
+        if int(value) <= 0:
+            failures.append(f"{label} entries must be positive integers")
+            break
+    return failures
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sweep Binance33 XGBoost cross-sectional policies.")
     parser.add_argument("--train-data", type=Path, default=Path("pufferlib_market/data/binance33_daily_train.bin"))
     parser.add_argument("--eval-data", type=Path, default=Path("pufferlib_market/data/binance33_daily_val.bin"))
@@ -539,25 +588,98 @@ def main() -> int:
         action="store_true",
         help="Exit non-zero unless a worst-slippage max-window row passes the production target.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def _validate_common_sweep_args(args: argparse.Namespace) -> list[str]:
+    failures = validate_nonnegative_realism_args(
+        args,
+        fields=(("fee_rate", "fee_rate"), ("fill_buffer_bps", "fill_buffer_bps")),
+    )
+    if int(args.rounds) <= 0:
+        failures.append("rounds must be positive")
+    if int(args.stride) <= 0:
+        failures.append("stride must be positive")
+    if int(args.decision_lag) < 0:
+        failures.append("decision_lag must be non-negative")
+    if int(getattr(args, "max_experiments", 0)) < 0:
+        failures.append("max_experiments must be non-negative")
+
+    for attr, label in (
+        ("max_offset_bps", "max_offset_bps"),
+        ("score_scale", "score_scale"),
+        ("target_vol", "target_vol"),
+        ("target_monthly_pct", "target_monthly_pct"),
+        ("target_max_dd_pct", "target_max_dd_pct"),
+    ):
+        if hasattr(args, attr):
+            value = float(getattr(args, attr))
+            if not np.isfinite(value) or value < 0.0:
+                failures.append(f"{label} must be finite and non-negative")
+    if hasattr(args, "fail_fast_max_dd_pct"):
+        value = float(args.fail_fast_max_dd_pct)
+        if not np.isfinite(value) or value < 0.0:
+            failures.append("fail_fast_max_dd_pct must be finite and non-negative")
+
+    try:
+        eval_days = _parse_int_list(str(args.eval_days))
+    except ValueError as exc:
+        failures.append(f"eval_days {exc}")
+    else:
+        failures.extend(_positive_int_values(eval_days, label="eval_days"))
+
+    try:
+        slippages = _parse_float_list(str(args.slippage_bps))
+    except ValueError as exc:
+        failures.append(f"slippage_bps {exc}")
+    else:
+        failures.extend(_finite_values(slippages, label="slippage_bps"))
+
+    return failures
+
+
+def _validate_args(args: argparse.Namespace) -> list[str]:
+    failures = _validate_common_sweep_args(args)
+    if int(args.allocation_bins) <= 0:
+        failures.append("allocation_bins must be positive")
+    if int(args.level_bins) <= 0:
+        failures.append("level_bins must be positive")
+    try:
+        leverages = _parse_float_list(str(args.max_leverage))
+    except ValueError as exc:
+        failures.append(f"max_leverage {exc}")
+    else:
+        if any(not np.isfinite(float(value)) or float(value) <= 0.0 for value in leverages):
+            failures.append("max_leverage entries must be finite and positive")
+    _, experiment_failures = _resolve_experiments(
+        experiment_names=str(args.experiment_names),
+        max_experiments=int(args.max_experiments),
+    )
+    failures.extend(experiment_failures)
+    return failures
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    failures = _validate_args(args)
+    if failures:
+        print("ERROR: invalid sweep configuration:", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 2
 
     train_data = read_mktd(args.train_data)
     eval_data = read_mktd(args.eval_data)
-    eval_days = [int(part.strip()) for part in str(args.eval_days).split(",") if part.strip()]
-    slippages = [float(part.strip()) for part in str(args.slippage_bps).split(",") if part.strip()]
+    eval_days = _parse_int_list(str(args.eval_days))
+    slippages = _parse_float_list(str(args.slippage_bps))
     leverages = _parse_float_list(str(args.max_leverage))
     size_modes = _parse_str_list(args.size_modes, default=["full"])
     level_modes = _parse_str_list(args.level_modes, default=["mid"])
-    experiments = _experiments()
-    if args.experiment_names:
-        requested = [part.strip() for part in str(args.experiment_names).split(",") if part.strip()]
-        by_name = {exp.name: exp for exp in experiments}
-        missing = sorted(set(requested) - set(by_name))
-        if missing:
-            raise ValueError(f"unknown experiment names: {', '.join(missing)}")
-        experiments = [by_name[name] for name in requested]
-    elif args.max_experiments > 0:
-        experiments = experiments[: int(args.max_experiments)]
+    experiments, _experiment_failures = _resolve_experiments(
+        experiment_names=str(args.experiment_names),
+        max_experiments=int(args.max_experiments),
+    )
     expanded: list[Experiment] = []
     for exp in experiments:
         for size_mode in size_modes:

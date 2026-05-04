@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import json
 import math
 import sys
 from pathlib import Path
@@ -28,13 +27,18 @@ from pathlib import Path
 import numpy as np
 import torch
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from pufferlib_market.evaluate_holdout import _mask_all_shorts, load_policy  # noqa: E402
-from pufferlib_market.hourly_replay import P_CLOSE, P_OPEN, read_mktd  # noqa: E402
+from pufferlib_market.hourly_replay import P_CLOSE, read_mktd  # noqa: E402
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
+
 from src.daily_stock_defaults import DEFAULT_CHECKPOINT, DEFAULT_EXTRA_CHECKPOINTS  # noqa: E402
+
 
 INITIAL_CASH = 100_000.0
 
@@ -118,6 +122,7 @@ def simulate_multipos(
     total_alloc: float,
     decision_lag: int,
     fee_rate: float,
+    fill_buffer_bps: float,
     slippage_bps: float,
     window_days: int,
     start_idx: int,
@@ -128,7 +133,8 @@ def simulate_multipos(
     S = int(data.num_symbols)
     F = int(data.features.shape[2])
     slip = max(0.0, slippage_bps) / 10_000.0
-    effective_fee = float(fee_rate) + slip
+    fill_buffer = max(0.0, fill_buffer_bps) / 10_000.0
+    effective_fee = float(fee_rate) + slip + fill_buffer
 
     closes = np.asarray(data.prices[:, :, P_CLOSE], dtype=np.float64)
     features = np.asarray(data.features, dtype=np.float32)
@@ -242,18 +248,98 @@ def simulate_multipos(
     }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--val-data", default="pufferlib_market/data/screened32_single_offset_val_full.bin")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--decision-lag", type=int, default=2)
     p.add_argument("--fill-buffer-bps", type=float, default=5.0)
+    p.add_argument("--fee-rate", type=float, default=0.001)
+    p.add_argument("--slippage-bps", type=float, default=20.0)
     p.add_argument("--total-alloc", type=float, default=1.0)
+    p.add_argument("--max-leverage", type=float, default=1.0)
     p.add_argument("--k", type=int, default=8)
     p.add_argument("--min-prob-ratio", type=float, default=0.5)
     p.add_argument("--window-days", type=int, default=50)
     p.add_argument("--out-json", default="docs/realism_gate_multipos/screened32_multipos.json")
-    args = p.parse_args()
+    p.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow lag 0/1 diagnostic runs; not production-realistic.",
+    )
+    return p
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> list[str]:
+    failures = validate_nonnegative_realism_args(
+        args,
+        fields=(
+            ("fee_rate", "fee_rate"),
+            ("fill_buffer_bps", "fill_buffer_bps"),
+            ("slippage_bps", "slippage_bps"),
+        ),
+    )
+    for attr, label in (
+        ("max_leverage", "max_leverage"),
+        ("total_alloc", "total_alloc"),
+        ("min_prob_ratio", "min_prob_ratio"),
+    ):
+        value = getattr(args, attr, None)
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            failures.append(f"{label} must be finite and positive")
+            continue
+        if not math.isfinite(value_f) or value_f <= 0.0:
+            failures.append(f"{label} must be finite and positive")
+    if int(args.k) <= 0:
+        failures.append("k must be positive")
+    if int(args.window_days) <= 0:
+        failures.append("window_days must be positive")
+    if int(args.decision_lag) < 0:
+        failures.append("decision_lag must be non-negative")
+    elif int(args.decision_lag) < 2 and not bool(args.allow_low_lag_diagnostics):
+        failures.append("decision_lag below 2 requires --allow-low-lag-diagnostics")
+    try:
+        total_alloc = float(args.total_alloc)
+        max_leverage = float(args.max_leverage)
+    except (TypeError, ValueError):
+        pass
+    else:
+        if math.isfinite(total_alloc) and math.isfinite(max_leverage) and total_alloc > max_leverage:
+            failures.append("total_alloc must be <= max_leverage")
+    return failures
+
+
+def build_payload(args: argparse.Namespace, ckpts: list[str | Path], summary: dict) -> dict:
+    return {
+        "ensemble": [Path(c).stem for c in ckpts],
+        "k": int(args.k),
+        "min_prob_ratio": float(args.min_prob_ratio),
+        "total_alloc": float(args.total_alloc),
+        "max_leverage": float(args.max_leverage),
+        "decision_lag": int(args.decision_lag),
+        "fill_buffer_bps": float(args.fill_buffer_bps),
+        "fee_rate": float(args.fee_rate),
+        "slippage_bps": float(args.slippage_bps),
+        "window_days": int(args.window_days),
+        "allow_low_lag_diagnostics": bool(args.allow_low_lag_diagnostics),
+        "summary": summary,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    validation_failures = validate_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"screened32_realism_gate_multipos: {failure}", file=sys.stderr)
+        return 2
 
     data = read_mktd(args.val_data)
     T = int(data.num_timesteps)
@@ -269,10 +355,14 @@ def main() -> int:
     head = loaded[0]
 
     starts = list(range(0, T - args.window_days - 1))
+    if not starts:
+        print(
+            f"screened32_realism_gate_multipos: val too short for window_days={args.window_days}",
+            file=sys.stderr,
+        )
+        return 2
     print(f"Windows: {len(starts)} starts × {args.window_days}d")
 
-    fee_rate = 0.001
-    slippage_bps = 5.0
     results = []
     for i, start in enumerate(starts):
         r = simulate_multipos(
@@ -283,8 +373,9 @@ def main() -> int:
             min_prob_ratio=args.min_prob_ratio,
             total_alloc=args.total_alloc,
             decision_lag=args.decision_lag,
-            fee_rate=fee_rate,
-            slippage_bps=slippage_bps,
+            fee_rate=float(args.fee_rate),
+            fill_buffer_bps=float(args.fill_buffer_bps),
+            slippage_bps=float(args.slippage_bps),
             window_days=args.window_days,
             start_idx=start,
             device=device,
@@ -309,26 +400,23 @@ def main() -> int:
     print(f"median_max_dd:  {float(np.median(dds))*100:.2f}%")
     print(f"n_neg:          {n_neg}/{len(rets)}")
 
-    Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out_json).write_text(json.dumps({
-        "ensemble": [Path(c).stem for c in ckpts],
-        "k": args.k,
-        "min_prob_ratio": args.min_prob_ratio,
-        "total_alloc": args.total_alloc,
-        "decision_lag": args.decision_lag,
-        "fill_buffer_bps": args.fill_buffer_bps,
-        "fee_rate": fee_rate,
-        "slippage_bps": slippage_bps,
-        "window_days": args.window_days,
-        "summary": {
-            "median_monthly": med_monthly,
-            "p10_monthly": p10_monthly,
-            "median_sortino": float(np.median(sortinos)),
-            "median_max_dd": float(np.median(dds)),
-            "n_neg": n_neg,
-            "n_windows": len(rets),
-        },
-    }, indent=2))
+    out_path = Path(args.out_json)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(
+        out_path,
+        build_payload(
+            args,
+            ckpts,
+            {
+                "median_monthly": med_monthly,
+                "p10_monthly": p10_monthly,
+                "median_sortino": float(np.median(sortinos)),
+                "median_max_dd": float(np.median(dds)),
+                "n_neg": n_neg,
+                "n_windows": len(rets),
+            },
+        ),
+    )
     print(f"\nWrote {args.out_json}")
     return 0
 

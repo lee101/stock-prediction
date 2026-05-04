@@ -27,7 +27,6 @@ Key flags
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import time
@@ -41,7 +40,9 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.artifacts import save_model_atomic, write_dataframe_csv_atomic, write_json_atomic  # noqa: E402
 from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, print_summary, simulate  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache  # noqa: E402
 from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
 from xgbnew.model import XGBStockModel  # noqa: E402
@@ -79,8 +80,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Position leverage (1.0=none, 2.0=max)")
     p.add_argument("--xgb-weight", type=float, default=0.5,
                    help="XGB weight in blended score (0=pure Chronos2, 1=pure XGB)")
-    p.add_argument("--commission-bps", type=float, default=0.0,
-                   help="Legacy extra commission per side in bps (default 0; stock fee defaults are applied separately)")
+    p.add_argument(
+        "--commission-bps",
+        type=float,
+        default=0.0,
+        help="Legacy extra commission per side in bps; stock fee defaults are applied separately.",
+    )
     p.add_argument(
         "--fee-rate",
         type=float,
@@ -115,12 +120,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _validate_realism_args(args: argparse.Namespace) -> list[str]:
+    return validate_nonnegative_realism_args(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s %(message)s",
     )
+
+    validation_failures = _validate_realism_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
 
     # ── Symbols ──────────────────────────────────────────────────────────────
     if args.symbols:
@@ -181,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                   verbose=args.verbose)
 
         if args.model_path:
-            model.save(args.model_path)
+            save_model_atomic(model, args.model_path)
             print(f"[xgb-daily] Model saved to {args.model_path}", flush=True)
 
     # ── Feature importances ───────────────────────────────────────────────────
@@ -270,8 +285,7 @@ def main(argv: list[str] | None = None) -> int:
                         "fee_rate": t.fee_rate, "fill_buffer_bps": t.fill_buffer_bps,
                         "net_return_pct": t.net_return_pct, "equity_end": dr.equity_end,
                     })
-            pd.DataFrame(rows).to_csv(
-                args.output_dir / f"trades_{label}.csv", index=False)
+            write_dataframe_csv_atomic(args.output_dir / f"trades_{label}.csv", pd.DataFrame(rows))
 
     # ── Comparison table ──────────────────────────────────────────────────────
     print("\n  Comparison across configs:")
@@ -285,16 +299,19 @@ def main(argv: list[str] | None = None) -> int:
     # Save summary JSON
     ts = time.strftime("%Y%m%d_%H%M%S")
     summary_path = args.output_dir / f"summary_{ts}.json"
-    summary_path.write_text(json.dumps({
-        "train_start": args.train_start, "train_end": args.train_end,
-        "val_start": args.val_start, "val_end": args.val_end,
-        "test_start": args.test_start, "test_end": args.test_end,
-        "n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df),
-        "fee_rate": float(args.fee_rate),
-        "fill_buffer_bps": float(args.fill_buffer_bps),
-        "commission_bps": float(args.commission_bps),
-        "results": results_summary,
-    }, indent=2), encoding="utf-8")
+    write_json_atomic(
+        summary_path,
+        {
+            "train_start": args.train_start, "train_end": args.train_end,
+            "val_start": args.val_start, "val_end": args.val_end,
+            "test_start": args.test_start, "test_end": args.test_end,
+            "n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df),
+            "fee_rate": float(args.fee_rate),
+            "fill_buffer_bps": float(args.fill_buffer_bps),
+            "commission_bps": float(args.commission_bps),
+            "results": results_summary,
+        },
+    )
     print(f"\n  Summary → {summary_path}")
 
     return 0

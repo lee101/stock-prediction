@@ -5,13 +5,13 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 
+from pufferlib_market.artifacts import save_torch_atomic, write_json_atomic
 from pufferlib_market.evaluate_multiperiod import load_policy
 from pufferlib_market.hourly_replay import (
     FEATURES_PER_SYM,
@@ -19,7 +19,6 @@ from pufferlib_market.hourly_replay import (
     P_CLOSE,
     P_HIGH,
     P_LOW,
-    DailySimResult,
     HourlyMarket,
     HourlyReplayResult,
     MktdData,
@@ -35,7 +34,9 @@ from pufferlib_market.hourly_replay import (
     load_hourly_market,
     read_mktd,
 )
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
+
 
 _EPS = 1e-8
 
@@ -87,7 +88,7 @@ class RefinerObjectiveSummary:
 class RefinerConfig:
     max_leverage: float = 5.0
     fee_rate: float = 0.001
-    short_borrow_apr: float = 0.0
+    short_borrow_apr: float = PRODUCTION_SHORT_BORROW_APR
     periods_per_year: float = 365.0
     epochs: int = 400
     lr: float = 1e-3
@@ -1099,8 +1100,7 @@ def _evaluate_refined_trace(
 
 
 def _save_report(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    write_json_atomic(path, payload, sort_keys=True)
 
 
 def main() -> None:
@@ -1125,7 +1125,7 @@ def main() -> None:
     parser.add_argument("--turnover-penalty", type=float, default=0.02)
     parser.add_argument("--hidden-size", type=int, default=192)
     parser.add_argument("--fee-rate", type=float, default=0.001)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--periods-per-year", type=float, default=365.0)
     parser.add_argument("--seed", type=int, default=42)
@@ -1187,7 +1187,7 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    save_torch_atomic(
         {
             "model": model.state_dict(),
             "config": asdict(config),

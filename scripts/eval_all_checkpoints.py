@@ -14,17 +14,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime
 import struct
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from xgbnew.artifacts import write_dict_rows_csv_atomic  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
 
 
 # Default data paths to try in order
@@ -43,14 +45,14 @@ _KNOWN_PERIODS: dict[str, int] = {"1d": 24, "7d": 168, "30d": 720}
 def _parse_periods(periods_str: str) -> dict[str, int]:
     """Parse a comma-separated periods string into a name->hours dict."""
     period_map: dict[str, int] = {}
-    for p in periods_str.split(","):
-        p = p.strip()
-        if p in _KNOWN_PERIODS:
-            period_map[p] = _KNOWN_PERIODS[p]
-        elif p.endswith("d") and p[:-1].isdigit():
-            period_map[p] = int(p[:-1]) * 24
-        elif p.endswith("h") and p[:-1].isdigit():
-            period_map[p] = int(p[:-1])
+    for raw_period in periods_str.split(","):
+        period = raw_period.strip()
+        if period in _KNOWN_PERIODS:
+            period_map[period] = _KNOWN_PERIODS[period]
+        elif period.endswith("d") and period[:-1].isdigit():
+            period_map[period] = int(period[:-1]) * 24
+        elif period.endswith("h") and period[:-1].isdigit():
+            period_map[period] = int(period[:-1])
     return period_map or {"30d": 720}
 
 
@@ -76,7 +78,7 @@ def checkpoint_label(pt_path: Path, checkpoints_dir: Path) -> str:
     return str(rel)
 
 
-def infer_num_symbols(data_path: Path) -> Optional[int]:
+def infer_num_symbols(data_path: Path) -> int | None:
     """Read symbol count from MKTD binary header."""
     try:
         with data_path.open("rb") as f:
@@ -101,9 +103,9 @@ def run_evaluation(
     max_leverage: float = 1.0,
     deterministic: bool = True,
     device: str = "cpu",
-) -> Optional[dict]:
+) -> dict | None:
     """Evaluate a single checkpoint. Returns dict of metrics or None on error."""
-    from pufferlib_market.evaluate_multiperiod import evaluate_checkpoint
+    from pufferlib_market.evaluate_multiperiod import evaluate_checkpoint  # noqa: PLC0415
 
     period_map = _parse_periods(periods)
 
@@ -122,7 +124,7 @@ def run_evaluation(
         return {"error": str(e)}
 
     # Flatten results for the primary period (30d if available, else first)
-    primary_period = "30d" if "30d" in period_map else list(period_map.keys())[0]
+    primary_period = "30d" if "30d" in period_map else next(iter(period_map.keys()))
     primary = next((r for r in results if r.get("period") == primary_period), None)
     if primary is None and results:
         primary = results[0]
@@ -196,20 +198,38 @@ def save_leaderboard(rows: list[dict], output_path: Path) -> None:
             if k not in seen:
                 all_keys.append(k)
                 seen.add(k)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(sorted_rows)
+    write_dict_rows_csv_atomic(output_path, sorted_rows, fieldnames=all_keys)
     print(f"\nLeaderboard saved to: {output_path}")
 
 
-def resolve_default_data_path() -> Optional[Path]:
+def resolve_default_data_path() -> Path | None:
     for candidate in DEFAULT_VAL_DATA_CANDIDATES:
         p = ROOT / candidate
         if p.exists():
             return p
     return None
+
+
+def validate_eval_args(args: argparse.Namespace) -> list[str]:
+    failures = validate_nonnegative_realism_args(
+        args,
+        fields=(
+            ("fee_rate", "fee_rate"),
+            ("fill_buffer_bps", "fill_buffer_bps"),
+        ),
+    )
+    try:
+        max_leverage = float(args.max_leverage)
+    except (TypeError, ValueError):
+        failures.append("max_leverage must be finite and positive")
+    else:
+        leverage_failures = validate_nonnegative_realism_args(
+            argparse.Namespace(max_leverage=max_leverage),
+            fields=(("max_leverage", "max_leverage"),),
+        )
+        if leverage_failures or max_leverage == 0.0:
+            failures.append("max_leverage must be finite and positive")
+    return failures
 
 
 def main() -> None:
@@ -261,6 +281,12 @@ def main() -> None:
         help="Comma-separated list of specific checkpoint .pt paths to evaluate (skips discovery)",
     )
     args = parser.parse_args()
+
+    validation_failures = validate_eval_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        sys.exit(2)
 
     # Resolve paths relative to repo root
     checkpoints_dir = Path(args.checkpoints_dir)
@@ -321,7 +347,7 @@ def main() -> None:
         for i, pt in enumerate(checkpoint_paths, 1):
             label = checkpoint_label(pt, checkpoints_dir)
             mtime = pt.stat().st_mtime if pt.exists() else 0
-            ts = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).strftime("%Y-%m-%d %H:%M")
             print(f"  {i:>4}. [{ts}] {label}")
         return
 

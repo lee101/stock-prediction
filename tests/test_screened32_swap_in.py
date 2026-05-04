@@ -177,9 +177,11 @@ def test_main_single_slippage_override_is_explicit_smoke_path(
         ),
     )
     observed_slips: list[float] = []
+    observed_lags: list[int] = []
 
     def fake_evaluate_subset(**kwargs):
         observed_slips.append(float(kwargs["slippage_bps"]))
+        observed_lags.append(int(kwargs["decision_lag"]))
         return {
             "median_total": 0.1,
             "p10_total": 0.08,
@@ -205,6 +207,9 @@ def test_main_single_slippage_override_is_explicit_smoke_path(
             "2",
             "--slippage-bps",
             "5",
+            "--decision-lag",
+            "1",
+            "--allow-low-lag-diagnostics",
             "--out",
             str(out_path),
             "--device",
@@ -214,7 +219,39 @@ def test_main_single_slippage_override_is_explicit_smoke_path(
 
     assert rc == 0
     assert set(observed_slips) == {5.0}
+    assert set(observed_lags) == {1}
     assert json.loads(out_path.read_text(encoding="utf-8"))["cell"]["slippage_bps_grid"] == [5.0]
+
+
+def test_main_rejects_low_lag_without_diagnostic_opt_in_before_loading_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    read_calls = 0
+
+    def fail_if_called(path):
+        nonlocal read_calls
+        read_calls += 1
+        raise AssertionError("read_mktd should not be called")
+
+    monkeypatch.setattr(module, "read_mktd", fail_if_called)
+
+    rc = module.main(
+        [
+            "--candidate",
+            str(tmp_path / "candidate.pt"),
+            "--val-data",
+            str(tmp_path / "val.bin"),
+            "--decision-lag",
+            "1",
+            "--out",
+            str(tmp_path / "out.json"),
+        ]
+    )
+
+    assert rc == 2
+    assert read_calls == 0
 
 
 def test_main_rejects_invalid_realism_inputs_before_loading_data(
@@ -248,3 +285,10 @@ def test_main_rejects_invalid_realism_inputs_before_loading_data(
 
     assert rc == 2
     assert read_calls == 0
+
+
+def test_script_uses_shared_atomic_json_writer() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "from xgbnew.artifacts import write_json_atomic" in source
+    assert "def _write_json_atomic" not in source

@@ -23,12 +23,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+
 # Add project root
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
-from pufferlib_market.export_data_daily import compute_daily_features as compute_daily_feature_history
-from pufferlib_market.inference import PPOTrader, TradingSignal, compute_hourly_features as compute_hourly_feature_snapshot
-from pufferlib_market.inference_daily import DailyPPOTrader
+from pufferlib_market.artifacts import write_json_atomic  # noqa: E402
+from pufferlib_market.export_data_daily import compute_daily_features as compute_daily_feature_history  # noqa: E402
+from pufferlib_market.inference import PPOTrader, TradingSignal  # noqa: E402
+from pufferlib_market.inference import compute_hourly_features as compute_hourly_feature_snapshot  # noqa: E402
+from pufferlib_market.inference_daily import DailyPPOTrader  # noqa: E402
 
 
 def load_hourly_bars(symbol: str, data_root: str = "trainingdatahourly") -> pd.DataFrame:
@@ -152,7 +155,7 @@ def _set_trader_shadow_state(
     # The C training env starts with INITIAL_CASH=10_000 and buys
     # qty = INITIAL_CASH / entry_price units, so obs[base+1] = pos_val /
     # INITIAL_CASH ≈ 1.0 when fully invested.  Using position_qty=1.0 here
-    # would give obs[base+1] = cur_price / 10_000 — up to 8.5× off for BTC at
+    # would give obs[base+1] = cur_price / 10_000 — up to 8.5x off for BTC at
     # $85k.  Use the same normalization as the C env.
     _ep = float(entry_price) if held_symbol and entry_price and entry_price > 0 else 0.0
     # C env: flat→cash=10000/obs[base+0]=1.0; holding→cash≈0/obs[base+0]≈0.
@@ -435,7 +438,7 @@ def _emit_validation_summary(
 ) -> None:
     rendered = json.dumps(summary, indent=2, sort_keys=True)
     if output_json:
-        Path(output_json).write_text(f"{rendered}\n", encoding="utf-8")
+        write_json_atomic(Path(output_json), summary, sort_keys=True)
     print(rendered)
 
 

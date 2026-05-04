@@ -13,32 +13,36 @@ Scope:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.backtest import (
-    BacktestConfig,
-    CRYPTO_HOURS_PER_MONTH,
+from xgbnew import run_hourly  # noqa: E402
+from xgbnew.backtest import (  # noqa: E402
     CRYPTO_HOURS_PER_YEAR,
     STOCK_HOURS_PER_MONTH,
     STOCK_HOURS_PER_YEAR,
+    BacktestConfig,
     simulate_hourly,
 )
-from xgbnew.dataset import (
+from xgbnew.dataset import (  # noqa: E402
     build_hourly_dataset,
     list_hourly_symbols,
     load_hourly_symbol_csv,
 )
-from xgbnew.eval_hourly_multiwindow import _build_hourly_windows, _bars_per_year
-from xgbnew.features import HOURLY_FEATURE_COLS, build_features_for_symbol_hourly
+from xgbnew.eval_hourly_multiwindow import _bars_per_year, _build_hourly_windows  # noqa: E402
+from xgbnew.features import HOURLY_FEATURE_COLS, build_features_for_symbol_hourly  # noqa: E402
+from xgbnew.run_hourly import _simulate_hourly as run_hourly_simulate  # noqa: E402
 
 
 HOURLY_ROOT = REPO / "trainingdatahourly"
@@ -89,7 +93,7 @@ class TestHourlyFeaturesNoLookahead:
     def test_feature_row_h_is_independent_of_bar_h_close(self):
         base = _make_hourly_ohlcv(n_bars=200)
         feat_a = build_features_for_symbol_hourly(base, symbol="X")
-        # Perturb bar 100's close strongly — a leak-free feature for row 100
+        # Perturb bar 100's close strongly; a leak-free feature for row 100
         # would not move because features at row H use only bars < H.
         pert = base.copy()
         pert.loc[100, "close"] = pert.loc[100, "close"] * 1.5
@@ -127,7 +131,7 @@ class TestHourlyLoader:
         assert load_hourly_symbol_csv("DOES_NOT_EXIST", tmp_path) is None
 
     def test_list_symbols_segmented(self, tmp_path):
-        # Universe split is by symbol suffix (USD-quote → crypto), not by subdir,
+        # Universe split is by symbol suffix (USD-quote -> crypto), not by subdir,
         # because the legacy 'crypto/' folder contains a few stock CSVs (DBX,
         # AAPL, AMZN). Use realistic suffixes here.
         for kind, name in (("stocks", "AAA"), ("stocks", "BBB"), ("crypto", "BTCUSD")):
@@ -169,7 +173,9 @@ class TestHourlyLoader:
             min_dollar_vol=0.0,
         )
         # The three splits must be non-empty and time-ordered.
-        assert not train_df.empty and not val_df.empty and not test_df.empty
+        assert not train_df.empty
+        assert not val_df.empty
+        assert not test_df.empty
         assert train_df["timestamp"].max() <= pd.Timestamp("2025-01-16", tz="UTC")
         assert val_df["timestamp"].min() > pd.Timestamp("2025-01-16", tz="UTC")
         assert val_df["timestamp"].max() <= pd.Timestamp("2025-01-20", tz="UTC")
@@ -188,7 +194,7 @@ class TestSimulateHourly:
         ts = pd.date_range("2025-03-01 14:30:00", periods=n, freq="1h", tz="UTC")
         rows = []
         for sym in ("AAA", "BBB"):
-            for i, t in enumerate(ts):
+            for _i, t in enumerate(ts):
                 open_p = 100.0
                 close_p = open_p * (1.0 + up_bps / 1e4)
                 rows.append({
@@ -200,7 +206,7 @@ class TestSimulateHourly:
                     "target_oc": up_bps / 1e4,
                     "target_oc_up": 1,
                     "chronos_oc_return": 0.0,
-                    **{c: 0.0 for c in HOURLY_FEATURE_COLS},
+                    **dict.fromkeys(HOURLY_FEATURE_COLS, 0.0),
                 })
         df = pd.DataFrame(rows)
         return df
@@ -213,7 +219,7 @@ class TestSimulateHourly:
         model = _ConstantScoreModel(0.9)
         res = simulate_hourly(df, model, cfg, bars_per_year=STOCK_HOURS_PER_YEAR)
         assert res.total_return_pct > 0
-        # Sanity: per-bar +25bps - 0 fee → compounded > 0 over 100 bars
+        # Sanity: per-bar +25bps - 0 fee compounds above 0 over 100 bars.
         assert res.total_trades == 100
 
     def test_fee_eats_small_moves(self):
@@ -236,7 +242,7 @@ class TestSimulateHourly:
         assert res.total_trades == 0
 
     def test_crypto_annualisation_higher_than_stocks(self):
-        """Crypto has 5.35× more bars per year — same per-bar return → higher annual."""
+        """Crypto has 5.35x more bars per year; same per-bar return means higher annual."""
         df = self._synthetic_scored_frame(n=200, up_bps=3.0)
         cfg = BacktestConfig(top_n=1, xgb_weight=1.0, fee_rate=0.0,
                              fill_buffer_bps=0.0, min_dollar_vol=0.0,
@@ -247,7 +253,7 @@ class TestSimulateHourly:
         crypto_res = simulate_hourly(
             df, _ConstantScoreModel(0.9), cfg, bars_per_year=CRYPTO_HOURS_PER_YEAR
         )
-        # Total return is identical because total compounding is the same — only
+        # Total return is identical because total compounding is the same; only
         # the annualisation horizon scales with bars_per_year.
         assert abs(stock_res.total_return_pct - crypto_res.total_return_pct) < 1e-6
         assert crypto_res.annualized_return_pct > stock_res.annualized_return_pct
@@ -268,6 +274,89 @@ class TestSimulateHourly:
         expected = ((1.0 + res.total_return_pct / 100.0) ** (STOCK_HOURS_PER_MONTH / n) - 1.0) * 100.0
         assert abs(res.monthly_return_pct - expected) < 1e-6
 
+    def test_run_hourly_wrapper_uses_shared_fee_and_fill_buffer_costs(self):
+        """``xgbnew.run_hourly`` must not bypass shared hourly cost realism."""
+        df = self._synthetic_scored_frame(n=6, up_bps=2.0)
+        df = df[df["symbol"] == "AAA"].copy()
+        cfg = BacktestConfig(
+            top_n=1,
+            xgb_weight=1.0,
+            fee_rate=0.001,
+            fill_buffer_bps=5.0,
+            commission_bps=0.0,
+            min_score=0.0,
+            min_dollar_vol=0.0,
+            max_spread_bps=1000.0,
+        )
+        train_end_ts = df["timestamp"].min() - pd.Timedelta(hours=1)
+
+        res = run_hourly_simulate(
+            {"AAA": df},
+            _ConstantScoreModel(0.9),
+            cfg,
+            train_end_ts,
+        )
+
+        assert res.total_trades == len(df)
+        assert res.total_return_pct < 0.0
+        trade = res.day_results[0].trades[0]
+        assert trade.fee_rate == pytest.approx(0.001)
+        assert trade.fill_buffer_bps == pytest.approx(5.0)
+        assert trade.entry_fill_price > trade.actual_open
+        assert trade.exit_fill_price < trade.actual_close
+
+    def test_run_hourly_main_writes_summary_without_temp_residue(self, monkeypatch, tmp_path):
+        class _FakeModel:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def fit(self, *_args, **_kwargs) -> None:
+                return None
+
+            def feature_importances(self) -> pd.Series:
+                return pd.Series({"ret_1h": 1.0})
+
+        raw = {"AAA": _make_hourly_ohlcv(260)}
+        feat = raw["AAA"].copy()
+        for col in HOURLY_FEATURE_COLS:
+            feat[col] = 0.0
+
+        fake_result = SimpleNamespace(
+            total_return_pct=1.0,
+            monthly_return_pct=2.0,
+            sharpe_ratio=1.5,
+            sortino_ratio=2.0,
+            max_drawdown_pct=3.0,
+            win_rate_pct=100.0,
+            directional_accuracy_pct=100.0,
+            total_trades=3,
+        )
+        mktd_file = tmp_path / "fake.mktd"
+        mktd_file.write_bytes(b"fake")
+
+        monkeypatch.setattr(run_hourly, "read_mktd_hourly", lambda *_args, **_kwargs: raw)
+        monkeypatch.setattr(run_hourly, "build_features_for_symbol_hourly", lambda *_args, **_kwargs: feat)
+        monkeypatch.setattr(run_hourly, "XGBStockModel", _FakeModel)
+        monkeypatch.setattr(run_hourly, "_simulate_hourly", lambda *_args, **_kwargs: fake_result)
+        monkeypatch.setattr(run_hourly, "print_summary", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_hourly.time, "strftime", lambda _fmt: "20260102_030405")
+
+        rc = run_hourly.main([
+            "--mktd-file",
+            str(mktd_file),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--n-estimators",
+            "1",
+        ])
+
+        assert rc == 0
+        summary_path = tmp_path / "out" / "hourly_summary_20260102_030405.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        assert summary["results"][0]["fee_rate"] == pytest.approx(0.001)
+        assert summary["results"][0]["fill_buffer_bps"] == pytest.approx(5.0)
+        assert list((tmp_path / "out").glob(".hourly_summary_*.json.*.tmp")) == []
+
     def test_leverage_scales_return(self):
         df = self._synthetic_scored_frame(n=50, up_bps=10.0)
         base = simulate_hourly(
@@ -284,8 +373,8 @@ class TestSimulateHourly:
                            max_spread_bps=1000.0),
             bars_per_year=STOCK_HOURS_PER_YEAR,
         )
-        # 2× leverage should roughly double per-bar return before margin cost.
-        # (Margin prorated per bar is tiny for lev=2: 6.25% / 1638 ≈ 0.0004%.)
+        # 2x leverage should roughly double per-bar return before margin cost.
+        # (Margin prorated per bar is tiny for lev=2: 6.25% / 1638 ~= 0.0004%.)
         assert lev.total_return_pct > base.total_return_pct * 1.9
 
 
@@ -321,7 +410,7 @@ def test_real_data_smoke():
     syms = list_hourly_symbols(HOURLY_ROOT, universe="stocks")[:3]
     if not syms:
         pytest.skip("no hourly stocks CSVs")
-    train_df, val_df, test_df, kind_map = build_hourly_dataset(
+    train_df, val_df, test_df, _kind_map = build_hourly_dataset(
         HOURLY_ROOT, syms,
         train_start=None,
         train_end=pd.Timestamp("2025-09-30", tz="UTC"),

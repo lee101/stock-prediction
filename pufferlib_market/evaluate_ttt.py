@@ -32,17 +32,20 @@ import torch
 
 from pufferlib_market.checkpoint_loader import (
     build_action_grid_summary_line,
-    format_action_grid_override_note,
     build_checkpoint_summary_lines,
     build_cli_policy_config_line,
     build_runtime_summary_line,
+    format_action_grid_override_note,
     load_checkpoint_payload,
-    load_policy_from_checkpoint as _load_base_policy_from_checkpoint_impl,
     resolve_checkpoint_action_grid_config,
 )
-from pufferlib_market.train import TradingPolicy, ResidualTradingPolicy
+from pufferlib_market.checkpoint_loader import (
+    load_policy_from_checkpoint as _load_base_policy_from_checkpoint_impl,
+)
 from pufferlib_market.lora import LoRAPolicy, reset_adam_state
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
+from pufferlib_market.train import ResidualTradingPolicy, TradingPolicy
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +354,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=720, help="Episode length")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
     parser.add_argument("--action-allocation-bins", type=int, default=1)
     parser.add_argument("--action-level-bins", type=int, default=1)

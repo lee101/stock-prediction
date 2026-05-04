@@ -20,6 +20,9 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+from xgbnew.artifacts import write_pickle_atomic
+
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_N_DECILES = 10
@@ -219,11 +222,10 @@ class XGBRankerStockModel:
         return pd.Series(imps, index=self.feature_cols).sort_values(ascending=False)
 
     def save(self, path: Path) -> None:
-        import pickle
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump({
+        write_pickle_atomic(
+            path,
+            {
                 "family": "xgb_rank",
                 "clf": self.clf,
                 "feature_cols": self.feature_cols,
@@ -232,7 +234,8 @@ class XGBRankerStockModel:
                 "n_deciles": self.n_deciles,
                 "sample_weight_mode": self.sample_weight_mode,
                 "sample_weight_clip": self.sample_weight_clip,
-            }, f)
+            },
+        )
         logger.info("XGBRanker saved to %s", path)
 
     @classmethod

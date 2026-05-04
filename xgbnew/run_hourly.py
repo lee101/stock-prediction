@@ -11,8 +11,8 @@ Strategy
 Each trading hour H:
   1. Score all available symbols with XGBStockModel on hourly features
   2. Pick top-N by score (min confidence threshold)
-  3. Simulate: buy at H's open, sell at H's close
-  4. Apply spread + commission costs, optional leverage
+  3. Simulate: buy at H's open fill, sell at H's close fill
+  4. Apply explicit fee/fill-buffer costs, optional leverage
 
 Data
 ----
@@ -29,32 +29,37 @@ Usage
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import time
-from datetime import date
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from xgbnew.features import HOURLY_FEATURE_COLS, build_features_for_symbol_hourly
-from xgbnew.model import XGBStockModel
-from xgbnew.backtest import BacktestConfig, BacktestResult, DayResult, DayTrade, print_summary
-from xgbnew.mktd_reader import read_mktd_hourly
+from xgbnew.backtest import (  # noqa: E402,I001
+    PRODUCTION_STOCK_FEE_RATE,
+    STOCK_HOURS_PER_YEAR,
+    BacktestConfig,
+    BacktestResult,
+    _compute_result,
+    print_summary,
+    simulate_hourly as _shared_simulate_hourly,
+)
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
+from xgbnew.features import HOURLY_FEATURE_COLS, build_features_for_symbol_hourly  # noqa: E402
+from xgbnew.mktd_reader import read_mktd_hourly  # noqa: E402
+from xgbnew.model import XGBStockModel  # noqa: E402
+
 
 logger = logging.getLogger(__name__)
 
-TRADING_DAYS_PER_YEAR = 252
-HOURS_PER_DAY = 6.5  # US equities regular session
-
-
-# ── Hourly backtest (different cadence from daily) ────────────────────────────
+# Hourly backtest (different cadence from daily)
 
 def _simulate_hourly(
     feat_dfs: dict[str, pd.DataFrame],
@@ -62,10 +67,7 @@ def _simulate_hourly(
     config: BacktestConfig,
     train_end_ts: pd.Timestamp,
 ) -> BacktestResult:
-    """Run hourly backtest on test data (bars after train_end_ts)."""
-    from xgbnew.backtest import _compute_result, _day_margin_cost
-
-    # Merge all symbols into one frame, keeping only test bars
+    """Run shared hourly backtest on test data (bars after train_end_ts)."""
     parts = []
     for sym, df in feat_dfs.items():
         d = df[df["timestamp"] > train_end_ts].copy()
@@ -77,70 +79,12 @@ def _simulate_hourly(
         return _compute_result([], config)
 
     merged = pd.concat(parts, ignore_index=True).sort_values("timestamp")
-    # Add a "date" column derived from timestamp (for grouping)
-    merged["date"] = merged["timestamp"].dt.date
-
-    # Score everything
-    scores = model.predict_scores(merged)
-    merged["_score"] = scores.values
-    merged = merged.dropna(subset=["actual_open", "actual_close"])
-    merged = merged[(merged["actual_open"] > 0) & (merged["actual_close"] > 0)]
-
-    equity = config.initial_cash
-    day_results: list[DayResult] = []
-    margin_cost = _day_margin_cost(config.leverage)
-
-    for bar_ts, bar_df in merged.groupby("timestamp", sort=True):
-        bar_df = bar_df.sort_values("_score", ascending=False)
-        picks = bar_df.head(config.top_n * 3)
-
-        trades: list[DayTrade] = []
-        for _, row in picks.iterrows():
-            if len(trades) >= config.top_n:
-                break
-            if float(row["_score"]) < config.min_score:
-                break
-
-            o = float(row["actual_open"])
-            c = float(row["actual_close"])
-            spread = float(row.get("spread_bps", 20.0))
-            if not np.isfinite(spread) or spread <= 0:
-                spread = 20.0
-
-            gross_oc = (c - o) / o
-            gross_lev = config.leverage * gross_oc
-            cost = (config.leverage * (spread + 2.0 * config.commission_bps) / 10_000.0
-                    + margin_cost / HOURS_PER_DAY)  # prorate margin per hour
-            net = gross_lev - cost
-
-            trades.append(DayTrade(
-                symbol=str(row["symbol"]),
-                score=float(row["_score"]),
-                actual_open=o,
-                actual_close=c,
-                spread_bps=spread,
-                commission_bps=config.commission_bps,
-                leverage=config.leverage,
-                gross_return_pct=gross_oc * 100.0,
-                net_return_pct=net * 100.0,
-            ))
-
-        if not trades:
-            continue
-
-        daily_ret_pct = float(np.mean([t.net_return_pct for t in trades]))
-        equity_end = equity * (1.0 + daily_ret_pct / 100.0)
-        day_results.append(DayResult(
-            day=bar_ts.date() if hasattr(bar_ts, "date") else bar_ts,  # type: ignore
-            equity_start=equity,
-            equity_end=equity_end,
-            daily_return_pct=daily_ret_pct,
-            trades=trades,
-            n_candidates=len(bar_df),
-        ))
-        equity = equity_end
-
-    return _compute_result(day_results, config)
+    return _shared_simulate_hourly(
+        merged,
+        model,
+        config,
+        bars_per_year=STOCK_HOURS_PER_YEAR,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -154,7 +98,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--leverage",   type=float, default=1.0)
     p.add_argument("--xgb-weight", type=float, default=1.0,
                    help="XGB weight (1.0=pure XGB; no Chronos2 for hourly)")
-    p.add_argument("--commission-bps", type=float, default=10.0)
+    p.add_argument("--commission-bps", type=float, default=0.0)
+    p.add_argument(
+        "--fee-rate",
+        type=float,
+        default=PRODUCTION_STOCK_FEE_RATE,
+        help="Per-side fee fraction (default 0.001 = 10 bps production stress)",
+    )
+    p.add_argument("--fill-buffer-bps", type=float, default=5.0)
     p.add_argument("--min-score",  type=float, default=0.52,
                    help="Minimum P(up) to trade (default 0.52)")
     p.add_argument("--initial-cash", type=float, default=10_000.0)
@@ -171,6 +122,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _validate_realism_args(args: argparse.Namespace) -> list[str]:
+    return validate_nonnegative_realism_args(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -178,7 +133,13 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(message)s",
     )
 
-    # ── Load hourly MKTD data ─────────────────────────────────────────────────
+    validation_failures = _validate_realism_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
+
+    # Load hourly MKTD data
     if not args.mktd_file.exists():
         print(f"ERROR: MKTD file not found: {args.mktd_file}", file=sys.stderr)
         print("Available files:", flush=True)
@@ -192,13 +153,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {len(raw_data)} symbols loaded in {time.perf_counter()-t0:.1f}s", flush=True)
     for sym, df in raw_data.items():
         print(f"    {sym}: {len(df)} bars  "
-              f"{df['timestamp'].iloc[0].date()} → {df['timestamp'].iloc[-1].date()}", flush=True)
+              f"{df['timestamp'].iloc[0].date()} -> {df['timestamp'].iloc[-1].date()}", flush=True)
 
     if not raw_data:
         print("ERROR: No symbols loaded.", file=sys.stderr)
         return 1
 
-    # ── Build hourly features ─────────────────────────────────────────────────
+    # Build hourly features
     print("[xgb-hourly] Building features...", flush=True)
     feat_dfs: dict[str, pd.DataFrame] = {}
     for sym, df in raw_data.items():
@@ -214,19 +175,19 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: No symbols with sufficient data.", file=sys.stderr)
         return 1
 
-    # ── Train/test split (temporal) ───────────────────────────────────────────
-    all_ts = sorted(set(
+    # Train/test split (temporal)
+    all_ts = sorted({
         ts for df in feat_dfs.values()
         for ts in df["timestamp"]
         if pd.notna(ts)
-    ))
+    })
     split_idx = int(len(all_ts) * args.train_fraction)
     train_end_ts = all_ts[split_idx] if split_idx < len(all_ts) else all_ts[-1]
-    print(f"  Train → {train_end_ts.date()}  |  Test → after {train_end_ts.date()}", flush=True)
+    print(f"  Train -> {train_end_ts.date()}  |  Test -> after {train_end_ts.date()}", flush=True)
 
-    # ── Build combined train DataFrame ────────────────────────────────────────
+    # Build combined train DataFrame
     train_parts = []
-    for sym, df in feat_dfs.items():
+    for _sym, df in feat_dfs.items():
         tr = df[df["timestamp"] <= train_end_ts].copy()
         if len(tr) > 50:
             train_parts.append(tr)
@@ -238,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     train_df = pd.concat(train_parts, ignore_index=True)
     print(f"  Training rows: {len(train_df):,}", flush=True)
 
-    # ── Train XGBoost ─────────────────────────────────────────────────────────
+    # Train XGBoost
     print("[xgb-hourly] Training XGBStockModel...", flush=True)
     model = XGBStockModel(
         device=args.device,
@@ -253,15 +214,18 @@ def main(argv: list[str] | None = None) -> int:
     for feat, imp in model.feature_importances().head(10).items():
         print(f"    {feat:<25} {imp:.4f}")
 
-    # ── Backtest ──────────────────────────────────────────────────────────────
+    # Backtest
     configs = [
         BacktestConfig(top_n=args.top_n, leverage=1.0,
                        xgb_weight=1.0, commission_bps=args.commission_bps,
+                       fee_rate=args.fee_rate, fill_buffer_bps=args.fill_buffer_bps,
                        min_score=args.min_score, initial_cash=args.initial_cash),
     ]
     if args.leverage > 1.0:
         configs.append(BacktestConfig(top_n=args.top_n, leverage=args.leverage,
                                       xgb_weight=1.0, commission_bps=args.commission_bps,
+                                      fee_rate=args.fee_rate,
+                                      fill_buffer_bps=args.fill_buffer_bps,
                                       min_score=args.min_score, initial_cash=args.initial_cash))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -276,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
             "top_n": cfg.top_n,
             "leverage": cfg.leverage,
             "min_score": cfg.min_score,
+            "fee_rate": cfg.fee_rate,
+            "fill_buffer_bps": cfg.fill_buffer_bps,
+            "commission_bps": cfg.commission_bps,
             "total_return_pct": result.total_return_pct,
             "monthly_return_pct": result.monthly_return_pct,
             "sharpe": result.sharpe_ratio,
@@ -288,10 +255,8 @@ def main(argv: list[str] | None = None) -> int:
 
     ts_str = time.strftime("%Y%m%d_%H%M%S")
     summary_path = args.output_dir / f"hourly_summary_{ts_str}.json"
-    summary_path.write_text(
-        json.dumps({"results": results_summary}, indent=2), encoding="utf-8"
-    )
-    print(f"\n  Summary → {summary_path}")
+    write_json_atomic(summary_path, {"results": results_summary})
+    print(f"\n  Summary -> {summary_path}")
     return 0
 
 

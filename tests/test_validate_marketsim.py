@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
 import marketsimulator
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
-
-from pufferlib_market.inference import TradingSignal
 from pufferlib_market import validate_marketsim as validate
+from pufferlib_market.inference import TradingSignal
+from pufferlib_market.validate_marketsim import _set_trader_shadow_state
 
 
 def _make_bars() -> pd.DataFrame:
@@ -59,11 +60,11 @@ def test_marketsimulator_package_exports_legacy_shared_cash_api() -> None:
 def test_load_trader_for_timeframe_selects_daily_and_forces_long_only(monkeypatch) -> None:
     seen: list[tuple[str, object, object, object, object]] = []
 
-    def _fake_hourly(checkpoint, device, long_only, symbols):  # noqa: ANN001
+    def _fake_hourly(checkpoint, device, long_only, symbols):
         seen.append(("hourly", checkpoint, device, long_only, tuple(symbols)))
         return object()
 
-    def _fake_daily(checkpoint, device, long_only, symbols):  # noqa: ANN001
+    def _fake_daily(checkpoint, device, long_only, symbols):
         seen.append(("daily", checkpoint, device, long_only, tuple(symbols)))
         return object()
 
@@ -171,7 +172,7 @@ def test_generate_policy_actions_rotates_single_position(monkeypatch) -> None:
                 ]
             )
 
-        def get_signal(self, features, prices):  # noqa: ANN001, ARG002
+        def get_signal(self, features, prices):
             return next(self._signals)
 
     monkeypatch.setattr(
@@ -235,7 +236,7 @@ def test_generate_policy_actions_flattens_short_signals(monkeypatch) -> None:
                 ]
             )
 
-        def get_signal(self, features, prices):  # noqa: ANN001, ARG002
+        def get_signal(self, features, prices):
             return next(self._signals)
 
     monkeypatch.setattr(
@@ -289,7 +290,7 @@ def test_generate_policy_actions_daily_tracks_hold_days(monkeypatch) -> None:
                 ]
             )
 
-        def get_signal(self, features, prices):  # noqa: ANN001, ARG002
+        def get_signal(self, features, prices):
             self.hold_days_seen.append(self.hold_days)
             return next(self._signals)
 
@@ -385,7 +386,7 @@ def test_generate_policy_actions_uses_precomputed_arrays(monkeypatch) -> None:
         def __len__(self) -> int:
             return 4
 
-        def __getitem__(self, key):  # noqa: ANN001
+        def __getitem__(self, key):
             raise AssertionError(f"aligned frame access should be avoided after precompute: {key}")
 
     seen_prices: list[dict[str, float]] = []
@@ -400,7 +401,7 @@ def test_generate_policy_actions_uses_precomputed_arrays(monkeypatch) -> None:
             self.step = 0
             self.hold_hours = 0
 
-        def get_signal(self, features, prices):  # noqa: ANN001
+        def get_signal(self, features, prices):
             assert features.shape == (2, 16)
             seen_prices.append(dict(prices))
             return TradingSignal("flat", None, None, 0.0, 0.0, 0.0, 0.0)
@@ -465,7 +466,14 @@ def test_parse_args_supports_json_only_and_output_json() -> None:
 
 
 def test_main_json_only_emits_only_summary_json(monkeypatch, capsys, tmp_path: Path) -> None:
+    writes: list[tuple[Path, dict, dict]] = []
+
     monkeypatch.setattr(validate, "load_hourly_bars", lambda symbol: _make_bars().query("symbol == @symbol").copy())
+    monkeypatch.setattr(
+        validate,
+        "write_json_atomic",
+        lambda path, payload, **kwargs: writes.append((Path(path), payload, kwargs)),
+    )
     monkeypatch.setattr(
         validate,
         "_generate_policy_actions",
@@ -527,7 +535,15 @@ def test_main_json_only_emits_only_summary_json(monkeypatch, capsys, tmp_path: P
     assert payload["checkpoint"] == "demo.pt"
     assert payload["metrics"]["total_return"] == pytest.approx(0.02)
     assert payload["metrics"]["trades"] == 2
-    assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+    assert writes == [(output_path, payload, {"sort_keys": True})]
+    assert not output_path.exists()
+
+
+def test_validate_marketsim_uses_atomic_json_helper() -> None:
+    source = Path("pufferlib_market/validate_marketsim.py").read_text(encoding="utf-8")
+
+    assert "write_json_atomic(" in source
+    assert "write_text(" not in source
 
 
 def test_set_trader_shadow_state_uses_hold_bars_not_step_index() -> None:
@@ -537,8 +553,6 @@ def test_set_trader_shadow_state_uses_hold_bars_not_step_index() -> None:
     Production sets trader.step = min(hold_bars, max_steps).  A freshly-opened
     position at overall bar 100 with hold_bars=0 must show step=0, not 100.
     """
-    from pufferlib_market.validate_marketsim import _set_trader_shadow_state
-
     class _FakeTrader:
         cash = 0.0
         position_qty = 0.0

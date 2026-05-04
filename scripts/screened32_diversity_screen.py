@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -39,12 +40,16 @@ from typing import Sequence
 import numpy as np
 import torch
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from pufferlib_market.evaluate_holdout import _slice_window  # noqa: E402
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy  # noqa: E402
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
+
 from scripts.screened32_realism_gate import (  # noqa: E402
     _build_ensemble_policy_fn,
 )
@@ -131,7 +136,7 @@ def _neg_jaccard(a: list[float], b: list[float]) -> tuple[float, list[int], list
     return len(inter) / len(union), overlap, only_a, only_b
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--candidate-checkpoint", required=True)
     ap.add_argument("--val-data", default="pufferlib_market/data/screened32_single_offset_val_full.bin")
@@ -141,9 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fee-rate", type=float, default=0.001)
     ap.add_argument("--slippage-bps", type=float, default=5.0)
     ap.add_argument("--decision-lag", type=int, default=2)
+    ap.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow lag 0/1 diagnostic runs; not production-realistic.",
+    )
     ap.add_argument("--disable-shorts", action="store_true", default=True)
     ap.add_argument("--no-disable-shorts", dest="disable_shorts", action="store_false")
-    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--device", default=None, help="Torch device. Defaults to cuda when available, else cpu.")
     ap.add_argument("--out-dir", default="docs/diversity_screen")
     ap.add_argument("--rebuild-baseline", action="store_true",
                     help="Force re-compute the baseline 13-model per-window returns.")
@@ -159,7 +169,159 @@ def main(argv: list[str] | None = None) -> int:
         default=0.40,
         help="PASS if jaccard(candidate_neg_starts, baseline_neg_starts) < this.",
     )
-    args = ap.parse_args(argv)
+    return ap
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> list[str]:
+    failures = validate_nonnegative_realism_args(
+        args,
+        fields=(
+            ("fee_rate", "fee_rate"),
+            ("fill_buffer_bps", "fill_buffer_bps"),
+            ("slippage_bps", "slippage_bps"),
+        ),
+    )
+    try:
+        max_leverage = float(args.max_leverage)
+    except (TypeError, ValueError):
+        failures.append("max_leverage must be finite and positive")
+    else:
+        if not math.isfinite(max_leverage) or max_leverage <= 0.0:
+            failures.append("max_leverage must be finite and positive")
+    if int(args.window_days) <= 0:
+        failures.append("window_days must be positive")
+    if int(args.decision_lag) < 0:
+        failures.append("decision_lag must be non-negative")
+    elif int(args.decision_lag) < 2 and not bool(args.allow_low_lag_diagnostics):
+        failures.append("decision_lag below 2 requires --allow-low-lag-diagnostics")
+    for attr, label in (
+        ("corr_threshold", "corr_threshold"),
+        ("jaccard_threshold", "jaccard_threshold"),
+    ):
+        value = getattr(args, attr, None)
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            failures.append(f"{label} must be finite")
+            continue
+        if not math.isfinite(value_f):
+            failures.append(f"{label} must be finite")
+    return failures
+
+
+def _float_matches(payload: dict, key: str, expected: float) -> bool:
+    try:
+        observed = float(payload[key])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return math.isfinite(observed) and abs(observed - float(expected)) <= 1e-12
+
+
+def baseline_cache_matches_config(
+    payload: dict,
+    *,
+    args: argparse.Namespace,
+    base_ckpts: Sequence[Path],
+    start_indices: Sequence[int],
+) -> bool:
+    if payload.get("window_start_indices") != list(start_indices):
+        return False
+    if payload.get("checkpoints") != [str(c) for c in base_ckpts]:
+        return False
+    if bool(payload.get("disable_shorts")) != bool(args.disable_shorts):
+        return False
+    if int(payload.get("decision_lag", -1)) != int(args.decision_lag):
+        return False
+    if int(payload.get("window_days", -1)) != int(args.window_days):
+        return False
+    for key, expected in (
+        ("fill_buffer_bps", float(args.fill_buffer_bps)),
+        ("max_leverage", float(args.max_leverage)),
+        ("fee_rate", float(args.fee_rate)),
+        ("slippage_bps", float(args.slippage_bps)),
+    ):
+        if not _float_matches(payload, key, expected):
+            return False
+    returns = payload.get("window_returns")
+    return isinstance(returns, list) and len(returns) == len(start_indices)
+
+
+def build_baseline_cache_payload(
+    *,
+    args: argparse.Namespace,
+    base_ckpts: Sequence[Path],
+    baseline_rets: list[float],
+    start_indices: Sequence[int],
+) -> dict:
+    return {
+        "checkpoints": [str(c) for c in base_ckpts],
+        "window_returns": baseline_rets,
+        "window_start_indices": list(start_indices),
+        "fill_buffer_bps": float(args.fill_buffer_bps),
+        "max_leverage": float(args.max_leverage),
+        "decision_lag": int(args.decision_lag),
+        "fee_rate": float(args.fee_rate),
+        "slippage_bps": float(args.slippage_bps),
+        "disable_shorts": bool(args.disable_shorts),
+        "window_days": int(args.window_days),
+    }
+
+
+def build_result_payload(
+    *,
+    args: argparse.Namespace,
+    cand_path: Path,
+    val_path: Path,
+    base_med: float,
+    cand_med: float,
+    base_neg: int,
+    cand_neg: int,
+    corr: float,
+    jaccard: float,
+    overlap: list[int],
+    only_baseline: list[int],
+    only_cand: list[int],
+    cand_rets: list[float],
+    verdict: str,
+) -> dict:
+    return {
+        "candidate": str(cand_path),
+        "val_data": str(val_path),
+        "window_days": int(args.window_days),
+        "fill_buffer_bps": float(args.fill_buffer_bps),
+        "max_leverage": float(args.max_leverage),
+        "decision_lag": int(args.decision_lag),
+        "fee_rate": float(args.fee_rate),
+        "slippage_bps": float(args.slippage_bps),
+        "disable_shorts": bool(args.disable_shorts),
+        "baseline_median_total": base_med,
+        "candidate_median_total": cand_med,
+        "baseline_neg_count": base_neg,
+        "candidate_neg_count": cand_neg,
+        "pearson_correlation": corr,
+        "neg_jaccard": jaccard,
+        "neg_overlap_indices": overlap,
+        "baseline_only_neg_indices": only_baseline,
+        "candidate_only_neg_indices": only_cand,
+        "candidate_window_returns": cand_rets,
+        "verdict": verdict,
+        "corr_threshold": float(args.corr_threshold),
+        "jaccard_threshold": float(args.jaccard_threshold),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    validation_failures = validate_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"diversity_screen: {failure}", file=sys.stderr)
+        return 2
 
     val_path = Path(args.val_data).resolve()
     if not val_path.exists():
@@ -191,21 +353,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     candidate_count = data.num_timesteps - window_len + 1
     start_indices = list(range(candidate_count))
-    device = torch.device(args.device)
+    device_name = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(device_name)
 
     base_ckpts = [Path(DEFAULT_CHECKPOINT), *(Path(p) for p in DEFAULT_EXTRA_CHECKPOINTS)]
     abs_base = [REPO / c for c in base_ckpts]
 
-    cache_path = out_dir / f"baseline_returns_{val_path.stem}_w{args.window_days}_fb{int(args.fill_buffer_bps)}_lev{args.max_leverage}_lag{args.decision_lag}.json"
+    cache_path = out_dir / (
+        f"baseline_returns_{val_path.stem}_w{args.window_days}_fb{int(args.fill_buffer_bps)}"
+        f"_lev{args.max_leverage}_lag{args.decision_lag}.json"
+    )
     if cache_path.exists() and not args.rebuild_baseline:
         print(f"loading cached baseline returns from {cache_path}")
         baseline_payload = json.loads(cache_path.read_text())
-        baseline_rets = baseline_payload["window_returns"]
-        if len(baseline_rets) != len(start_indices):
-            print(
-                f"cached baseline length {len(baseline_rets)} != expected "
-                f"{len(start_indices)}; re-computing",
-            )
+        if baseline_cache_matches_config(
+            baseline_payload,
+            args=args,
+            base_ckpts=base_ckpts,
+            start_indices=start_indices,
+        ):
+            baseline_rets = baseline_payload["window_returns"]
+        else:
+            print("cached baseline config does not match requested run; re-computing")
             baseline_rets = None
     else:
         baseline_rets = None
@@ -229,17 +398,15 @@ def main(argv: list[str] | None = None) -> int:
             start_indices=start_indices,
             label="baseline",
         )
-        cache_path.write_text(json.dumps({
-            "checkpoints": [str(c) for c in base_ckpts],
-            "window_returns": baseline_rets,
-            "window_start_indices": start_indices,
-            "fill_buffer_bps": float(args.fill_buffer_bps),
-            "max_leverage": float(args.max_leverage),
-            "decision_lag": int(args.decision_lag),
-            "fee_rate": float(args.fee_rate),
-            "slippage_bps": float(args.slippage_bps),
-            "window_days": int(args.window_days),
-        }, indent=2))
+        write_json_atomic(
+            cache_path,
+            build_baseline_cache_payload(
+                args=args,
+                base_ckpts=base_ckpts,
+                baseline_rets=baseline_rets,
+                start_indices=start_indices,
+            ),
+        )
         print(f"cached baseline returns to {cache_path}")
 
     print(f"computing candidate per-window returns: {cand_path.name}")
@@ -283,7 +450,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"candidate alone:   med={cand_med:+.4f}  n_neg={cand_neg}/{len(cand_rets)}")
     print()
     print(f"per-window pearson correlation: {corr:+.3f}  ({'PASS' if pass_corr else 'FAIL'} < {args.corr_threshold})")
-    print(f"neg-window jaccard:             {jaccard:.3f}  ({'PASS' if pass_jacc else 'FAIL'} < {args.jaccard_threshold})")
+    print(
+        f"neg-window jaccard:             {jaccard:.3f}  "
+        f"({'PASS' if pass_jacc else 'FAIL'} < {args.jaccard_threshold})"
+    )
     print(f"  overlap (both lose):    {overlap}")
     print(f"  baseline-only neg:      {only_baseline}")
     print(f"  candidate-only neg:     {only_cand}")
@@ -295,27 +465,25 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     out_path = out_dir / f"{cand_path.stem}_diversity.json"
-    out_path.write_text(json.dumps({
-        "candidate": str(cand_path),
-        "val_data": str(val_path),
-        "window_days": int(args.window_days),
-        "fill_buffer_bps": float(args.fill_buffer_bps),
-        "max_leverage": float(args.max_leverage),
-        "decision_lag": int(args.decision_lag),
-        "baseline_median_total": base_med,
-        "candidate_median_total": cand_med,
-        "baseline_neg_count": base_neg,
-        "candidate_neg_count": cand_neg,
-        "pearson_correlation": corr,
-        "neg_jaccard": jaccard,
-        "neg_overlap_indices": overlap,
-        "baseline_only_neg_indices": only_baseline,
-        "candidate_only_neg_indices": only_cand,
-        "candidate_window_returns": cand_rets,
-        "verdict": verdict,
-        "corr_threshold": float(args.corr_threshold),
-        "jaccard_threshold": float(args.jaccard_threshold),
-    }, indent=2))
+    write_json_atomic(
+        out_path,
+        build_result_payload(
+            args=args,
+            cand_path=cand_path,
+            val_path=val_path,
+            base_med=base_med,
+            cand_med=cand_med,
+            base_neg=base_neg,
+            cand_neg=cand_neg,
+            corr=corr,
+            jaccard=jaccard,
+            overlap=overlap,
+            only_baseline=only_baseline,
+            only_cand=only_cand,
+            cand_rets=cand_rets,
+            verdict=verdict,
+        ),
+    )
     print(f"wrote {out_path}")
     return 0
 

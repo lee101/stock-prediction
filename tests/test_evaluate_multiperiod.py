@@ -121,6 +121,19 @@ def test_multiperiod_rejects_empty_checkpoint_list() -> None:
     assert "--checkpoints must include at least one checkpoint path" in result.stderr
 
 
+def test_main_rejects_low_lag_without_diagnostic_opt_in() -> None:
+    fake_args = SimpleNamespace(decision_lag=1, allow_low_lag_diagnostics=False)
+
+    with (
+        patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
+        patch.object(eval_mod, "read_mktd") as read_mktd,
+        pytest.raises(ValueError, match="decision_lag below 2 requires --allow-low-lag-diagnostics"),
+    ):
+        eval_mod.main()
+
+    read_mktd.assert_not_called()
+
+
 def test_load_policy_rejects_metadata_mapping_without_model(tmp_path: Path):
     with (
         patch.object(eval_mod, "load_checkpoint_payload", return_value={"arch": "mlp", "hidden_size": 16}),

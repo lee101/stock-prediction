@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from pufferlib_market.artifacts import write_json_atomic
 from pufferlib_market.evaluate_multiperiod import LoadedPolicy, load_policy, make_policy_fn
 from pufferlib_market.hourly_replay import (
     InitialPositionSpec,
@@ -29,6 +30,7 @@ from pufferlib_market.hourly_replay import (
     simulate_hourly_policy,
 )
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 from src.robust_trading_metrics import (
     compute_market_sim_goodness_score,
     compute_pnl_smoothness_from_equity,
@@ -232,7 +234,7 @@ def main() -> None:
         help="Require the daily bar to trade through each limit by this many bps before fill.",
     )
     p.add_argument("--max-leverage", type=float, default=1.0)
-    p.add_argument("--short-borrow-apr", type=float, default=0.0)
+    p.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     p.add_argument("--daily-periods-per-year", type=float, default=365.0)
     p.add_argument("--hourly-periods-per-year", type=float, default=8760.0)
     p.add_argument("--disable-shorts", action="store_true")
@@ -496,8 +498,7 @@ def main() -> None:
 
     if args.output_json:
         out = Path(args.output_json)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, indent=2, sort_keys=True))
+        write_json_atomic(out, report, sort_keys=True)
 
 
 if __name__ == "__main__":

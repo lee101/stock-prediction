@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -1291,7 +1292,7 @@ def test_load_models_normalized_duplicate_ensemble_paths_returns_none(
     assert "duplicate model paths" in capsys.readouterr().err
 
 
-def test_load_models_duplicate_ensemble_seed_names_return_none(tmp_path, capsys):
+def test_load_models_allows_same_seed_names_from_distinct_paths(monkeypatch, tmp_path):
     left = tmp_path / "left"
     right = tmp_path / "right"
     left.mkdir()
@@ -1300,6 +1301,15 @@ def test_load_models_duplicate_ensemble_seed_names_return_none(tmp_path, capsys)
     path0_right = right / "alltrain_seed0.pkl"
     path0_left.write_bytes(b"x")
     path0_right.write_bytes(b"x")
+    models_by_path = {
+        path0_left: SimpleNamespace(feature_cols=["ret_1d"]),
+        path0_right: SimpleNamespace(feature_cols=["ret_1d"]),
+    }
+    monkeypatch.setattr(
+        live_trader,
+        "_load_live_model",
+        lambda path: models_by_path[Path(path)],
+    )
     args = SimpleNamespace(
         model_paths=f"{path0_left},{path0_right}",
         model_path=tmp_path / "whatever.pkl",
@@ -1307,8 +1317,7 @@ def test_load_models_duplicate_ensemble_seed_names_return_none(tmp_path, capsys)
 
     result = live_trader._load_models(args)
 
-    assert result is None
-    assert "duplicate model seeds" in capsys.readouterr().err
+    assert result == [models_by_path[path0_left], models_by_path[path0_right]]
 
 
 def test_load_models_unparseable_ensemble_seed_name_returns_none(tmp_path, capsys):

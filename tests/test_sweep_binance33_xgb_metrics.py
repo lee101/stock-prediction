@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
+from scripts import sweep_binance33_xgb
 from scripts.sweep_binance33_xgb import _monthly_equivalent_return, _passes_production_target
 
 
@@ -54,3 +54,42 @@ def test_passes_production_target_rejects_weak_rows(
     }
 
     assert not _passes_production_target(row, target_monthly_pct=27.0, max_dd_pct=20.0), expected_reason
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--fee-rate", "nan"], "fee_rate must be finite and non-negative"),
+        (["--slippage-bps", "20,nan"], "slippage_bps entries must be finite"),
+        (["--max-leverage", "0"], "max_leverage entries must be finite and positive"),
+        (["--eval-days", "30,0"], "eval_days entries must be positive integers"),
+        (["--decision-lag", "-1"], "decision_lag must be non-negative"),
+        (["--experiment-names", "missing_exp"], "unknown experiment names: missing_exp"),
+    ],
+)
+def test_main_rejects_invalid_sweep_config_before_loading_data(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+    argv: list[str],
+    expected: str,
+) -> None:
+    def fail_read_mktd(_path):
+        raise AssertionError("read_mktd should not run for invalid configs")
+
+    monkeypatch.setattr(sweep_binance33_xgb, "read_mktd", fail_read_mktd)
+
+    rc = sweep_binance33_xgb.main(
+        [
+            "--train-data",
+            str(tmp_path / "missing-train.bin"),
+            "--eval-data",
+            str(tmp_path / "missing-eval.bin"),
+            "--out",
+            str(tmp_path / "out.csv"),
+            *argv,
+        ]
+    )
+
+    assert rc == 2
+    assert expected in capsys.readouterr().err

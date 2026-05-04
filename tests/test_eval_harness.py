@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import struct
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
@@ -122,6 +124,62 @@ class TestEvalAllCheckpointsHelp:
     def test_script_exists(self):
         assert (SCRIPTS_DIR / "eval_all_checkpoints.py").exists()
 
+    def test_root_wrapper_help_runs(self):
+        result = run_script(ROOT / "eval_all_checkpoints.py", ["--help"])
+        assert result.returncode == 0
+        assert "checkpoints" in result.stdout.lower() or "usage" in result.stdout.lower()
+
+    def test_root_wrapper_delegates_private_helpers(self):
+        from scripts import eval_all_checkpoints as maintained_mod
+
+        spec = importlib.util.spec_from_file_location("root_eval_all_checkpoints_wrapper", ROOT / "eval_all_checkpoints.py")
+        assert spec is not None
+        assert spec.loader is not None
+        root_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(root_mod)
+
+        assert root_mod.main is maintained_mod.main
+        assert root_mod._parse_periods is maintained_mod._parse_periods
+
+
+class TestEvalAllCheckpointsValidation:
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (
+                ["--fee-rate", "nan"],
+                "fee_rate must be finite and non-negative",
+            ),
+            (
+                ["--fill-buffer-bps", "-1"],
+                "fill_buffer_bps must be finite and non-negative",
+            ),
+            (
+                ["--max-leverage", "0"],
+                "max_leverage must be finite and positive",
+            ),
+        ],
+    )
+    def test_rejects_invalid_realism_before_path_resolution(
+        self,
+        argv,
+        expected,
+        tmp_path,
+    ):
+        missing_data = tmp_path / "missing.bin"
+        result = run_script(
+            SCRIPTS_DIR / "eval_all_checkpoints.py",
+            [
+                "--data-path",
+                str(missing_data),
+                *argv,
+            ],
+        )
+
+        assert result.returncode == 2
+        assert expected in result.stderr
+        assert "Data file not found" not in result.stderr
+
 
 class TestCheckpointDiscovery:
     def test_discovers_best_pt_files(self, tmp_path):
@@ -133,7 +191,7 @@ class TestCheckpointDiscovery:
         (tmp_path / "run_c").mkdir()
         (tmp_path / "run_c" / "final.pt").write_bytes(b"fake")  # no best.pt here
 
-        from eval_all_checkpoints import discover_best_checkpoints
+        from scripts.eval_all_checkpoints import discover_best_checkpoints
         found = discover_best_checkpoints(tmp_path)
         labels = [p.name for p in found]
         assert labels.count("best.pt") == 2
@@ -148,7 +206,7 @@ class TestCheckpointDiscovery:
         (parent / "ent_anneal").mkdir(parents=True)
         (parent / "ent_anneal" / "best.pt").write_bytes(b"fake")
 
-        from eval_all_checkpoints import discover_best_checkpoints
+        from scripts.eval_all_checkpoints import discover_best_checkpoints
         found = discover_best_checkpoints(tmp_path)
         assert len(found) == 2
 
@@ -175,13 +233,11 @@ class TestCheckpointDiscovery:
 class TestEvalAllCheckpointsLeaderboard:
     def test_run_evaluation_with_mock(self, tmp_path):
         """Test run_evaluation returns expected dict structure when mocked."""
-        from eval_all_checkpoints import run_evaluation
-
         fake_data = make_mktd_binary(tmp_path)
         fake_ckpt = make_fake_checkpoint(tmp_path)
 
         with patch(
-            "eval_all_checkpoints.run_evaluation",
+            "scripts.eval_all_checkpoints.run_evaluation",
             return_value={
                 "checkpoint": str(fake_ckpt),
                 "period": "30d",
@@ -195,7 +251,7 @@ class TestEvalAllCheckpointsLeaderboard:
                 "error": "",
             },
         ):
-            from eval_all_checkpoints import run_evaluation as mocked_eval
+            from scripts.eval_all_checkpoints import run_evaluation as mocked_eval
             result = mocked_eval(fake_ckpt, fake_data)
         assert result["sortino"] == 1.23
         assert result["total_return_pct"] == 5.0
@@ -203,7 +259,7 @@ class TestEvalAllCheckpointsLeaderboard:
 
     def test_leaderboard_csv_format(self, tmp_path):
         """Test save_leaderboard creates valid CSV with expected columns."""
-        from eval_all_checkpoints import save_leaderboard
+        from scripts.eval_all_checkpoints import save_leaderboard
 
         rows = [
             {
@@ -246,6 +302,51 @@ class TestEvalAllCheckpointsLeaderboard:
         assert "total_return_pct" in csv_rows[0]
         assert "sortino" in csv_rows[0]
 
+    def test_save_leaderboard_replaces_existing_file_atomically(self, tmp_path):
+        """Leaderboard writes should not expose stale temp files."""
+        from scripts.eval_all_checkpoints import save_leaderboard
+
+        out = tmp_path / "leaderboard.csv"
+        out.write_text("old,content\n", encoding="utf-8")
+        rows = [
+            {
+                "checkpoint": "run_a/best.pt",
+                "period": "30d",
+                "total_return_pct": 5.0,
+                "sortino": 1.5,
+            }
+        ]
+
+        save_leaderboard(rows, out)
+
+        assert out.read_text(encoding="utf-8").startswith("checkpoint,period")
+        assert "run_a/best.pt" in out.read_text(encoding="utf-8")
+        assert list(tmp_path.glob(".leaderboard.csv.*.tmp")) == []
+
+    def test_save_leaderboard_cleans_temp_file_on_replace_failure(self, tmp_path, monkeypatch):
+        """A failed atomic replace should not leave partial CSV temp files."""
+        from scripts import eval_all_checkpoints
+        from xgbnew import artifacts
+
+        out = tmp_path / "leaderboard.csv"
+        rows = [
+            {
+                "checkpoint": "run_a/best.pt",
+                "period": "30d",
+                "total_return_pct": 5.0,
+                "sortino": 1.5,
+            }
+        ]
+        def fail_replace(_source, _target):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(artifacts, "_replace_path", fail_replace)
+        with pytest.raises(OSError, match="replace failed"):
+            eval_all_checkpoints.save_leaderboard(rows, out)
+
+        assert not out.exists()
+        assert list(tmp_path.glob(".leaderboard.csv.*.tmp")) == []
+
     def test_top_n_limits_checkpoints(self, tmp_path):
         """Test --top-n limits evaluation to N most recently modified checkpoints."""
         import time
@@ -278,7 +379,7 @@ class TestEvalAllCheckpointsLeaderboard:
 class TestEvalAllCheckpointsMktdInfer:
     def test_infer_num_symbols(self, tmp_path):
         """Test that infer_num_symbols correctly reads the MKTD header."""
-        from eval_all_checkpoints import infer_num_symbols
+        from scripts.eval_all_checkpoints import infer_num_symbols
 
         data_file = make_mktd_binary(tmp_path, num_symbols=5)
         n = infer_num_symbols(data_file)
@@ -286,12 +387,254 @@ class TestEvalAllCheckpointsMktdInfer:
 
     def test_infer_num_symbols_bad_file(self, tmp_path):
         """Test that infer_num_symbols returns None for invalid files."""
-        from eval_all_checkpoints import infer_num_symbols
+        from scripts.eval_all_checkpoints import infer_num_symbols
 
         bad_file = tmp_path / "bad.bin"
         bad_file.write_bytes(b"NOT_MKTD_HEADER")
         n = infer_num_symbols(bad_file)
         assert n is None
+
+
+class TestEvalLag2CheckpointsValidation:
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (
+                ["--fee-rate", "nan"],
+                "fee_rate must be finite and non-negative",
+            ),
+            (
+                ["--fill-buffer-bps", "-1"],
+                "fill_buffer_bps must be finite and non-negative",
+            ),
+            (
+                ["--max-hold-hours", "0"],
+                "max_hold_hours must be finite and positive",
+            ),
+            (
+                ["--primary-horizon", "12"],
+                "primary_horizon must be 1 or 24",
+            ),
+            (
+                ["--lags", "0,two"],
+                "lags must be comma-separated integers",
+            ),
+            (
+                ["--lags", "0,1"],
+                "lags below 2 require --allow-low-lag-diagnostics",
+            ),
+        ],
+    )
+    def test_rejects_invalid_realism_before_data_work(
+        self,
+        argv,
+        expected,
+        tmp_path,
+    ):
+        result = run_script(
+            SCRIPTS_DIR / "eval_lag2_checkpoints.py",
+            [
+                "--checkpoint-dir",
+                str(tmp_path / "missing-checkpoints"),
+                "--symbol",
+                "BTCUSD",
+                *argv,
+            ],
+        )
+
+        assert result.returncode == 2
+        assert expected in result.stderr
+        assert "No epoch checkpoints found" not in result.stdout
+        assert "val bars" not in result.stdout
+
+    def test_defaults_are_production_realistic(self):
+        from scripts.eval_lag2_checkpoints import parse_args, validate_args
+
+        args = parse_args(["--checkpoint-dir", "ckpts", "--symbol", "BTCUSD"])
+
+        assert args.lags == "2"
+        assert args.max_hold_hours == 6.0
+        assert validate_args(args) == []
+
+    def test_low_lag_diagnostics_require_explicit_opt_in(self):
+        from scripts.eval_lag2_checkpoints import parse_args, validate_args
+
+        rejected = parse_args(["--checkpoint-dir", "ckpts", "--symbol", "BTCUSD", "--lags", "0,1"])
+        allowed = parse_args([
+            "--checkpoint-dir",
+            "ckpts",
+            "--symbol",
+            "BTCUSD",
+            "--lags",
+            "0,1",
+            "--allow-low-lag-diagnostics",
+        ])
+
+        assert "lags below 2 require --allow-low-lag-diagnostics" in validate_args(rejected)
+        assert validate_args(allowed) == []
+
+    def test_holdout_payload_records_realism_config(self):
+        from scripts.eval_lag2_checkpoints import build_holdout_payload, parse_args
+
+        args = parse_args(["--checkpoint-dir", "ckpts", "--symbol", "BTCUSD"])
+        payload = build_holdout_payload(args, [2], [{"epoch": 1, "lag": 2}])
+
+        assert payload["symbol"] == "BTCUSD"
+        assert payload["config"] == {
+            "lags": [2],
+            "fee_rate": 0.001,
+            "fill_buffer_bps": 5.0,
+            "window_days": 70,
+            "max_hold_hours": 6.0,
+            "primary_horizon": 1,
+            "market_order_entry": False,
+            "allow_low_lag_diagnostics": False,
+        }
+        assert payload["results"] == [{"epoch": 1, "lag": 2}]
+
+
+class TestEvalRebalanceCheckpointsValidation:
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (
+                ["--fee-rate", "nan"],
+                "fee_rate must be finite and non-negative",
+            ),
+            (
+                ["--window-days", "0"],
+                "window_days must be positive",
+            ),
+            (
+                ["--lags", "0,two"],
+                "lags must be comma-separated integers",
+            ),
+            (
+                ["--lags", "0,1"],
+                "lags below 2 require --allow-low-lag-diagnostics",
+            ),
+        ],
+    )
+    def test_rejects_invalid_realism_before_data_work(
+        self,
+        argv,
+        expected,
+        tmp_path,
+    ):
+        result = run_script(
+            SCRIPTS_DIR / "eval_rebalance_checkpoints.py",
+            [
+                "--checkpoint-dir",
+                str(tmp_path / "missing-checkpoints"),
+                "--symbol",
+                "BTCUSD",
+                *argv,
+            ],
+        )
+
+        assert result.returncode == 2
+        assert expected in result.stderr
+        assert "No epoch checkpoints found" not in result.stdout
+        assert "val bars" not in result.stdout
+
+    def test_defaults_are_production_realistic(self):
+        from scripts.eval_rebalance_checkpoints import parse_args, validate_args
+
+        args = parse_args(["--checkpoint-dir", "ckpts", "--symbol", "BTCUSD"])
+
+        assert args.lags == "2"
+        assert args.fee_rate == 0.001
+        assert validate_args(args) == []
+
+    def test_low_lag_diagnostics_require_explicit_opt_in(self):
+        from scripts.eval_rebalance_checkpoints import parse_args, validate_args
+
+        rejected = parse_args(["--checkpoint-dir", "ckpts", "--symbol", "BTCUSD", "--lags", "0,1"])
+        allowed = parse_args([
+            "--checkpoint-dir",
+            "ckpts",
+            "--symbol",
+            "BTCUSD",
+            "--lags",
+            "0,1",
+            "--allow-low-lag-diagnostics",
+        ])
+
+        assert "lags below 2 require --allow-low-lag-diagnostics" in validate_args(rejected)
+        assert validate_args(allowed) == []
+
+    def test_payload_records_realism_config(self):
+        from scripts.eval_rebalance_checkpoints import build_rebalance_payload, parse_args
+
+        args = parse_args(["--checkpoint-dir", "ckpts", "--symbol", "BTCUSD"])
+        payload = build_rebalance_payload(args, [2], [{"epoch": 1, "lag": 2}])
+
+        assert payload["symbol"] == "BTCUSD"
+        assert payload["config"] == {
+            "lags": [2],
+            "fee_rate": 0.001,
+            "window_days": 70,
+            "allow_low_lag_diagnostics": False,
+        }
+        assert payload["results"] == [{"epoch": 1, "lag": 2}]
+
+    def test_main_writes_rebalance_eval_atomically(self, monkeypatch, tmp_path):
+        import pandas as pd
+        from scripts import eval_rebalance_checkpoints as mod
+
+        ckpt_dir = tmp_path / "ckpts"
+        ckpt_dir.mkdir()
+        (ckpt_dir / "epoch_1.pt").write_bytes(b"fake")
+
+        class FakeValDataset:
+            frame = pd.DataFrame({"open": [1.0, 1.0], "close": [1.0, 1.01]})
+
+        class FakeDataModule:
+            val_dataset = FakeValDataset()
+            feature_columns = ["feat"]
+            normalizer = object()
+
+            def __init__(self, _cfg):
+                pass
+
+        writes: list[tuple[Path, dict]] = []
+
+        monkeypatch.setattr(mod, "BinanceHourlyDataModule", FakeDataModule)
+        monkeypatch.setattr(mod, "load_checkpoint", lambda *_args, **_kwargs: (object(), {}))
+        monkeypatch.setattr(
+            mod,
+            "eval_checkpoint_on_window",
+            lambda **_kwargs: {"total_return": 0.1, "sortino": 1.2, "max_drawdown": -0.01, "num_rebalances": 2},
+        )
+        monkeypatch.setattr(mod, "write_json_atomic", lambda path, payload: writes.append((path, payload)))
+
+        rc = mod.main(["--checkpoint-dir", str(ckpt_dir), "--symbol", "BTCUSD"])
+
+        assert rc == 0
+        assert writes == [
+            (
+                ckpt_dir / "rebalance_eval.json",
+                {
+                    "symbol": "BTCUSD",
+                    "config": {
+                        "lags": [2],
+                        "fee_rate": 0.001,
+                        "window_days": 70,
+                        "allow_low_lag_diagnostics": False,
+                    },
+                    "results": [
+                        {
+                            "total_return": 0.1,
+                            "sortino": 1.2,
+                            "max_drawdown": -0.01,
+                            "num_rebalances": 2,
+                            "epoch": 1,
+                            "lag": 2,
+                        }
+                    ],
+                },
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -342,21 +685,21 @@ class TestUpdateFreshDataDryRun:
 class TestUpdateFreshDataSymbolAvailability:
     def test_find_symbol_csv(self):
         """Test that key mixed23 symbols can be found in trainingdata."""
-        from update_fresh_data import find_symbol_csv, DAILY_DATA_ROOTS
+        from update_fresh_data import DAILY_DATA_ROOTS, find_symbol_csv
 
         data_roots = [ROOT / r for r in DAILY_DATA_ROOTS]
         # Check a few required symbols
         for sym in ["BTCUSD", "ETHUSD", "AAPL"]:
-            path, source = find_symbol_csv(sym, data_roots)
+            path, _source = find_symbol_csv(sym, data_roots)
             assert path is not None, f"Expected to find {sym} in data roots: {data_roots}"
             assert path.exists(), f"CSV file does not exist: {path}"
 
     def test_mixed23_mostly_available(self):
         """Most mixed23 symbols should be available in trainingdata."""
-        from update_fresh_data import check_availability, MIXED23_SYMBOLS, DAILY_DATA_ROOTS
+        from update_fresh_data import DAILY_DATA_ROOTS, MIXED23_SYMBOLS, check_availability
 
         data_roots = [ROOT / r for r in DAILY_DATA_ROOTS]
-        available, missing, dates = check_availability(MIXED23_SYMBOLS, data_roots)
+        available, missing, _dates = check_availability(MIXED23_SYMBOLS, data_roots)
         # At least crypto symbols should be available
         assert len(available) >= 8, f"Too few symbols available: {available}"
         # Warn about missing (not fail, as data may not always be present)
@@ -425,14 +768,14 @@ class TestRealCheckpointsExist:
 
     def test_val_data_exists(self):
         """At least one of the default val data files should exist."""
-        from eval_all_checkpoints import DEFAULT_VAL_DATA_CANDIDATES
+        from scripts.eval_all_checkpoints import DEFAULT_VAL_DATA_CANDIDATES
         any_exists = any((ROOT / c).exists() for c in DEFAULT_VAL_DATA_CANDIDATES)
         assert any_exists, f"No default val data found. Checked: {DEFAULT_VAL_DATA_CANDIDATES}"
 
 
 class TestCheckpointLabelFunction:
     def test_label_relative_to_checkpoints_dir(self, tmp_path):
-        from eval_all_checkpoints import checkpoint_label
+        from scripts.eval_all_checkpoints import checkpoint_label
 
         ckpts_dir = tmp_path / "checkpoints"
         pt = ckpts_dir / "autoresearch_mixed23_daily" / "baseline" / "best.pt"
@@ -441,7 +784,7 @@ class TestCheckpointLabelFunction:
         assert "autoresearch_mixed23_daily" in label
 
     def test_label_fallback_when_not_under_dir(self, tmp_path):
-        from eval_all_checkpoints import checkpoint_label
+        from scripts.eval_all_checkpoints import checkpoint_label
 
         ckpts_dir = tmp_path / "other_dir"
         pt = tmp_path / "checkpoints" / "run1" / "best.pt"

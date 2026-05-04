@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import pandas as pd
 import torch
 
+from pufferlib_market.artifacts import write_json_atomic
 from pufferlib_market.evaluate_multiperiod import LoadedPolicy, load_policy, make_policy_fn
 from pufferlib_market.hourly_replay import (
     DailySimResult,
@@ -30,6 +31,7 @@ from pufferlib_market.hourly_replay import (
     replay_hourly_frozen_daily_actions,
     simulate_daily_policy,
 )
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
 from unified_hourly_experiment.meta_selector import daily_returns_from_equity, select_daily_winners
 
 
@@ -419,7 +421,7 @@ def main() -> None:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--max-leverage", type=float, default=1.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--daily-periods-per-year", type=float, default=365.0)
     parser.add_argument("--hourly-periods-per-year", type=float, default=8760.0)
     parser.add_argument("--lookback-days", type=int, default=7)
@@ -468,12 +470,9 @@ def main() -> None:
         require_full_window=not bool(args.allow_partial_window),
         device=device,
     )
-    text = json.dumps(report, indent=2, sort_keys=True)
-    print(text)
+    print(json.dumps(report, indent=2, sort_keys=True))
     if args.output_json:
-        out = Path(args.output_json)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text)
+        write_json_atomic(Path(args.output_json), report, sort_keys=True)
 
 
 if __name__ == "__main__":

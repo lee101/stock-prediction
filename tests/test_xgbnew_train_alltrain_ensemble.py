@@ -6,6 +6,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,6 +53,40 @@ def test_parse_seed_list_accepts_unique_seed_strings() -> None:
     mod = _load_module()
 
     assert mod._parse_seed_list("0, 7,42") == [0, 7, 42]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--n-estimators", "0"], "n_estimators must be positive"),
+        (["--max-depth", "0"], "max_depth must be positive"),
+        (["--learning-rate", "nan"], "learning_rate must be finite and positive"),
+        (["--min-dollar-vol", "-1"], "--min-dollar-vol"),
+        (["--train-start", "2025-01-02", "--train-end", "2025-01-01"], "--train-start"),
+        (["--shapes", "bad"], "--shapes tuple"),
+        (["--shapes", "0:5:0.03:42,400:5:0.03:7"], "--shapes tuple 1"),
+    ],
+)
+def test_main_rejects_invalid_training_config_before_symbol_loading(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    argv,
+    expected,
+) -> None:
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_load_symbols", lambda _path: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(mod, "build_daily_dataset", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError))
+
+    rc = mod.main(
+        [
+            "--symbols-file", str(tmp_path / "symbols.txt"),
+            *argv,
+        ]
+    )
+
+    assert rc == 1
+    assert expected in capsys.readouterr().err
 
 
 def test_main_rejects_nonpositive_fm_n_latents_before_symbol_loading(
@@ -131,6 +166,7 @@ def test_main_records_fm_latents_sha256_in_manifest(
         }
     )
     fit_calls = []
+    saved_paths = []
 
     class FakeModel:
         def __init__(self, **kwargs):
@@ -142,6 +178,10 @@ def test_main_records_fm_latents_sha256_in_manifest(
         def save(self, path):
             Path(path).write_bytes(b"model-bytes")
 
+    def save_model(model, path):
+        saved_paths.append(path)
+        model.save(path)
+
     monkeypatch.setattr(mod, "load_fm_latents", lambda path: fm_df)
     monkeypatch.setattr(
         mod,
@@ -150,6 +190,7 @@ def test_main_records_fm_latents_sha256_in_manifest(
     )
     monkeypatch.setattr(mod, "XGBStockModel", FakeModel)
     monkeypatch.setattr(mod, "load_chronos_cache", lambda _path: {})
+    monkeypatch.setattr(mod, "save_model_atomic", save_model)
 
     rc = mod.main(
         [
@@ -172,3 +213,4 @@ def test_main_records_fm_latents_sha256_in_manifest(
     assert "latent_1" in config["feature_cols"]
     assert "fm_available" in config["feature_cols"]
     assert len(fit_calls) == 2
+    assert saved_paths == [out_dir / "alltrain_seed0.pkl", out_dir / "alltrain_seed7.pkl"]

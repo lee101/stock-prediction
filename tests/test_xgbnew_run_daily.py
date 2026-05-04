@@ -22,6 +22,9 @@ class _FakeModel:
     def predict_scores(self, df: pd.DataFrame) -> pd.Series:
         return pd.Series(0.75, index=df.index)
 
+    def save(self, path) -> None:
+        path.write_bytes(b"daily-model")
+
 
 def test_run_daily_records_fee_provenance(monkeypatch, tmp_path) -> None:
     train_df = pd.DataFrame(
@@ -46,6 +49,11 @@ def test_run_daily_records_fee_provenance(monkeypatch, tmp_path) -> None:
         }
     )
     seen_fee_rates: list[float] = []
+    saved_models = []
+
+    def _save_model_atomic(model, path):
+        saved_models.append((model, path))
+        model.save(path)
 
     monkeypatch.setattr(run_daily, "load_chronos_cache", lambda _path: {})
     monkeypatch.setattr(
@@ -54,6 +62,7 @@ def test_run_daily_records_fee_provenance(monkeypatch, tmp_path) -> None:
         lambda **_kwargs: (train_df, val_df, test_df),
     )
     monkeypatch.setattr(run_daily, "XGBStockModel", _FakeModel)
+    monkeypatch.setattr(run_daily, "save_model_atomic", _save_model_atomic)
     monkeypatch.setattr(run_daily, "print_summary", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_daily.time, "strftime", lambda _fmt: "20260102_030405")
 
@@ -102,12 +111,16 @@ def test_run_daily_records_fee_provenance(monkeypatch, tmp_path) -> None:
             str(tmp_path / "missing-cache"),
             "--output-dir",
             str(tmp_path / "out"),
+            "--model-path",
+            str(tmp_path / "model.pkl"),
             "--n-estimators",
             "1",
         ]
     )
 
     assert rc == 0
+    assert len(saved_models) == 1
+    assert saved_models[0][1] == tmp_path / "model.pkl"
     assert seen_fee_rates
     assert set(seen_fee_rates) == {PRODUCTION_STOCK_FEE_RATE}
     summary = json.loads(
@@ -120,3 +133,5 @@ def test_run_daily_records_fee_provenance(monkeypatch, tmp_path) -> None:
     trades = pd.read_csv(tmp_path / "out" / "trades_top2_lev1.0_xw0.50.csv")
     assert trades.loc[0, "fee_rate"] == PRODUCTION_STOCK_FEE_RATE
     assert trades.loc[0, "fill_buffer_bps"] == 5.0
+    assert list((tmp_path / "out").glob(".summary_*.json.*.tmp")) == []
+    assert list((tmp_path / "out").glob(".trades_*.csv.*.tmp")) == []

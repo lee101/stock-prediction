@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import evaluate_holdout as root_eval
 import numpy as np
 import pytest
 import torch
 from pufferlib_market import evaluate_holdout as eval_mod
 from pufferlib_market.hourly_replay import MktdData
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
@@ -31,6 +37,7 @@ def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         "shortable_symbols": None,
         "tradable_symbols": None,
         "decision_lag": 0,
+        "allow_low_lag_diagnostics": True,
         "deterministic": True,
         "no_early_stop": False,
         "device": "cpu",
@@ -58,6 +65,40 @@ def _make_data(num_timesteps: int, num_symbols: int = 1) -> MktdData:
         prices=prices,
         tradable=tradable,
     )
+
+
+def test_root_evaluate_holdout_is_compatibility_wrapper() -> None:
+    source = (ROOT / "evaluate_holdout.py").read_text(encoding="utf-8")
+
+    assert root_eval.main is eval_mod.main
+    assert root_eval.TradingPolicy is eval_mod.TradingPolicy
+    assert root_eval._mask_all_shorts is eval_mod._mask_all_shorts
+    assert "write_text(" not in source
+
+
+def test_root_evaluate_holdout_help_runs() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "evaluate_holdout.py"), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "checkpoint" in result.stdout.lower()
+
+
+def test_main_rejects_low_lag_without_diagnostic_opt_in(tmp_path: Path) -> None:
+    fake_args = _fake_main_args(tmp_path, decision_lag=1, allow_low_lag_diagnostics=False)
+
+    with (
+        patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
+        patch.object(eval_mod, "read_mktd") as read_mktd,
+        pytest.raises(ValueError, match="decision_lag below 2 requires --allow-low-lag-diagnostics"),
+    ):
+        eval_mod.main()
+
+    read_mktd.assert_not_called()
 
 
 def test_infer_action_grid_ignores_invalid_metadata() -> None:
@@ -362,6 +403,38 @@ def test_main_ignores_invalid_checkpoint_action_grid_metadata(tmp_path: Path) ->
         assert call.kwargs["action_allocation_bins"] == 1
         assert call.kwargs["action_level_bins"] == 1
         assert call.kwargs["action_max_offset_bps"] == pytest.approx(0.0)
+
+
+def test_main_writes_summary_with_atomic_json_writer(tmp_path: Path) -> None:
+    fake_args = _fake_main_args(tmp_path, n_windows=1, out=str(tmp_path / "summary.json"))
+    source_policy = eval_mod.TradingPolicy(obs_size=22, num_actions=3, hidden=16)
+    fake_result = SimpleNamespace(
+        total_return=0.1,
+        sortino=1.0,
+        max_drawdown=0.05,
+        num_trades=2,
+        win_rate=0.5,
+    )
+    writes = []
+
+    def write_json(path, payload, **kwargs):
+        writes.append((path, payload, kwargs))
+
+    with (
+        patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
+        patch.object(eval_mod, "load_checkpoint_payload", return_value=source_policy.state_dict()),
+        patch.object(eval_mod, "read_mktd", return_value=_make_data(40)),
+        patch.object(eval_mod, "simulate_daily_policy", return_value=fake_result),
+        patch.object(eval_mod, "write_json_atomic", side_effect=write_json),
+    ):
+        eval_mod.main()
+
+    assert len(writes) == 1
+    path, payload, kwargs = writes[0]
+    assert path == Path(fake_args.out)
+    assert kwargs == {"sort_keys": True}
+    assert payload["summary"]["median_total_return"] == pytest.approx(0.1)
+    assert not Path(fake_args.out).exists()
 
 
 def test_main_reports_exhaustive_window_selection_metadata(tmp_path: Path) -> None:

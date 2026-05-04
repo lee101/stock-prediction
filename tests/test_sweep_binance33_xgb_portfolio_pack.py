@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from pufferlib_market.hourly_replay import MktdData, P_CLOSE
+from pufferlib_market.hourly_replay import P_CLOSE, MktdData
+from scripts import sweep_binance33_xgb_portfolio_pack
 from scripts.sweep_binance33_xgb import Experiment
 from scripts.sweep_binance33_xgb_portfolio_pack import (
     PackConfig,
@@ -131,3 +131,43 @@ def test_simulate_pack_window_charges_turnover_and_closes_final_weights() -> Non
     assert no_cost["total_return"] > 0.0
     assert with_cost["total_return"] < no_cost["total_return"]
     assert with_cost["trades"] >= 4
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--fill-buffer-bps", "inf"], "fill_buffer_bps must be finite and non-negative"),
+        (["--top-n-grid", "1,0"], "top_n_grid entries must be positive integers"),
+        (["--score-temp-grid", "0"], "score_temp_grid entries must be positive"),
+        (["--max-weight-grid", "nan"], "max_weight_grid entries must be finite"),
+        (["--allocation-modes", ""], "allocation_modes expected at least one value"),
+        (["--experiment-names", "missing_exp"], "unknown experiment names: missing_exp"),
+        (["--experiment-names", ""], "experiment_names must contain at least one experiment"),
+    ],
+)
+def test_main_rejects_invalid_portfolio_pack_config_before_loading_data(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+    argv: list[str],
+    expected: str,
+) -> None:
+    def fail_read_mktd(_path):
+        raise AssertionError("read_mktd should not run for invalid configs")
+
+    monkeypatch.setattr(sweep_binance33_xgb_portfolio_pack, "read_mktd", fail_read_mktd)
+
+    rc = sweep_binance33_xgb_portfolio_pack.main(
+        [
+            "--train-data",
+            str(tmp_path / "missing-train.bin"),
+            "--eval-data",
+            str(tmp_path / "missing-eval.bin"),
+            "--out",
+            str(tmp_path / "out.csv"),
+            *argv,
+        ]
+    )
+
+    assert rc == 2
+    assert expected in capsys.readouterr().err

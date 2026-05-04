@@ -33,7 +33,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Categorical
+
 
 try:
     import wandb
@@ -46,13 +46,20 @@ except ImportError:
 # needed at import time and they have no pufferlib dependency.
 
 # Local
-from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
+from pufferlib_market.artifacts import save_torch_atomic
+from pufferlib_market.gae_cuda import HAS_TRITON as HAS_TRITON_GAE
+from pufferlib_market.gae_cuda import compute_gae_gpu
+from pufferlib_market.kernels.fused_mlp import HAS_TRITON, fused_mlp_relu
+from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
+from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import (
+    PRODUCTION_DECISION_LAG,
+    PRODUCTION_SHORT_BORROW_APR,
+    require_production_decision_lag,
+)
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 from src.torch_backend import configure_tf32_backends
-from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
-from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
-from pufferlib_market.gae_cuda import compute_gae_gpu, HAS_TRITON as HAS_TRITON_GAE
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -298,7 +305,7 @@ def _checkpoint_payload(
     best_return: float,
     disable_shorts: bool,
     action_meta: dict[str, int | float],
-    arch: str,
+    arch: str = "mlp",
 ) -> dict[str, object]:
     activation_name = getattr(
         policy,
@@ -1054,7 +1061,21 @@ def _compute_gae_cpu_inline(rewards, values, dones, next_value, gamma, gae_lambd
     return adv_buf, adv_buf + values
 
 
+def _validate_realism_args(args) -> None:
+    allow_low_lag = bool(getattr(args, "allow_low_lag_diagnostics", False))
+    args.decision_lag = require_production_decision_lag(
+        getattr(args, "decision_lag", PRODUCTION_DECISION_LAG),
+        allow_low_lag_diagnostics=allow_low_lag,
+    )
+    args.val_decision_lag = require_production_decision_lag(
+        getattr(args, "val_decision_lag", PRODUCTION_DECISION_LAG),
+        allow_low_lag_diagnostics=allow_low_lag,
+    )
+
+
 def train(args):
+    _validate_realism_args(args)
+
     # Lazy pufferlib imports — only needed at training time, not import time.
     try:
         import pufferlib  # noqa: F401
@@ -1074,6 +1095,7 @@ def train(args):
     if device.type == "cuda":
         torch.cuda.manual_seed_all(args.seed)
     import random as _random
+
     import numpy as _np
     _random.seed(args.seed)
     _np.random.seed(args.seed)
@@ -1172,7 +1194,7 @@ def train(args):
         trade_penalty=config.trade_penalty,
         fill_slippage_bps=config.fill_slippage_bps,
         fill_probability=config.fill_probability,
-        decision_lag=int(getattr(args, "decision_lag", 1)),
+        decision_lag=int(getattr(args, "decision_lag", PRODUCTION_DECISION_LAG)),
         max_hold_hours=config.max_hold_hours,
         enable_drawdown_profit_early_exit=config.enable_drawdown_profit_early_exit,
         drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,
@@ -1657,8 +1679,8 @@ def train(args):
     _VAL_WINDOW_STEPS = 90  # Always evaluate on 90-day windows regardless of training episode length
     if getattr(args, "val_data_path", None):
         try:
-            from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
             from pufferlib_market.evaluate_holdout import _slice_window
+            from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
             _val_data = read_mktd(args.val_data_path)
             _all_starts = list(range(_val_data.num_timesteps - _VAL_WINDOW_STEPS))
             # Use a fixed random subset of windows for fast periodic eval
@@ -2080,8 +2102,7 @@ def train(args):
             if ep_return > best_return:
                 best_return = ep_return
                 ckpt_path = Path(args.checkpoint_dir) / "best.pt"
-                ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(
+                save_torch_atomic(
                     _checkpoint_payload(
                         policy,
                         optimizer,
@@ -2198,8 +2219,7 @@ def train(args):
                 _val_best_score = val_score
                 _val_best_neg = val_neg
                 val_ckpt_path = Path(args.checkpoint_dir) / "val_best.pt"
-                val_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(
+                save_torch_atomic(
                     _checkpoint_payload(
                         policy, optimizer, update=update, global_step=global_step,
                         best_return=float(val_score), disable_shorts=bool(args.disable_shorts),
@@ -2211,8 +2231,7 @@ def train(args):
             if val_avg_trades >= 1.0 and val_neg < _val_best_neg_track:
                 _val_best_neg_track = val_neg
                 neg_ckpt_path = Path(args.checkpoint_dir) / "best_neg.pt"
-                neg_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(
+                save_torch_atomic(
                     _checkpoint_payload(
                         policy, optimizer, update=update, global_step=global_step,
                         best_return=float(val_med), disable_shorts=bool(args.disable_shorts),
@@ -2432,8 +2451,7 @@ def train(args):
         # ── Periodic checkpoint ──
         if update % args.save_every == 0:
             ckpt_path = Path(args.checkpoint_dir) / f"update_{update:06d}.pt"
-            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(
+            save_torch_atomic(
                 _checkpoint_payload(
                     policy,
                     optimizer,
@@ -2451,8 +2469,7 @@ def train(args):
 
     # ── Final save ──
     ckpt_path = Path(args.checkpoint_dir) / "final.pt"
-    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
+    save_torch_atomic(
         _checkpoint_payload(
             policy,
             optimizer,
@@ -2573,13 +2590,18 @@ def main():
     parser.add_argument(
         "--decision-lag",
         type=int,
-        default=1,
-        help="Bars between observation and execution. 1=prior hardcoded (lookahead-ish). 2+=realistic production (Chronos+LLM+order placement straddle >1 bar).",
+        default=PRODUCTION_DECISION_LAG,
+        help="Bars between observation and execution. Default 2 matches production fill timing.",
+    )
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow decision_lag < 2 for explicit diagnostic runs only.",
     )
     parser.add_argument("--num-envs", type=int, default=64,
                         help="Number of parallel envs (default 64). For H100, consider --num-envs 256 (4x default) for better GPU utilization.")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0, help="Annual borrow rate applied to open shorts")
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR, help="Annual borrow rate applied to open shorts")
     parser.add_argument("--max-hold-hours", type=int, default=0, help="Force close position after N hours (0=disabled)")
     parser.add_argument(
         "--drawdown-profit-early-exit",
@@ -2878,6 +2900,10 @@ def main():
                         help="Override the root directory for marketsim artifacts (default: <repo>/models/artifacts).")
 
     args = parser.parse_args()
+    try:
+        _validate_realism_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     train(args)
 
 

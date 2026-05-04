@@ -26,17 +26,19 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
+import math
 import sys
 import time
 from datetime import date
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.artifacts import save_model_atomic, write_json_atomic
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
 from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
@@ -199,19 +201,118 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _parse_seed_list(value: str) -> list[int]:
+    seeds = [int(s.strip()) for s in value.split(",") if s.strip()]
+    seen: set[int] = set()
+    duplicates: list[int] = []
+    for seed in seeds:
+        if seed in seen and seed not in duplicates:
+            duplicates.append(seed)
+        seen.add(seed)
+    if duplicates:
+        raise ValueError(f"duplicate seeds are not allowed: {duplicates}")
+    return seeds
+
+
+def _parse_date_arg(name: str, value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"--{name} must be an ISO date, got {value!r}") from exc
+
+
+def _validate_positive_int(args: argparse.Namespace, attr: str, label: str) -> None:
+    if int(getattr(args, attr)) <= 0:
+        raise ValueError(f"--{label} must be positive")
+
+
+def _validate_nonnegative_finite(args: argparse.Namespace, attr: str, label: str) -> None:
+    value = float(getattr(args, attr))
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"--{label} must be finite and nonnegative")
+
+
+def _validate_positive_finite(args: argparse.Namespace, attr: str, label: str) -> None:
+    value = float(getattr(args, attr))
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"--{label} must be finite and positive")
+
+
+def _parse_mlp_hidden(value: str) -> list[int]:
+    dims = [int(h) for h in value.split(",") if h.strip()]
+    if not dims or any(dim <= 0 for dim in dims):
+        raise ValueError("--mlp-hidden must contain positive integer dimensions")
+    return dims
+
+
+def _validate_args(args: argparse.Namespace) -> tuple[list[int], date, date]:
+    try:
+        seeds = _parse_seed_list(str(args.seeds))
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    if not seeds:
+        raise ValueError("--seeds must contain at least one seed")
+
+    train_start = _parse_date_arg("train-start", str(args.train_start))
+    train_end = (
+        _parse_date_arg("train-end", str(args.train_end))
+        if args.train_end
+        else date.today()
+    )
+    if train_start > train_end:
+        raise ValueError("--train-start must be <= --train-end")
+
+    _validate_nonnegative_finite(args, "min_dollar_vol", "min-dollar-vol")
+    val_frac = float(args.val_frac)
+    if not math.isfinite(val_frac) or not 0.0 <= val_frac < 1.0:
+        raise ValueError("--val-frac must be finite and in [0, 1)")
+    family = str(args.family)
+    if family in {"xgb", "xgb_rank", "lgb", "cat"}:
+        _validate_positive_int(args, "n_estimators", "n-estimators")
+        _validate_positive_finite(args, "learning_rate", "learning-rate")
+    if family in {"xgb", "xgb_rank"} and int(args.max_depth) <= 0:
+        raise ValueError("--max-depth must be positive for xgb families")
+    if family == "lgb":
+        _validate_positive_int(args, "lgb_num_leaves", "lgb-num-leaves")
+    if family == "xgb_rank":
+        if int(args.ranker_deciles) < 2:
+            raise ValueError("--ranker-deciles must be >= 2")
+        _validate_positive_finite(
+            args,
+            "ranker_sample_weight_clip",
+            "ranker-sample-weight-clip",
+        )
+    if family in {"mlp", "mlp_muon"}:
+        _parse_mlp_hidden(str(args.mlp_hidden))
+        dropout = float(args.mlp_dropout)
+        if not math.isfinite(dropout) or not 0.0 <= dropout < 1.0:
+            raise ValueError("--mlp-dropout must be finite and in [0, 1)")
+        _validate_positive_finite(args, "mlp_lr", "mlp-lr")
+        _validate_positive_int(args, "mlp_batch", "mlp-batch")
+        _validate_positive_int(args, "mlp_epochs", "mlp-epochs")
+        if int(args.mlp_patience) < 0:
+            raise ValueError("--mlp-patience must be nonnegative")
+        _validate_nonnegative_finite(args, "mlp_weight_decay", "mlp-weight-decay")
+    if family == "mlp_muon":
+        _validate_positive_int(args, "muon_hidden", "muon-hidden")
+        _validate_positive_int(args, "muon_blocks", "muon-blocks")
+        _validate_positive_finite(args, "muon_lr", "muon-lr")
+        _validate_positive_finite(args, "muon_momentum", "muon-momentum")
+    return seeds, train_start, train_end
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
 
-    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
-    if len(seeds) < 1:
-        print("ERROR: need at least 1 seed", file=sys.stderr)
-        return 1
+    try:
+        seeds, train_start, train_end = _validate_args(args)
+    except ValueError as exc:
+        print(f"train_ensemble_family: {exc}", file=sys.stderr)
+        return 2
 
     symbols = _load_symbols(args.symbols_file)
-    train_start = date.fromisoformat(args.train_start)
-    train_end = date.fromisoformat(args.train_end) if args.train_end else date.today()
 
     chronos_cache = {}
     if args.chronos_cache.exists():
@@ -266,7 +367,7 @@ def main(argv=None) -> int:
         model = _build_model(args.family, seed, args.device, args)
         model.fit(train_df, feature_cols, val_df=val_df, verbose=args.verbose)
         out_pkl = args.out_dir / f"alltrain_seed{seed}.pkl"
-        model.save(out_pkl)
+        save_model_atomic(model, out_pkl)
         saved.append({
             "seed": int(seed),
             "path": str(out_pkl),
@@ -307,7 +408,7 @@ def main(argv=None) -> int:
         "blend_recipe": "predict_scores mean across seeds",
     }
     manifest_path = args.out_dir / "alltrain_ensemble.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    write_json_atomic(manifest_path, manifest)
     print(f"\n[train-family {args.family}] Manifest → {manifest_path}")
     print(f"[train-family {args.family}] Models   → {len(saved)} files in {args.out_dir}")
     return 0

@@ -28,20 +28,23 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
+import math
 import sys
 import time
 from datetime import date
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.artifacts import save_model_atomic, write_json_atomic
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache
 from xgbnew.features import DAILY_FEATURE_COLS
 from xgbnew.model import XGBStockModel
+
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +83,45 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _parse_date_arg(name: str, value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"--{name} must be an ISO date, got {value!r}") from exc
+
+
+def _validate_args(args: argparse.Namespace) -> tuple[date, date]:
+    train_start = _parse_date_arg("train-start", str(args.train_start))
+    train_end = (
+        _parse_date_arg("train-end", str(args.train_end))
+        if args.train_end
+        else date.today()
+    )
+    if train_start > train_end:
+        raise ValueError("--train-start must be <= --train-end")
+    if not math.isfinite(float(args.min_dollar_vol)) or float(args.min_dollar_vol) < 0.0:
+        raise ValueError("--min-dollar-vol must be finite and nonnegative")
+    if int(args.n_estimators) <= 0:
+        raise ValueError("--n-estimators must be positive")
+    if int(args.max_depth) <= 0:
+        raise ValueError("--max-depth must be positive")
+    if not math.isfinite(float(args.learning_rate)) or float(args.learning_rate) <= 0.0:
+        raise ValueError("--learning-rate must be finite and positive")
+    return train_start, train_end
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
 
+    try:
+        train_start, train_end = _validate_args(args)
+    except ValueError as exc:
+        print(f"train_alltrain: {exc}", file=sys.stderr)
+        return 2
+
     symbols = _load_symbols(args.symbols_file)
-    train_start = date.fromisoformat(args.train_start)
-    train_end = date.fromisoformat(args.train_end) if args.train_end else date.today()
 
     chronos_cache = {}
     if args.chronos_cache.exists():
@@ -133,7 +167,7 @@ def main(argv=None) -> int:
         print(f"    {feat:<25} {imp:.4f}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    model.save(args.out)
+    save_model_atomic(model, args.out)
 
     # Sidecar metadata
     meta = {
@@ -154,10 +188,10 @@ def main(argv=None) -> int:
         "feature_importances_top10": {k: float(v) for k, v in imps.items()},
     }
     meta_path = args.out.with_suffix(".json")
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    write_json_atomic(meta_path, meta)
     print(f"\n  Model  → {args.out}")
     print(f"  Meta   → {meta_path}")
-    print(f"  ⚠ No OOS metrics — this is an alltrain model; trust champion hyperparams only.")
+    print("  ⚠ No OOS metrics — this is an alltrain model; trust champion hyperparams only.")
     return 0
 
 

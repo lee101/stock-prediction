@@ -30,6 +30,11 @@ from pufferlib_market.checkpoint_loader import (
 )
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.realism import (
+    PRODUCTION_DECISION_LAG,
+    PRODUCTION_SHORT_BORROW_APR,
+    require_production_decision_lag,
+)
 
 
 def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int, per_symbol_actions: int = 1) -> torch.Tensor:
@@ -314,7 +319,7 @@ def main() -> None:
     )
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
-    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--arch", choices=["auto", "mlp", "resmlp"], default="auto")
     parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--disable-shorts", action="store_true")
@@ -322,13 +327,22 @@ def main() -> None:
     parser.add_argument(
         "--decision-lag",
         type=int,
-        default=0,
+        default=PRODUCTION_DECISION_LAG,
         help="Delay actions by N bars (0=execute immediately; 1=use previous bar's decision).",
+    )
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow lag 0/1 diagnostic runs; not production-realistic.",
     )
     parser.add_argument("--deterministic", action="store_true", help="Argmax actions (recommended for eval)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
+    decision_lag = require_production_decision_lag(
+        args.decision_lag,
+        allow_low_lag_diagnostics=getattr(args, "allow_low_lag_diagnostics", False),
+    )
     device = torch.device(args.device)
     ckpt_path = Path(args.checkpoint)
 
@@ -355,9 +369,6 @@ def main() -> None:
     if shortable_mask is not None:
         shortable_mask = shortable_mask.to(device=device)
 
-    decision_lag = int(args.decision_lag)
-    if decision_lag < 0:
-        raise ValueError("--decision-lag must be >= 0")
     pending_actions: collections.deque[int] = collections.deque(maxlen=max(1, decision_lag + 1))
 
     def _policy_fn(obs: np.ndarray) -> int:

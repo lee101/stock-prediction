@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import json
 import math
 import os
 import sys
@@ -53,6 +52,11 @@ from pufferlib_market.evaluate_holdout import (  # noqa: E402
     load_policy,
 )
 from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy  # noqa: E402
+from pufferlib_market.realism import (  # noqa: E402
+    PRODUCTION_DECISION_LAG,
+    require_production_decision_lag,
+)
+from xgbnew.artifacts import write_json_atomic, write_text_atomic  # noqa: E402
 
 from src.daily_stock_defaults import (  # noqa: E402
     DEFAULT_CHECKPOINT,
@@ -145,16 +149,6 @@ def _require_int_at_least(value: int, *, name: str, min_value: int) -> int:
     if parsed < int(min_value):
         raise ValueError(f"{name} must be >= {int(min_value)}, got {parsed}")
     return parsed
-
-
-def _write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp_path.write_text(text, encoding="utf-8")
-        tmp_path.replace(path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
 
 
 def _build_ensemble_policy_fn(
@@ -545,8 +539,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="Legacy/smoke override: evaluate one adverse fill slippage cell in bps.")
     ap.add_argument("--short-borrow-apr", type=float, default=0.0625,
                     help="Annualized short borrow APR charged by the simulator (default 0.0625 = 6.25%).")
-    ap.add_argument("--decision-lag", type=int, default=2,
+    ap.add_argument("--decision-lag", type=int, default=PRODUCTION_DECISION_LAG,
                     help="Defer the policy's action by N bars (production-safe default 2).")
+    ap.add_argument("--allow-low-lag-diagnostics", action="store_true",
+                    help="Allow decision_lag < 2 for explicit smoke/diagnostic runs only.")
     ap.add_argument("--monthly-target", type=float, default=0.27)
     ap.add_argument("--no-enforce-gate", dest="enforce_gate", action="store_false",
                     help="Write report artifacts but return 0 even if cells miss monthly_target.")
@@ -599,7 +595,10 @@ def main(argv: list[str] | None = None) -> int:
             name="short_borrow_apr",
             min_value=0.0,
         )
-        decision_lag = _require_int_at_least(args.decision_lag, name="decision_lag", min_value=0)
+        decision_lag = require_production_decision_lag(
+            int(args.decision_lag),
+            allow_low_lag_diagnostics=bool(args.allow_low_lag_diagnostics),
+        )
         monthly_target = _require_finite_float(args.monthly_target, name="monthly_target")
         max_windows = (
             None
@@ -709,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     json_path = out_dir / f"{val_stem}_realism_gate.json"
     md_path = out_dir / f"{val_stem}_realism_gate.md"
-    _write_text_atomic(json_path, json.dumps(payload, indent=2, default=str) + "\n")
+    write_json_atomic(json_path, payload, default=str)
     md = _render_md(
         cells,
         val_path=val_path,
@@ -722,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
         promotion_gate=promotion_gate,
         checkpoint_names=[Path(c).stem for c in ckpts],
     )
-    _write_text_atomic(md_path, md)
+    write_text_atomic(md_path, md)
     print()
     print(md)
     print()

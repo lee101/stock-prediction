@@ -23,6 +23,8 @@ _EXT_ERR: Optional[str] = None
 _ATTEMPTED = False
 
 _PKG_DIR = Path(__file__).resolve().parent
+PRODUCTION_FEE_BPS = 10.0
+PRODUCTION_FILL_BUFFER_BPS = 5.0
 # csrc lives at gpu_trading_env/csrc (three levels up from this file).
 _CSRC = (_PKG_DIR / ".." / ".." / "csrc").resolve()
 if not _CSRC.exists():
@@ -98,8 +100,8 @@ def _load_ext():
 
 @dataclass
 class EnvConfig:
-    fee_bps: float = 10.0
-    buffer_bps: float = 5.0
+    fee_bps: float = PRODUCTION_FEE_BPS
+    buffer_bps: float = PRODUCTION_FILL_BUFFER_BPS
     max_quote_offset_bps: float = 50.0
     max_leverage: float = 5.0
     maint_margin: float = 0.0625
@@ -242,6 +244,7 @@ def _load_bin_features(path: Union[str, Path]) -> tuple:
     features: [T, S*F] float32 on CPU.
     """
     import struct
+
     import numpy as np
     path = Path(path)
     with open(path, "rb") as f:
@@ -282,6 +285,7 @@ def load_bin_full(path: Union[str, Path]) -> dict:
         T, S, F   ints
     """
     import struct
+
     import numpy as np
     path = Path(path)
     raw = path.read_bytes()
@@ -444,7 +448,6 @@ class MultiSymbolEnvHandle:
         if ext is None:
             raise RuntimeError(_EXT_ERR or "gpu_trading_env._C not loaded")
 
-        S = self.num_symbols
         if action.dtype != torch.float32:
             action = action.to(torch.float32)
         if not action.is_contiguous():
@@ -709,8 +712,8 @@ class PortfolioBracketConfig:
     """Knobs for PortfolioBracketEnv (mirrors MultiSymBracketConfig in the
     numpy spec at pufferlib_cpp_market_sim/python/market_sim_py/multisym_bracket_ref.py).
     """
-    fee_bps: float = 0.278
-    fill_buffer_bps: float = 5.0
+    fee_bps: float = PRODUCTION_FEE_BPS
+    fill_buffer_bps: float = PRODUCTION_FILL_BUFFER_BPS
     max_leverage: float = 2.0
     annual_margin_rate: float = 0.0625
     trading_days_per_year: int = 252
@@ -969,6 +972,7 @@ def make_multisym(
 
 
 __all__ = ["make", "make_multi_symbol", "make_multisym", "make_portfolio_bracket",
+           "PRODUCTION_FEE_BPS", "PRODUCTION_FILL_BUFFER_BPS",
            "EnvConfig", "PortfolioBracketConfig",
            "EnvHandle", "MultiSymbolEnvHandle", "MultiSymEnv", "PortfolioBracketEnv",
            "_load_ext", "_EXT_ERR", "_load_bin_features", "load_bin_full"]

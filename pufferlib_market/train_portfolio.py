@@ -4,19 +4,24 @@ Train portfolio RL agent with architecture search.
 Tests multiple configs and picks best based on validation Sortino.
 """
 import argparse
-import json
-import os
+import math
 import sys
 from pathlib import Path
-from datetime import datetime
+
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.distributions import Categorical
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from pufferlib_market.artifacts import save_torch_atomic
 from pufferlib_market.portfolio_env import PortfolioEnv
+
+
+ROLLOUT_STEPS = 2048
+EVAL_INTERVAL_STEPS = ROLLOUT_STEPS * 10
 
 
 class PortfolioPolicy(nn.Module):
@@ -142,7 +147,7 @@ class PPOTrainer:
                 actions, log_prob, value = self.policy.get_action(obs_t)
 
             action = actions.squeeze(0).cpu().numpy()
-            next_obs, reward, term, trunc, info = self.env.step(action)
+            next_obs, reward, term, trunc, _info = self.env.step(action)
             done = term or trunc
 
             obs_list.append(obs)
@@ -157,12 +162,12 @@ class PPOTrainer:
                 obs, _ = self.env.reset()
 
         return {
-            'obs': np.array(obs_list),
-            'actions': np.array(actions_list),
-            'rewards': np.array(rewards_list),
-            'log_probs': np.array(log_probs_list),
-            'values': np.array(values_list),
-            'dones': np.array(dones_list),
+            "obs": np.array(obs_list),
+            "actions": np.array(actions_list),
+            "rewards": np.array(rewards_list),
+            "log_probs": np.array(log_probs_list),
+            "values": np.array(values_list),
+            "dones": np.array(dones_list),
         }
 
     def compute_gae(self, rewards, values, dones):
@@ -184,12 +189,12 @@ class PPOTrainer:
 
     def update(self, rollout, num_epochs: int = 4, batch_size: int = 64):
         """PPO update."""
-        obs = torch.from_numpy(rollout['obs']).float().to(self.device)
-        actions = torch.from_numpy(rollout['actions']).long().to(self.device)
-        old_log_probs = torch.from_numpy(rollout['log_probs']).float().to(self.device)
+        obs = torch.from_numpy(rollout["obs"]).float().to(self.device)
+        actions = torch.from_numpy(rollout["actions"]).long().to(self.device)
+        old_log_probs = torch.from_numpy(rollout["log_probs"]).float().to(self.device)
 
         advantages, returns = self.compute_gae(
-            rollout['rewards'], rollout['values'], rollout['dones']
+            rollout["rewards"], rollout["values"], rollout["dones"]
         )
         advantages = torch.from_numpy(advantages).float().to(self.device)
         returns = torch.from_numpy(returns).float().to(self.device)
@@ -237,9 +242,9 @@ class PPOTrainer:
                 num_updates += 1
 
         return {
-            'pg_loss': total_pg_loss / num_updates,
-            'vf_loss': total_vf_loss / num_updates,
-            'entropy': total_ent / num_updates,
+            "pg_loss": total_pg_loss / num_updates,
+            "vf_loss": total_vf_loss / num_updates,
+            "entropy": total_ent / num_updates,
         }
 
     def evaluate(self, num_episodes: int = 10) -> dict:
@@ -259,18 +264,18 @@ class PPOTrainer:
 
                 obs, reward, term, trunc, info = self.env.step(action)
                 episode_return += reward
-                ep_returns.append(info.get('return', 0))
+                ep_returns.append(info.get("return", 0))
 
                 if term or trunc:
                     break
 
-            returns.append(info.get('total_return', episode_return / 100))
-            sortinos.append(info.get('sortino', 0))
+            returns.append(info.get("total_return", episode_return / 100))
+            sortinos.append(info.get("sortino", 0))
 
         return {
-            'mean_return': np.mean(returns),
-            'mean_sortino': np.mean(sortinos),
-            'std_return': np.std(returns),
+            "mean_return": np.mean(returns),
+            "mean_sortino": np.mean(sortinos),
+            "std_return": np.std(returns),
         }
 
 
@@ -284,6 +289,14 @@ def train_config(
     checkpoint_dir: str,
 ):
     """Train with specific config."""
+    _validate_train_config(
+        data_path=data_path,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        discrete_bins=discrete_bins,
+        lr=lr,
+        total_steps=total_steps,
+    )
     env = PortfolioEnv(data_path, discrete_bins=discrete_bins, max_steps=720)
     obs_dim = env.observation_space.shape[0]
 
@@ -299,39 +312,72 @@ def train_config(
 
     best_sortino = -np.inf
     step = 0
-    rollout_steps = 2048
 
     while step < total_steps:
-        rollout = trainer.collect_rollout(rollout_steps)
+        rollout = trainer.collect_rollout(ROLLOUT_STEPS)
         losses = trainer.update(rollout)
-        step += rollout_steps
+        step += ROLLOUT_STEPS
 
-        if step % (rollout_steps * 10) == 0:
+        should_eval = step % EVAL_INTERVAL_STEPS == 0 or step >= total_steps
+        if should_eval:
             eval_results = trainer.evaluate(num_episodes=5)
             print(f"[{step:,}] ret={eval_results['mean_return']:.2%} "
                   f"sortino={eval_results['mean_sortino']:.1f} "
                   f"pg={losses['pg_loss']:.4f} ent={losses['entropy']:.3f}", flush=True)
 
-            if eval_results['mean_sortino'] > best_sortino:
-                best_sortino = eval_results['mean_sortino']
+            if eval_results["mean_sortino"] > best_sortino:
+                best_sortino = eval_results["mean_sortino"]
                 Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-                torch.save({
-                    'policy': policy.state_dict(),
-                    'config': {
-                        'hidden_dim': hidden_dim,
-                        'num_layers': num_layers,
-                        'discrete_bins': discrete_bins,
-                        'num_symbols': env.num_symbols,
-                        'obs_dim': obs_dim,
+                save_torch_atomic({
+                    "policy": policy.state_dict(),
+                    "config": {
+                        "hidden_dim": hidden_dim,
+                        "num_layers": num_layers,
+                        "discrete_bins": discrete_bins,
+                        "num_symbols": env.num_symbols,
+                        "obs_dim": obs_dim,
                     },
-                    'sortino': best_sortino,
-                    'step': step,
-                }, f"{checkpoint_dir}/best.pt")
+                    "sortino": best_sortino,
+                    "step": step,
+                }, Path(checkpoint_dir) / "best.pt")
 
     return best_sortino
 
 
-def main():
+def _validate_train_config(
+    *,
+    data_path: str,
+    hidden_dim: int,
+    num_layers: int,
+    discrete_bins: int,
+    lr: float,
+    total_steps: int,
+) -> None:
+    if not Path(data_path).exists():
+        raise ValueError(f"data_path not found: {data_path}")
+    for name, value in (
+        ("hidden_dim", hidden_dim),
+        ("num_layers", num_layers),
+        ("discrete_bins", discrete_bins),
+        ("total_steps", total_steps),
+    ):
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError(f"{name} must be >= 1, got {parsed}")
+    parsed_lr = float(lr)
+    if not math.isfinite(parsed_lr) or parsed_lr <= 0.0:
+        raise ValueError(f"lr must be finite and > 0, got {lr!r}")
+
+
+def _validate_training_source(*, data_path: str, total_steps: int) -> None:
+    if not Path(data_path).exists():
+        raise ValueError(f"data_path not found: {data_path}")
+    parsed_steps = int(total_steps)
+    if parsed_steps < 1:
+        raise ValueError(f"total_steps must be >= 1, got {parsed_steps}")
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", default="pufferlib_market/data/stocks10_data.bin")
     parser.add_argument("--total-steps", type=int, default=500_000)
@@ -341,15 +387,21 @@ def main():
     parser.add_argument("--discrete-bins", type=int, default=5)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--checkpoint-dir", default="experiments/portfolio_rl")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.search:
+        try:
+            _validate_training_source(data_path=args.data_path, total_steps=args.total_steps)
+        except ValueError as exc:
+            print(f"train_portfolio: {exc}", file=sys.stderr)
+            return 2
+
         # Architecture search
         configs = [
-            {'hidden_dim': 128, 'num_layers': 2, 'discrete_bins': 5, 'lr': 3e-4},
-            {'hidden_dim': 256, 'num_layers': 3, 'discrete_bins': 5, 'lr': 3e-4},
-            {'hidden_dim': 256, 'num_layers': 3, 'discrete_bins': 10, 'lr': 3e-4},
-            {'hidden_dim': 512, 'num_layers': 4, 'discrete_bins': 5, 'lr': 1e-4},
+            {"hidden_dim": 128, "num_layers": 2, "discrete_bins": 5, "lr": 3e-4},
+            {"hidden_dim": 256, "num_layers": 3, "discrete_bins": 5, "lr": 3e-4},
+            {"hidden_dim": 256, "num_layers": 3, "discrete_bins": 10, "lr": 3e-4},
+            {"hidden_dim": 512, "num_layers": 4, "discrete_bins": 5, "lr": 1e-4},
         ]
 
         results = []
@@ -358,23 +410,36 @@ def main():
             ckpt_dir = f"{args.checkpoint_dir}/config_{i}"
             sortino = train_config(
                 args.data_path,
-                cfg['hidden_dim'],
-                cfg['num_layers'],
-                cfg['discrete_bins'],
-                cfg['lr'],
+                cfg["hidden_dim"],
+                cfg["num_layers"],
+                cfg["discrete_bins"],
+                cfg["lr"],
                 args.total_steps,
                 ckpt_dir,
             )
-            results.append({'config': cfg, 'sortino': sortino, 'checkpoint': ckpt_dir})
+            results.append({"config": cfg, "sortino": sortino, "checkpoint": ckpt_dir})
             print(f"Config {i+1} final sortino: {sortino:.2f}")
 
         # Print best
-        best = max(results, key=lambda x: x['sortino'])
+        best = max(results, key=lambda x: x["sortino"])
         print(f"\n=== Best config: {best['config']} ===")
         print(f"Sortino: {best['sortino']:.2f}")
         print(f"Checkpoint: {best['checkpoint']}")
 
     else:
+        try:
+            _validate_train_config(
+                data_path=args.data_path,
+                hidden_dim=args.hidden_dim,
+                num_layers=args.num_layers,
+                discrete_bins=args.discrete_bins,
+                lr=args.lr,
+                total_steps=args.total_steps,
+            )
+        except ValueError as exc:
+            print(f"train_portfolio: {exc}", file=sys.stderr)
+            return 2
+
         # Single training run
         train_config(
             args.data_path,
@@ -385,7 +450,8 @@ def main():
             args.total_steps,
             args.checkpoint_dir,
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

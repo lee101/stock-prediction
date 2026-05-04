@@ -7,6 +7,7 @@ import argparse
 import csv
 import importlib.util
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,12 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+
+from pufferlib_market.realism import (  # noqa: E402
+    PRODUCTION_DECISION_LAG,
+    require_production_decision_lag,
+)
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
 
 
 def _load_multihorizon_module():
@@ -36,6 +43,44 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _require_finite_float(value: float, *, name: str, min_value: float | None = None) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if min_value is not None and parsed < float(min_value):
+        raise ValueError(f"{name} must be >= {float(min_value):g}, got {parsed!r}")
+    return parsed
+
+
+def _require_int_at_least(value: int, *, name: str, min_value: int) -> int:
+    parsed = int(value)
+    if parsed < int(min_value):
+        raise ValueError(f"{name} must be >= {int(min_value)}, got {parsed}")
+    return parsed
+
+
+def _parse_int_grid(raw: str, *, name: str, min_value: int) -> list[int]:
+    values: list[int] = []
+    seen: set[int] = set()
+    for part in str(raw).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            parsed = int(text)
+        except ValueError as exc:
+            raise ValueError(f"{name} contains invalid value {text!r}") from exc
+        if parsed < int(min_value):
+            raise ValueError(f"{name} values must be >= {int(min_value)}, got {parsed}")
+        if parsed in seen:
+            raise ValueError(f"{name} contains duplicate value {parsed}")
+        seen.add(parsed)
+        values.append(parsed)
+    if not values:
+        raise ValueError(f"{name} must contain at least one value")
+    return values
 
 
 def require_safe_component(value: str, *, field_name: str = "description") -> str:
@@ -128,6 +173,8 @@ def _run_candidate_eval(
         "--out",
         str(output_path),
     ]
+    if int(args.decision_lag) < PRODUCTION_DECISION_LAG and bool(args.allow_low_lag_diagnostics):
+        cmd.append("--allow-low-lag-diagnostics")
     if args.exhaustive:
         cmd.append("--exhaustive")
     if not args.disable_shorts:
@@ -161,7 +208,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0625)
-    parser.add_argument("--decision-lag", type=int, default=2)
+    parser.add_argument("--decision-lag", type=int, default=PRODUCTION_DECISION_LAG)
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow decision_lag < 2 for explicit smoke/diagnostic runs only.",
+    )
     parser.add_argument("--disable-shorts", action="store_true", default=True)
     parser.add_argument("--exhaustive", action="store_true")
     parser.add_argument("--out-dir", default="reports/screened32_candidate_evals")
@@ -170,6 +222,35 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        args.top_k = _require_int_at_least(args.top_k, name="top_k", min_value=1)
+        args.n_windows = _require_int_at_least(args.n_windows, name="n_windows", min_value=1)
+        args.recent_within_days = _require_int_at_least(
+            args.recent_within_days,
+            name="recent_within_days",
+            min_value=0,
+        )
+        _parse_int_grid(args.horizons_days, name="horizons_days", min_value=1)
+        _parse_int_grid(args.slippage_bps, name="slippage_bps", min_value=0)
+        args.fee_rate = _require_finite_float(args.fee_rate, name="fee_rate", min_value=0.0)
+        args.fill_buffer_bps = _require_finite_float(
+            args.fill_buffer_bps,
+            name="fill_buffer_bps",
+            min_value=0.0,
+        )
+        args.short_borrow_apr = _require_finite_float(
+            args.short_borrow_apr,
+            name="short_borrow_apr",
+            min_value=0.0,
+        )
+        args.decision_lag = require_production_decision_lag(
+            int(args.decision_lag),
+            allow_low_lag_diagnostics=bool(args.allow_low_lag_diagnostics),
+        )
+    except ValueError as exc:
+        print(f"evaluate_screened32_candidates: {exc}", file=sys.stderr)
+        return 2
+
     leaderboard_path = Path(args.leaderboard)
     if not leaderboard_path.is_absolute():
         leaderboard_path = REPO / leaderboard_path
@@ -186,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         sort_field=str(args.sort_field),
         require_blank_error=bool(args.require_blank_error),
     )
-    selected_rows = ranked_rows[: max(int(args.top_k), 0)]
+    selected_rows = ranked_rows[: int(args.top_k)]
     try:
         selected_descriptions = [
             require_safe_component(str(row.get("description", "")))
@@ -226,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     summary_path = out_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
+    write_json_atomic(summary_path, summary, sort_keys=True)
 
     print(f"Screened32 candidate evals: {len(summary['candidates'])}")
     for item in summary["candidates"]:

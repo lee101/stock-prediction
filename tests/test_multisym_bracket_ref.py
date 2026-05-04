@@ -7,15 +7,30 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from pufferlib_cpp_market_sim.python.market_sim_py.multisym_bracket_ref import (
+    PRODUCTION_FEE_BPS,
+    PRODUCTION_FILL_BUFFER_BPS,
     MultiSymBracketConfig,
     step,
+)
+from pufferlib_market.realism import (
+    PRODUCTION_FEE_BPS as PUFFERLIB_PRODUCTION_FEE_BPS,
+)
+from pufferlib_market.realism import (
+    PRODUCTION_FILL_BUFFER_BPS as PUFFERLIB_PRODUCTION_FILL_BUFFER_BPS,
 )
 
 
 def _tradable_all_true(B: int, S: int) -> np.ndarray:
     return np.ones((B, S), dtype=bool)
+
+
+def test_defaults_use_project_production_costs():
+    cfg = MultiSymBracketConfig()
+    assert PRODUCTION_FEE_BPS == PUFFERLIB_PRODUCTION_FEE_BPS == 10.0
+    assert PRODUCTION_FILL_BUFFER_BPS == PUFFERLIB_PRODUCTION_FILL_BUFFER_BPS == 5.0
+    assert cfg.fee_bps == PRODUCTION_FEE_BPS
+    assert cfg.fill_buffer_bps == PRODUCTION_FILL_BUFFER_BPS
 
 
 def test_no_op_action_returns_zero_reward_when_flat():

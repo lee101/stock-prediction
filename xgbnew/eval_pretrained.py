@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import sys
 import time
@@ -44,7 +43,9 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
 from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents  # noqa: E402
 from xgbnew.model import XGBStockModel  # noqa: E402
 
@@ -218,10 +219,20 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _validate_realism_args(args: argparse.Namespace) -> list[str]:
+    return validate_nonnegative_realism_args(args)
+
+
 def main(argv=None) -> int:  # noqa: PLR0911
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
+
+    validation_failures = _validate_realism_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
 
     if args.model_path is not None:
         model_paths = [args.model_path]
@@ -412,8 +423,7 @@ def main(argv=None) -> int:  # noqa: PLR0911
         "summary": summary,
         "windows": window_results,
     }
-    args.output_path.parent.mkdir(parents=True, exist_ok=True)
-    args.output_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    write_json_atomic(args.output_path, out)
     print(f"\n[xgb-eval-pre] results -> {args.output_path}")
     return 0
 

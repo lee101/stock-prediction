@@ -172,12 +172,62 @@ def test_run_holdout_forwards_short_borrow_apr(tmp_path: Path, monkeypatch: pyte
     assert cmd[cmd.index("--extra-checkpoints") + 1] == "extra.pt"
 
 
-@pytest.mark.parametrize("bad_apr", ["nan", "-0.1"])
-def test_main_rejects_invalid_short_borrow_apr_before_data_load(
-    bad_apr: str,
+def test_run_holdout_forwards_low_lag_diagnostic_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    data_path = tmp_path / "data.bin"
+    data_path.write_bytes(b"stub")
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(part) for part in cmd])
+        out_path = Path(cmd[cmd.index("--out") + 1])
+        out_path.write_text(
+            json.dumps({"summary": {"median_total_return": 0.1, "p10_total_return": 0.05}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._run_holdout(
+        scenario=module.Scenario(name="candidate", checkpoint="candidate.pt", extra_checkpoints=()),
+        data_path=data_path,
+        eval_days=30,
+        start_indices=[0],
+        fee_rate=0.001,
+        slippage_bps=5,
+        fill_buffer_bps=5.0,
+        short_borrow_apr=0.0625,
+        decision_lag=1,
+        disable_shorts=True,
+        allow_low_lag_diagnostics=True,
+    )
+
+    assert "--allow-low-lag-diagnostics" in commands[0]
+
+
+@pytest.mark.parametrize(
+    ("flag", "bad_value"),
+    [
+        ("--short-borrow-apr", "nan"),
+        ("--short-borrow-apr", "-0.1"),
+        ("--fee-rate", "-0.001"),
+        ("--fill-buffer-bps", "-1"),
+        ("--decision-lag", "1"),
+        ("--horizons-days", "30,0"),
+        ("--slippage-bps", "5,nan"),
+        ("--n-windows", "0"),
+        ("--recent-within-days", "-1"),
+    ],
+)
+def test_main_rejects_invalid_config_before_data_load(
+    flag: str,
+    bad_value: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-):
+) -> None:
     module = _load_module()
     read_calls = 0
 
@@ -192,8 +242,8 @@ def test_main_rejects_invalid_short_borrow_apr_before_data_load(
         [
             "--data-path",
             str(tmp_path / "missing.bin"),
-            "--short-borrow-apr",
-            bad_apr,
+            flag,
+            bad_value,
             "--out",
             str(tmp_path / "out.json"),
         ]
@@ -201,3 +251,27 @@ def test_main_rejects_invalid_short_borrow_apr_before_data_load(
 
     assert rc == 2
     assert read_calls == 0
+
+
+def test_main_low_lag_diagnostic_opt_in_reaches_data_validation(tmp_path: Path) -> None:
+    module = _load_module()
+
+    with pytest.raises(FileNotFoundError, match="data path not found"):
+        module.main(
+            [
+                "--data-path",
+                str(tmp_path / "missing.bin"),
+                "--decision-lag",
+                "1",
+                "--allow-low-lag-diagnostics",
+                "--out",
+                str(tmp_path / "out.json"),
+            ]
+        )
+
+
+def test_script_uses_shared_atomic_json_writer() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "from xgbnew.artifacts import write_json_atomic" in source
+    assert ".write_text(json.dumps(report" not in source

@@ -32,6 +32,11 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from pufferlib_market.hourly_replay import read_mktd  # noqa: E402
+from pufferlib_market.realism import (  # noqa: E402
+    PRODUCTION_DECISION_LAG,
+    require_production_decision_lag,
+)
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
 
 from src.daily_stock_defaults import DEFAULT_CHECKPOINT, DEFAULT_EXTRA_CHECKPOINTS  # noqa: E402
 
@@ -45,6 +50,40 @@ class Scenario:
 
 def _parse_int_csv(raw: str) -> list[int]:
     return [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+
+
+def _parse_int_grid(
+    raw: str,
+    *,
+    name: str,
+    min_value: int | None = None,
+) -> list[int]:
+    values: list[int] = []
+    seen: set[int] = set()
+    for part in str(raw).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            parsed = int(text)
+        except ValueError as exc:
+            raise ValueError(f"{name} contains invalid value {text!r}") from exc
+        if min_value is not None and parsed < int(min_value):
+            raise ValueError(f"{name} values must be >= {int(min_value)}, got {parsed}")
+        if parsed in seen:
+            raise ValueError(f"{name} contains duplicate value {parsed}")
+        seen.add(parsed)
+        values.append(parsed)
+    if not values:
+        raise ValueError(f"{name} must contain at least one value")
+    return values
+
+
+def _require_int_at_least(value: int, *, name: str, min_value: int) -> int:
+    parsed = int(value)
+    if parsed < int(min_value):
+        raise ValueError(f"{name} must be >= {int(min_value)}, got {parsed}")
+    return parsed
 
 
 def _require_finite_float(value: float, *, name: str, min_value: float | None = None) -> float:
@@ -121,6 +160,7 @@ def _run_holdout(
     short_borrow_apr: float,
     decision_lag: int,
     disable_shorts: bool,
+    allow_low_lag_diagnostics: bool = False,
 ) -> dict[str, Any]:
     tmp_root = REPO / ".tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -157,6 +197,8 @@ def _run_holdout(
         ]
         if disable_shorts:
             cmd.append("--disable-shorts")
+        if int(decision_lag) < PRODUCTION_DECISION_LAG and bool(allow_low_lag_diagnostics):
+            cmd.append("--allow-low-lag-diagnostics")
         if scenario.extra_checkpoints:
             cmd.extend(["--extra-checkpoints", *scenario.extra_checkpoints])
         subprocess.run(cmd, cwd=REPO, check=True, capture_output=True, text=True)
@@ -380,7 +422,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0625)
-    parser.add_argument("--decision-lag", type=int, default=2)
+    parser.add_argument("--decision-lag", type=int, default=PRODUCTION_DECISION_LAG)
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow decision_lag < 2 for explicit smoke/diagnostic runs only.",
+    )
     parser.add_argument("--allow-shorts", action="store_false", dest="disable_shorts")
     parser.set_defaults(disable_shorts=True)
     parser.add_argument("--out", default="reports/multihorizon_candidate_eval.json")
@@ -390,10 +437,29 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        horizons = _parse_int_grid(args.horizons_days, name="horizons_days", min_value=1)
+        slippages = _parse_int_grid(args.slippage_bps, name="slippage_bps", min_value=0)
+        n_windows = _require_int_at_least(args.n_windows, name="n_windows", min_value=1)
+        recent_within_days = _require_int_at_least(
+            args.recent_within_days,
+            name="recent_within_days",
+            min_value=0,
+        )
+        recent_within_days = recent_within_days if recent_within_days > 0 else None
+        fee_rate = _require_finite_float(args.fee_rate, name="fee_rate", min_value=0.0)
+        fill_buffer_bps = _require_finite_float(
+            args.fill_buffer_bps,
+            name="fill_buffer_bps",
+            min_value=0.0,
+        )
         short_borrow_apr = _require_finite_float(
             args.short_borrow_apr,
             name="short_borrow_apr",
             min_value=0.0,
+        )
+        decision_lag = require_production_decision_lag(
+            int(args.decision_lag),
+            allow_low_lag_diagnostics=bool(args.allow_low_lag_diagnostics),
         )
     except ValueError as exc:
         print(f"eval_multihorizon_candidate: {exc}", file=sys.stderr)
@@ -406,12 +472,10 @@ def main(argv: list[str] | None = None) -> int:
         raise FileNotFoundError(f"data path not found: {data_path}")
 
     dataset = read_mktd(data_path)
-    horizons = _parse_int_csv(args.horizons_days)
-    slippages = _parse_int_csv(args.slippage_bps)
     scenarios = _build_scenarios(args)
     regimes = {
         "full": None,
-        "recent": int(args.recent_within_days) if args.recent_within_days and args.recent_within_days > 0 else None,
+        "recent": recent_within_days,
     }
     if regimes["recent"] is None:
         regimes = {"full": None}
@@ -422,13 +486,13 @@ def main(argv: list[str] | None = None) -> int:
             "num_timesteps": int(dataset.num_timesteps),
             "horizons_days": horizons,
             "slippage_bps": slippages,
-            "n_windows": int(args.n_windows),
+            "n_windows": n_windows,
             "seed": int(args.seed),
             "recent_within_days": regimes.get("recent"),
-            "fee_rate": float(args.fee_rate),
-            "fill_buffer_bps": float(args.fill_buffer_bps),
+            "fee_rate": fee_rate,
+            "fill_buffer_bps": fill_buffer_bps,
             "short_borrow_apr": short_borrow_apr,
-            "decision_lag": int(args.decision_lag),
+            "decision_lag": decision_lag,
             "disable_shorts": bool(args.disable_shorts),
         },
         "scenarios": {},
@@ -443,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
                 start_indices = build_start_indices(
                     num_timesteps=int(dataset.num_timesteps),
                     eval_days=int(horizon),
-                    n_windows=int(args.n_windows),
+                    n_windows=n_windows,
                     seed=int(args.seed),
                     recent_within_days=recent_days,
                     exhaustive=bool(args.exhaustive),
@@ -455,11 +519,12 @@ def main(argv: list[str] | None = None) -> int:
                         data_path=data_path,
                         eval_days=int(horizon),
                         start_indices=start_indices,
-                        fee_rate=float(args.fee_rate),
+                        fee_rate=fee_rate,
                         slippage_bps=int(slip),
-                        fill_buffer_bps=float(args.fill_buffer_bps),
+                        fill_buffer_bps=fill_buffer_bps,
                         short_borrow_apr=short_borrow_apr,
-                        decision_lag=int(args.decision_lag),
+                        decision_lag=decision_lag,
+                        allow_low_lag_diagnostics=bool(args.allow_low_lag_diagnostics),
                         disable_shorts=bool(args.disable_shorts),
                     )
                 regime_results[f"{int(horizon)}d"] = slip_results
@@ -488,8 +553,7 @@ def main(argv: list[str] | None = None) -> int:
     out_path = Path(args.out)
     if not out_path.is_absolute():
         out_path = REPO / out_path
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(report, indent=2, sort_keys=True))
+    write_json_atomic(out_path, report, sort_keys=True)
     _print_summary(report)
     print(f"\nreport: {out_path}")
     return 0

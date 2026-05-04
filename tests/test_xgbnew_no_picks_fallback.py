@@ -16,7 +16,6 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import pytest
-
 from xgbnew.backtest import BacktestConfig, simulate
 
 
@@ -279,6 +278,38 @@ def test_hold_through_no_pick_keeps_previous_position_marked_to_market():
     assert day2_trade.fee_rate == 0.0
     assert day2_trade.fill_buffer_bps == 0.0
     assert day2_trade.net_return_pct == pytest.approx((110.0 - 105.0) / 105.0 * 100.0)
+
+
+def test_hold_through_state_uses_executed_trade_set_after_missed_order_filter():
+    """Continuation state must reflect filled trades, not pre-skip candidates."""
+    d1, d2 = date(2024, 1, 2), date(2024, 1, 3)
+    rows = [
+        _row(d1, "AAA", o=100.0, c=105.0, score=0.95),
+        _row(d1, "BBB", o=100.0, c=102.0, score=0.90),
+        _row(d2, "AAA", o=105.0, c=108.0, score=0.10),
+        _row(d2, "BBB", o=102.0, c=104.0, score=0.10),
+    ]
+    df = _build_df(rows)
+    scores = df["_score_stub"]
+
+    base_top2 = {k: v for k, v in BASE.items() if k != "top_n"}
+    cfg = BacktestConfig(
+        **base_top2,
+        top_n=2,
+        min_score=0.85,
+        hold_through=True,
+        skip_prob=0.5,
+        skip_seed=0,
+    )
+    r = simulate(df, model=None, config=cfg, precomputed_scores=scores)  # type: ignore[arg-type]
+
+    assert len(r.day_results) == 2
+    day1_symbols = {trade.symbol for trade in r.day_results[0].trades}
+    day2_symbols = {trade.symbol for trade in r.day_results[1].trades}
+    assert day1_symbols == {"AAA"}
+    assert day2_symbols == {"AAA"}
+    assert r.day_results[1].trades[0].fee_rate == 0.0
+    assert r.day_results[1].trades[0].fill_buffer_bps == 0.0
 
 
 def test_conviction_scaled_alloc_scales_leverage():

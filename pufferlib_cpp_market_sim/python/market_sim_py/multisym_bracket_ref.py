@@ -36,10 +36,14 @@ from typing import Tuple
 import numpy as np
 
 
+PRODUCTION_FEE_BPS = 10.0
+PRODUCTION_FILL_BUFFER_BPS = 5.0
+
+
 @dataclass
 class MultiSymBracketConfig:
-    fee_bps: float = 0.278           # Alpaca real fee
-    fill_buffer_bps: float = 5.0     # buyer must beat low by this many bps
+    fee_bps: float = PRODUCTION_FEE_BPS
+    fill_buffer_bps: float = PRODUCTION_FILL_BUFFER_BPS
     max_leverage: float = 2.0
     annual_margin_rate: float = 0.0625  # 6.25% APR
     trading_days_per_year: int = 252

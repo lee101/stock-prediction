@@ -30,15 +30,19 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
 from pufferlib_market.early_stopper import (
-    combined_score as _combined_score,
-    effective_prune_floor,
-    PolynomialEarlyStopper,
     BestKnownTracker,
     HoldCashDetector,
     OverfitDetector,
+    PolynomialEarlyStopper,
+    effective_prune_floor,
 )
+from pufferlib_market.early_stopper import (
+    combined_score as _combined_score,
+)
+from pufferlib_market.realism import PRODUCTION_SHORT_BORROW_APR
+from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
+
 
 try:
     import wandb as _wandb_module
@@ -135,7 +139,7 @@ class TrialConfig:
     seed: int = 42
     description: str = ""
     max_leverage: float = 1.0
-    short_borrow_apr: float = 0.0
+    short_borrow_apr: float = PRODUCTION_SHORT_BORROW_APR
     requires_gpu: str = ""  # e.g. "a100", "h100", "" = any GPU (dispatcher metadata only)
     # Training performance settings: BF16 + CUDA graph PPO give ~30-50% speedup on modern GPUs
     minibatch_size: int = 2048
@@ -2671,7 +2675,7 @@ def run_trial(
     holdout_fee_rate: float = -1.0,
     holdout_fill_buffer_bps: float = 5.0,
     holdout_max_leverage: float = 1.0,
-    holdout_short_borrow_apr: float = 0.0,
+    holdout_short_borrow_apr: float = PRODUCTION_SHORT_BORROW_APR,
     eval_tradable_symbols: str | None = None,
     eval_disable_shorts: bool = False,
     eval_timeout_s: int = 0,
@@ -3084,7 +3088,7 @@ def run_trial(
         total_steps = _read_checkpoint_global_step(ckpt_path)
 
     # Evaluate on validation data
-    print(f"  Evaluating on validation data...")
+    print("  Evaluating on validation data...")
     eval_cmd = [
         sys.executable, "-u", "-m", "pufferlib_market.evaluate",
         "--checkpoint", str(ckpt_path),
@@ -3525,7 +3529,7 @@ def main():
     parser.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0,
                         help="Require holdout daily bars to trade through each limit by this many bps")
     parser.add_argument("--holdout-max-leverage", type=float, default=1.0)
-    parser.add_argument("--holdout-short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--holdout-short-borrow-apr", type=float, default=PRODUCTION_SHORT_BORROW_APR)
     parser.add_argument("--eval-tradable-symbols", default="",
                         help="Optional comma-separated tradable symbol subset applied to holdout and replay eval")
     parser.add_argument("--eval-disable-shorts", action="store_true",

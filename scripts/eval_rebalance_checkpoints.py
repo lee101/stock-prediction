@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 """Evaluate rebalance-mode checkpoints with position-target sim.
 
-Tests all epochs at decision_lag=0,1,2 with fee=10bps.
+Production-style defaults use decision_lag=2 and fee=10bps. Lower-lag
+diagnostics require an explicit opt-in flag.
 """
 from __future__ import annotations
-import json
+
+import argparse
 import sys
 from pathlib import Path
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
 import torch
+from differentiable_loss_utils import simulate_rebalance
+from xgbnew.artifacts import write_json_atomic
+from xgbnew.cli_realism import validate_nonnegative_realism_args
 
 from binanceneural.config import DatasetConfig, TrainingConfig
-from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
+from binanceneural.data import BinanceHourlyDataModule
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
-from differentiable_loss_utils import simulate_rebalance
 from src.torch_load_utils import torch_load_compat
 
 
@@ -117,18 +122,79 @@ def eval_checkpoint_on_window(
     }
 
 
-def main():
-    import argparse
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--symbol", required=True)
-    parser.add_argument("--lags", default="0,1,2")
+    parser.add_argument("--lags", default="2")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--window-days", type=int, default=70)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--allow-low-lag-diagnostics",
+        action="store_true",
+        help="Allow lag 0/1 diagnostic runs; not production-realistic.",
+    )
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def _parse_lags(raw: str) -> list[int]:
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts:
+        raise ValueError("lags must contain at least one integer")
+    try:
+        lags = [int(part) for part in parts]
+    except ValueError as exc:
+        raise ValueError("lags must be comma-separated integers") from exc
+    if any(lag < 0 for lag in lags):
+        raise ValueError("lags must be non-negative integers")
+    return lags
+
+
+def validate_args(args: argparse.Namespace) -> list[str]:
+    failures = validate_nonnegative_realism_args(
+        args,
+        fields=(("fee_rate", "fee_rate"),),
+    )
+    if int(args.window_days) <= 0:
+        failures.append("window_days must be positive")
+    try:
+        lags = _parse_lags(str(args.lags))
+    except ValueError as exc:
+        failures.append(str(exc))
+    else:
+        if any(lag < 2 for lag in lags) and not bool(args.allow_low_lag_diagnostics):
+            failures.append("lags below 2 require --allow-low-lag-diagnostics")
+    return failures
+
+
+def build_rebalance_payload(args: argparse.Namespace, lags: list[int], results: list[dict]) -> dict:
+    return {
+        "symbol": args.symbol,
+        "config": {
+            "lags": lags,
+            "fee_rate": float(args.fee_rate),
+            "window_days": int(args.window_days),
+            "allow_low_lag_diagnostics": bool(args.allow_low_lag_diagnostics),
+        },
+        "results": results,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    validation_failures = validate_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
 
     ckpt_dir = Path(args.checkpoint_dir)
-    lags = [int(x) for x in args.lags.split(",")]
+    lags = _parse_lags(str(args.lags))
 
     dataset_cfg = DatasetConfig(
         symbol=args.symbol,
@@ -147,12 +213,12 @@ def main():
     epochs = sorted(ckpt_dir.glob("epoch_*.pt"), key=lambda p: int(p.stem.split("_")[1]))
     if not epochs:
         print("No epoch checkpoints found")
-        return
+        return 0
 
     results = []
     for ckpt_path in epochs:
         ep_num = int(ckpt_path.stem.split("_")[1])
-        model, payload = load_checkpoint(str(ckpt_path), input_dim=len(data.feature_columns))
+        model, _payload = load_checkpoint(str(ckpt_path), input_dim=len(data.feature_columns))
 
         for lag in lags:
             try:
@@ -177,8 +243,7 @@ def main():
                 traceback.print_exc()
 
     out_path = ckpt_dir / "rebalance_eval.json"
-    with open(out_path, "w") as f:
-        json.dump({"symbol": args.symbol, "results": results}, f, indent=2)
+    write_json_atomic(out_path, build_rebalance_payload(args, lags, results))
     print(f"\nSaved to {out_path}")
 
     print(f"\n{'='*70}")
@@ -195,7 +260,8 @@ def main():
             else:
                 parts.append(f"{'N/A':>12}")
         print(f"  {ep:3d} | {' | '.join(parts)}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

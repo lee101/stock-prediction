@@ -5,7 +5,17 @@ the training is learning a real (or exploit) strategy.
 """
 from __future__ import annotations
 
+import sys
+
 import torch
+
+
+try:
+    from scripts._gpu_env_bootstrap import ensure_gpu_trading_env
+except ModuleNotFoundError:
+    from _gpu_env_bootstrap import ensure_gpu_trading_env
+
+GPU_ENV_PYTHON = ensure_gpu_trading_env(sys_module=sys)
 
 import gpu_trading_env
 
@@ -30,8 +40,12 @@ def main():
     for policy_name in ("zero", "random_buy_only", "random_all", "max_buy_sell"):
         env = gpu_trading_env.make_portfolio_bracket(
             B=512, prices=prices, tradable_tape=tradable,
-            params={"episode_len": 25, "fee_bps": 0.278,
-                    "fill_buffer_bps": 5.0, "max_leverage": 1.5},
+            params={
+                "episode_len": 25,
+                "fee_bps": gpu_trading_env.PRODUCTION_FEE_BPS,
+                "fill_buffer_bps": gpu_trading_env.PRODUCTION_FILL_BUFFER_BPS,
+                "max_leverage": 1.5,
+            },
         )
         eq_before = env.state["equity"].clone()
         g = torch.Generator(device=env.prices.device).manual_seed(0)

@@ -134,6 +134,7 @@ def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         "disable_shorts": False,
         "shortable_symbols": None,
         "decision_lag": 0,
+        "allow_low_lag_diagnostics": True,
         "deterministic": True,
         "device": "cpu",
     }
@@ -193,6 +194,20 @@ def test_main_supports_legacy_bare_state_dict_checkpoint(tmp_path: Path, capsys:
     assert out["summary"]["total_return"] == pytest.approx(0.12)
     assert out["summary"]["annualized_return"] == pytest.approx(0.34)
     assert out["summary"]["num_trades"] == 4
+
+
+@pytest.mark.unit
+def test_main_rejects_low_lag_without_diagnostic_opt_in(tmp_path: Path) -> None:
+    fake_args = _fake_main_args(tmp_path, decision_lag=1, allow_low_lag_diagnostics=False)
+
+    with (
+        patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
+        patch.object(eval_mod, "read_mktd") as read_mktd,
+        pytest.raises(ValueError, match="decision_lag below 2 requires --allow-low-lag-diagnostics"),
+    ):
+        eval_mod.main()
+
+    read_mktd.assert_not_called()
 
 
 @pytest.mark.unit

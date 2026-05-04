@@ -27,18 +27,20 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
-import os
+import math
 import sys
 import time
 from datetime import date
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.artifacts import save_model_atomic
+from xgbnew.artifacts import write_json_atomic as _shared_write_json_atomic
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents
 from xgbnew.features import (
     DAILY_DISPERSION_FEATURE_COLS,
@@ -57,10 +59,7 @@ def _file_sha256(path: Path) -> str:
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    _shared_write_json_atomic(path, payload)
 
 
 def _load_symbols(path: Path) -> list[str]:
@@ -173,12 +172,62 @@ def _parse_shapes(s: str) -> list[dict]:
     return out
 
 
+def _parse_date_arg(name: str, value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"--{name} must be an ISO date, got {value!r}") from exc
+
+
+def _validate_positive_architecture(*, n_estimators: int, max_depth: int, learning_rate: float) -> None:
+    if int(n_estimators) <= 0:
+        raise ValueError("n_estimators must be positive")
+    if int(max_depth) <= 0:
+        raise ValueError("max_depth must be positive")
+    if not math.isfinite(float(learning_rate)) or float(learning_rate) <= 0.0:
+        raise ValueError("learning_rate must be finite and positive")
+
+
+def _validate_args(args: argparse.Namespace, shapes: list[dict]) -> tuple[date, date]:
+    train_start = _parse_date_arg("train-start", str(args.train_start))
+    train_end = (
+        _parse_date_arg("train-end", str(args.train_end))
+        if args.train_end
+        else date.today()
+    )
+    if train_start > train_end:
+        raise ValueError("--train-start must be <= --train-end")
+    if not math.isfinite(float(args.min_dollar_vol)) or float(args.min_dollar_vol) < 0.0:
+        raise ValueError("--min-dollar-vol must be finite and nonnegative")
+    if shapes:
+        for idx, shape in enumerate(shapes, start=1):
+            try:
+                _validate_positive_architecture(
+                    n_estimators=int(shape["n_est"]),
+                    max_depth=int(shape["depth"]),
+                    learning_rate=float(shape["lr"]),
+                )
+            except ValueError as exc:
+                raise ValueError(f"--shapes tuple {idx}: {exc}") from exc
+    else:
+        _validate_positive_architecture(
+            n_estimators=int(args.n_estimators),
+            max_depth=int(args.max_depth),
+            learning_rate=float(args.learning_rate),
+        )
+    return train_start, train_end
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
 
-    shapes = _parse_shapes(args.shapes) if args.shapes else []
+    try:
+        shapes = _parse_shapes(args.shapes) if args.shapes else []
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     if shapes:
         # Architectural-diversity mode: shapes list drives training.
         seeds = [sp["seed"] for sp in shapes]
@@ -195,8 +244,11 @@ def main(argv=None) -> int:
             print("ERROR: need at least 2 seeds", file=sys.stderr)
             return 1
 
-    train_start = date.fromisoformat(args.train_start)
-    train_end = date.fromisoformat(args.train_end) if args.train_end else date.today()
+    try:
+        train_start, train_end = _validate_args(args, shapes)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     fm_latents_df = None
     fm_latents_sha256 = None
@@ -287,7 +339,7 @@ def main(argv=None) -> int:
             model.fit(train_df, feature_cols, verbose=args.verbose)
             tag = f"n{sp['n_est']}_d{sp['depth']}_lr{str(sp['lr']).replace('.', '')}_s{seed}"
             out_pkl = args.out_dir / f"alltrain_{tag}.pkl"
-            model.save(out_pkl)
+            save_model_atomic(model, out_pkl)
             saved.append({"seed": seed, "n_estimators": sp["n_est"],
                           "max_depth": sp["depth"], "learning_rate": sp["lr"],
                           "path": str(out_pkl),
@@ -309,7 +361,7 @@ def main(argv=None) -> int:
             )
             model.fit(train_df, feature_cols, verbose=args.verbose)
             out_pkl = args.out_dir / f"alltrain_seed{seed}.pkl"
-            model.save(out_pkl)
+            save_model_atomic(model, out_pkl)
             saved.append({"seed": int(seed), "path": str(out_pkl),
                           "sha256": _file_sha256(out_pkl),
                           "fit_seconds": round(time.perf_counter() - t_fit, 2)})
@@ -350,7 +402,7 @@ def main(argv=None) -> int:
     _write_json_atomic(manifest_path, manifest)
     print(f"\n[xgb-alltrain-ens] Manifest → {manifest_path}")
     print(f"[xgb-alltrain-ens] Models   → {len(saved)} files in {args.out_dir}")
-    print(f"[xgb-alltrain-ens] ⚠ No OOS metrics — trust champion hyperparams only.")
+    print("[xgb-alltrain-ens] ⚠ No OOS metrics — trust champion hyperparams only.")
     return 0
 
 

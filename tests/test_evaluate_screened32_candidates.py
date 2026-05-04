@@ -109,6 +109,7 @@ def test_run_candidate_eval_forwards_short_borrow_apr(
         fill_buffer_bps=5.0,
         short_borrow_apr=0.0625,
         decision_lag=2,
+        allow_low_lag_diagnostics=False,
         exhaustive=False,
         disable_shorts=True,
     )
@@ -124,6 +125,46 @@ def test_run_candidate_eval_forwards_short_borrow_apr(
     cmd = commands[0]
     assert cmd[cmd.index("--short-borrow-apr") + 1] == "0.0625"
     assert "--allow-shorts" not in cmd
+
+
+def test_run_candidate_eval_forwards_low_lag_diagnostic_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    commands: list[list[str]] = []
+    output_path = tmp_path / "report.json"
+
+    def fake_run(cmd, **kwargs):
+        commands.append([str(part) for part in cmd])
+        output_path.write_text('{"recommendation": {"status": "ok"}}', encoding="utf-8")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    args = SimpleNamespace(
+        data_path=tmp_path / "data.bin",
+        baseline_checkpoint=tmp_path / "baseline.pt",
+        baseline_extra_checkpoints=[],
+        horizons_days="30",
+        slippage_bps="5",
+        n_windows=1,
+        seed=1337,
+        recent_within_days=0,
+        fee_rate=0.001,
+        fill_buffer_bps=5.0,
+        short_borrow_apr=0.0625,
+        decision_lag=1,
+        allow_low_lag_diagnostics=True,
+        exhaustive=False,
+        disable_shorts=True,
+    )
+
+    module._run_candidate_eval(
+        candidate_checkpoint=tmp_path / "candidate.pt",
+        output_path=output_path,
+        args=args,
+    )
+
+    assert "--allow-low-lag-diagnostics" in commands[0]
 
 
 def test_main_rejects_unsafe_selected_description_before_eval(
@@ -167,3 +208,67 @@ def test_main_rejects_unsafe_selected_description_before_eval(
     assert rc == 2
     assert run_calls == 0
     assert not (out_dir / "summary.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("flag", "bad_value"),
+    [
+        ("--top-k", "0"),
+        ("--n-windows", "0"),
+        ("--recent-within-days", "-1"),
+        ("--horizons-days", "30,0"),
+        ("--slippage-bps", "5,nan"),
+        ("--fee-rate", "-0.001"),
+        ("--fill-buffer-bps", "-1"),
+        ("--short-borrow-apr", "nan"),
+        ("--decision-lag", "1"),
+    ],
+)
+def test_main_rejects_invalid_config_before_leaderboard_read(
+    tmp_path: Path,
+    flag: str,
+    bad_value: str,
+) -> None:
+    module = _load_module()
+
+    rc = module.main(
+        [
+            "--leaderboard",
+            str(tmp_path / "missing.csv"),
+            "--checkpoint-root",
+            str(tmp_path / "ckpts"),
+            flag,
+            bad_value,
+            "--out-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    assert rc == 2
+    assert not (tmp_path / "out" / "summary.json").exists()
+
+
+def test_main_low_lag_diagnostic_opt_in_reaches_leaderboard_read(tmp_path: Path) -> None:
+    module = _load_module()
+
+    with pytest.raises(FileNotFoundError):
+        module.main(
+            [
+                "--leaderboard",
+                str(tmp_path / "missing.csv"),
+                "--checkpoint-root",
+                str(tmp_path / "ckpts"),
+                "--decision-lag",
+                "1",
+                "--allow-low-lag-diagnostics",
+                "--out-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+
+
+def test_main_uses_shared_atomic_summary_writer() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "from xgbnew.artifacts import write_json_atomic" in source
+    assert "summary_path.write_text" not in source

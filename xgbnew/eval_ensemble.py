@@ -25,7 +25,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import time
@@ -40,7 +39,9 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from xgbnew.artifacts import write_json_atomic  # noqa: E402
 from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate  # noqa: E402
+from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache  # noqa: E402
 from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
 from xgbnew.model import XGBStockModel  # noqa: E402
@@ -134,10 +135,20 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _validate_realism_args(args: argparse.Namespace) -> list[str]:
+    return validate_nonnegative_realism_args(args)
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(message)s")
+
+    validation_failures = _validate_realism_args(args)
+    if validation_failures:
+        for failure in validation_failures:
+            print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
 
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
     if len(seeds) < 2:
@@ -322,7 +333,7 @@ def main(argv=None) -> int:
         "windows": window_rows,
     }
     out_path = args.output_dir / f"ensemble_{ts}.json"
-    out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    write_json_atomic(out_path, out)
     print(f"  Results → {out_path}")
     return 0
 

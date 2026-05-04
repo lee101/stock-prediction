@@ -13,7 +13,6 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 import torch
-
 from pufferlib_market import evaluate_sliding as eval_mod
 from pufferlib_market.evaluate_sliding import (
     WindowResult,
