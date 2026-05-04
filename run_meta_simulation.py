@@ -20,9 +20,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -125,9 +125,7 @@ def _chronos2_forecast_pnl(
 
     Returns predicted cumulative return over the forecast window.
     """
-    try:
-        from chronos import ChronosPipeline
-    except ImportError:
+    if importlib.util.find_spec("chronos") is None:
         # Fall back to simple extrapolation if Chronos2 not available
         return _simple_trend_forecast(equity_series, idx, context_hours, forecast_hours)
 
@@ -251,9 +249,6 @@ def run_meta_simulation(
     # Meta B: Chronos2 forecast selector
     meta_b_equity = [initial_cash]
     meta_b_selections = []
-
-    # CASH option: just hold cash
-    cash_equity = [initial_cash] * n_bars
 
     print(f"\nRunning meta-selection over {n_bars} bars...")
 
@@ -407,6 +402,12 @@ def main() -> None:
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument("--fill-buffer-bps", type=float, default=0.0)
+    parser.add_argument(
+        "--max-drawdown-early-exit",
+        type=float,
+        default=0.25,
+        help="Stop each strategy sim once running max drawdown reaches this fraction; use a negative value to disable.",
+    )
     parser.add_argument("--fee-rate", type=float, default=None)
     parser.add_argument("--one-side-per-bar", action="store_true")
     parser.add_argument("--meta-lookback-hours", type=int, default=24)
@@ -433,6 +434,7 @@ def main() -> None:
         decision_lag_bars=args.decision_lag_bars,
         fill_buffer_bps=args.fill_buffer_bps,
         one_side_per_bar=args.one_side_per_bar,
+        max_drawdown_early_exit=args.max_drawdown_early_exit if args.max_drawdown_early_exit >= 0 else None,
     )
 
     run_meta_simulation(

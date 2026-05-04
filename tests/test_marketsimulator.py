@@ -12,8 +12,6 @@ import pytest
 from binanceneural.marketsimulator import (
     BinanceMarketSimulator,
     SimulationConfig,
-    SimulationResult,
-    TradeRecord,
     run_shared_cash_simulation,
     _resolve_amount_scale,
     _compute_metrics,
@@ -171,7 +169,7 @@ class TestFeeAccounting:
         sim = BinanceMarketSimulator(config)
         result = sim.run(bars, actions)
         trades = result.per_symbol["BTCUSD"].trades
-        buy, sell = trades[0], trades[1]
+        sell = trades[1]
 
         expected_proceeds = sell.quantity * 110.0 * (1 - 0.001)
         # cash after sell = 0 (all cash was used to buy) + proceeds
@@ -741,8 +739,6 @@ class TestRealisticScenario:
         eq_vals = sym.equity_curve.values
         assert len(eq_vals) == 10
 
-        # Final equity = last cash + inventory * last close
-        last_trade = sym.trades[-1]
         # After all sells, final value should match cash
         # (depending on whether final trade is buy or sell)
 
@@ -1054,3 +1050,40 @@ def test_binance_market_simulator_stops_early_when_drawdown_exceeds_profit(capsy
 
     assert len(sym.equity_curve) < len(bars)
     assert "early stopping" in capsys.readouterr().out.lower()
+
+
+def test_binance_market_simulator_stops_early_at_max_drawdown_limit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prices = [(100.0, 101.0, 99.0, 100.0)] * 5 + [(70.0, 71.0, 69.0, 70.0)] * 35
+    bars = _make_bars(prices)
+    actions = _make_actions(
+        [{"buy_price": 100.0, "sell_price": 10_000.0, "buy_amount": 1.0, "sell_amount": 0.0}]
+        + [{"buy_price": 0.0, "sell_price": 10_000.0, "buy_amount": 0.0, "sell_amount": 0.0}] * (len(prices) - 1)
+    )
+
+    result = BinanceMarketSimulator(SimulationConfig(maker_fee=0.0, initial_cash=10_000.0)).run(bars, actions)
+
+    assert len(result.per_symbol["BTCUSD"].equity_curve) < len(bars)
+    output = capsys.readouterr().out.lower()
+    assert "max drawdown" in output
+    assert "25.00%" in output
+
+
+def test_binance_market_simulator_can_disable_early_exit() -> None:
+    prices = [(100.0, 101.0, 99.0, 100.0)] * 5 + [(70.0, 71.0, 69.0, 70.0)] * 35
+    bars = _make_bars(prices)
+    actions = _make_actions(
+        [{"buy_price": 100.0, "sell_price": 10_000.0, "buy_amount": 1.0, "sell_amount": 0.0}]
+        + [{"buy_price": 0.0, "sell_price": 10_000.0, "buy_amount": 0.0, "sell_amount": 0.0}] * (len(prices) - 1)
+    )
+    config = SimulationConfig(
+        maker_fee=0.0,
+        initial_cash=10_000.0,
+        max_drawdown_early_exit=None,
+        enable_drawdown_profit_early_exit=False,
+    )
+
+    result = BinanceMarketSimulator(config).run(bars, actions)
+
+    assert len(result.per_symbol["BTCUSD"].equity_curve) == len(bars)

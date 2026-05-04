@@ -103,6 +103,39 @@ def test_compiled_sim_and_loss_matches_vectorized_sortino(monkeypatch) -> None:
     assert torch.allclose(annual_return, ref_annual_return, atol=1e-6, rtol=1e-6)
 
 
+def test_compiled_sim_and_loss_accepts_scalar_controls(monkeypatch) -> None:
+    monkeypatch.setattr(compiled_module, "get_compiled_sim_loss", lambda: _sim_loop_sortino)
+
+    torch.manual_seed(1)
+    shape = (2, 8)
+    base = 100.0 + torch.randn(shape)
+
+    loss, score, sortino, annual_return = compiled_sim_and_loss(
+        highs=base + 1.0,
+        lows=base - 1.0,
+        closes=base,
+        buy_prices=base - 0.25,
+        sell_prices=base + 0.25,
+        buy_frac=torch.full(shape, 0.2),
+        sell_frac=torch.full(shape, 0.1),
+        max_leverage=1.0,
+        can_short=False,
+        can_long=True,
+        initial_cash=1.0,
+        maker_fee=0.001,
+        temperature=0.01,
+        fill_buffer_pct=0.0005,
+        periods_per_year=HOURLY_PERIODS_PER_YEAR,
+        return_weight=0.08,
+        decision_lag_bars=1,
+    )
+
+    assert loss.ndim == 0
+    assert score.shape == (shape[0],)
+    assert sortino.shape == (shape[0],)
+    assert annual_return.shape == (shape[0],)
+
+
 def test_compiled_sim_trajectory_matches_vectorized_state() -> None:
     torch.manual_seed(0)
     shape = (2, 8)

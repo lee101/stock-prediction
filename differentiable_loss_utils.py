@@ -847,6 +847,8 @@ def simulate_rebalance(
     margin_annual_rate: float = 0.0,
     max_leverage: float = 1.0,
     allow_short: bool = False,
+    max_drawdown_early_exit: float | None = None,
+    early_exit_min_steps: int = 20,
 ) -> HourlySimulationResult:
     """Position-target rebalancing sim. No limit orders, no adverse selection.
 
@@ -861,7 +863,6 @@ def simulate_rebalance(
 
     exec_prices = opens if opens is not None else closes
 
-    original_steps = closes.shape[-1]
     if decision_lag_bars > 0:
         lag = decision_lag_bars
         closes = closes[..., lag:]
@@ -879,6 +880,8 @@ def simulate_rebalance(
     cash = torch.full(batch_shape, initial_cash, dtype=dtype, device=device)
     inventory = torch.zeros(batch_shape, dtype=dtype, device=device)
     prev_value = cash.clone()
+    enable_early_exit = max_drawdown_early_exit is not None and len(batch_shape) == 0
+    running_peak = torch.as_tensor(0.0, dtype=dtype, device=device)
 
     fee_buy = 1.0 + fee
     fee_sell = 1.0 - fee
@@ -929,6 +932,12 @@ def simulate_rebalance(
         sell_fill_list.append((sell_qty > 0).float())
         inventory_list.append(inventory)
         prev_value = torch.clamp(portfolio_value.detach(), min=_EPS)
+
+        if enable_early_exit:
+            running_peak = torch.maximum(running_peak, portfolio_value.detach())
+            drawdown = (running_peak - portfolio_value.detach()) / torch.clamp(running_peak, min=_EPS)
+            if idx + 1 >= int(early_exit_min_steps) and bool(drawdown >= float(max_drawdown_early_exit)):
+                break
 
     return HourlySimulationResult(
         pnl=torch.stack(pnl_list, dim=-1),

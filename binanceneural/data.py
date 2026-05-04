@@ -185,18 +185,55 @@ class BinanceHourlyDataModule:
             primary_horizon=self.primary_horizon,
         )
 
-    def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return _make_dataloader(self.train_dataset, batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
+    def train_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+        prefetch_factor: int = 2,
+    ) -> DataLoader:
+        return _make_dataloader(
+            self.train_dataset,
+            batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            drop_last=True,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+        )
 
-    def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return _make_dataloader(self.val_dataset, batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+    def val_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+        prefetch_factor: int = 2,
+    ) -> DataLoader:
+        return _make_dataloader(
+            self.val_dataset,
+            batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            drop_last=False,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+        )
 
     def gpu_cached_dataloader(
         self, dataset_name: str, batch_size: int, device: torch.device, shuffle: bool = True
     ) -> DataLoader:
         base = self.train_dataset if dataset_name == "train" else self.val_dataset
         cached = GPUCachedDataset(base, device)
-        return _make_dataloader(cached, batch_size, shuffle=shuffle, num_workers=0, drop_last=(dataset_name == "train"), pin_memory=False)
+        return _make_dataloader(
+            cached,
+            batch_size,
+            shuffle=shuffle,
+            num_workers=0,
+            drop_last=(dataset_name == "train"),
+            pin_memory=False,
+        )
 
     # ------------------------------------------------------------------
     def _prepare_frame(self) -> pd.DataFrame:
@@ -241,18 +278,26 @@ class BinanceHourlyDataModule:
 
 
 def _make_dataloader(
-    dataset: Dataset, batch_size: int, shuffle: bool, num_workers: int, drop_last: bool, pin_memory: bool = True
+    dataset: Dataset,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+    drop_last: bool,
+    pin_memory: bool | None = None,
+    prefetch_factor: int = 2,
 ) -> DataLoader:
     persistent = num_workers > 0
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        drop_last=drop_last,
-        pin_memory=pin_memory,
-        persistent_workers=persistent,
-    )
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "drop_last": drop_last,
+        "pin_memory": torch.cuda.is_available() if pin_memory is None else bool(pin_memory),
+        "persistent_workers": persistent,
+    }
+    if num_workers > 0:
+        kwargs["prefetch_factor"] = max(1, int(prefetch_factor))
+    return DataLoader(dataset, **kwargs)
 
 
 class GPUCachedDataset(Dataset):
@@ -389,11 +434,41 @@ class MultiSymbolDataModule:
         self.feature_columns = target_module.feature_columns
         self.frame = target_module.frame
 
-    def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return _make_dataloader(self.train_dataset, batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
+    def train_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+        prefetch_factor: int = 2,
+    ) -> DataLoader:
+        return _make_dataloader(
+            self.train_dataset,
+            batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            drop_last=True,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+        )
 
-    def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return _make_dataloader(self.val_dataset, batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+    def val_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+        prefetch_factor: int = 2,
+    ) -> DataLoader:
+        return _make_dataloader(
+            self.val_dataset,
+            batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            drop_last=False,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+        )
 
     def gpu_cached_dataloader(
         self, dataset_name: str, batch_size: int, device: torch.device, shuffle: bool = True
@@ -403,7 +478,14 @@ class MultiSymbolDataModule:
             cached = MultiSymbolDataset(cached_subs)
         else:
             cached = GPUCachedDataset(self.val_dataset, device)
-        return _make_dataloader(cached, batch_size, shuffle=shuffle, num_workers=0, drop_last=(dataset_name == "train"), pin_memory=False)
+        return _make_dataloader(
+            cached,
+            batch_size,
+            shuffle=shuffle,
+            num_workers=0,
+            drop_last=(dataset_name == "train"),
+            pin_memory=False,
+        )
 
 
 # ------------------------------------------------------------------

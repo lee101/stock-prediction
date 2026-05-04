@@ -9,7 +9,7 @@ class _BackendNS(types.SimpleNamespace):
     pass
 
 
-def test_configure_tf32_prefers_new_api(monkeypatch):
+def test_configure_tf32_prefers_new_api():
     matmul = types.SimpleNamespace(allow_tf32=False, fp32_precision="ieee")
     conv = types.SimpleNamespace(fp32_precision="ieee")
     cuda = types.SimpleNamespace(matmul=matmul)
@@ -18,11 +18,11 @@ def test_configure_tf32_prefers_new_api(monkeypatch):
 
     state = configure_tf32_backends(torch_module)
 
-    assert state == {"new_api": False, "legacy_api": True}
-    assert matmul.allow_tf32 is True
-    assert cudnn.allow_tf32 is True
-    assert matmul.fp32_precision == "ieee"
-    assert conv.fp32_precision == "ieee"
+    assert state == {"new_api": True, "legacy_api": False}
+    assert matmul.allow_tf32 is False
+    assert cudnn.allow_tf32 is False
+    assert matmul.fp32_precision == "tf32"
+    assert conv.fp32_precision == "tf32"
 
 
 def test_configure_tf32_uses_legacy_when_new_missing():
