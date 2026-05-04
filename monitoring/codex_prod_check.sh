@@ -59,6 +59,13 @@ echo "=== Codex prod audit $(date -u -Iseconds) ===" | tee -a "$LOG"
 echo "prompt: $PROMPT_FILE ($(wc -c < "$PROMPT_FILE") bytes)" | tee -a "$LOG"
 echo "codex: $CODEX_BIN" | tee -a "$LOG"
 
+if [ -f "$HOME/.secretbashrc" ]; then
+  # shellcheck disable=SC1091
+  set +e
+  source "$HOME/.secretbashrc" >/dev/null 2>&1
+  set -e
+fi
+
 if [ "${CODEX_PROD_CHECK_DRY_RUN:-0}" = "1" ]; then
   echo "dry run: would execute codex prod check" | tee -a "$LOG"
   write_current_status DRY_RUN 0
@@ -70,7 +77,7 @@ PROMPT="$(cat "$PROMPT_FILE")"
 set +e
 timeout 2400 "$CODEX_BIN" exec \
   --cd "$REPO" \
-  --yolo3 \
+  --dangerously-bypass-approvals-and-sandbox \
   -m gpt-5.5 \
   --config model_reasoning_effort=high \
   --json \

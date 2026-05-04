@@ -8,6 +8,13 @@ CODEX_BIN="${CODEX_BIN:-${CODEX_LOCAL:-/home/administrator/.bun/bin/codex}}"
 
 cd "$REPO"
 
+if [ -f "$HOME/.secretbashrc" ]; then
+    # shellcheck disable=SC1091
+    set +e
+    source "$HOME/.secretbashrc" >/dev/null 2>&1
+    set -e
+fi
+
 LOG_DIR="$REPO/monitoring/logs"
 mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%S)
@@ -83,7 +90,7 @@ Keep it brief. Only fix what you can actually fix."
     set +e
     timeout 1800 "$CODEX_BIN" exec \
         --cd "$REPO" \
-        --yolo3 \
+        --dangerously-bypass-approvals-and-sandbox \
         -m gpt-5.5 \
         --config model_reasoning_effort=high \
         "$PROMPT" 2>&1 | tee -a "$LOG_FILE"

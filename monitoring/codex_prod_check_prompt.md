@@ -10,33 +10,44 @@ You are running with `--dangerously-bypass-approvals-and-sandbox`. Treat that as
 
 - Read `AGENTS.md` instructions from the user context if present, plus the top of `alpacaprod.md` and `monitoring/current_algorithms.md`.
 - Do not start a second Alpaca live writer.
-- Do not start `daily-rl-trader` or `trading-server`; they are intentionally stopped unless the user explicitly asks for a rollback.
+- Treat `alpacaprod.md` as the source of truth for which Alpaca writer should
+  be live. As of 2026-05-04, the expected stock production path is the manual
+  `trading-server` on `127.0.0.1:8050` owning the singleton writer lock, with
+  `daily-rl-trader` attached; `xgb-daily-trader-live` is intentionally inert
+  until an XGB candidate clears the heldout/stress gate.
+- Do not start, stop, or swap `daily-rl-trader`, `trading-server`, or
+  `xgb-daily-trader-live` unless their state contradicts `alpacaprod.md` and
+  the fix is operationally necessary.
 - Do not force trades, lower stock thresholds, change leverage, or set `ALLOW_ALPACA_LIVE_TRADING=1`.
 - Do not place orders from this scheduled check.
-- Do not deploy a strategy/model/threshold change unless the existing single live writer is clearly broken and the fix is operational only, such as restarting the same `xgb-daily-trader-live` unit through `scripts/deploy_live_trader.sh`.
-- If you restart production, use `bash scripts/deploy_live_trader.sh --allow-dirty --allow-unmodeled-live-sidecars xgb-daily-trader-live` and update `alpacaprod.md`.
+- Do not deploy a strategy/model/threshold change. If the existing single live
+  writer is clearly broken, apply only the minimal operational fix for the
+  canonical production path and update `alpacaprod.md`.
 
 ## What To Check
 
 1. Source `~/.secretbashrc` and activate `.venv` or `.venv313`.
 2. Run `python monitoring/health_check.py --json` and inspect warnings/errors.
 3. Check supervisor:
-   - `xgb-daily-trader-live` must be RUNNING.
-   - `daily-rl-trader` must be STOPPED.
-   - `trading-server` must not be an active live writer.
+   - Match actual service expectations against the top of `alpacaprod.md`.
+   - In the current manual daily-stock mode, `xgb-daily-trader-live` may be
+     RUNNING but inert (`sleep infinity`), while `daily-rl-trader` and
+     `trading-server` are expected to be alive outside Supervisor.
 4. Check `strategy_state/account_locks/alpaca_live_writer.lock`:
-   - lock holder pid must match the running `xgb-daily-trader-live` process.
-   - command line must include the stock champion flags: `--top-n 1`, `--allocation 2.0`, `--min-score 0.85`, `--hold-through`, `--crypto-weekend`, `--crypto-poll-seconds 300`, `--crypto-max-gross 0.5`.
+   - lock holder pid/service must match the canonical writer in
+     `alpacaprod.md`.
+   - In the current manual daily-stock mode, the service name should look like
+     `alpaca_wrapper_<pid>` for the `trading-server` process.
 5. Read current Alpaca state using the existing `xgbnew.live_trader._build_trading_client(paper=False)` read-only path:
    - account status, trading_blocked flag, equity, cash, buying_power
    - open orders
    - positions and material market values
    - BTC order `21ccf911-ff7a-46c5-85d0-8a911360e6c3` if still relevant
 6. Check the live logs:
-   - `/var/log/supervisor/xgb-daily-trader-live.log`
-   - `/var/log/supervisor/xgb-daily-trader-live-error.log`
-   - `analysis/xgb_live_trade_log/<today>.jsonl`
-   - `analysis/crypto_weekend_live/<today>.jsonl`
+   - Logs for the canonical writer and trading algorithm from
+     `alpacaprod.md`.
+   - If XGB is inert, stale XGB trade logs are expected; do not treat that as
+     a failure.
 7. For the weekend crypto sleeve:
    - Expect `tick_status` every roughly 300 seconds while the stock market is closed.
    - If BTC is already held, `action=none`, `positions_ok=true`, `n_positions=1` is healthy.
@@ -50,8 +61,9 @@ You are running with `--dangerously-bypass-approvals-and-sandbox`. Treat that as
 ## If Something Looks Wrong
 
 - Fix operational breakage only: stale/crashed same unit, bad lock, log directory permissions, missing heartbeat due to crashed process, or credential sourcing issue.
-- Use the single-writer deploy script for production restarts.
-- Never bring up the legacy RL path.
+- Preserve the single-writer invariant for production restarts.
+- Never bring up an alternate trading path that is not canonical in
+  `alpacaprod.md`.
 - Never submit orders manually.
 - If the bot is logically holding cash because scores are below gate, say that clearly and do not force it to trade.
 

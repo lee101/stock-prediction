@@ -2,6 +2,35 @@
 
 ## Active Deployments
 
+### 2026-05-04 12:50 UTC -- Codex monitor real-run repaired
+
+**Monitoring change**:
+- Local Codex CLI upgraded from `0.56.0` to `0.128.0` so the scheduled
+  `gpt-5.5` monitor can run.
+- `monitoring/codex_prod_check.sh` and `monitoring/monitor_agent.sh` now use
+  the current CLI flag `--dangerously-bypass-approvals-and-sandbox` instead of
+  obsolete `--yolo3`.
+- Both wrappers source `~/.secretbashrc` under `set +e` before invoking
+  Codex, so strict shell mode does not break on profile helper commands.
+- `monitoring/codex_prod_check_prompt.md` now treats this file as canonical
+  for the expected live writer and accepts the current manual
+  `trading-server` + `daily-rl-trader` mode with XGB intentionally inert.
+
+**Real monitor test**:
+- `CODEX_BIN=/home/administrator/.bun/bin/codex monitoring/codex_prod_check.sh`
+  completed with wrapper status `OK rc=0`.
+- Current status file:
+  `monitoring/logs/codex_current.log` points at
+  `monitoring/logs/codex_prod_20260504T124713Z.log`.
+- Scheduled Codex agent verdict was `YELLOW`, but it was read-only:
+  no orders, no service restarts, no model/config/leverage/threshold changes.
+- Agent confirmed `trading-server` pid `4130990` owns the singleton lock as
+  `alpaca_wrapper_4130990`, `daily-rl-trader` pid `4131404` is attached,
+  Alpaca is active, and there are `0` open orders / `0` material positions.
+- Follow-up `.venv313/bin/python monitoring/health_check.py --json` exits `0`;
+  `scheduled-audits` is now OK for Codex. Remaining warnings are optional
+  services and disk (`/` 94%, `/nvme0n1-disk` 86%).
+
 ### 2026-05-04 11:26 UTC -- XGB aggressive sizing guard
 
 **Code change prepared, not a strategy promotion**:
