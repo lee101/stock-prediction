@@ -1682,6 +1682,7 @@ def test_fail_fast_max_dd_prunes_cell_and_forces_losing_rank(monkeypatch):
     assert cell.goodness_score == sweep.FAIL_FAST_SCORE
     assert cell.robust_goodness_score == sweep.FAIL_FAST_SCORE
     assert cell.pain_adjusted_goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.safety_goodness_score == sweep.FAIL_FAST_SCORE
 
 
 def test_fail_fast_max_intraday_dd_prunes_cell_and_forces_losing_rank(monkeypatch):
@@ -1726,6 +1727,7 @@ def test_fail_fast_max_intraday_dd_prunes_cell_and_forces_losing_rank(monkeypatc
     assert cell.goodness_score == sweep.FAIL_FAST_SCORE
     assert cell.robust_goodness_score == sweep.FAIL_FAST_SCORE
     assert cell.pain_adjusted_goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.safety_goodness_score == sweep.FAIL_FAST_SCORE
 
 
 def test_fail_fast_neg_windows_prunes_after_threshold(monkeypatch):
@@ -1768,6 +1770,7 @@ def test_fail_fast_neg_windows_prunes_after_threshold(monkeypatch):
     assert cell.fail_fast_triggered is True
     assert cell.fail_fast_reason == "neg_windows>=2"
     assert cell.pain_adjusted_goodness_score == sweep.FAIL_FAST_SCORE
+    assert cell.safety_goodness_score == sweep.FAIL_FAST_SCORE
 
 
 # ─── robust_goodness tests ────────────────────────────────────────────────────
@@ -1858,6 +1861,56 @@ def test_pain_adjusted_goodness_custom_weights():
     assert (no_pain - default) == pytest.approx(expected_delta, abs=1e-9)
 
 
+def test_interval_loss_uses_worst_comparable_window_risk():
+    losses = sweep.compute_window_interval_loss_pcts(
+        monthlies=[25.0, -55.0, 10.0],
+        drawdowns=[5.0, 35.0, 20.0],
+        intraday_drawdowns=[7.0, 30.0, 45.0],
+    )
+
+    assert losses.tolist() == pytest.approx([7.0, 55.0, 45.0])
+
+
+def test_safety_goodness_penalizes_hidden_crash_tail():
+    smooth = sweep.compute_safety_goodness(
+        [28.0] * 10,
+        drawdowns=[6.0] * 10,
+        intraday_drawdowns=[7.0] * 10,
+        time_under_water_pct=5.0,
+        ulcer_index=1.0,
+    )
+    crashy = sweep.compute_safety_goodness(
+        [31.0] * 9 + [-55.0],
+        drawdowns=[6.0] * 9 + [35.0],
+        intraday_drawdowns=[7.0] * 9 + [40.0],
+        time_under_water_pct=35.0,
+        ulcer_index=8.0,
+    )
+
+    assert crashy < smooth
+
+
+def test_safety_goodness_custom_weights():
+    monthlies = [15.0] * 9 + [-20.0]
+    default = sweep.compute_safety_goodness(
+        monthlies,
+        drawdowns=[4.0] * 10,
+        intraday_drawdowns=[6.0] * 10,
+    )
+    no_interval_penalty = sweep.compute_safety_goodness(
+        monthlies,
+        drawdowns=[4.0] * 10,
+        intraday_drawdowns=[6.0] * 10,
+        weights={
+            **sweep.SAFETY_GOODNESS_WEIGHTS,
+            "p90_interval_loss_coef": 0.0,
+            "worst_interval_loss_coef": 0.0,
+        },
+    )
+
+    assert no_interval_penalty > default
+
+
 def test_robust_goodness_in_cell_result_and_rows():
     c = sweep.CellResult(
         leverage=2.0, min_score=0.85, hold_through=True, top_n=1,
@@ -1866,10 +1919,20 @@ def test_robust_goodness_in_cell_result_and_rows():
         median_sortino=40.0, worst_dd_pct=7.18, n_neg=0,
         goodness_score=88.82, robust_goodness_score=85.23,
         pain_adjusted_goodness_score=74.56,
+        safety_goodness_score=66.0,
+        p05_monthly_pct=95.0,
+        worst_monthly_pct=94.0,
+        p90_interval_loss_pct=8.0,
+        worst_interval_loss_pct=9.0,
     )
     rows = sweep._cells_to_rows([c])
     assert rows[0]["robust_goodness_score"] == pytest.approx(85.23)
     assert rows[0]["pain_adjusted_goodness_score"] == pytest.approx(74.56)
+    assert rows[0]["safety_goodness_score"] == pytest.approx(66.0)
+    assert rows[0]["p05_monthly_pct"] == pytest.approx(95.0)
+    assert rows[0]["worst_monthly_pct"] == pytest.approx(94.0)
+    assert rows[0]["p90_interval_loss_pct"] == pytest.approx(8.0)
+    assert rows[0]["worst_interval_loss_pct"] == pytest.approx(9.0)
 
 
 def test_robust_goodness_sweep_end_to_end(monkeypatch, tmp_path):

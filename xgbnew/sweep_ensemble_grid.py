@@ -115,6 +115,7 @@ class CellResult:
     monthly_return_pcts: list[float] = field(default_factory=list)
     window_sortino_values: list[float] = field(default_factory=list)
     window_drawdown_pcts: list[float] = field(default_factory=list)
+    window_interval_loss_pcts: list[float] = field(default_factory=list)
     window_time_under_water_pcts: list[float] = field(default_factory=list)
     window_ulcer_indexes: list[float] = field(default_factory=list)
     window_active_day_pcts: list[float] = field(default_factory=list)
@@ -140,6 +141,14 @@ class CellResult:
     robust_goodness_score: float = 0.0
     # Robust downside score with explicit equity-curve pain penalties.
     pain_adjusted_goodness_score: float = 0.0
+    # Safety-first score. This uses a unified per-window interval-loss metric
+    # (max of endpoint monthly loss, close-to-close DD, and intraday DD) so a
+    # crashy partial/fail-fast window cannot hide behind a smaller raw DD.
+    safety_goodness_score: float = 0.0
+    p05_monthly_pct: float = 0.0
+    worst_monthly_pct: float = 0.0
+    p90_interval_loss_pct: float = 0.0
+    worst_interval_loss_pct: float = 0.0
     # Fail-fast pruning fields. When enabled, a cell that breaches the
     # configured risk budget keeps observed partial metrics but its ranking
     # scores are forced to FAIL_FAST_SCORE so it cannot win a sweep.
@@ -284,6 +293,23 @@ PAIN_ADJUSTED_GOODNESS_WEIGHTS = {
 }
 
 
+# Safety-first optimizer target. It converts every eval window into one
+# comparable "how bad did this interval get?" loss number, then penalizes both
+# p90 and worst interval loss. This is deliberately harsher than the older
+# goodness variants because the production preference is reliable money, not
+# median PnL with a hidden crash cell.
+SAFETY_GOODNESS_WEIGHTS = {
+    "p10_coef":                 1.00,
+    "median_coef":              0.10,
+    "p90_interval_loss_coef":   1.00,
+    "worst_interval_loss_coef": 0.50,
+    "neg_count_coef":          75.00,
+    "neg_magnitude_coef":       1.50,
+    "tuw_coef":                 0.25,
+    "ulcer_coef":               1.00,
+}
+
+
 FAIL_FAST_SCORE = -1_000_000_000.0
 PRODUCTION_TARGET_MEDIAN_MONTHLY_PCT = 27.0
 PRODUCTION_TARGET_MAX_DD_PCT = 25.0
@@ -417,6 +443,94 @@ def compute_pain_adjusted_goodness(
         robust
         - pw["tuw_coef"] * float(time_under_water_pct)
         - pw["ulcer_coef"] * float(ulcer_index)
+    )
+
+
+def _aligned_nonnegative_metric_array(
+    values: "list[float] | np.ndarray | None",
+    n: int,
+    *,
+    name: str,
+) -> np.ndarray:
+    if values is None:
+        return np.zeros(n, dtype=float)
+    arr = np.asarray(values, dtype=float)
+    if arr.size != n:
+        raise ValueError(f"{name} length {arr.size} does not match monthlies length {n}")
+    arr = np.where(np.isfinite(arr), arr, 0.0)
+    return np.maximum(arr, 0.0)
+
+
+def compute_window_interval_loss_pcts(
+    monthlies: "list[float] | np.ndarray",
+    drawdowns: "list[float] | np.ndarray | None" = None,
+    intraday_drawdowns: "list[float] | np.ndarray | None" = None,
+) -> np.ndarray:
+    """Return per-window loss on one comparable interval-risk scale.
+
+    Each entry is the maximum of:
+      - endpoint loss from the monthly-normalized window return,
+      - close-to-close max drawdown inside the window,
+      - intraday adverse excursion inside the window.
+
+    This intentionally allows the loss to exceed raw DD. A fail-fast window
+    that loses 35% in a short elapsed interval can annualize/month-normalize
+    to a much worse endpoint loss, and the optimizer should see that.
+    """
+    monthly_arr = np.asarray(monthlies, dtype=float)
+    n = int(monthly_arr.size)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    monthly_arr = np.where(np.isfinite(monthly_arr), monthly_arr, 0.0)
+    endpoint_losses = np.maximum(-monthly_arr, 0.0)
+    dd_arr = _aligned_nonnegative_metric_array(drawdowns, n, name="drawdowns")
+    intra_arr = _aligned_nonnegative_metric_array(
+        intraday_drawdowns,
+        n,
+        name="intraday_drawdowns",
+    )
+    return np.maximum.reduce([endpoint_losses, dd_arr, intra_arr])
+
+
+def compute_safety_goodness(
+    monthlies: "list[float] | np.ndarray",
+    drawdowns: "list[float] | np.ndarray | None" = None,
+    intraday_drawdowns: "list[float] | np.ndarray | None" = None,
+    time_under_water_pct: float = 0.0,
+    ulcer_index: float = 0.0,
+    weights: dict | None = None,
+) -> float:
+    """Safety-first sweep objective for reliable-money strategies.
+
+    safety = p10 + 0.1*median
+             - p90(interval_loss) - 0.5*worst(interval_loss)
+             - 75*neg_frac - 1.5*mean_abs_negative_monthly
+             - 0.25*time_under_water - ulcer_index
+
+    The interval-loss terms put endpoint losses, close-to-close drawdown, and
+    intraday adverse excursion on one risk axis, so the optimizer does not
+    prefer a high-median cell with a single catastrophic validation interval.
+    """
+    w = SAFETY_GOODNESS_WEIGHTS if weights is None else weights
+    arr = np.asarray(monthlies, dtype=float)
+    n = int(arr.size)
+    if n == 0:
+        return 0.0
+    arr = np.where(np.isfinite(arr), arr, 0.0)
+    losses = compute_window_interval_loss_pcts(arr, drawdowns, intraday_drawdowns)
+    neg_mask = arr < 0.0
+    neg_count = int(neg_mask.sum())
+    neg_frac = neg_count / n
+    mean_abs_neg = float(-arr[neg_mask].sum()) / n if neg_count else 0.0
+    return (
+        w["p10_coef"] * float(np.percentile(arr, 10))
+        + w["median_coef"] * float(np.median(arr))
+        - w["p90_interval_loss_coef"] * float(np.percentile(losses, 90))
+        - w["worst_interval_loss_coef"] * float(np.max(losses))
+        - w["neg_count_coef"] * neg_frac
+        - w["neg_magnitude_coef"] * mean_abs_neg
+        - w["tuw_coef"] * float(time_under_water_pct)
+        - w["ulcer_coef"] * float(ulcer_index)
     )
 
 
@@ -918,6 +1032,8 @@ def _run_cell(
 
     arr = np.array(monthlies)
     p10 = float(np.percentile(arr, 10))
+    p05 = float(np.percentile(arr, 5))
+    worst_monthly = float(np.min(arr))
     worst_dd = float(np.max(dds))
     n_neg = int(np.sum(arr < 0))
     mean_abs_neg = float(-arr[arr < 0].sum()) / n if n_neg else 0.0
@@ -935,10 +1051,25 @@ def _run_cell(
         tuw_med,
         ulcer_med,
     )
+    interval_losses = compute_window_interval_loss_pcts(
+        arr,
+        dds,
+        intra_dds_worst,
+    )
+    p90_interval_loss = float(np.percentile(interval_losses, 90))
+    worst_interval_loss = float(np.max(interval_losses))
+    safety_goodness = compute_safety_goodness(
+        arr,
+        dds,
+        intra_dds_worst,
+        tuw_med,
+        ulcer_med,
+    )
     if fail_fast_reason:
         goodness = FAIL_FAST_SCORE
         robust_goodness = FAIL_FAST_SCORE
         pain_adjusted_goodness = FAIL_FAST_SCORE
+        safety_goodness = FAIL_FAST_SCORE
     return CellResult(
         leverage=leverage,
         min_score=min_score,
@@ -958,6 +1089,7 @@ def _run_cell(
         monthly_return_pcts=[float(value) for value in arr],
         window_sortino_values=[float(value) for value in sortinos],
         window_drawdown_pcts=[float(value) for value in dds],
+        window_interval_loss_pcts=[float(value) for value in interval_losses],
         window_time_under_water_pcts=[float(value) for value in tuws],
         window_ulcer_indexes=[float(value) for value in ulcers],
         window_active_day_pcts=[float(value) for value in active_day_pcts],
@@ -972,6 +1104,11 @@ def _run_cell(
         goodness_score=goodness,
         robust_goodness_score=robust_goodness,
         pain_adjusted_goodness_score=pain_adjusted_goodness,
+        safety_goodness_score=safety_goodness,
+        p05_monthly_pct=p05,
+        worst_monthly_pct=worst_monthly,
+        p90_interval_loss_pct=p90_interval_loss,
+        worst_interval_loss_pct=worst_interval_loss,
         fail_fast_triggered=bool(fail_fast_reason),
         fail_fast_reason=fail_fast_reason,
         worst_intraday_dd_pct=worst_intra,
@@ -1745,9 +1882,14 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "worst_dd_pct": c.worst_dd_pct,
             "n_neg": c.n_neg,
             "mean_abs_neg_monthly_pct": c.mean_abs_neg_monthly_pct,
+            "p05_monthly_pct": c.p05_monthly_pct,
+            "worst_monthly_pct": c.worst_monthly_pct,
+            "p90_interval_loss_pct": c.p90_interval_loss_pct,
+            "worst_interval_loss_pct": c.worst_interval_loss_pct,
             "monthly_return_pcts": c.monthly_return_pcts,
             "window_sortino_values": c.window_sortino_values,
             "window_drawdown_pcts": c.window_drawdown_pcts,
+            "window_interval_loss_pcts": c.window_interval_loss_pcts,
             "window_time_under_water_pcts": c.window_time_under_water_pcts,
             "window_ulcer_indexes": c.window_ulcer_indexes,
             "window_active_day_pcts": c.window_active_day_pcts,
@@ -1758,6 +1900,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "goodness_score": c.goodness_score,
             "robust_goodness_score": c.robust_goodness_score,
             "pain_adjusted_goodness_score": c.pain_adjusted_goodness_score,
+            "safety_goodness_score": c.safety_goodness_score,
             "fail_fast_triggered": c.fail_fast_triggered,
             "fail_fast_reason": c.fail_fast_reason,
             "worst_intraday_dd_pct": c.worst_intraday_dd_pct,
@@ -1822,6 +1965,9 @@ def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
         "goodness_score",
         "robust_goodness_score",
         "pain_adjusted_goodness_score",
+        "safety_goodness_score",
+        "p05_monthly_pct",
+        "worst_monthly_pct",
         "median_active_day_pct",
         "min_active_day_pct",
     )
@@ -1831,6 +1977,8 @@ def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
         "avg_intraday_dd_pct",
         "time_under_water_pct",
         "ulcer_index",
+        "p90_interval_loss_pct",
+        "worst_interval_loss_pct",
         "n_neg",
     )
     for group_rows in grouped.values():
@@ -1864,11 +2012,19 @@ def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
         )
         worst_row = min(
             group_rows,
+            key=lambda r: float(r.get("safety_goodness_score", 0.0)),
+        )
+        summary["worst_fee_regime_by_safety"] = worst_row.get("fee_regime", "")
+        summary["worst_fill_buffer_bps_by_safety"] = float(
+            worst_row.get("fill_buffer_bps", 0.0)
+        )
+        worst_pain_row = min(
+            group_rows,
             key=lambda r: float(r.get("pain_adjusted_goodness_score", 0.0)),
         )
-        summary["worst_fee_regime_by_pain"] = worst_row.get("fee_regime", "")
+        summary["worst_fee_regime_by_pain"] = worst_pain_row.get("fee_regime", "")
         summary["worst_fill_buffer_bps_by_pain"] = float(
-            worst_row.get("fill_buffer_bps", 0.0)
+            worst_pain_row.get("fill_buffer_bps", 0.0)
         )
         summary["any_fail_fast_triggered"] = any(
             bool(r.get("fail_fast_triggered", False)) for r in group_rows
@@ -1885,6 +2041,7 @@ def _friction_robust_strategy_rows(rows: list[dict]) -> list[dict]:
     summaries.sort(
         key=lambda r: (
             bool(r["production_target_pass"]),
+            float(r["worst_safety_goodness_score"]),
             float(r["worst_pain_adjusted_goodness_score"]),
             float(r["worst_median_monthly_pct"]),
         ),
@@ -1951,6 +2108,7 @@ def _sweep_json_payload(
         "goodness_weights": GOODNESS_WEIGHTS,
         "robust_goodness_weights": ROBUST_GOODNESS_WEIGHTS,
         "pain_adjusted_goodness_weights": PAIN_ADJUSTED_GOODNESS_WEIGHTS,
+        "safety_goodness_weights": SAFETY_GOODNESS_WEIGHTS,
         "ensemble_feature_mode": {
             "needs_ranks": any(bool(row.get("ensemble_needs_ranks", False)) for row in rows),
             "needs_dispersion": any(
@@ -2670,12 +2828,12 @@ def main(argv=None) -> int:
     )
     print(f"[sweep] wrote {out}  ({len(rows)} cells)", flush=True)
 
-    # Pretty table — sorted by goodness descending for easy frontier read.
+    # Pretty table — sorted by safety-goodness descending for easy frontier read.
     # ddW    = worst realized (equity) drawdown across windows
     # idW    = worst INTRADAY unrealized drawdown (OHLC proxy)
     # Divergence between ddW and idW quantifies the "what we were briefly
     # exposed to" gap vs "what hit the equity curve at close".
-    rows_sorted = sorted(rows, key=lambda r: -r["goodness_score"])
+    rows_sorted = sorted(rows, key=lambda r: -float(r.get("safety_goodness_score", 0.0)))
     inf_grid_active = len({r["inference_min_dolvol"] for r in rows}) > 1
     vol_grid_active = len({r["inference_min_vol_20d"] for r in rows}) > 1
     sp_grid_active  = len({r["skip_prob"] for r in rows}) > 1
@@ -2688,9 +2846,10 @@ def main(argv=None) -> int:
     secondary_grid_active = len({r.get("min_secondary_allocation", 0.0) for r in rows}) > 1
     uncertainty_grid_active = len({r.get("score_uncertainty_penalty", 0.0) for r in rows}) > 1
     hdr = (f"\n{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} {'reg':>10} "
-           f"{'med%':>8} {'p10':>8} {'sort':>6} {'ddW':>6} {'idW':>6} "
+           f"{'med%':>8} {'p10':>8} {'loss90':>7} {'lossW':>7} "
+           f"{'sort':>6} {'ddW':>6} {'idW':>6} "
            f"{'tuw%':>6} {'ulc':>6} {'act%':>6} {'neg':>6} "
-           f"{'good':>8} {'robG':>8} {'painG':>8}")
+           f"{'good':>8} {'robG':>8} {'painG':>8} {'safeG':>8}")
     if ff_active:
         hdr += f" {'ff':>2}"
     if alloc_grid_active:
@@ -2708,7 +2867,7 @@ def main(argv=None) -> int:
     if fb_grid_active:
         hdr += f" {'fb':>5}"
     print(hdr)
-    print("-" * (115
+    print("-" * (139
                  + (3 if ff_active else 0)
                  + (17 if alloc_grid_active else 0)
                  + (6 if secondary_grid_active else 0)
@@ -2723,6 +2882,8 @@ def main(argv=None) -> int:
                 f"{int(r.get('min_picks', 0)):3d} "
                 f"{r['fee_regime']:>10} "
                 f"{r['median_monthly_pct']:+8.2f} {r['p10_monthly_pct']:+8.2f} "
+                f"{float(r.get('p90_interval_loss_pct', 0.0)):7.2f} "
+                f"{float(r.get('worst_interval_loss_pct', 0.0)):7.2f} "
                 f"{r['median_sortino']:6.2f} {r['worst_dd_pct']:6.2f} "
                 f"{r['worst_intraday_dd_pct']:6.2f} "
                 f"{r['time_under_water_pct']:6.2f} "
@@ -2731,7 +2892,8 @@ def main(argv=None) -> int:
                 f"{r['n_neg']:3d}/{r['n_windows']:3d} "
                 f"{r['goodness_score']:+8.2f} "
                 f"{r['robust_goodness_score']:+8.2f} "
-                f"{r['pain_adjusted_goodness_score']:+8.2f}")
+                f"{r['pain_adjusted_goodness_score']:+8.2f} "
+                f"{float(r.get('safety_goodness_score', 0.0)):+8.2f}")
         if ff_active:
             line += f" {'Y' if r['fail_fast_triggered'] else 'N':>2}"
         if alloc_grid_active:
@@ -2759,12 +2921,12 @@ def main(argv=None) -> int:
             f"dd<={PRODUCTION_TARGET_MAX_DD_PCT:g}%, "
             f"neg<={PRODUCTION_TARGET_MAX_NEG_WINDOWS} on worst stress cell)\n"
             f"{'lev':>5} {'ms':>5} {'ht':>3} {'tn':>3} {'mp':>3} "
-            f"{'medW':>8} {'p10W':>8} {'ddMax':>6} {'tuwMax':>7} "
-            f"{'actMin':>7} {'negMax':>6} {'painW':>8} {'pass':>4} "
+            f"{'medW':>8} {'p10W':>8} {'lossW':>7} {'ddMax':>6} {'tuwMax':>7} "
+            f"{'actMin':>7} {'negMax':>6} {'safeW':>8} {'painW':>8} {'pass':>4} "
             f"{'worstReg':>10} {'fb':>5} {'cells':>5}"
         )
         print(hdr2)
-        print("-" * 111)
+        print("-" * 130)
         for r in friction_rows:
             print(
                 f"{r['leverage']:5.2f} {r['min_score']:5.2f} "
@@ -2772,14 +2934,16 @@ def main(argv=None) -> int:
                 f"{int(r.get('min_picks', 0)):3d} "
                 f"{r['worst_median_monthly_pct']:+8.2f} "
                 f"{r['worst_p10_monthly_pct']:+8.2f} "
+                f"{r['max_worst_interval_loss_pct']:7.2f} "
                 f"{r['max_worst_dd_pct']:6.2f} "
                 f"{r['max_time_under_water_pct']:7.2f} "
                 f"{r['worst_min_active_day_pct']:7.2f} "
                 f"{r['max_n_neg']:6d} "
+                f"{r['worst_safety_goodness_score']:+8.2f} "
                 f"{r['worst_pain_adjusted_goodness_score']:+8.2f} "
                 f"{'Y' if r['production_target_pass'] else 'N':>4} "
-                f"{str(r['worst_fee_regime_by_pain']):>10} "
-                f"{r['worst_fill_buffer_bps_by_pain']:5.1f} "
+                f"{str(r['worst_fee_regime_by_safety']):>10} "
+                f"{r['worst_fill_buffer_bps_by_safety']:5.1f} "
                 f"{r['n_friction_cells']:5d}"
             )
     exit_code = _production_target_exit_code(

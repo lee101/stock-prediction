@@ -428,3 +428,66 @@ Conclusion:
   learned allocation and future RL policies.
 - It does not solve the current XGB worksteal tail; the bottleneck is still
   regime detection / signal transfer, not just portfolio concentration.
+
+## 2026-05-04 - Safety goodness metric
+
+Why p10 can be worse than drawdown:
+
+- `p10_monthly_pct` is a monthly-normalized endpoint return per rolling
+  window.
+- `worst_dd_pct` is the raw peak-to-trough equity drawdown inside a simulated
+  window.
+- When fail-fast stops a window early, a 35% raw loss over a short elapsed
+  interval can monthly-normalize to a much larger endpoint loss, so `p10=-55`
+  and `DD=35` can both be internally consistent.
+- The optimizer should see the worse interval risk directly rather than
+  requiring a human to compare those two different scales.
+
+Implemented:
+
+- Added per-window `window_interval_loss_pcts`:
+  `max(endpoint_monthly_loss, close_to_close_drawdown, intraday_drawdown)`.
+- Added cell-level `p05_monthly_pct`, `worst_monthly_pct`,
+  `p90_interval_loss_pct`, `worst_interval_loss_pct`.
+- Added `safety_goodness_score`, a harsher optimizer target:
+  `p10 + 0.1*median - p90_interval_loss - 0.5*worst_interval_loss`
+  minus negative-window, negative-magnitude, time-under-water, and ulcer
+  penalties.
+- Sweep output now prints `loss90`, `lossW`, and `safeG`, and sorts the main
+  table by `safeG`.
+- Friction-robust strategy summaries now carry worst safety score and rank by
+  safety before pain-adjusted goodness.
+
+Validation:
+
+- `.venv313/bin/python -m py_compile xgbnew/sweep_ensemble_grid.py`
+- `.venv313/bin/pytest -q tests/test_xgbnew_sweep_ensemble_grid.py`
+- Result: `88 passed, 2 warnings`.
+
+Focused alltrain no-fail sweep:
+`analysis/xgbnew_daily/safety_goodness_worksteal_corr_nofail_20260503/sweep_20260504_000055.json`
+
+- Same top-2 worksteal/correlation family, no fail-fast pruning, 6 full
+  windows.
+- Best safety-ranked cell was 2.0x rather than 2.25x:
+  median `+11.43%/mo`, p10 `-9.80%`, `loss90=41.35%`, `lossW=52.63%`,
+  `safeG=-122.43`.
+- The tempting 2.25x high-median cells had worse interval loss
+  (`loss90≈45%`, `lossW≈57%`) and lower safety scores (`safeG≈-133` to
+  `-140`).
+
+Focused held-out no-fail sweep:
+`analysis/xgbnew_daily/safety_goodness_heldout_worksteal_corr_nofail_20260504/sweep_20260504_000423.json`
+
+- Same family on models trained through `2025-06-30`.
+- Best safety cell was still negative: median `-4.19%/mo`, p10 `-25.18%`,
+  `loss90=50.18%`, `lossW=51.69%`, `4/6` negative windows,
+  `safeG=-197.55`.
+
+Conclusion:
+
+- `safety_goodness_score` is a better optimizer objective for this project
+  than median or plain p10/DD goodness because it measures interval pain on
+  one comparable scale.
+- The current worksteal XGB family is still rejected; the metric now makes
+  that rejection automatic and visible in the sweep table.
