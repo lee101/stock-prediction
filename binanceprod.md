@@ -1,5 +1,175 @@
 # Binance Production Systems
 
+## Hourly XGB Margin-Pack Live Rollout (2026-05-04 NZ / 2026-05-04 07:20 UTC)
+
+Live deployment is active under the single Binance writer surface:
+
+- Supervisor program: `binance-hourly-xgb-margin-pack`
+- Launch: `deployments/binance-hourly-xgb-margin-pack/launch.sh`
+- Runner: `scripts/binance_hourly_xgb_margin_trader.py --execute --daemon --run-on-start --cycle-minutes 60 --refresh-data-before-cycle`
+- Label: `h12_short_corr168_08_aggr2777_dd1998_20260504`
+- Sim result from aggressive sweep: `27.77%/mo`, `+165.39%` total over about 120 days, `19.98%` max DD, Sortino `4.85`, `260` exits.
+- Shape: hourly XGB, horizon `12`, short-only, max `2` active positions, max `4` pending entry watchers, direct `168h` correlation gate at max signed corr `0.8`, concentrated allocation, `2.55x` gross, drawdown scaler start/full/floor `4.5%/15%/32%`.
+
+Production isolation:
+
+- Stopped and made non-autostart/non-autorestart: `binance-hybrid-spot`, `binance-meta-margin`, `binance-worksteal-daily`, `binanceexp1-selector`, `binanceexp1-solusd`, and `crypto30-daily`.
+- Current Binance writer audit passes with exactly one writer: `xgb_hourly_pack`.
+- Cache/collector services such as `binance-5min-collector` and cache refreshers remain running.
+
+Live safety behavior verified:
+
+- Existing margin account coverage is clean: `6` positions, `6` covered, `0` missing, `0` partial.
+- Pre-existing long positions are covered by open `SELL` exits: `LINK`, `ETH`, `AAVE`, `DOGE`, `BTC`, `SOL`.
+- Live cycle at `2026-05-04T07:18:30Z` used data through `2026-05-04T07:00:00Z` and decision timestamp `2026-05-04T05:00:00Z`.
+- It selected two candidate shorts: `FILUSDT` and `TONUSDT`, about `$2645` notional each.
+- Both entry orders were submitted as cross-margin `SELL`/`AUTO_BORROW_REPAY`, filled `0`, and were canceled. No `BUY` exit was placed because no short position existed.
+- Post-execute coverage after the settle gate remained clean: `6` positions, `6` covered, `0` missing.
+
+Safety patch in this rollout:
+
+- The runner now waits `--post-cycle-settle-seconds` after entry/cancel handling before the post-execute coverage gate. This avoids false missing-coverage failures from Binance's transient margin asset state after canceled borrow-style orders.
+- Filled short deltas still get immediate `BUY`/`AUTO_REPAY` exits, and unfilled entries are canceled by default.
+- New live entries are capped by current margin gross exposure: `equity * max_leverage * risk_scale - existing_gross`, so old covered positions do not let the runner over-gross the account.
+
+Verification:
+
+- Focused tests: `58 passed` for the XGB runner, Binance live process audit, margin exit coverage, and margin wrapper.
+- Shell checks: supervisor launch script syntax passes; relevant diff whitespace check passes.
+- Current artifact: `analysis/binance_hourly_xgb_margin_plan_latest.json`.
+
+## Hourly XGB Margin-Pack Dry-Run Deploy Blocked (2026-05-04 NZ / 2026-05-04 05:35 UTC)
+
+No live deployment.
+
+Candidate prepared for careful Binance cross-margin rollout:
+
+- Label: `h12_short_corr168_08_2795_20260504`
+- Sim result: `27.95%/mo`, `+168.01%` total over about 120 days, `29.66%` max DD, Sortino `4.09`, `246` exits.
+- Shape: hourly XGB, horizon `12`, short-only, max `2` positions, direct `168h` correlation gate at max signed corr `0.8`, concentrated allocation, `2.55x` gross, drawdown scaler start/full/floor `4.5%/15%/32%`.
+- Deploy runner: `scripts/binance_hourly_xgb_margin_trader.py`.
+
+Safety work added:
+
+- Runner is dry-run by default; live orders require `--execute`, `ALLOW_BINANCE_XGB_LIVE_TRADING=1`, fresh hourly data, clean Binance writer isolation, and existing margin exit coverage.
+- Stable-base pairs such as `FDUSDUSDT`/`USDCUSDT` are filtered before liquidity top-N selection.
+- Short entries are cross-margin limit `SELL` orders with `AUTO_BORROW_REPAY`.
+- The execute path now watches entry fills, places matching `BUY`/`AUTO_REPAY` exits for filled short quantity, and cancels unfilled entry orders by default so an entry cannot fill later without the runner supervising exit coverage.
+- `scripts/binance_margin_exit_coverage.py` now audits both long and short positions: longs require open `SELL` coverage, shorts require open `BUY` coverage.
+
+Dry-run verification:
+
+- Hourly data refresh wrote current bars through `2026-05-04T05:00:00Z`; downloader exited nonzero only because it reports old historical exchange gaps.
+- Inference dry-run command: `.venv313/bin/python scripts/binance_hourly_xgb_margin_trader.py --json-out analysis/binance_hourly_xgb_margin_plan_20260504_dryrun.json`
+- Dry-run result: `data_end=2026-05-04T05:00:00Z`, `decision_ts=2026-05-04T03:00:00Z`, data age about `0.57h`, margin equity about `$3059.47`, `risk_scale=1.000`, candidates `0`.
+- Offline dry-run with live account state disabled also selected `0` candidates, so the no-trade result is the model signal at this decision point, not only active-account symbol skipping.
+- Current margin exit coverage: `positions=3`, `covered=3`, `partial=0`, `missing=0` (`LINK`, `ETH`, `AAVE` are long positions covered by open `SELL` exits).
+- Focused tests: `88 passed` across XGB runner, margin wrapper, exit coverage, snapshot coverage, live process audit, hourly pack, and simulator allocator tests.
+
+Live blocker:
+
+- Process audit still fails. Conflicting Binance writers are present: `binanceleveragesui.trade_margin_meta` PID `1943` and `binance_worksteal.trade_live` PID `3833`; hybrid margin PID `71548` is also active.
+- Decision: do not run `--execute` on this machine until supervisor/root state is reconciled to a single allowed XGB margin-pack writer and the dry-run produces a real candidate on fresh data.
+
+## Binance33 Year-Scale Robustness Pass (2026-05-02 NZ / 2026-05-01 UTC)
+
+No production deployment.
+
+Data refresh:
+
+- Refreshed all 33 `trainingdatadailybinance/*.csv` proxy files through `2026-05-01`.
+- Exported separate refreshed binaries under `analysis/binance33_refresh_20260502/` so the canonical `pufferlib_market/data/binance33_daily_*.bin` files were not overwritten.
+- Refreshed val span is now `2025-10-01` through `2026-05-01` (`213` daily bars), versus the stale local cutoff around `2026-03-16`.
+
+Current best recent candidate after adding April:
+
+- Candidate: `allow_sui_strict_rb2_gross4p60_maxw0p34_sr1p04`.
+- Old March-cutoff val: median monthly `+49.554%`, p10 `+42.627%`, p90 DD `19.708%`, worst DD `19.984%`, `0/45` negative windows.
+- Refreshed val through `2026-05-01`: median monthly `+44.696%`, p10 `+28.429%`, worst monthly `+21.248%`, `0/93` negative windows, but p90 DD `48.446%` and worst DD `51.821%`.
+- Latest refreshed 120d trace: `+184.43%`, DD `40.22%`, `207` trades.
+- Viewer regenerated at `analysis/binance_backtest_space.html` against the refreshed validation window.
+
+Additional robustness checks:
+
+- Exact deterministic Binance33 rule sweep artifact: `analysis/binance33_rule_sweep_train_120_365_stride10_20260502.csv`.
+- Sweep settings: train history, lag `2`, slippage `20bps`, max leverage `1.0`, 1440 generated long/short/regime configs, 120d and 365d rolling windows.
+- Best active 120d train row was only about `+1.74%/mo` median with p10 `-14.61%/mo`, p90 DD `60.06%`, and `77/162` negative windows.
+- Best active 365d train row was about `+3.61%/mo` median with p10 `-11.86%/mo`, p90 DD `80.54%`, and `59/137` negative windows.
+- No active deterministic row had p90 DD `<=20%`, no active row had nonnegative p10, and no active row approached the `>=27%/mo` production gate.
+- Shadow/profit-gate scout artifact: `analysis/binance33_meta_shadow_gate_scout_20260502.csv`. The gate reduced some recent drawdown but did not create a production row; high-PnL rows still had old-history p10 around `-8%/mo` and old-history p90 DD around `30-36%`, while stricter rows mostly went flat and still had extreme old-history worst DD.
+- Old-history symbol failure analysis found `77/81` bad windows for the high-gross SUI-allowed candidate. Worst negative contributors were `SOLUSD`, `DOGEUSD`, `SHIBUSD`, `BTCUSD`, `DOTUSD`, `NEARUSD`, and `LINKUSD`. Excluding the first seven improved old-history median to roughly flat but left p10 around `-29%/mo` and p90 DD around `84%`.
+
+Hedged/CVaR portfolio-packing pass:
+
+- Added `scripts/sweep_binance33_hedged_cvar_pack.py` and `tests/test_sweep_binance33_hedged_cvar_pack.py` for small 2-3 position long/short books with binary fills, CVaR/vol sizing, per-symbol weight caps, gross caps, net caps, and separate long-signal support.
+- Fixed the hedged packer so `max_net=0.0` means true neutral instead of disabling the net cap.
+- Same-score hedged CVaR scout artifact: `analysis/binance33_hedged_cvar_pack_scout_20260502.csv`. The best smooth refreshed-val rows were only about `+0.5%` to `+2.5%/mo`; train rows were flat/negative. Hedging reduced drawdown but mostly removed the edge.
+- Dual-alpha scout artifact: `analysis/binance33_dual_hedged_scout_20260502.csv`. Trend60 longs plus `rand0038` shorts produced attractive refreshed-val rows, e.g. `+5.19%/mo`, p10 `+1.80%/mo`, p90 DD `19.47%`, but the matching train row was `-2.25%/mo`, p10 `-11.30%/mo`, p90 DD `41.85%`.
+- Corrected repeatable dual-signal scout artifact: `analysis/binance33_hedged_cvar_dual_signal_scout_20260502.csv`. After enforcing neutral books, the best train+val rows had low DD but were effectively flat (`0.00%/mo`, median trades `0`); the best refreshed-val rows around `+2.92%/mo` still had matching train median `-1.92%/mo`, p10 `-8.00%/mo`, and p90 DD `33.63%`.
+- No hedged row passed the production gate; no paired row had nonnegative train p10.
+
+Decision: hold. This is now blocked by both refreshed recent drawdown and old-history robustness. Hedged portfolio packing improves the shape but does not recover enough return under realistic lag-2 binary fills. The next useful research is a trained walk-forward regime/mixture model with an explicit cash expert and survival objective across `2021-2026`; fixed symbol pruning, simple market gates, deterministic rules, shadow PnL gates, and static CVaR packing are not enough.
+
+Additional search pass:
+
+- Added `scripts/sweep_binance33_meta_risk_overlay.py` to test causal overlays around meta-anneal candidates: always-on shadow-PnL gates, circuit breakers with cooldown, and book drawdown throttles. Initial `cand00426` overlay screens went either flat or low-return; the documented high-gross SUI candidate is not reproduced by raw `cand00426` JSON alone.
+- Expanded `scripts/search_binance33_regime_gates.py` with cross-sectional dispersion/skew/range gates (`iqr_ret5`, `iqr_ret20`, `skew_ret5`, `skew_ret20`, `mkt_absret5`, `mkt_range1`).
+- Dispersion gate scout artifact: `analysis/binance33_regime_gate_dispersion_rand0045_20260502.csv` (partial exact replay, stopped after `1197` rows because results were already stable). Best recent-val rows reached about `+9.47%/mo` with p10 `+6.96%/mo` and p90 DD `15.36%`, but their matching train rows were still around `-9%/mo` median, p10 `-28%/mo`, and p90 DD `75%+`. Best combined rows were near-flat with too few trades.
+- Refreshed XGBoost targeted artifact: `analysis/binance33_xgb_refreshed_xgb08_11_leverage_20260502.csv`. `xgb08` at higher leverage reached up to `+15.93%/mo` median on refreshed val, but p10 was `-13.29%/mo`, `17/47` windows were negative, and p90 DD was `71.72%`.
+- Refreshed XGBoost portfolio-pack artifact: `analysis/binance33_xgb_pack_refreshed_xgb08_11_20260502.csv`. Packing xgb08/xgb11 shorts across multiple symbols reduced upside to about `+5.24%/mo` and still had p10 `-5.11%/mo`, `14/47` negative windows, and p90 DD `42.48%`.
+- No new row passed the `>=27-30%/mo`, nonnegative-p10, low-drawdown gate.
+
+Decision remains hold/no deploy. The new evidence says the recent short edge is not just a bad static pack or a missing simple market-state gate; it is a regime-specific edge that breaks badly across older crypto regimes. More search should focus on a true walk-forward learner/objective that treats "cash" as a first-class expert and penalizes stale-regime survival failures during training, not post-hoc gating.
+
+## Binance33 Meta-Anneal Deployment Review (2026-05-01 NZ / 2026-04-30 UTC)
+
+No production deployment.
+
+Best recent-validation candidate from the current pass:
+
+- label: `allow_sui_strict_rb2_gross4p60_maxw0p34_sr1p04`
+- source row: `cand00426` from `analysis/binance33_meta_anneal_linear_hand_aug_active_20260501.csv`
+- excludes: `PEPEUSD,ICPUSD,TAOUSD,ATOMUSD,FILUSD,TIAUSD,ALGOUSD,BNBUSD,AAVEUSD`
+- SUI is allowed; TAO remains excluded because exact allow-back sweeps were worse.
+- book: short portfolio, `top_k=4`, rebalance every `2` days, `max_gross=4.60`, `max_weight=0.34`, `short_risk_mult=1.04`, `decision_lag=2`, binary fills.
+- recent 120d validation at 20bps slippage: median monthly `+49.554%`, p10 monthly `+42.627%`, p90 DD `19.708%`, worst DD `19.984%`, `0` negative windows, median trades `116`.
+- latest 120d trace: `+311.67%`, DD `19.71%`, `109` trades.
+- viewer regenerated: `analysis/binance_backtest_space.html`.
+
+Blocking robustness result:
+
+- Same candidate on older Binance33 train history (`2021-01-01` through `2025-09-30`, 120d windows, stride 10, lag 2, 20bps) fails catastrophically: median monthly `-34.54%`, p10 monthly `-99.37%`, worst monthly `-99.44%`, p90 DD `100%`, worst DD `100%`, `128/162` negative windows.
+- Simple BTC/market/breadth/volatility gates around the candidate did not fix this; the best gates preserved some recent PnL but still had 100% old-history drawdown in at least one window.
+- Residual drawdown analysis on the recent validation worst case mostly pointed at `DOT`, `SOL`, `NEAR`, and `UNI`, but excluding those reduced robustness/objective quality versus the SUI-allowed winner.
+- Local daily Binance data is stale around `2026-03-16`, so April 2026 is not included in the current local daily binary data.
+- Current Binance live process state is still not a clean single-writer deployment surface for this strategy, and the existing `trade_crypto30_daily.py` path is a long-only spot/PPO-style daemon, not a margin short-portfolio executor for this candidate.
+
+Decision: do not promote this to live production. It can be kept as a recent-regime research/shadow candidate only. Before any live margin rollout, refresh daily data through the current date, re-export train/validation binaries, rerun the 0/5/10/20bps binary-fill lag-2 grids including April 2026, build a dedicated dry-run/paper margin executor for the vector portfolio, and fix Binance writer isolation at supervisor/root level.
+
+Research direction: more compute should optimize a walk-forward objective across `2021-2026`, including old-history survival and a cash/regime expert. More annealing on the recent slice alone is likely to improve the recent leaderboard while worsening year-scale reliability.
+
+## Runtime Observation + Offline Head-to-Head (2026-04-30 NZ / 2026-04-30 09:30 UTC)
+
+Current machine process scan shows the 2026-04-27 production note is stale:
+
+- `binance-hybrid-spot` is still running the documented six-symbol margin launch (`robust_reg_tp005_dd002`, 0.5x).
+- Retired/conflicting writers `binanceleveragesui.trade_margin_meta` PID `1943` and `binance_worksteal.trade_live` PID `3833` are still present but SIGSTOP'ed (`Tl`), not cleanly removed from supervisor.
+- A new `binanceleveragesui.trade_margin_sui` process is running and is not covered by the 2026-04-27 ledger. Treat Binance live account state as writer-contaminated until this is reconciled at supervisor/root level.
+
+Offline eval work added:
+
+- `scripts/binance_head_to_head.py` normalizes PPO, rule, XGB, XGB-pack, and hourly-pack CSV artifacts into one gateable leaderboard.
+- `scripts/sweep_binance33_rule_portfolio_pack.py` tests diversified deterministic daily rule portfolios.
+- `scripts/search_binance33_easy_universe.py` tests calibration-ranked symbol pruning plus raw/augmented XGBoost retraining.
+- `scripts/sweep_binance33_rule_risk_controls.py` and `scripts/search_binance33_linear_rules.py` test risk controls and composite linear rules around the recent short-reversion edge.
+- `scripts/search_binance33_regime_gates.py` tests explicit cash/regime gates around the best linear rule.
+- `scripts/sweep_binance33_lgbm.py` tests LightGBM `4.6.0`; `.venv312` XGBoost was upgraded from `3.1.1` to `3.2.0` for latest-library reruns.
+- Latest combined artifact: `analysis/binance_head_to_head_20260430_after_latest_libs.csv`.
+
+Result: the recent validation frontier improved. Linear rule `rand0045` at `1.305x` reaches `30.04%/mo`, p10 `19.54%/mo`, `0/45` negative windows, p90 drawdown `19.96%`, and 37 median trades on recent 120d/20bps validation. A simple market-regime gate (`mkt_ret20gt-0.1`) improves recent drawdown to `15.36%` while keeping `30.05%/mo`, but older-history stride-10 validation still fails (`-18.01%/mo`, `137/162` negative windows). XGBoost `3.2.0` and LightGBM targeted reruns did not beat this. This is not deployable, and live Binance account state is still writer-contaminated.
+
+Decision: no Binance promotion/deploy. The next useful work is not another broad PPO swap; it is a regime-conditioned short-reversion learner with explicit out-of-regime cash gating, plus fixing live writer isolation before any margin experiment is considered production-capable.
+
 ## Runtime + Backtest Re-Audit (2026-04-27 NZ / 2026-04-27 10:50 UTC)
 
 Current machine state:
@@ -700,3 +870,51 @@ Results:
 - live exit pricing now reconstructs the active entry lot from recent fills instead of using the most recent buy blindly; snapshots carry `position_entry_time`, `hold_hours`, `exit_basis`, and the real live basis when it can be inferred
 - account-guard-blocked cycles now cancel every non-cover BUY order and place closing sell coverage for any meaningful long on the account, including foreign holdings like `ZEC`/`XRP`, instead of only tracked strategy symbols
 - `BINANCE_HYBRID_MAX_HOLD_HOURS` is now a configurable but disabled-by-default backstop; when enabled and a live long exceeds that age, the runner prices its closing order from the exchange midpoint and records `exit_basis=max_hold_midpoint` in the snapshot
+
+## 2026-04-30 NVIDIA/CVaR and Symbol-Filter Research Pass
+
+No production deployment.
+
+New artifacts:
+- `analysis/binance33_linear_cvar_pack_rand0045_targeted_20260430.csv`
+- `analysis/binance33_linear_symbol_filter_rand0045_greedy_20260430.csv`
+- `analysis/binance_head_to_head_20260430_after_nvidia_cvar_symbolfilter.csv`
+
+Findings:
+- NVIDIA-style CVaR portfolio packing around the current best linear short rule was not competitive. Best targeted
+  validation row was only about `+5.18%/mo` with `2/45` negative windows.
+- Train-history-only symbol filtering improved the bad historical regime but not enough: after excluding
+  `AAVEUSD,BTCUSD,DOGEUSD,ETHUSD,SHIBUSD,SOLUSD`, train-history still had `61/162` negative windows and p90 DD
+  around `80%`.
+- Recent validation still contains the known borderline rows:
+  - raw linear rule at leverage `1.305`: `+30.0387%/mo`, p10 `+19.5390%/mo`, p90 DD `19.9609%`, `0/45` negative windows.
+  - `mkt_ret20gt-0.1` gate at leverage `1.305`: `+30.0539%/mo`, p10 `+17.8341%/mo`, p90 DD `15.358%`, `0/45`
+    negative windows.
+
+Production decision: hold. These are recent-validation candidates only; broader train-history robustness remains far
+below the production bar, and the live Binance machine state previously showed writer/process contamination that must
+stay resolved before any live flip.
+
+## 2026-05-01 Meta-Anneal / XGBoost Blend Pass
+
+No production deployment.
+
+New artifacts:
+- `analysis/binance33_meta_anneal_linear_hand_20260501.csv`
+- `analysis/binance33_meta_anneal_single_linear_hand_20260501.csv`
+- `analysis/binance33_meta_anneal_xgb_linear_20260501.csv`
+- `analysis/binance33_meta_anneal_recent_tail_linear_hand_20260501.csv`
+- `analysis/binance33_meta_channel_gate_grid_20260501.csv`
+- `analysis/binance_head_to_head_20260501_after_meta_anneal.csv`
+
+Findings:
+- Temperature-cooled meta blending over linear and handcrafted channels mostly converged to low-return defensive books.
+  Best full-history validation portfolio row was only about `+4.61%/mo`.
+- XGBoost-channel blending was smoother but far below target: best exact single replay was about `+4.89%/mo` with tiny
+  DD, but too few trades and nowhere near the PnL gate.
+- Recent-tail annealing raised PnL by rediscovering 20-day winner shorts, but exact validation had p90 DD around `74%`.
+- Focused exact channel/gate grid found no improvement over the known candidate. Best blend-normalized channel row was
+  `+26.69%/mo`, p10 `+16.46%/mo`, p90 DD `19.96%`, below the 30%/mo target.
+
+Production decision: hold. The meta/XGB blend pass did not produce a candidate better than the existing recent-only
+rand0045/regime rows, and none solved old-history robustness.

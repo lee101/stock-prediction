@@ -156,7 +156,7 @@ def allocate_concentrated_entry_budget(
     max_caps: list[float] = []
     scores: list[float] = []
 
-    for candidate, slot_budget in zip(candidates, slot_budgets, strict=False):
+    for candidate, slot_budget in zip(candidates, slot_budgets):
         intensity = min(max(float(candidate.intensity_fraction), 0.0), 1.0)
         base_alloc = slot_budget * intensity
         max_cap = min(slot_budget * float(position_count), budget_cap * single_fraction)

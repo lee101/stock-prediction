@@ -19,6 +19,7 @@ if str(REPO) not in sys.path:
 from src.binan import binance_wrapper as bw
 from binanceneural.execution import quantize_price, quantize_qty, resolve_symbol_rules
 from src.binan.binance_margin import (
+    create_margin_limit_buy,
     create_margin_limit_sell,
     get_margin_account,
     get_open_margin_orders,
@@ -33,8 +34,13 @@ class CoverageRow:
     asset: str
     pair: str
     pair_candidates: tuple[str, ...]
+    direction: str
+    coverage_side: str
     net_qty: float
     free_qty: float
+    borrowed_qty: float
+    interest_qty: float
+    position_qty: float
     market_price: float
     est_value_usdt: float
     open_sell_qty: float
@@ -48,6 +54,7 @@ class CoverageRow:
 class RepairPlan:
     asset: str
     pair: str
+    side: str
     quantity: float
     price: float
     notional_usdt: float
@@ -114,22 +121,33 @@ def load_coverage(*, min_value_usdt: float) -> list[CoverageRow]:
         if not asset or asset in STABLE_ASSETS:
             continue
         net_qty = _safe_float(entry.get("netAsset"))
-        if net_qty <= 0.0:
+        if abs(net_qty) <= 0.0:
             continue
         free_qty = _safe_float(entry.get("free"), default=net_qty)
+        borrowed_qty = _safe_float(entry.get("borrowed"))
+        interest_qty = _safe_float(entry.get("interest"))
         price, price_pair = _asset_price_and_pair(asset)
-        est_value = net_qty * price
+        position_qty = abs(net_qty)
+        est_value = position_qty * price
         if est_value < float(min_value_usdt):
             continue
         pair = price_pair or _pair_for_asset(asset)
         pair_candidates = _pair_candidates_for_asset(asset)
         open_sell_qty = sum(sell_qty_by_pair.get(candidate, 0.0) for candidate in pair_candidates)
         open_buy_qty = sum(buy_qty_by_pair.get(candidate, 0.0) for candidate in pair_candidates)
-        ratio = open_sell_qty / max(net_qty, 1e-12)
-        gap_qty = max(0.0, net_qty - open_sell_qty)
+        if net_qty < 0.0:
+            direction = "short"
+            coverage_side = "BUY"
+            covered_qty = open_buy_qty
+        else:
+            direction = "long"
+            coverage_side = "SELL"
+            covered_qty = open_sell_qty
+        ratio = covered_qty / max(position_qty, 1e-12)
+        gap_qty = max(0.0, position_qty - covered_qty)
         if ratio >= 0.98:
             status = "covered"
-        elif open_sell_qty > 0.0:
+        elif covered_qty > 0.0:
             status = "partial"
         else:
             status = "missing"
@@ -138,8 +156,13 @@ def load_coverage(*, min_value_usdt: float) -> list[CoverageRow]:
                 asset=asset,
                 pair=pair,
                 pair_candidates=pair_candidates,
+                direction=direction,
+                coverage_side=coverage_side,
                 net_qty=float(net_qty),
                 free_qty=float(free_qty),
+                borrowed_qty=float(borrowed_qty),
+                interest_qty=float(interest_qty),
+                position_qty=float(position_qty),
                 market_price=float(price),
                 est_value_usdt=float(est_value),
                 open_sell_qty=float(open_sell_qty),
@@ -166,29 +189,39 @@ def build_repair_plan(
         if row.status == "covered":
             continue
         gap_qty = max(0.0, float(row.coverage_gap_qty))
-        place_qty = min(gap_qty, max(0.0, float(row.free_qty)))
-        target_price = float(row.market_price) * (1.0 + markup)
+        place_qty = gap_qty
+        target_price = float(row.market_price) * (
+            1.0 - markup if row.coverage_side == "BUY" else 1.0 + markup
+        )
+        if row.coverage_side == "SELL":
+            place_qty = min(place_qty, max(0.0, float(row.free_qty)))
         if gap_qty <= 0.0:
-            plans.append(RepairPlan(row.asset, row.pair, 0.0, target_price, 0.0, "skipped", "no_coverage_gap"))
+            plans.append(RepairPlan(row.asset, row.pair, row.coverage_side, 0.0, target_price, 0.0, "skipped", "no_coverage_gap"))
             continue
         if place_qty <= 0.0:
-            plans.append(RepairPlan(row.asset, row.pair, 0.0, target_price, 0.0, "skipped", "no_free_qty"))
+            reason = "no_free_qty" if row.coverage_side == "SELL" else "no_cover_qty"
+            plans.append(RepairPlan(row.asset, row.pair, row.coverage_side, 0.0, target_price, 0.0, "skipped", reason))
             continue
         if target_price <= 0.0:
-            plans.append(RepairPlan(row.asset, row.pair, place_qty, 0.0, 0.0, "skipped", "no_market_price"))
+            plans.append(RepairPlan(row.asset, row.pair, row.coverage_side, place_qty, 0.0, 0.0, "skipped", "no_market_price"))
             continue
         notional = place_qty * target_price
         if notional < min_notional:
             plans.append(
-                RepairPlan(row.asset, row.pair, place_qty, target_price, notional, "skipped", "below_min_order_value")
+                RepairPlan(row.asset, row.pair, row.coverage_side, place_qty, target_price, notional, "skipped", "below_min_order_value")
             )
             continue
         reason = "partial_gap" if row.status == "partial" else "missing_exit"
-        plans.append(RepairPlan(row.asset, row.pair, place_qty, target_price, notional, "planned", reason))
+        plans.append(RepairPlan(row.asset, row.pair, row.coverage_side, place_qty, target_price, notional, "planned", reason))
     return plans
 
 
-def place_repair_orders(plans: list[RepairPlan], *, side_effect_type: str) -> list[RepairPlan]:
+def place_repair_orders(
+    plans: list[RepairPlan],
+    *,
+    side_effect_type: str,
+    short_side_effect_type: str,
+) -> list[RepairPlan]:
     placed: list[RepairPlan] = []
     for plan in plans:
         if plan.status != "planned":
@@ -196,28 +229,38 @@ def place_repair_orders(plans: list[RepairPlan], *, side_effect_type: str) -> li
             continue
         try:
             rules = resolve_symbol_rules(plan.pair)
-            price = quantize_price(plan.price, tick_size=rules.tick_size, side="sell")
+            side = str(plan.side or "SELL").upper()
+            price = quantize_price(plan.price, tick_size=rules.tick_size, side=side.lower())
             qty = quantize_qty(plan.quantity, step_size=rules.step_size)
             if rules.min_qty is not None and qty < rules.min_qty:
-                placed.append(RepairPlan(plan.asset, plan.pair, qty, price, qty * price, "skipped", "below_min_qty"))
+                placed.append(RepairPlan(plan.asset, plan.pair, side, qty, price, qty * price, "skipped", "below_min_qty"))
                 continue
             if rules.min_notional is not None and qty * price < rules.min_notional:
                 placed.append(
-                    RepairPlan(plan.asset, plan.pair, qty, price, qty * price, "skipped", "below_min_notional")
+                    RepairPlan(plan.asset, plan.pair, side, qty, price, qty * price, "skipped", "below_min_notional")
                 )
                 continue
-            order = create_margin_limit_sell(
-                plan.pair,
-                qty,
-                price,
-                side_effect_type=str(side_effect_type or "NO_SIDE_EFFECT"),
-            )
-            placed.append(RepairPlan(plan.asset, plan.pair, qty, price, qty * price, "placed", plan.reason, order))
+            if side == "BUY":
+                order = create_margin_limit_buy(
+                    plan.pair,
+                    qty,
+                    price,
+                    side_effect_type=str(short_side_effect_type or "AUTO_REPAY"),
+                )
+            else:
+                order = create_margin_limit_sell(
+                    plan.pair,
+                    qty,
+                    price,
+                    side_effect_type=str(side_effect_type or "NO_SIDE_EFFECT"),
+                )
+            placed.append(RepairPlan(plan.asset, plan.pair, side, qty, price, qty * price, "placed", plan.reason, order))
         except Exception as exc:
             placed.append(
                 RepairPlan(
                     plan.asset,
                     plan.pair,
+                    plan.side,
                     plan.quantity,
                     plan.price,
                     plan.notional_usdt,
@@ -234,6 +277,7 @@ def main() -> int:
     parser.add_argument("--target-markup-pct", type=float, default=0.20)
     parser.add_argument("--min-order-value-usdt", type=float, default=12.0)
     parser.add_argument("--side-effect-type", default="NO_SIDE_EFFECT")
+    parser.add_argument("--short-side-effect-type", default="AUTO_REPAY")
     parser.add_argument("--execute", action="store_true", help="Actually place missing target SELL orders")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
     args = parser.parse_args()
@@ -245,7 +289,11 @@ def main() -> int:
         min_order_value_usdt=float(args.min_order_value_usdt),
     )
     if args.execute:
-        repair_plan = place_repair_orders(repair_plan, side_effect_type=str(args.side_effect_type))
+        repair_plan = place_repair_orders(
+            repair_plan,
+            side_effect_type=str(args.side_effect_type),
+            short_side_effect_type=str(args.short_side_effect_type),
+        )
     summary = {
         "positions": len(rows),
         "covered": sum(1 for row in rows if row.status == "covered"),
@@ -268,21 +316,21 @@ def main() -> int:
         f"covered={summary['covered']} partial={summary['partial']} missing={summary['missing']} "
         f"repair_planned={summary['repair_planned']} repair_placed={summary['repair_placed']}"
     )
-    print("asset pair       net_qty       free       value   sell_qty  buy_qty  gap_qty  cover  status")
+    print("asset pair      dir   cover net_qty       free    borrowed      value   sell_qty  buy_qty  gap_qty  cover  status")
     for row in rows:
         print(
-            f"{row.asset:<5} {row.pair:<9} {row.net_qty:>11.6g} "
-            f"{row.free_qty:>9.6g} ${row.est_value_usdt:>8.2f} "
+            f"{row.asset:<5} {row.pair:<9} {row.direction:<5} {row.coverage_side:<5} {row.net_qty:>11.6g} "
+            f"{row.free_qty:>9.6g} {row.borrowed_qty:>11.6g} ${row.est_value_usdt:>8.2f} "
             f"{row.open_sell_qty:>9.6g} {row.open_buy_qty:>8.6g} "
             f"{row.coverage_gap_qty:>8.6g} {row.sell_coverage_ratio:>6.2f} {row.status}"
         )
     if repair_plan:
         action = "placed" if args.execute else "dry-run plan"
         print(f"\nexit repair {action}:")
-        print("asset pair       qty          price       notional  status   reason")
+        print("asset pair      side  qty          price       notional  status   reason")
         for plan in repair_plan:
             print(
-                f"{plan.asset:<5} {plan.pair:<9} {plan.quantity:>11.6g} "
+                f"{plan.asset:<5} {plan.pair:<9} {plan.side:<5} {plan.quantity:>11.6g} "
                 f"{plan.price:>12.6g} ${plan.notional_usdt:>8.2f} {plan.status:<8} {plan.reason}"
             )
     return exit_code

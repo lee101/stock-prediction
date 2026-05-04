@@ -355,6 +355,32 @@ def cancel_margin_order(
     return result
 
 
+def get_margin_order(
+    symbol: str,
+    *,
+    order_id: int | None = None,
+    orig_client_order_id: str | None = None,
+    client: Client | None = None,
+) -> Dict[str, Any]:
+    if order_id is None and orig_client_order_id is None:
+        raise ValueError("Either order_id or orig_client_order_id is required")
+    client = _resolve_client(client)
+    normalized = _normalize_symbol(symbol)
+    payload: Dict[str, Any] = {"symbol": normalized, "isIsolated": "FALSE"}
+    if order_id is not None:
+        payload["orderId"] = int(order_id)
+    if orig_client_order_id is not None:
+        payload["origClientOrderId"] = orig_client_order_id
+    try:
+        result = client.get_margin_order(**payload)
+    except Exception as exc:
+        logger.error(f"Failed to fetch margin order: {exc}")
+        raise
+    if not isinstance(result, dict):
+        return {}
+    return result
+
+
 def cancel_all_margin_orders(
     symbol: str, client: Client | None = None
 ) -> List[Dict[str, Any]]:

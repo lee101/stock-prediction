@@ -6,7 +6,9 @@ import pandas as pd
 
 from scripts.sweep_binance_hourly_portfolio_pack import (
     PackConfig,
+    assign_symbol_return_buckets,
     _filter_liquid_frames,
+    build_model_frame,
     build_actions_and_bars,
     compute_pack_selection_score,
     iter_pack_configs,
@@ -46,6 +48,45 @@ def _pack_config(**overrides) -> PackConfig:
     )
     values.update(overrides)
     return PackConfig(**values)
+
+
+def test_build_model_frame_can_keep_latest_unlabeled_rows_for_live_scoring():
+    timestamps = pd.date_range("2026-03-01T00:00:00Z", periods=120, freq="h")
+    frames = {}
+    for offset, symbol in enumerate(("AAAUSDT", "BBBUSDT")):
+        close = pd.Series(100.0 + offset + pd.RangeIndex(len(timestamps)).astype(float) * 0.1)
+        frames[symbol] = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": 1000.0 + offset + pd.RangeIndex(len(timestamps)).astype(float),
+                "trade_count": 10.0,
+                "vwap": close,
+                "symbol": symbol,
+            }
+        )
+
+    strict, _ = build_model_frame(
+        frames,
+        start=timestamps[0],
+        end=timestamps[-1],
+        horizon=12,
+        require_targets=True,
+    )
+    live, _ = build_model_frame(
+        frames,
+        start=timestamps[0],
+        end=timestamps[-1],
+        horizon=12,
+        require_targets=False,
+    )
+
+    assert live["timestamp"].max() == timestamps[-1]
+    assert strict["timestamp"].max() < live["timestamp"].max()
+    assert live[live["timestamp"] == timestamps[-1]]["target_close_ret"].isna().all()
 
 
 def test_build_actions_and_bars_creates_long_watcher_levels():
@@ -135,6 +176,78 @@ def test_build_actions_and_bars_applies_top_candidate_gate():
 
     active = actions[actions["buy_amount"] > 0.0]
     assert active["symbol"].tolist() == ["AAAUSDT"]
+
+
+def test_top_candidate_gate_ignores_inactive_high_edge_rows():
+    ts = pd.Timestamp("2026-03-03T15:00:00Z")
+    scored = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "DEADUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.10,
+                "pred_low_ret_xgb": -0.002,
+                "pred_close_ret_xgb": -0.02,
+                "cvar_loss_72h": 0.001,
+            },
+            {
+                "timestamp": ts,
+                "symbol": "LIVEUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 10.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.04,
+                "pred_low_ret_xgb": -0.002,
+                "pred_close_ret_xgb": 0.01,
+                "cvar_loss_72h": 0.001,
+            },
+        ]
+    )
+
+    _, actions = build_actions_and_bars(
+        scored,
+        cfg=_pack_config(min_close_ret=0.0),
+        label_horizon=24,
+        min_take_profit_bps=35.0,
+        max_entry_gap_bps=120.0,
+        max_exit_gap_bps=250.0,
+        fee_rate=0.001,
+        top_candidates_per_hour=1,
+    )
+
+    active = actions[actions["trade_amount"] > 0.0]
+    assert active["symbol"].tolist() == ["LIVEUSDT"]
+
+
+def test_assign_symbol_return_buckets_is_deterministic_and_uses_buckets():
+    timestamps = pd.date_range("2026-03-01T00:00:00Z", periods=8, freq="h")
+    rows = []
+    patterns = {
+        "AAAUSDT": [0.01, 0.02, -0.01, 0.02, 0.01, -0.01, 0.02, 0.01],
+        "BBBUSDT": [0.011, 0.018, -0.012, 0.019, 0.012, -0.011, 0.021, 0.009],
+        "CCCUSDT": [-0.01, -0.02, 0.01, -0.02, -0.01, 0.01, -0.02, -0.01],
+        "DDDUSDT": [-0.009, -0.018, 0.011, -0.019, -0.012, 0.011, -0.021, -0.009],
+    }
+    for symbol, values in patterns.items():
+        for timestamp, value in zip(timestamps, values):
+            rows.append({"timestamp": timestamp, "symbol": symbol, "ret_1h": value})
+    scored = pd.DataFrame(rows)
+
+    buckets_a = assign_symbol_return_buckets(scored, 2)
+    buckets_b = assign_symbol_return_buckets(scored, 2)
+
+    assert buckets_a == buckets_b
+    assert set(buckets_a) == set(patterns)
+    assert set(buckets_a.values()) == {0, 1}
 
 
 def test_build_actions_and_bars_can_gate_weak_close_consensus():
@@ -344,6 +457,129 @@ def test_build_actions_and_bars_supports_short_side_mode():
     assert action["buy_price"] < action["sell_price"]
     assert action["sell_amount"] > 0.0
     assert action["buy_amount"] == 0.0
+
+
+def test_short_include_inactive_top_gate_ranks_by_short_edge():
+    ts = pd.Timestamp("2026-03-03T12:00:00Z")
+    scored = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "LONGBAITUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.10,
+                "pred_low_ret_xgb": -0.001,
+                "pred_close_ret_xgb": 0.03,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": 0.02,
+                "ret_72h": 0.03,
+                "vol_72h": 0.01,
+            },
+            {
+                "timestamp": ts,
+                "symbol": "SHORTLIVEUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.003,
+                "pred_low_ret_xgb": -0.04,
+                "pred_close_ret_xgb": -0.02,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": -0.01,
+                "ret_72h": -0.02,
+                "vol_72h": 0.01,
+            },
+        ]
+    )
+
+    _, actions = build_actions_and_bars(
+        scored,
+        cfg=_pack_config(
+            risk_penalty=0.2,
+            cvar_weight=0.0,
+            entry_gap_bps=50.0,
+            edge_threshold=0.001,
+            min_close_ret=0.001,
+            close_edge_weight=0.25,
+        ),
+        label_horizon=24,
+        min_take_profit_bps=35.0,
+        max_entry_gap_bps=120.0,
+        max_exit_gap_bps=250.0,
+        fee_rate=0.001,
+        top_candidates_per_hour=1,
+        top_candidates_include_inactive=True,
+        side_mode="short",
+    )
+
+    active = actions[actions["sell_amount"] > 0.0]
+    assert active["symbol"].tolist() == ["SHORTLIVEUSDT"]
+
+
+def test_build_actions_and_bars_supports_mixed_side_mode():
+    ts = pd.Timestamp("2026-03-03T12:00:00Z")
+    scored = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "LONGUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.05,
+                "pred_low_ret_xgb": -0.002,
+                "pred_close_ret_xgb": 0.02,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": 0.01,
+                "ret_72h": 0.02,
+                "vol_72h": 0.01,
+            },
+            {
+                "timestamp": ts,
+                "symbol": "SHORTUSDT",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "reference_close": 100.0,
+                "pred_high_ret_xgb": 0.002,
+                "pred_low_ret_xgb": -0.05,
+                "pred_close_ret_xgb": -0.02,
+                "cvar_loss_72h": 0.001,
+                "ret_24h": -0.01,
+                "ret_72h": -0.02,
+                "vol_72h": 0.01,
+            },
+        ]
+    )
+
+    _, actions = build_actions_and_bars(
+        scored,
+        cfg=_pack_config(risk_penalty=0.2, edge_threshold=0.001, min_close_ret=0.001),
+        label_horizon=24,
+        min_take_profit_bps=35.0,
+        max_entry_gap_bps=120.0,
+        max_exit_gap_bps=250.0,
+        fee_rate=0.001,
+        top_candidates_per_hour=10,
+        side_mode="both",
+    )
+
+    by_symbol = actions.set_index("symbol")
+    assert by_symbol.loc["LONGUSDT", "side_mode"] == "long"
+    assert by_symbol.loc["LONGUSDT", "buy_amount"] > 0.0
+    assert by_symbol.loc["LONGUSDT", "sell_amount"] == 0.0
+    assert by_symbol.loc["SHORTUSDT", "side_mode"] == "short"
+    assert by_symbol.loc["SHORTUSDT", "sell_amount"] > 0.0
+    assert by_symbol.loc["SHORTUSDT", "buy_amount"] == 0.0
 
 
 def test_build_actions_and_bars_applies_inverse_vol_sizing_scale():

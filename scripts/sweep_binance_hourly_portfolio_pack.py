@@ -143,8 +143,8 @@ def _parse_hour_set(value: str) -> tuple[int, ...]:
 
 def _normalize_side_mode(value: str) -> str:
     mode = str(value or "long").strip().lower()
-    if mode not in {"long", "short"}:
-        raise ValueError(f"side_mode must be 'long' or 'short', got {value!r}")
+    if mode not in {"long", "short", "both"}:
+        raise ValueError(f"side_mode must be 'long', 'short', or 'both', got {value!r}")
     return mode
 
 
@@ -325,6 +325,7 @@ def build_model_frame(
     start: pd.Timestamp,
     end: pd.Timestamp,
     horizon: int,
+    require_targets: bool = True,
 ) -> tuple[pd.DataFrame, list[str]]:
     parts = []
     symbols = sorted(frames)
@@ -360,7 +361,10 @@ def build_model_frame(
         "target_close_ret",
     ] + feature_cols
     combined = combined[keep_cols].replace([np.inf, -np.inf], np.nan)
-    combined = combined.dropna(subset=feature_cols + ["target_high_ret", "target_low_ret", "target_close_ret"])
+    required_cols = list(feature_cols)
+    if bool(require_targets):
+        required_cols.extend(["target_high_ret", "target_low_ret", "target_close_ret"])
+    combined = combined.dropna(subset=required_cols)
     return combined.sort_values(["timestamp", "symbol"]).reset_index(drop=True), feature_cols
 
 
@@ -405,6 +409,7 @@ def fit_forecasters(
     device: str,
 ) -> tuple[Any, Any, Any]:
     train = model_frame[model_frame["timestamp"] < train_end]
+    train = train.dropna(subset=["target_high_ret", "target_low_ret", "target_close_ret"])
     if train.empty:
         raise ValueError("empty training split")
     x_train = train[feature_cols].to_numpy(dtype=np.float32, copy=False)
@@ -435,6 +440,58 @@ def score_eval_rows(
     return rows.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
 
 
+def assign_symbol_return_buckets(scored: pd.DataFrame, bucket_count: int) -> dict[str, int]:
+    """Assign deterministic symbol buckets from non-market return structure."""
+
+    count = int(bucket_count)
+    symbols = sorted(scored["symbol"].astype(str).str.upper().unique())
+    if count <= 0 or not symbols:
+        return {}
+    if count == 1 or len(symbols) == 1:
+        return {symbol: 0 for symbol in symbols}
+
+    value_col = "ret_1h" if "ret_1h" in scored.columns else "target_close_ret"
+    if value_col not in scored.columns:
+        return {symbol: idx % count for idx, symbol in enumerate(symbols)}
+
+    pivot = (
+        scored.assign(symbol=scored["symbol"].astype(str).str.upper())
+        .pivot_table(index="timestamp", columns="symbol", values=value_col, aggfunc="last")
+        .reindex(columns=symbols)
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    if len(pivot) < 3:
+        return {symbol: idx % count for idx, symbol in enumerate(symbols)}
+
+    means = pivot.mean(axis=0, skipna=True)
+    stds = pivot.std(axis=0, skipna=True).replace(0.0, np.nan)
+    standardized = pivot.sub(means, axis=1).div(stds, axis=1).fillna(0.0)
+    matrix = standardized.to_numpy(dtype=np.float64, copy=False)
+    if matrix.shape[1] < 2 or not np.isfinite(matrix).all():
+        return {symbol: idx % count for idx, symbol in enumerate(symbols)}
+
+    cov = np.cov(matrix, rowvar=False)
+    try:
+        values, vectors = np.linalg.eigh(cov)
+    except np.linalg.LinAlgError:
+        return {symbol: idx % count for idx, symbol in enumerate(symbols)}
+    if len(values) < 2 or not np.isfinite(values).all() or not np.isfinite(vectors).all():
+        return {symbol: idx % count for idx, symbol in enumerate(symbols)}
+
+    # PC1 is usually the whole-crypto market mode. PC2 separates the residual
+    # groups we do not want to stack in the same two-position book.
+    coord = vectors[:, np.argsort(values)[-2]]
+    if float(np.nanmax(coord) - np.nanmin(coord)) <= 1e-12:
+        return {symbol: idx % count for idx, symbol in enumerate(symbols)}
+
+    order = np.argsort(coord, kind="mergesort")
+    buckets: dict[str, int] = {}
+    for rank, symbol_idx in enumerate(order):
+        bucket = min(count - 1, int(rank * count / len(symbols)))
+        buckets[symbols[int(symbol_idx)]] = int(bucket)
+    return buckets
+
+
 def build_actions_and_bars(
     scored: pd.DataFrame,
     *,
@@ -445,6 +502,7 @@ def build_actions_and_bars(
     max_exit_gap_bps: float,
     fee_rate: float,
     top_candidates_per_hour: int,
+    top_candidates_include_inactive: bool = False,
     entry_block_hours_utc: str = "",
     side_mode: str = "long",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -497,66 +555,112 @@ def build_actions_and_bars(
         market_vol_scale = float(cfg.vol_target_ann) / np.maximum(market_vol_ann, 1e-9)
         market_vol_scale = np.clip(market_vol_scale, float(cfg.inv_vol_floor), float(cfg.inv_vol_cap))
 
-    if side_mode == "short":
-        favorable_move = np.maximum.reduce([-pred_low, -pred_close, np.zeros_like(pred_low)])
-        adverse_move = np.maximum(pred_high, 0.0)
-        close_edge_signal = -pred_close
-    else:
-        favorable_move = np.maximum.reduce([pred_high, pred_close, np.zeros_like(pred_high)])
-        adverse_move = np.maximum(-pred_low, 0.0)
-        close_edge_signal = pred_close
     base_entry_gap = float(cfg.entry_gap_bps) / 10_000.0
-    entry_gap = np.maximum(base_entry_gap, float(cfg.entry_alpha) * adverse_move)
-    entry_gap = np.clip(entry_gap, 0.0, float(max_entry_gap_bps) / 10_000.0)
     min_tp = float(min_take_profit_bps) / 10_000.0
-    exit_gap = np.maximum(min_tp, float(cfg.exit_alpha) * favorable_move)
-    exit_gap = np.clip(exit_gap, min_tp, float(max_exit_gap_bps) / 10_000.0)
 
+    def _side_signal(*, is_short: bool) -> dict[str, np.ndarray]:
+        if is_short:
+            favorable_move = np.maximum.reduce([-pred_low, -pred_close, np.zeros_like(pred_low)])
+            adverse_move = np.maximum(pred_high, 0.0)
+            close_edge_signal = -pred_close
+        else:
+            favorable_move = np.maximum.reduce([pred_high, pred_close, np.zeros_like(pred_high)])
+            adverse_move = np.maximum(-pred_low, 0.0)
+            close_edge_signal = pred_close
+        entry_gap = np.maximum(base_entry_gap, float(cfg.entry_alpha) * adverse_move)
+        entry_gap = np.clip(entry_gap, 0.0, float(max_entry_gap_bps) / 10_000.0)
+        exit_gap = np.maximum(min_tp, float(cfg.exit_alpha) * favorable_move)
+        exit_gap = np.clip(exit_gap, min_tp, float(max_exit_gap_bps) / 10_000.0)
+        if is_short:
+            sell_price = ref * (1.0 + entry_gap)
+            buy_price = np.minimum(sell_price * (1.0 - min_tp), ref * (1.0 - exit_gap))
+            gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
+            recent_ret_24h_ok = recent_ret_24h <= -float(cfg.min_recent_ret_24h)
+            recent_ret_72h_ok = recent_ret_72h <= -float(cfg.min_recent_ret_72h)
+        else:
+            buy_price = ref * (1.0 - entry_gap)
+            sell_price = np.maximum(buy_price * (1.0 + min_tp), ref * (1.0 + exit_gap))
+            gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
+            recent_ret_24h_ok = recent_ret_24h >= float(cfg.min_recent_ret_24h)
+            recent_ret_72h_ok = recent_ret_72h >= float(cfg.min_recent_ret_72h)
+        risk_charge = float(cfg.risk_penalty) * (adverse_move + float(cfg.cvar_weight) * cvar)
+        close_edge_bonus = float(cfg.close_edge_weight) * close_edge_signal
+        edge = gross_edge - risk_charge - 2.0 * float(fee_rate) + close_edge_bonus
+        risk_denominator = np.maximum(adverse_move + cvar, 1e-9)
+        upside_downside_ratio = favorable_move / risk_denominator
+        amount = 100.0 * np.clip(edge / max(float(cfg.edge_to_full_size), 1e-9), 0.0, 1.0)
+        active = (
+            (edge >= float(cfg.edge_threshold))
+            & (close_edge_signal >= float(cfg.min_close_ret))
+            & (upside_downside_ratio >= float(cfg.min_upside_downside_ratio))
+            & recent_ret_24h_ok
+            & recent_ret_72h_ok
+        )
+        if float(cfg.max_recent_vol_72h) > 0.0:
+            active &= recent_vol_72h <= float(cfg.max_recent_vol_72h)
+        if float(cfg.regime_cs_skew_min) > -1e8:
+            active &= regime_cs_skew_24h >= float(cfg.regime_cs_skew_min)
+        amount = np.where(active, amount, 0.0)
+        return {
+            "buy_price": buy_price,
+            "sell_price": sell_price,
+            "entry_gap": entry_gap,
+            "exit_gap": exit_gap,
+            "edge": edge,
+            "gross_edge": gross_edge,
+            "risk_charge": risk_charge,
+            "close_edge_bonus": close_edge_bonus,
+            "upside_downside_ratio": upside_downside_ratio,
+            "amount": amount,
+            "active": active,
+        }
+
+    long_signal = _side_signal(is_short=False)
+    short_signal = _side_signal(is_short=True)
     if side_mode == "short":
-        sell_price = ref * (1.0 + entry_gap)
-        buy_price = np.minimum(sell_price * (1.0 - min_tp), ref * (1.0 - exit_gap))
-        gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
+        choose_short = short_signal["active"]
+        choose_long = np.zeros(len(rows), dtype=bool)
+        use_short_signal = np.ones(len(rows), dtype=bool)
+    elif side_mode == "both":
+        choose_short = short_signal["active"] & (
+            ~long_signal["active"] | (short_signal["edge"] >= long_signal["edge"])
+        )
+        choose_long = long_signal["active"] & ~choose_short
+        use_short_signal = choose_short
     else:
-        buy_price = ref * (1.0 - entry_gap)
-        sell_price = np.maximum(buy_price * (1.0 + min_tp), ref * (1.0 + exit_gap))
-        gross_edge = sell_price / np.maximum(buy_price, 1e-12) - 1.0
-    risk_charge = float(cfg.risk_penalty) * (adverse_move + float(cfg.cvar_weight) * cvar)
-    close_edge_bonus = float(cfg.close_edge_weight) * close_edge_signal
-    edge = gross_edge - risk_charge - 2.0 * float(fee_rate) + close_edge_bonus
-    risk_denominator = np.maximum(adverse_move + cvar, 1e-9)
-    upside_downside_ratio = favorable_move / risk_denominator
-    amount = 100.0 * np.clip(edge / max(float(cfg.edge_to_full_size), 1e-9), 0.0, 1.0)
-    if side_mode == "short":
-        recent_ret_24h_ok = recent_ret_24h <= -float(cfg.min_recent_ret_24h)
-        recent_ret_72h_ok = recent_ret_72h <= -float(cfg.min_recent_ret_72h)
-    else:
-        recent_ret_24h_ok = recent_ret_24h >= float(cfg.min_recent_ret_24h)
-        recent_ret_72h_ok = recent_ret_72h >= float(cfg.min_recent_ret_72h)
-    active = (
-        (edge >= float(cfg.edge_threshold))
-        & (close_edge_signal >= float(cfg.min_close_ret))
-        & (upside_downside_ratio >= float(cfg.min_upside_downside_ratio))
-        & recent_ret_24h_ok
-        & recent_ret_72h_ok
+        choose_long = long_signal["active"]
+        choose_short = np.zeros(len(rows), dtype=bool)
+        use_short_signal = np.zeros(len(rows), dtype=bool)
+
+    buy_price = np.where(use_short_signal, short_signal["buy_price"], long_signal["buy_price"])
+    sell_price = np.where(use_short_signal, short_signal["sell_price"], long_signal["sell_price"])
+    entry_gap = np.where(use_short_signal, short_signal["entry_gap"], long_signal["entry_gap"])
+    exit_gap = np.where(use_short_signal, short_signal["exit_gap"], long_signal["exit_gap"])
+    edge = np.where(use_short_signal, short_signal["edge"], long_signal["edge"])
+    gross_edge = np.where(use_short_signal, short_signal["gross_edge"], long_signal["gross_edge"])
+    risk_charge = np.where(use_short_signal, short_signal["risk_charge"], long_signal["risk_charge"])
+    close_edge_bonus = np.where(use_short_signal, short_signal["close_edge_bonus"], long_signal["close_edge_bonus"])
+    upside_downside_ratio = np.where(
+        use_short_signal,
+        short_signal["upside_downside_ratio"],
+        long_signal["upside_downside_ratio"],
     )
-    if float(cfg.max_recent_vol_72h) > 0.0:
-        active &= recent_vol_72h <= float(cfg.max_recent_vol_72h)
-    if float(cfg.regime_cs_skew_min) > -1e8:
-        active &= regime_cs_skew_24h >= float(cfg.regime_cs_skew_min)
+    amount = np.where(choose_short, short_signal["amount"], np.where(choose_long, long_signal["amount"], 0.0))
     entry_block_hours = _parse_hour_set(entry_block_hours_utc)
     if entry_block_hours:
         timestamps = pd.to_datetime(rows["timestamp"], utc=True)
         blocked_hours = timestamps.dt.hour.isin(entry_block_hours).to_numpy()
-        active &= ~blocked_hours
+        choose_long &= ~blocked_hours
+        choose_short &= ~blocked_hours
+        amount = np.where(blocked_hours, 0.0, amount)
     else:
         blocked_hours = np.zeros(len(rows), dtype=bool)
     amount = amount * inv_vol_scale * market_vol_scale
-    amount = np.where(active, amount, 0.0)
 
     rows["buy_price"] = buy_price
     rows["sell_price"] = sell_price
-    rows["buy_amount"] = np.where(side_mode == "short", 0.0, amount)
-    rows["sell_amount"] = np.where(side_mode == "short", amount, 0.0)
+    rows["buy_amount"] = np.where(choose_long, amount, 0.0)
+    rows["sell_amount"] = np.where(choose_short, amount, 0.0)
     rows["trade_amount"] = amount
     rows["xgb_edge"] = edge
     rows["xgb_gross_edge"] = gross_edge
@@ -572,7 +676,9 @@ def build_actions_and_bars(
     rows["inv_vol_scale"] = inv_vol_scale
     rows["market_vol_scale"] = market_vol_scale
     rows["entry_blocked_utc_hour"] = blocked_hours.astype(float)
-    rows["side_mode"] = side_mode
+    rows["side_mode"] = np.where(choose_short, "short", np.where(choose_long, "long", side_mode))
+    if "entry_diversify_bucket" in rows.columns:
+        rows["entry_diversify_bucket"] = rows["entry_diversify_bucket"].fillna(-1).astype(int)
     rows["watch_entry_gap_bps"] = entry_gap * 10_000.0
     rows["watch_exit_gap_bps"] = exit_gap * 10_000.0
     rows[f"predicted_high_p50_h{label_horizon}"] = ref * (1.0 + pred_high)
@@ -580,8 +686,12 @@ def build_actions_and_bars(
     rows[f"predicted_close_p50_h{label_horizon}"] = ref * (1.0 + pred_close)
 
     if int(top_candidates_per_hour) > 0:
-        rank = rows.groupby("timestamp")["xgb_edge"].rank(method="first", ascending=False)
-        rows.loc[rank > int(top_candidates_per_hour), ["buy_amount", "trade_amount"]] = 0.0
+        if bool(top_candidates_include_inactive):
+            rank_edge = rows["xgb_edge"]
+        else:
+            rank_edge = rows["xgb_edge"].where(rows["trade_amount"].astype(float) > 0.0, -np.inf)
+        rank = rank_edge.groupby(rows["timestamp"]).rank(method="first", ascending=False)
+        rows.loc[rank > int(top_candidates_per_hour), ["buy_amount", "sell_amount", "trade_amount"]] = 0.0
 
     action_cols = [
         "timestamp",
@@ -612,6 +722,8 @@ def build_actions_and_bars(
         f"predicted_low_p50_h{label_horizon}",
         f"predicted_close_p50_h{label_horizon}",
     ]
+    if "entry_diversify_bucket" in rows.columns:
+        action_cols.append("entry_diversify_bucket")
     bar_cols = [
         "timestamp",
         "symbol",
@@ -667,6 +779,7 @@ def evaluate_pack(
         max_exit_gap_bps=float(args.max_exit_gap_bps),
         fee_rate=float(args.fee_rate),
         top_candidates_per_hour=int(args.top_candidates_per_hour),
+        top_candidates_include_inactive=bool(args.top_candidates_include_inactive),
         entry_block_hours_utc=str(args.entry_block_hours_utc),
         side_mode=str(args.side_mode),
     )
@@ -697,9 +810,23 @@ def evaluate_pack(
         entry_allocator_edge_power=float(cfg.entry_allocator_edge_power),
         entry_allocator_max_single_position_fraction=float(args.entry_allocator_max_single_position_fraction),
         entry_allocator_reserve_fraction=float(args.entry_allocator_reserve_fraction),
+        entry_allocator_min_active_positions=int(args.entry_allocator_min_active_positions),
+        entry_allocator_min_second_position_fraction=float(args.entry_allocator_min_second_position_fraction),
+        entry_drawdown_pause_threshold=float(args.entry_drawdown_pause_threshold),
+        entry_drawdown_resume_threshold=float(args.entry_drawdown_resume_threshold),
+        entry_drawdown_cooldown_hours=int(args.entry_drawdown_cooldown_hours),
+        entry_drawdown_scale_start=float(args.entry_drawdown_scale_start),
+        entry_drawdown_scale_full=float(args.entry_drawdown_scale_full),
+        entry_drawdown_scale_floor=float(args.entry_drawdown_scale_floor),
+        entry_diversify_bucket_column=(
+            "entry_diversify_bucket" if int(args.entry_diversify_buckets) > 0 else ""
+        ),
+        entry_corr_window_bars=int(args.entry_corr_window_bars),
+        entry_corr_min_periods=int(args.entry_corr_min_periods),
+        entry_corr_max_signed=float(args.entry_corr_max_signed),
         max_pending_entries=int(cfg.max_pending_entries),
         apply_leverage_to_crypto=True,
-        allow_crypto_shorts=side_mode == "short",
+        allow_crypto_shorts=side_mode in {"short", "both"},
         short_only_symbols=set(symbols) if side_mode == "short" else None,
         sim_backend="python",
         drawdown_profit_early_exit=not bool(args.disable_drawdown_profit_early_exit),
@@ -731,6 +858,19 @@ def evaluate_pack(
     }
     row["entry_block_hours_utc"] = str(args.entry_block_hours_utc)
     row["force_exit_hours_utc"] = str(args.force_exit_hours_utc)
+    row["entry_allocator_min_active_positions"] = int(args.entry_allocator_min_active_positions)
+    row["entry_allocator_min_second_position_fraction"] = float(args.entry_allocator_min_second_position_fraction)
+    row["entry_drawdown_pause_threshold"] = float(args.entry_drawdown_pause_threshold)
+    row["entry_drawdown_resume_threshold"] = float(args.entry_drawdown_resume_threshold)
+    row["entry_drawdown_cooldown_hours"] = int(args.entry_drawdown_cooldown_hours)
+    row["entry_drawdown_scale_start"] = float(args.entry_drawdown_scale_start)
+    row["entry_drawdown_scale_full"] = float(args.entry_drawdown_scale_full)
+    row["entry_drawdown_scale_floor"] = float(args.entry_drawdown_scale_floor)
+    row["entry_diversify_buckets"] = int(args.entry_diversify_buckets)
+    row["entry_corr_window_bars"] = int(args.entry_corr_window_bars)
+    row["entry_corr_min_periods"] = int(args.entry_corr_min_periods)
+    row["entry_corr_max_signed"] = float(args.entry_corr_max_signed)
+    row["top_candidates_include_inactive"] = bool(args.top_candidates_include_inactive)
     row["side_mode"] = side_mode
     row["min_result_trades"] = int(args.min_result_trades)
     row["selection_score"] = compute_pack_selection_score(
@@ -1151,7 +1291,7 @@ def _pack_config_at_index(axes: tuple[list[Any], ...], index: int) -> PackConfig
     for axis in reversed(axes):
         remaining, coord = divmod(remaining, len(axis))
         coords.append(coord)
-    values = [axis[coord] for axis, coord in zip(axes, reversed(coords), strict=True)]
+    values = [axis[coord] for axis, coord in zip(axes, reversed(coords))]
     return PackConfig(*values)
 
 
@@ -1241,13 +1381,26 @@ def main() -> int:
     parser.add_argument("--max-entry-gap-bps", type=float, default=120.0)
     parser.add_argument("--max-exit-gap-bps", type=float, default=250.0)
     parser.add_argument("--top-candidates-per-hour", type=int, default=30)
+    parser.add_argument("--top-candidates-include-inactive", action="store_true")
     parser.add_argument("--entry-intensity-power", type=float, default=1.0)
     parser.add_argument("--entry-min-intensity-fraction", type=float, default=0.0)
     parser.add_argument("--entry-allocator-max-single-position-fraction", type=float, default=0.35)
     parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.05)
+    parser.add_argument("--entry-allocator-min-active-positions", type=int, default=0)
+    parser.add_argument("--entry-allocator-min-second-position-fraction", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-pause-threshold", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-resume-threshold", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-cooldown-hours", type=int, default=0)
+    parser.add_argument("--entry-drawdown-scale-start", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-scale-full", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-scale-floor", type=float, default=1.0)
+    parser.add_argument("--entry-diversify-buckets", type=int, default=0)
+    parser.add_argument("--entry-corr-window-bars", type=int, default=0)
+    parser.add_argument("--entry-corr-min-periods", type=int, default=24)
+    parser.add_argument("--entry-corr-max-signed", type=float, default=1.0)
     parser.add_argument("--min-result-trades", type=int, default=10)
     parser.add_argument("--disable-drawdown-profit-early-exit", action="store_true")
-    parser.add_argument("--side-mode", choices=("long", "short"), default="long")
+    parser.add_argument("--side-mode", choices=("long", "short", "both"), default="long")
     parser.add_argument(
         "--entry-block-hours-utc",
         default="",
@@ -1314,6 +1467,20 @@ def main() -> int:
         device=str(args.device),
     )
     scored = score_eval_rows(model_frame, feature_cols, models, eval_start=eval_start, eval_end=end)
+    if int(args.entry_diversify_buckets) > 0:
+        buckets = assign_symbol_return_buckets(scored, int(args.entry_diversify_buckets))
+        scored = scored.copy()
+        scored["entry_diversify_bucket"] = (
+            scored["symbol"].astype(str).str.upper().map(buckets).fillna(-1).astype(int)
+        )
+        print(
+            "entry diversify buckets="
+            + ",".join(
+                f"{symbol}:{bucket}"
+                for symbol, bucket in sorted(buckets.items())[:12]
+            )
+            + ("..." if len(buckets) > 12 else "")
+        )
     print(f"scored eval rows={len(scored):,} symbols={scored['symbol'].nunique()}")
 
     configs, total_configs = sample_pack_configs_from_args(

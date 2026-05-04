@@ -13,6 +13,7 @@ _PROCESS_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     ("selector", "module", "binanceexp1.trade_binance_selector"),
     ("hourly", "module", "binanceexp1.trade_binance_hourly"),
     ("worksteal_daily", "module", "binance_worksteal.trade_live"),
+    ("xgb_hourly_pack", "script", "scripts/binance_hourly_xgb_margin_trader.py"),
 )
 
 
