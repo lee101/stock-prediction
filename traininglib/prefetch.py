@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Iterable
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import Any
 
 import torch
 
@@ -36,7 +36,7 @@ class CudaPrefetcher(Iterator):
         self.stream = torch.cuda.Stream() if (torch.cuda.is_available() and self.device.type == "cuda") else None
         self.next_batch: Any | None = None
 
-    def __iter__(self) -> "CudaPrefetcher":
+    def __iter__(self) -> CudaPrefetcher:
         if self.stream is None:
             self._it = iter(self.loader)
             return self
@@ -56,6 +56,9 @@ class CudaPrefetcher(Iterator):
             raise StopIteration
         self._preload()
         return batch
+
+    def __len__(self) -> int:
+        return len(self.loader)  # type: ignore[arg-type]
 
     def _preload(self) -> None:
         if self.stream is None:

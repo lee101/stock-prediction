@@ -26,6 +26,14 @@ from differentiable_loss_utils import (
     compute_loss_by_type,
     simulate_hourly_trades,
 )
+from src.torch_backend import configure_tf32_backends, maybe_set_float32_precision
+
+try:
+    from trainingefficiency.compiled_sim_loss import compiled_sim_and_loss
+    HAS_COMPILED_SIM_LOSS = True
+except ImportError:
+    compiled_sim_and_loss = None
+    HAS_COMPILED_SIM_LOSS = False
 
 N_FEATURES = 10
 
@@ -65,8 +73,9 @@ def _sync(device: torch.device):
 def benchmark(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     has_cuda = device.type == "cuda"
-    if has_cuda and hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision("high")
+    if has_cuda:
+        maybe_set_float32_precision(torch, "high")
+        configure_tf32_backends(torch)
 
     config = TrainingConfig(
         batch_size=args.batch_size,
@@ -85,6 +94,7 @@ def benchmark(args):
         fill_temperature=5e-4,
         return_weight=0.08,
         use_compile=args.use_compile,
+        use_compiled_sim_loss=args.use_compiled_sim_loss,
     )
 
     policy_cfg = PolicyConfig(
@@ -150,33 +160,58 @@ def benchmark(args):
         _sync(device)
         t2 = time.perf_counter()
 
-        sim_result = sim_fn(
-            highs=batch["highs"],
-            lows=batch["lows"],
-            closes=batch["closes"],
-            opens=batch["opens"],
-            buy_prices=actions["buy_price"],
-            sell_prices=actions["sell_price"],
-            trade_intensity=actions["trade_amount"] / scale,
-            buy_trade_intensity=actions["buy_amount"] / scale,
-            sell_trade_intensity=actions["sell_amount"] / scale,
-            maker_fee=config.maker_fee,
-            initial_cash=config.initial_cash,
-            max_leverage=config.max_leverage,
-            temperature=float(config.fill_temperature),
-        )
-        _sync(device)
-        t3 = time.perf_counter()
+        if args.use_compiled_sim_loss:
+            if not has_cuda or not HAS_COMPILED_SIM_LOSS or compiled_sim_and_loss is None:
+                raise RuntimeError("--use-compiled-sim-loss requires CUDA and trainingefficiency.compiled_sim_loss")
+            loss, score, sortino, ret = compiled_sim_and_loss(
+                highs=batch["highs"],
+                lows=batch["lows"],
+                closes=batch["closes"],
+                buy_prices=actions["buy_price"],
+                sell_prices=actions["sell_price"],
+                buy_frac=actions["buy_amount"] / scale,
+                sell_frac=actions["sell_amount"] / scale,
+                max_leverage=config.max_leverage,
+                can_short=False,
+                can_long=True,
+                initial_cash=config.initial_cash,
+                maker_fee=config.maker_fee,
+                temperature=float(config.fill_temperature),
+                fill_buffer_pct=config.fill_buffer_pct,
+                periods_per_year=HOURLY_PERIODS_PER_YEAR,
+                return_weight=config.return_weight,
+            )
+            _sync(device)
+            t3 = time.perf_counter()
+            t4 = t3
+        else:
+            sim_result = sim_fn(
+                highs=batch["highs"],
+                lows=batch["lows"],
+                closes=batch["closes"],
+                opens=batch["opens"],
+                buy_prices=actions["buy_price"],
+                sell_prices=actions["sell_price"],
+                trade_intensity=actions["trade_amount"] / scale,
+                buy_trade_intensity=actions["buy_amount"] / scale,
+                sell_trade_intensity=actions["sell_amount"] / scale,
+                maker_fee=config.maker_fee,
+                initial_cash=config.initial_cash,
+                max_leverage=config.max_leverage,
+                temperature=float(config.fill_temperature),
+            )
+            _sync(device)
+            t3 = time.perf_counter()
 
-        loss, score, sortino, ret = compute_loss_by_type(
-            sim_result.returns,
-            config.loss_type,
-            target_sign=config.sortino_target_sign,
-            periods_per_year=HOURLY_PERIODS_PER_YEAR,
-            return_weight=config.return_weight,
-        )
-        _sync(device)
-        t4 = time.perf_counter()
+            loss, score, sortino, ret = compute_loss_by_type(
+                sim_result.returns,
+                config.loss_type,
+                target_sign=config.sortino_target_sign,
+                periods_per_year=HOURLY_PERIODS_PER_YEAR,
+                return_weight=config.return_weight,
+            )
+            _sync(device)
+            t4 = time.perf_counter()
 
         loss.backward()
         _sync(device)
@@ -221,6 +256,7 @@ def benchmark(args):
             "warmup": args.warmup,
             "use_fast_sim": args.use_fast_sim,
             "use_compile": args.use_compile,
+            "use_compiled_sim_loss": args.use_compiled_sim_loss,
             "device": str(device),
         },
         "throughput": {
@@ -256,6 +292,7 @@ def main():
     parser.add_argument("--attention-window", type=int, default=None)
     parser.add_argument("--use-fast-sim", action="store_true")
     parser.add_argument("--use-compile", action="store_true")
+    parser.add_argument("--use-compiled-sim-loss", action="store_true")
     args = parser.parse_args()
     benchmark(args)
 

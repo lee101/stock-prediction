@@ -16,7 +16,6 @@ import os
 from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as F
 
 _EPS = 1e-8
 
@@ -287,6 +286,10 @@ def compiled_sim_and_loss(
     decision_lag_bars: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compiled sim+loss for binanceneural. Returns (loss, score, sortino, annual_return)."""
+
+    max_leverage = torch.as_tensor(max_leverage, dtype=closes.dtype, device=closes.device)
+    can_short = torch.as_tensor(can_short, dtype=closes.dtype, device=closes.device)
+    can_long = torch.as_tensor(can_long, dtype=closes.dtype, device=closes.device)
 
     if decision_lag_bars > 0:
         lag = decision_lag_bars

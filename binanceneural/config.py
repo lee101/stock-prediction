@@ -234,6 +234,8 @@ class TrainingConfig:
     ema_decay: float = 0.0
     validation_use_binary_fills: bool = True
     validation_lag_aggregation: str = "minimax"  # minimax or mean across decision_lag_range
+    marketsim_max_drawdown_early_exit: float | None = 0.25
+    marketsim_eval_batch_size: int = 512
     dry_train_steps: int | None = None
     device: str | None = None
     run_name: str | None = None
@@ -253,21 +255,25 @@ class TrainingConfig:
     force_retrain: bool = False
     seed: int = 1337
     num_workers: int = 0
+    dataloader_pin_memory: bool = True
+    dataloader_prefetch_factor: int = 2
     num_outputs: int = 4
     max_hold_hours: float = 24.0
     feature_noise_std: float = 0.0
     bar_shift_range: int = 0  # propagated to DatasetConfig at training time
     moe_num_experts: int = 0  # propagated to PolicyConfig
     use_compile: bool = True
-    use_amp: bool = False
+    use_amp: bool = True
     amp_dtype: str = "bfloat16"
-    split_amp: bool = False
+    split_amp: bool = True
     use_vectorized_sim: bool = False
     use_compiled_sim_loss: bool = True
     use_tf32: bool = True
     use_flash_attention: bool = True
     accumulation_steps: int = 1
     use_flex_attention: bool = True
+    gpu_cache_dataset: bool = True
+    cuda_prefetch_batches: bool = True
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 

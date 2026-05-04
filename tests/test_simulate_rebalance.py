@@ -1,6 +1,8 @@
 """Tests for position-target rebalancing simulator."""
-import torch
+
 import pytest
+import torch
+
 from differentiable_loss_utils import simulate_rebalance
 
 
@@ -92,3 +94,35 @@ def test_max_leverage_caps_allocation():
     result_2x = simulate_rebalance(closes=closes, allocation=alloc, max_leverage=2.0, maker_fee=0.0, initial_cash=1000.0)
     # At 1x: allocation capped to 1.0, at 2x: allocation kept at 2.0
     assert result_1x.inventory.item() < result_2x.inventory.item()
+
+
+def test_max_drawdown_early_exit_shortens_scalar_rebalance_eval():
+    closes = torch.tensor([100.0] * 5 + [70.0] * 35)
+    alloc = torch.ones_like(closes)
+
+    result = simulate_rebalance(
+        closes=closes,
+        allocation=alloc,
+        maker_fee=0.0,
+        initial_cash=1000.0,
+        max_drawdown_early_exit=0.25,
+        early_exit_min_steps=10,
+    )
+
+    assert result.portfolio_values.shape[-1] == 10
+
+
+def test_max_drawdown_early_exit_disabled_keeps_full_rebalance_eval():
+    closes = torch.tensor([100.0] * 5 + [70.0] * 35)
+    alloc = torch.ones_like(closes)
+
+    result = simulate_rebalance(
+        closes=closes,
+        allocation=alloc,
+        maker_fee=0.0,
+        initial_cash=1000.0,
+        max_drawdown_early_exit=None,
+        early_exit_min_steps=10,
+    )
+
+    assert result.portfolio_values.shape[-1] == closes.shape[-1]

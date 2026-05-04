@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict, Optional
+
+if __name__ == "torch_backend":
+    sys.modules.setdefault("src.torch_backend", sys.modules[__name__])
+elif __name__ == "src.torch_backend":
+    sys.modules.setdefault("torch_backend", sys.modules[__name__])
 
 
 def configure_tf32_backends(
@@ -13,15 +19,12 @@ def configure_tf32_backends(
 ) -> Dict[str, bool]:
     """Configure TF32 execution in a way that stays compatible with torch.compile.
 
-    We prefer the legacy ``allow_tf32`` toggles when they exist. On PyTorch 2.9,
-    setting the new ``fp32_precision`` knobs and later reading
-    ``torch.backends.cuda.matmul.allow_tf32`` raises a RuntimeError, and
-    torch.compile / Inductor still reads the legacy flag internally. As a
-    result, using the "new" API unconditionally can break compilation.
+    Newer PyTorch builds expose ``fp32_precision`` knobs and warn when the
+    legacy ``allow_tf32`` properties are read. Prefer the new API when present,
+    then fall back to legacy toggles for older builds.
 
     Returns a dict with flags describing which API surface was exercised so
-    callers can log or branch if necessary. Falls back to the modern
-    ``fp32_precision`` knobs only when legacy toggles are unavailable.
+    callers can log or branch if necessary.
     """
 
     state = {"new_api": False, "legacy_api": False}
@@ -43,37 +46,28 @@ def configure_tf32_backends(
         cuda_available = True
 
     if cuda_available:
-        legacy_configured = False
         fp32_precision = "tf32" if enabled else "ieee"
 
-        # Prefer legacy toggles when available (see docstring).
+        matmul = None
         try:
-            matmul = getattr(cuda_backend, "matmul", None)
-            if matmul is not None and hasattr(matmul, "allow_tf32"):
-                matmul.allow_tf32 = enabled
-                state["legacy_api"] = True
-                legacy_configured = True
-                _debug(f"Configured torch.backends.cuda.matmul.allow_tf32 = {enabled}")
+            matmul = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
         except Exception:
-            _debug("Failed to configure torch.backends.cuda.matmul.allow_tf32")
+            matmul = None
 
+        cudnn_conv = None
         try:
-            cudnn = cudnn_backend
-            if cudnn is not None and hasattr(cudnn, "allow_tf32"):
-                cudnn.allow_tf32 = enabled
-                state["legacy_api"] = True
-                legacy_configured = True
-                _debug(f"Configured torch.backends.cudnn.allow_tf32 = {enabled}")
+            cudnn_conv = getattr(getattr(cuda_backend, "cudnn", None), "conv", None)
         except Exception:
-            _debug("Failed to configure torch.backends.cudnn.allow_tf32")
+            cudnn_conv = None
+        if cudnn_conv is None and cudnn_backend is not None:
+            try:
+                cudnn_conv = getattr(cudnn_backend, "conv", None)
+            except Exception:
+                cudnn_conv = None
 
-        if legacy_configured:
-            return state
-
-        # Fallback to the newer precision controls only when the legacy toggles
-        # are absent on this torch build.
+        # Prefer the PyTorch 2.9+ precision controls. Avoid probing
+        # allow_tf32 until we know the newer attribute is absent.
         try:
-            matmul = getattr(cuda_backend, "matmul", None)
             if matmul is not None and hasattr(matmul, "fp32_precision"):
                 matmul.fp32_precision = fp32_precision
                 state["new_api"] = True
@@ -85,12 +79,6 @@ def configure_tf32_backends(
             _debug("Failed to configure torch.backends.cuda.matmul.fp32_precision")
 
         try:
-            cudnn_conv = getattr(getattr(cuda_backend, "cudnn", None), "conv", None)
-        except Exception:
-            cudnn_conv = None
-        if cudnn_conv is None and cudnn_backend is not None:
-            cudnn_conv = getattr(cudnn_backend, "conv", None)
-        try:
             if cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
                 cudnn_conv.fp32_precision = fp32_precision
                 state["new_api"] = True
@@ -100,6 +88,27 @@ def configure_tf32_backends(
                 )
         except Exception:
             _debug("Failed to configure torch.backends.cudnn.conv.fp32_precision")
+
+        if state["new_api"]:
+            return state
+
+        # Older PyTorch builds only expose allow_tf32.
+        try:
+            if matmul is not None and hasattr(matmul, "allow_tf32"):
+                matmul.allow_tf32 = enabled
+                state["legacy_api"] = True
+                _debug(f"Configured torch.backends.cuda.matmul.allow_tf32 = {enabled}")
+        except Exception:
+            _debug("Failed to configure torch.backends.cuda.matmul.allow_tf32")
+
+        try:
+            cudnn = cudnn_backend
+            if cudnn is not None and hasattr(cudnn, "allow_tf32"):
+                cudnn.allow_tf32 = enabled
+                state["legacy_api"] = True
+                _debug(f"Configured torch.backends.cudnn.allow_tf32 = {enabled}")
+        except Exception:
+            _debug("Failed to configure torch.backends.cudnn.allow_tf32")
 
     return state
 

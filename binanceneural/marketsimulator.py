@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -10,7 +10,12 @@ import pandas as pd
 from binanceneural.execution import quantize_down as _quantize_down
 from binanceneural.execution import quantize_up as _quantize_up
 from differentiable_loss_utils import DEFAULT_MAKER_FEE_RATE, HOURLY_PERIODS_PER_YEAR
-from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
+from src.market_sim_early_exit import (
+    EarlyExitDecision,
+    evaluate_drawdown_vs_profit_early_exit,
+    evaluate_metric_threshold_early_exit,
+    print_early_exit,
+)
 
 
 @dataclass
@@ -31,6 +36,11 @@ class SimulationConfig:
     step_size: Optional[float] = None  # quantity quantization step (rounds down)
     min_notional: Optional[float] = None  # minimum trade notional value
     min_qty: Optional[float] = None  # minimum trade quantity
+    max_drawdown_early_exit: Optional[float] = 0.25  # stop dud sims once running max DD reaches this
+    max_drawdown_early_exit_progress_fraction: float = 0.0
+    enable_drawdown_profit_early_exit: bool = True
+    drawdown_profit_early_exit_progress_fraction: float = 0.5
+    early_exit_min_steps: int = 20
 
 
 @dataclass
@@ -293,10 +303,11 @@ def run_shared_cash_simulation(
                 "inventory_value": inventory_value,
             }
         )
-        decision = evaluate_drawdown_vs_profit_early_exit(
+        decision = _evaluate_early_exit(
             equity_values,
             total_steps=total_steps,
             label="BinanceMarketSimulator[shared_cash]",
+            config=sim_config,
         )
         if decision.should_stop:
             print_early_exit(decision)
@@ -576,10 +587,11 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
                 "sell_filled": float(executed_sell > 0),
             }
         )
-        decision = evaluate_drawdown_vs_profit_early_exit(
+        decision = _evaluate_early_exit(
             equity_values,
             total_steps=total_steps,
             label=f"BinanceMarketSimulator[{symbol}]",
+            config=config,
         )
         if decision.should_stop:
             print_early_exit(decision)
@@ -590,6 +602,38 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
     per_hour = pd.DataFrame(per_hour_rows)
     metrics = _compute_metrics(equity_curve)
     return SymbolResult(equity_curve=equity_curve, trades=trades, per_hour=per_hour, metrics=metrics)
+
+
+def _evaluate_early_exit(
+    equity_values: List[float],
+    *,
+    total_steps: int,
+    label: str,
+    config: SimulationConfig,
+) -> EarlyExitDecision:
+    if config.max_drawdown_early_exit is not None:
+        decision = evaluate_metric_threshold_early_exit(
+            equity_values,
+            total_steps=total_steps,
+            label=label,
+            periods_per_year=HOURLY_PERIODS_PER_YEAR,
+            max_drawdown_limit=float(config.max_drawdown_early_exit),
+            min_total_steps=int(config.early_exit_min_steps),
+            progress_fraction=float(config.max_drawdown_early_exit_progress_fraction),
+        )
+        if decision.should_stop:
+            return decision
+
+    if config.enable_drawdown_profit_early_exit:
+        return evaluate_drawdown_vs_profit_early_exit(
+            equity_values,
+            total_steps=total_steps,
+            label=label,
+            min_total_steps=int(config.early_exit_min_steps),
+            progress_fraction=float(config.drawdown_profit_early_exit_progress_fraction),
+        )
+
+    return EarlyExitDecision(False, 0.0, 0.0, 0.0)
 
 
 def _combine_equity_curves(per_symbol: Dict[str, SymbolResult]) -> pd.Series:
@@ -606,20 +650,23 @@ def _combine_equity_curves(per_symbol: Dict[str, SymbolResult]) -> pd.Series:
 
 def _compute_metrics(equity_curve: pd.Series) -> Dict[str, float]:
     if equity_curve.empty:
-        return {"total_return": 0.0, "sortino": 0.0, "mean_hourly_return": 0.0}
+        return {"total_return": 0.0, "sortino": 0.0, "mean_hourly_return": 0.0, "max_drawdown": 0.0}
     values = equity_curve.to_numpy(dtype=float)
     if len(values) < 2:
-        return {"total_return": 0.0, "sortino": 0.0, "mean_hourly_return": 0.0}
+        return {"total_return": 0.0, "sortino": 0.0, "mean_hourly_return": 0.0, "max_drawdown": 0.0}
     returns = np.diff(values) / np.clip(values[:-1], a_min=1e-8, a_max=None)
     mean_ret = returns.mean() if len(returns) else 0.0
     downside = returns[returns < 0]
     downside_std = downside.std() if len(downside) else 0.0
     sortino = mean_ret / downside_std * np.sqrt(HOURLY_PERIODS_PER_YEAR) if downside_std > 0 else 0.0
     total_return = (values[-1] - values[0]) / values[0]
+    running_peak = np.maximum.accumulate(values)
+    max_drawdown = np.max((running_peak - values) / np.clip(running_peak, a_min=1e-8, a_max=None))
     return {
         "total_return": float(total_return),
         "sortino": float(sortino),
         "mean_hourly_return": float(mean_ret),
+        "max_drawdown": float(max_drawdown),
     }
 
 

@@ -16,7 +16,6 @@ from differentiable_loss_utils import (
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
     simulate_rebalance,
-    simulate_rebalance_fast,
 )
 try:
     from trainingefficiency.fast_differentiable_sim import (
@@ -40,6 +39,7 @@ except ImportError:
     HAS_COMPILED_SIM_LOSS = False
 from torch.nn.utils import clip_grad_norm_  # type: ignore
 from traininglib.optim_factory import MultiOptim
+from traininglib.prefetch import CudaPrefetcher
 
 from src.checkpoint_manager import TopKCheckpointManager
 from src.serialization_utils import serialize_for_checkpoint
@@ -247,6 +247,23 @@ class BinanceHourlyTrainer:
         raw = str(getattr(self.config, "wandb_tags", "") or "")
         return tuple(token.strip() for token in raw.split(",") if token.strip())
 
+    def _streaming_dataloader(self, dataset_name: str):
+        pin_memory = bool(getattr(self.config, "dataloader_pin_memory", True)) and self.device.type == "cuda"
+        prefetch_factor = int(getattr(self.config, "dataloader_prefetch_factor", 2) or 2)
+        loader_fn = self.data.train_dataloader if dataset_name == "train" else self.data.val_dataloader
+        try:
+            return loader_fn(
+                self.config.batch_size,
+                self.config.num_workers,
+                pin_memory=pin_memory,
+                prefetch_factor=prefetch_factor,
+            )
+        except TypeError:
+            # Some tests and older experiment modules expose the legacy two-arg
+            # dataloader API. Keep that compatibility path while production
+            # modules opt into pinned/prefetched loading.
+            return loader_fn(self.config.batch_size, self.config.num_workers)
+
     def _marketsim_eval(self, model: torch.nn.Module, epoch: int) -> dict | None:
         """Run full compounded PnL eval every N epochs."""
         try:
@@ -295,16 +312,22 @@ class BinanceHourlyTrainer:
 
         allow_short = bool(getattr(self.config, "rebalance_allow_short", False))
         alloc_fn = torch.tanh if allow_short else torch.sigmoid
+        features = normalizer.transform(val_frame[feature_columns].to_numpy(dtype=np.float32))
+        window_count = len(val_frame) - seq_len + 1
+        features_t = torch.from_numpy(features).float()
+        feature_windows = features_t.as_strided(
+            (window_count, seq_len, features_t.shape[-1]),
+            (features_t.stride(0), features_t.stride(0), features_t.stride(1)),
+        )
+        batch_size = max(1, int(getattr(self.config, "marketsim_eval_batch_size", 512) or 512))
         allocations = []
-        for start in range(0, len(val_frame) - seq_len + 1):
-            window = val_frame.iloc[start:start + seq_len]
-            feats = normalizer.transform(window[feature_columns].values)
-            feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
+        for start in range(0, window_count, batch_size):
+            feats_t = feature_windows[start : start + batch_size]
             with torch.inference_mode():
                 outputs = cpu_model(feats_t)
                 alloc_logits = outputs.get("allocation_logits", outputs.get("buy_amount_logits"))
-                alloc = float(alloc_fn(alloc_logits[0, -1, 0]))
-            allocations.append(alloc)
+                alloc_batch = alloc_fn(alloc_logits[:, -1, 0]).detach().cpu().numpy()
+            allocations.extend(float(x) for x in alloc_batch)
 
         aligned = val_frame.iloc[seq_len - 1:seq_len - 1 + len(allocations)]
         closes_t = torch.tensor(aligned["close"].values, dtype=torch.float32)
@@ -322,6 +345,7 @@ class BinanceHourlyTrainer:
                     closes=closes_t, opens=opens_t, allocation=alloc_t,
                     maker_fee=self.config.maker_fee, initial_cash=10_000.0,
                     decision_lag_bars=lag, allow_short=allow_short,
+                    max_drawdown_early_exit=getattr(self.config, "marketsim_max_drawdown_early_exit", 0.25),
                 )
                 vals = result.portfolio_values.numpy()
                 total_return = float((vals[-1] - 10000.0) / 10000.0)
@@ -355,6 +379,7 @@ class BinanceHourlyTrainer:
                 normalizer=self.data.normalizer,
                 sequence_length=self.config.sequence_length,
                 horizon=primary_horizon, device=torch.device("cpu"),
+                batch_size=int(getattr(self.config, "marketsim_eval_batch_size", 512) or 512),
             )
         if actions_df.empty:
             return {}
@@ -368,6 +393,7 @@ class BinanceHourlyTrainer:
                 max_hold_hours=int(self.config.max_hold_hours),
                 initial_cash=10_000.0,
                 market_order_entry=self.config.market_order_entry,
+                max_drawdown_early_exit=getattr(self.config, "marketsim_max_drawdown_early_exit", 0.25),
             )
             try:
                 sim = BinanceMarketSimulator(sim_cfg)
@@ -412,6 +438,11 @@ class BinanceHourlyTrainer:
                 from src.torch_backend import configure_tf32_backends
 
                 configure_tf32_backends(torch, logger=logger)
+            except Exception:
+                pass
+        if self.device.type == "cuda":
+            try:  # pragma: no cover - backend flag availability varies by build
+                torch.backends.cudnn.benchmark = True
             except Exception:
                 pass
         if self.config.use_flash_attention and self.device.type == "cuda":
@@ -496,22 +527,32 @@ class BinanceHourlyTrainer:
         ]
         self._amp_context, self._scaler = self._build_amp()
 
-        if self.device.type == "cuda" and hasattr(self.data, "gpu_cached_dataloader"):
+        used_gpu_cache = False
+        if self.device.type == "cuda" and bool(getattr(self.config, "gpu_cache_dataset", True)) and hasattr(self.data, "gpu_cached_dataloader"):
             try:
                 train_loader = self.data.gpu_cached_dataloader("train", self.config.batch_size, self.device, shuffle=True)
                 val_loader = self.data.gpu_cached_dataloader("val", self.config.batch_size, self.device, shuffle=False)
+                used_gpu_cache = True
                 logger.info("Using GPU-cached dataloaders")
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     logger.warning(f"GPU cache OOM, falling back to CPU streaming: {e}")
                     torch.cuda.empty_cache()
-                    train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
-                    val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+                    train_loader = self._streaming_dataloader("train")
+                    val_loader = self._streaming_dataloader("val")
                 else:
                     raise
         else:
-            train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
-            val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+            train_loader = self._streaming_dataloader("train")
+            val_loader = self._streaming_dataloader("val")
+        if (
+            self.device.type == "cuda"
+            and bool(getattr(self.config, "cuda_prefetch_batches", True))
+            and not used_gpu_cache
+        ):
+            train_loader = CudaPrefetcher(train_loader, self.device)
+            val_loader = CudaPrefetcher(val_loader, self.device)
+            logger.info("Using CUDA stream prefetchers for CPU-backed dataloaders")
         self._total_train_steps = max(1, len(train_loader) * max(1, self.config.epochs))
         if self.config.dry_train_steps:
             self._total_train_steps = min(
