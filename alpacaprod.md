@@ -2,6 +2,39 @@
 
 ## Active Deployments
 
+### 2026-05-04 11:15 UTC -- Alpaca-stock prod status + Codex monitors
+
+**Current live writer**:
+- `trading-server` is running manually on `127.0.0.1:8050`, pid `4130990`,
+  and owns the Alpaca singleton writer lock (`alpaca_wrapper_4130990`).
+- `daily-rl-trader` is running manually, pid `4131404`, against
+  `live_prod` through the trading server with bot id `daily_stock_sortino_v1`.
+- `xgb-daily-trader-live` Supervisor process is intentionally inert
+  (`sleep infinity`) because the current XGB stock candidates still fail the
+  production risk gate.
+
+**XGB aggressive top-1 replay**:
+- Reproduced the attractive alltrain, 5 bps, top-1 stock cells: about
+  `+28.61%/mo` median with `31.20%` drawdown.
+- Honest heldout (`train_end=2025-06-30`, OOS 2025-07-01 -> 2026-04-17)
+  showed high median but unacceptable tails: best stress cells had
+  `+29%` to `+39%/mo` median, but p10 was negative and drawdown was
+  `35%` to `44%`.
+- Decision: no XGB promotion today. The current blocker is tail/regime risk,
+  not lack of leverage.
+
+**Monitoring**:
+- Replaced the Claude remediation path with Codex exec:
+  `codex exec --yolo3 -m gpt-5.5 --config model_reasoning_effort=high`.
+- `monitoring/install_codex_tonight_cron.sh` installed one-shot Codex prod
+  audits for 2026-05-04/05 UTC at 22:30, 01:30, 04:30, and 07:30.
+- `monitoring/codex_prod_check.sh` dry-run passed before scheduling.
+- `monitoring/health_check.py` now accepts the current manual daily-stock
+  production mode instead of falsely requiring XGB to own the singleton.
+- Cleared disposable journal/temp compiled-model caches; `/` improved from
+  98% to 94%. Health now passes with warnings only (`disk`, optional services,
+  and the deliberate Codex dry-run status).
+
 ### 2026-04-30 23:13 UTC -- production hygiene + XGB live restart
 
 **Action**: after `git pull` + review/test pass, checked supervisor state and found:

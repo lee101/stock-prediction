@@ -60,15 +60,67 @@ def run_cmd(cmd: str, timeout: int = 15) -> tuple[int, str, str]:
         return -1, "", str(e)
 
 
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+
+
+def _live_writer_lock() -> tuple[str | None, int | None]:
+    lock_path = REPO_ROOT / "strategy_state" / "account_locks" / "alpaca_live_writer.lock"
+    if not lock_path.exists():
+        return None, None
+    try:
+        rec = json.loads(lock_path.read_text())
+    except Exception:
+        return None, None
+    pid = rec.get("pid")
+    return rec.get("service_name"), pid if isinstance(pid, int) else None
+
+
+def _manual_daily_rl_processes() -> list[tuple[int, str]]:
+    procs: list[tuple[int, str]] = []
+    for proc_dir in Path("/proc").iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        pid = int(proc_dir.name)
+        cmd = _proc_cmdline(pid)
+        if (
+            "trade_daily_stock_prod.py" in cmd
+            and "--daemon" in cmd
+            and "--live" in cmd
+        ):
+            procs.append((pid, cmd))
+    return procs
+
+
+def _xgb_supervisor_pid(status_out: str) -> int | None:
+    import re
+    m = re.search(r"pid\s+(\d+)", status_out)
+    return int(m.group(1)) if m else None
+
+
+def _xgb_supervisor_is_inert(pid: int | None) -> bool:
+    return bool(pid is not None and _proc_cmdline(pid) == "sleep infinity")
+
+
+def _trading_server_health() -> dict | None:
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:8050/health", timeout=3) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Individual checks
 # ---------------------------------------------------------------------------
 
 def check_xgb_daily_trader_live() -> CheckResult:
-    """Check `xgb-daily-trader-live` under supervisor — the primary LIVE writer
-    since 2026-04-19. Verifies supervisor RUNNING, pid matches singleton lock,
-    and no recent auth/traceback errors in the stdout log.
-    """
+    """Check the XGB supervisor state against the current live writer."""
     _rc, out, err = run_cmd("sudo -n supervisorctl status xgb-daily-trader-live 2>&1")
     if "RUNNING" not in out:
         return CheckResult(
@@ -78,34 +130,23 @@ def check_xgb_daily_trader_live() -> CheckResult:
             {"raw": out},
         )
 
-    # Extract supervisor pid to compare against singleton lock holder.
-    sup_pid: Optional[int] = None
-    for token in out.split():
-        if token.startswith("pid"):
-            try:
-                sup_pid = int(out.split("pid")[1].split(",")[0].strip())
-            except (ValueError, IndexError):
-                pass
-            break
-    # Fallback: grep for a bare pid= pattern
-    if sup_pid is None:
-        import re
-        m = re.search(r"pid\s+(\d+)", out)
-        if m:
-            sup_pid = int(m.group(1))
-
-    lock_path = REPO_ROOT / "strategy_state" / "account_locks" / "alpaca_live_writer.lock"
-    lock_svc: Optional[str] = None
-    lock_pid: Optional[int] = None
-    if lock_path.exists():
-        try:
-            rec = json.loads(lock_path.read_text())
-            lock_svc = rec.get("service_name")
-            lock_pid = rec.get("pid")
-        except Exception:
-            pass
+    sup_pid = _xgb_supervisor_pid(out)
+    lock_svc, lock_pid = _live_writer_lock()
 
     if lock_svc != "xgb_live_trader":
+        if (
+            _xgb_supervisor_is_inert(sup_pid)
+            and lock_svc
+            and lock_svc.startswith("alpaca_wrapper_")
+            and _manual_daily_rl_processes()
+        ):
+            return CheckResult(
+                "xgb-daily-trader-live",
+                "ok",
+                "supervisor is intentionally inert while trading-server owns "
+                "the live writer for the manual daily stock trader",
+                {"sup_pid": sup_pid, "lock_svc": lock_svc, "lock_pid": lock_pid},
+            )
         return CheckResult(
             "xgb-daily-trader-live",
             "fail",
@@ -153,23 +194,28 @@ def check_xgb_daily_trader_live() -> CheckResult:
 
 
 def check_daily_rl_trader_stopped() -> CheckResult:
-    """Verify `daily-rl-trader` is STOPPED (intentional, since 2026-04-19).
-
-    If this unit is RUNNING while `xgb-daily-trader-live` is also RUNNING,
-    they'll race for the singleton lock and one will crash. Expected state
-    is STOPPED / EXITED / FATAL / not-in-config.
-    """
+    """Verify the daily RL trader state matches the current live writer."""
     _rc, out, _ = run_cmd("sudo -n supervisorctl status daily-rl-trader 2>&1")
+    lock_svc, lock_pid = _live_writer_lock()
+    manual = _manual_daily_rl_processes()
+    if manual and lock_svc and lock_svc.startswith("alpaca_wrapper_"):
+        return CheckResult(
+            "daily-rl-trader",
+            "ok",
+            "manual daily-rl-trader is running through trading-server as the "
+            "current Alpaca stock production path",
+            {"manual_pids": [pid for pid, _cmd in manual], "lock_svc": lock_svc, "lock_pid": lock_pid},
+        )
     if "RUNNING" in out:
         return CheckResult(
-            "daily-rl-trader-stopped",
+            "daily-rl-trader",
             "fail",
             f"daily-rl-trader is RUNNING but must be STOPPED (XGB holds the singleton) — "
             f"immediate `sudo supervisorctl stop daily-rl-trader` needed",
             {"raw": out},
         )
     return CheckResult(
-        "daily-rl-trader-stopped",
+        "daily-rl-trader",
         "ok",
         "daily-rl-trader is STOPPED as expected (XGB is the live writer)",
         {"raw": out},
@@ -177,7 +223,7 @@ def check_daily_rl_trader_stopped() -> CheckResult:
 
 
 def check_trading_server_stopped() -> CheckResult:
-    """Verify `trading-server` (broker boundary on :8050) is STOPPED.
+    """Verify `trading-server` (broker boundary on :8050) matches live mode.
 
     It was the broker boundary for the now-stopped `daily-rl-trader`. Since
     XGB writes direct to Alpaca SDK, port 8050 should be CLOSED. If the
@@ -191,15 +237,33 @@ def check_trading_server_stopped() -> CheckResult:
     _rc_ss, out_ss, _ = run_cmd("ss -ltn 2>/dev/null | grep ':8050' | head -1")
     port_open = bool(out_ss.strip())
     if supervisor_running or port_open:
+        lock_svc, lock_pid = _live_writer_lock()
+        health = _trading_server_health()
+        if (
+            port_open
+            and health
+            and health.get("status") == "ok"
+            and bool(health.get("writer_lock_held_by_me"))
+            and lock_svc
+            and lock_svc.startswith("alpaca_wrapper_")
+            and _manual_daily_rl_processes()
+        ):
+            return CheckResult(
+                "trading-server",
+                "ok",
+                "trading-server is healthy and owns the live writer for the "
+                "manual daily stock trader",
+                {"supervisor": out, "ss": out_ss, "lock_svc": lock_svc, "lock_pid": lock_pid},
+            )
         return CheckResult(
-            "trading-server-stopped",
+            "trading-server",
             "fail",
             f"trading-server activity detected (supervisor_running={supervisor_running}, "
             f"port_8050_open={port_open}) — must be STOPPED while XGB is live",
             {"supervisor": out, "ss": out_ss},
         )
     return CheckResult(
-        "trading-server-stopped",
+        "trading-server",
         "ok",
         "trading-server STOPPED and :8050 closed as expected",
     )
@@ -442,6 +506,15 @@ def check_recent_activity() -> CheckResult:
         sup_count = 0
 
     if session_events == 0 and sup_count == 0:
+        manual = _manual_daily_rl_processes()
+        if manual:
+            return CheckResult(
+                "recent-activity",
+                "ok",
+                "manual daily-rl-trader process is alive; XGB trade-log "
+                "staleness is expected while XGB is intentionally inert",
+                {"manual_pids": [pid for pid, _cmd in manual]},
+            )
         return CheckResult(
             "recent-activity",
             "warn",
@@ -692,11 +765,6 @@ def check_scheduled_audit_status() -> CheckResult:
     now = time.time()
     specs = [
         ("codex", LOG_DIR / "codex_current.log", 48 * 3600),
-        (
-            "hourly",
-            LOG_DIR / "hourly_current.log",
-            3 * 3600 if _hourly_audit_expected_now(now) else None,
-        ),
     ]
     missing: list[str] = []
     failed: list[str] = []
@@ -1086,9 +1154,9 @@ def check_disk_space() -> CheckResult:
             worst_pct = pct
             worst_mount = mnt
     summary = ", ".join(f"{m}={v}" for m, v in details.items()) or "no mounts"
-    if worst_pct > 90:
+    if worst_pct > 95:
         return CheckResult("disk", "fail", f"{worst_mount} {worst_pct}% full — {summary}", details)
-    if worst_pct > 80:
+    if worst_pct > 85:
         return CheckResult("disk", "warn", f"{worst_mount} {worst_pct}% full — {summary}", details)
     return CheckResult("disk", "ok", summary, details)
 

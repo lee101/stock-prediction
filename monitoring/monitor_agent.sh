@@ -1,10 +1,10 @@
 #!/bin/bash
-# Alpaca trading monitor agent — runs Claude to check health and fix issues.
+# Alpaca trading monitor agent — runs Codex to check health and fix issues.
 # Invoked by systemd timer during market hours.
 set -euo pipefail
 
 REPO="${REPO:-/nvme0n1-disk/code/stock-prediction}"
-CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+CODEX_BIN="${CODEX_BIN:-${CODEX_LOCAL:-/home/administrator/.bun/bin/codex}}"
 
 cd "$REPO"
 
@@ -66,9 +66,9 @@ else
 fi
 FINAL_EXIT=$HEALTH_EXIT
 
-# If unhealthy, invoke Claude to diagnose and fix
+# If unhealthy, invoke Codex to diagnose and fix
 if [ "$HEALTH_EXIT" -ne 0 ]; then
-    echo "=== Unhealthy — spawning Claude agent ===" | tee -a "$LOG_FILE"
+    echo "=== Unhealthy — spawning Codex agent ===" | tee -a "$LOG_FILE"
 
     PROMPT="You are monitoring the Alpaca stock trading system. The health check found issues.
 Run: python monitoring/health_check.py --json
@@ -81,7 +81,12 @@ Review the output, then:
 Keep it brief. Only fix what you can actually fix."
 
     set +e
-    timeout 1800 "$CLAUDE_BIN" --dangerously-skip-permissions -p "$PROMPT" 2>&1 | tee -a "$LOG_FILE"
+    timeout 1800 "$CODEX_BIN" exec \
+        --cd "$REPO" \
+        --yolo3 \
+        -m gpt-5.5 \
+        --config model_reasoning_effort=high \
+        "$PROMPT" 2>&1 | tee -a "$LOG_FILE"
     AGENT_EXIT=${PIPESTATUS[0]}
     set -e
     echo "=== Agent exited with code $AGENT_EXIT ===" | tee -a "$LOG_FILE"

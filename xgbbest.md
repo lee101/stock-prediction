@@ -597,3 +597,61 @@ Production action:
   `trading-server` owns the Alpaca live writer on `127.0.0.1:8050`, and
   `daily-rl-trader` is running live against 32 Alpaca stock symbols, waiting
   for the next market window.
+
+## 2026-05-04 - Aggressive top-1 stock replay
+
+Question:
+
+- Revisit the promising aggressive top-1 long-only XGB stock result:
+  `2.25x`, top-1, min-score `0`, target-ish `+27.78%/mo`, but failed the
+  30% drawdown gate.
+- Keep this Alpaca-stock-only; no Binance/crypto deployment path.
+
+Alltrain reproduction:
+
+- `analysis/xgbnew_daily/top1_alpaca_stock_stage1_20260504/sweep_20260504_102104.json`
+- `analysis/xgbnew_daily/top1_alpaca_stock_stage2_20260504/sweep_20260504_103518.json`
+- Reproduced the attractive 5 bps cells on the 2025-07-01 -> 2026-04-17
+  window:
+  - `max_vol_20d=1.25`, `score_uncertainty_penalty=0.5`, top-1, min-score `0`
+    gave about `+28.61%/mo`, p10 `+23.03%`, active `100%`.
+  - Worst drawdown still hit `31.20%`, just beyond the 30% gate.
+  - Above `2.0x` allocation, results were mostly identical because
+    `overnight_max_gross_leverage=2.0` clips gross exposure.
+
+Friction/stress result:
+
+- The same family degraded sharply under stress costs and 10 bps fill buffer.
+- Worst grouped stress cell for the attractive configs was only about
+  `+15%` to `+20%/mo` median and `34%` to `35%` drawdown.
+- This is not a production candidate even though the light-friction median is
+  close to the target.
+
+Honest heldout check:
+
+- `analysis/xgbnew_daily/top1_alpaca_stock_heldout2025h2_xgb_20260504/sweep_20260504_104543.json`
+- Models trained only through `2025-06-30`, evaluated on
+  `2025-07-01 -> 2026-04-17`.
+- `min_score=0.55` looked strong on median:
+  - `1.5x` stress cell: `+29.38%/mo` median.
+  - `2.0x` stress cell: `+39.37%/mo` median.
+- Both failed badly on tail risk: p10 was negative (`-18%` to `-27%` range),
+  one losing window appeared before fail-fast, and drawdown was `35%` to
+  `44%`.
+- CatBoost heldout could not be rerun in `.venv313` because `catboost` is not
+  installed.
+
+Risk overlay check:
+
+- `analysis/xgbnew_daily/top1_alpaca_stock_heldout_spyrisk_narrow_20260504/sweep_20260504_110749.json`
+- SPY regime/vol-target overlays did not change the narrow top-1 result in
+  this setup; the heldout stress cell remained `+29.38%/mo` median,
+  p10 `-20.86%`, drawdown `35.22%`.
+
+Decision:
+
+- Do not redeploy this XGB top-1 family yet.
+- The real signal is not the median; the blocker is broad-market/tail regime
+  risk. The next useful work is either a deployable regime selector or a
+  different model family that improves p10 and interval loss, not more leverage
+  above the overnight cap.

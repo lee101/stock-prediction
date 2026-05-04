@@ -15,7 +15,7 @@ LAST_MSG="${LOG%.log}.last.txt"
 CURRENT_LOG="$LOG_DIR/codex_current.log"
 PROMPT_FILE="$REPO/monitoring/codex_prod_check_prompt.md"
 LOCK="$LOG_DIR/.codex_prod_check.lock"
-CODEX_BIN="${CODEX_BIN:-/home/administrator/.bun/bin/codex}"
+CODEX_BIN="${CODEX_BIN:-${CODEX_LOCAL:-/home/administrator/.bun/bin/codex}}"
 
 file_sha256() {
   if [ -s "$1" ]; then
@@ -70,7 +70,9 @@ PROMPT="$(cat "$PROMPT_FILE")"
 set +e
 timeout 2400 "$CODEX_BIN" exec \
   --cd "$REPO" \
-  --dangerously-bypass-approvals-and-sandbox \
+  --yolo3 \
+  -m gpt-5.5 \
+  --config model_reasoning_effort=high \
   --json \
   --output-last-message "$LAST_MSG" \
   "$PROMPT" \
