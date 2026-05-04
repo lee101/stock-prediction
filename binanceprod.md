@@ -30,13 +30,21 @@ Safety patch in this rollout:
 
 - The runner now waits `--post-cycle-settle-seconds` after entry/cancel handling before the post-execute coverage gate. This avoids false missing-coverage failures from Binance's transient margin asset state after canceled borrow-style orders.
 - Filled short deltas still get immediate `BUY`/`AUTO_REPAY` exits, and unfilled entries are canceled by default.
+- Entry orders are now supervised for the full simulated entry TTL: `3600s`.
+  The process polls fills during that window, places `BUY`/`AUTO_REPAY` exits
+  for any filled short quantity, then cancels remaining unfilled entry quantity.
 - New live entries are capped by current margin gross exposure: `equity * max_leverage * risk_scale - existing_gross`, so old covered positions do not let the runner over-gross the account.
+- Daemon sleep is measured against cycle start, so a full-hour supervised entry
+  window does not stretch the cadence into a two-hour loop.
 
 Verification:
 
 - Focused tests: `58 passed` for the XGB runner, Binance live process audit, margin exit coverage, and margin wrapper.
 - Shell checks: supervisor launch script syntax passes; relevant diff whitespace check passes.
 - Current artifact: `analysis/binance_hourly_xgb_margin_plan_latest.json`.
+- Follow-up restart with `--entry-fill-wait-seconds 3600` placed `FETUSDT`
+  and `ONDOUSDT` entry orders; both remained open as `NEW` after the old
+  60-second cancel point, confirming the supervised 1-hour TTL is active.
 
 ## Hourly XGB Margin-Pack Dry-Run Deploy Blocked (2026-05-04 NZ / 2026-05-04 05:35 UTC)
 

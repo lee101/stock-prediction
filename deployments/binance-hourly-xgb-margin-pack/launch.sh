@@ -18,5 +18,6 @@ exec "$PYTHON_BIN" "$ROOT/scripts/binance_hourly_xgb_margin_trader.py" \
   --daemon \
   --run-on-start \
   --cycle-minutes 60 \
+  --entry-fill-wait-seconds 3600 \
   --refresh-data-before-cycle \
   --json-out "$ROOT/analysis/binance_hourly_xgb_margin_plan_latest.json"

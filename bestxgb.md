@@ -47,6 +47,9 @@ Live verification on 2026-05-04:
 - Existing margin coverage is `6/6` covered.
 - First live cycle selected `FILUSDT` and `TONUSDT`; both entries filled `0`, were canceled, and post-cycle coverage stayed `6/6` covered.
 - The runner now has a post-cycle settle wait before coverage re-audit to handle transient Binance margin asset state after canceled borrow-style orders.
+- Entry orders are supervised for the full simulated 1-hour TTL before cancel;
+  any filled short quantity gets a matching `BUY`/`AUTO_REPAY` exit while the
+  process is still watching the order.
 
 ## Previous Frontier
 
