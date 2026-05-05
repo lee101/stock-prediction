@@ -1,10 +1,10 @@
 """Tests for monitoring/codex_prod_check.sh."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import subprocess
-import fcntl
 from pathlib import Path
 from textwrap import dedent
 

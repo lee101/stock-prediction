@@ -173,6 +173,34 @@ def test_open_order_at_price_or_all_adjusts_on_insufficient_balance():
     assert second_qty == 4
 
 
+def test_open_order_at_price_or_all_guards_sells_before_submit():
+    with patch("alpaca_wrapper.guard_sell_against_death_spiral", side_effect=RuntimeError("death spiral")) as guard, \
+         patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        with pytest.raises(RuntimeError, match="death spiral"):
+            open_order_at_price_or_all("AAPL", 10, "sell", 100.0)
+
+    guard.assert_called_once()
+    submit.assert_not_called()
+
+
+def test_open_order_at_price_or_all_records_buy_after_submit():
+    with patch("alpaca_wrapper.guard_sell_against_death_spiral") as guard, \
+         patch("alpaca_wrapper.record_buy_price") as record, \
+         patch("alpaca_wrapper.latest_data", side_effect=RuntimeError("no quote")), \
+         patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.get_all_positions", return_value=[]), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="ok"):
+
+        result = open_order_at_price_or_all("AAPL", 10, "buy", 100.0)
+
+    assert result == "ok"
+    guard.assert_called_once()
+    record.assert_called_once_with("AAPL", 100.0)
+
+
 def test_market_order_blocked_when_market_closed():
     """Paper stock market orders should fall back to midpoint limits when blocked."""
     # Create a mock clock that says market is closed

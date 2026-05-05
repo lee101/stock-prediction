@@ -27,13 +27,14 @@ def test_monitor_agent_shell_syntax_is_valid() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
 
 
-def test_monitor_agent_supports_repo_and_claude_overrides() -> None:
+def test_monitor_agent_supports_repo_and_codex_overrides() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
     assert 'REPO="${REPO:-/nvme0n1-disk/code/stock-prediction}"' in text
-    assert 'CLAUDE_BIN="${CLAUDE_BIN:-claude}"' in text
+    assert 'CODEX_BIN="${CODEX_BIN:-${CODEX_LOCAL:-/home/administrator/.bun/bin/codex}}"' in text
     assert 'cd "$REPO"' in text
-    assert 'timeout 1800 "$CLAUDE_BIN"' in text
+    assert 'timeout 1800 "$CODEX_BIN" exec' in text
+    assert "--dangerously-bypass-approvals-and-sandbox" in text
 
 
 def test_monitor_agent_captures_health_exit_under_pipefail() -> None:
@@ -62,7 +63,7 @@ def test_monitor_agent_reruns_health_after_agent_and_exits_final_status() -> Non
     assert "HEALTH_CHECK_SKIP_MONITOR_CURRENT=1 python monitoring/health_check.py --json" in text
 
     branch_idx = text.index('if [ "$HEALTH_EXIT" -ne 0 ]; then')
-    agent_idx = text.index('timeout 1800 "$CLAUDE_BIN"', branch_idx)
+    agent_idx = text.index('timeout 1800 "$CODEX_BIN"', branch_idx)
     agent_capture_idx = text.index("AGENT_EXIT=${PIPESTATUS[0]}", agent_idx)
     agent_log_idx = text.index("=== Agent exited with code $AGENT_EXIT ===", agent_capture_idx)
     post_check_idx = text.index("=== Post-agent health check", agent_log_idx)
@@ -110,12 +111,12 @@ def test_monitor_agent_unhealthy_path_returns_post_agent_status(tmp_path) -> Non
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
-    fake_claude = fakebin / "claude"
-    fake_claude.write_text(
-        "#!/usr/bin/env bash\necho fake claude remediation\nexit 0\n",
+    fake_codex = fakebin / "codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env bash\necho fake codex remediation\nexit 0\n",
         encoding="utf-8",
     )
-    fake_claude.chmod(0o755)
+    fake_codex.chmod(0o755)
 
     script = fake_repo / "monitor_agent.sh"
     script.write_text(
@@ -133,13 +134,13 @@ def test_monitor_agent_unhealthy_path_returns_post_agent_status(tmp_path) -> Non
         text=True,
         capture_output=True,
         check=False,
-        env={"REPO": str(fake_repo), "CLAUDE_BIN": str(fake_claude)},
+        env={"REPO": str(fake_repo), "CODEX_BIN": str(fake_codex)},
     )
 
     assert proc.returncode == 0
     assert call_counter.read_text(encoding="utf-8").strip() == "2"
     assert "=== Unhealthy" in proc.stdout
-    assert "fake claude remediation" in proc.stdout
+    assert "fake codex remediation" in proc.stdout
     assert "=== Agent exited with code 0 ===" in proc.stdout
     assert "=== Recovered after agent ===" in proc.stdout
     current = (fake_repo / "monitoring" / "logs" / "monitor_current.log").read_text(
@@ -188,12 +189,12 @@ def test_monitor_agent_logs_failed_agent_exit_but_uses_final_health_status(tmp_p
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
-    fake_claude = fakebin / "claude"
-    fake_claude.write_text(
-        "#!/usr/bin/env bash\necho fake claude failure\nexit 124\n",
+    fake_codex = fakebin / "codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env bash\necho fake codex failure\nexit 124\n",
         encoding="utf-8",
     )
-    fake_claude.chmod(0o755)
+    fake_codex.chmod(0o755)
 
     script = fake_repo / "monitor_agent.sh"
     script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
@@ -205,12 +206,12 @@ def test_monitor_agent_logs_failed_agent_exit_but_uses_final_health_status(tmp_p
         text=True,
         capture_output=True,
         check=False,
-        env={"REPO": str(fake_repo), "CLAUDE_BIN": str(fake_claude)},
+        env={"REPO": str(fake_repo), "CODEX_BIN": str(fake_codex)},
     )
 
     assert proc.returncode == 0
     assert call_counter.read_text(encoding="utf-8").strip() == "2"
-    assert "fake claude failure" in proc.stdout
+    assert "fake codex failure" in proc.stdout
     assert "=== Agent exited with code 124 ===" in proc.stdout
     assert "=== Recovered after agent ===" in proc.stdout
     current = (fake_repo / "monitoring" / "logs" / "monitor_current.log").read_text(
@@ -240,12 +241,12 @@ def test_monitor_agent_healthy_path_writes_current_status(tmp_path) -> None:
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
-    fake_claude = fakebin / "claude"
-    fake_claude.write_text(
+    fake_codex = fakebin / "codex"
+    fake_codex.write_text(
         "#!/usr/bin/env bash\necho should not run\nexit 1\n",
         encoding="utf-8",
     )
-    fake_claude.chmod(0o755)
+    fake_codex.chmod(0o755)
 
     script = fake_repo / "monitor_agent.sh"
     script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
@@ -257,7 +258,7 @@ def test_monitor_agent_healthy_path_writes_current_status(tmp_path) -> None:
         text=True,
         capture_output=True,
         check=False,
-        env={"REPO": str(fake_repo), "CLAUDE_BIN": str(fake_claude)},
+        env={"REPO": str(fake_repo), "CODEX_BIN": str(fake_codex)},
     )
 
     assert proc.returncode == 0
@@ -275,6 +276,55 @@ def test_monitor_agent_healthy_path_writes_current_status(tmp_path) -> None:
     assert fields["log_sha256"] == _sha256(Path(fields["log"]))
 
 
+def test_monitor_agent_sources_sparse_secret_env_without_nounset_failure(tmp_path) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".secretbashrc").write_text(
+        "echo ${SSH_AGENT_PID}\nexport MONITOR_SECRET_SOURCE_TEST=1\n",
+        encoding="utf-8",
+    )
+    fake_repo = tmp_path / "repo"
+    fake_repo.mkdir()
+    (fake_repo / "monitoring").mkdir()
+    (fake_repo / ".venv313" / "bin").mkdir(parents=True)
+    (fake_repo / ".venv313" / "bin" / "activate").write_text(
+        "export PATH=\"$PWD/fakebin:${PATH:-/usr/local/bin:/usr/bin:/bin}\"\n",
+        encoding="utf-8",
+    )
+    fakebin = fake_repo / "fakebin"
+    fakebin.mkdir()
+    fake_python = fakebin / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\necho '{\"healthy\":true}'\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    script = fake_repo / "monitor_agent.sh"
+    script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    script.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        cwd=fake_repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            "HOME": str(fake_home),
+            "REPO": str(fake_repo),
+            "CODEX_BIN": str(tmp_path / "missing-codex"),
+        },
+    )
+
+    assert proc.returncode == 0
+    assert "unbound variable" not in proc.stderr
+    current = (fake_repo / "monitoring" / "logs" / "monitor_current.log").read_text(
+        encoding="utf-8",
+    )
+    assert "status=OK" in current
+
+
 def test_monitor_agent_setup_failure_writes_current_status(tmp_path) -> None:
     fake_repo = tmp_path / "repo"
     fake_repo.mkdir()
@@ -290,7 +340,7 @@ def test_monitor_agent_setup_failure_writes_current_status(tmp_path) -> None:
         text=True,
         capture_output=True,
         check=False,
-        env={"REPO": str(fake_repo), "CLAUDE_BIN": str(tmp_path / "missing-claude")},
+        env={"REPO": str(fake_repo), "CODEX_BIN": str(tmp_path / "missing-codex")},
     )
 
     assert proc.returncode == 2

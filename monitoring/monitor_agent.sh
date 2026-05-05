@@ -5,14 +5,23 @@ set -euo pipefail
 
 REPO="${REPO:-/nvme0n1-disk/code/stock-prediction}"
 CODEX_BIN="${CODEX_BIN:-${CODEX_LOCAL:-/home/administrator/.bun/bin/codex}}"
+export PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}"
 
 cd "$REPO"
 
-if [ -f "$HOME/.secretbashrc" ]; then
+if [ -n "${HOME:-}" ] && [ -f "$HOME/.secretbashrc" ]; then
     # shellcheck disable=SC1091
-    set +e
+    saved_shell_flags="$-"
+    set +e +u
     source "$HOME/.secretbashrc" >/dev/null 2>&1
-    set -e
+    case "$saved_shell_flags" in
+        *e*) set -e ;;
+        *) set +e ;;
+    esac
+    case "$saved_shell_flags" in
+        *u*) set -u ;;
+        *) set +u ;;
+    esac
 fi
 
 LOG_DIR="$REPO/monitoring/logs"

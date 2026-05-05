@@ -668,8 +668,12 @@ Live-code improvement:
 - BUY quantities are sized from the actual limit price and floored to four
   decimals so rounding/min-size logic cannot push the submitted value above
   budget.
+- Inverse-vol per-pick scaling preserves relative exposure but is renormalized
+  if it would exceed the clipped total buy budget.
 - Hold-through rotations allocate the clipped buy budget only across newly
   added symbols; sell-only rotations no longer compute a buy budget.
+- Embedded EOD deleverage long sells pass through the same death-spiral guard
+  before order submission; all-guard-blocked ticks report `order_error`.
 - The change does not introduce market orders; stock entries still submit
   explicit-priced limit orders.
 
@@ -677,7 +681,7 @@ Validation:
 
 - `.venv313/bin/python -m py_compile xgbnew/live_trader.py`
 - `.venv313/bin/pytest -q tests/test_xgbnew_live_trader_helpers.py`
-  (`69 passed`)
+  (`71 passed`)
 
 Narrow heldout stress sweep:
 

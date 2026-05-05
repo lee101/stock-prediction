@@ -3,8 +3,8 @@
 Production daily stock RL trading bot.
 
 This trader runs a long-only daily PPO policy on U.S. equities. It uses the
-previous completed trading day's bar set for inference and places a single
-market order shortly after the regular session opens.
+previous completed trading day's bar set for inference and places explicit
+limit-priced orders shortly after the regular session opens.
 """
 
 from __future__ import annotations
@@ -2361,6 +2361,8 @@ def _market_order_side_for_qty(qty: float) -> str:
 
 
 def submit_market_order(client, *, symbol: str, qty: float, side: str):
+    if os.getenv("ALP_PAPER", "1") == "0":
+        import alpaca_wrapper  # noqa: F401
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
 
@@ -2385,11 +2387,15 @@ def submit_limit_order(
     limit_price: float,
 ) -> object:
     """Submit a DAY limit order via Alpaca."""
+    if os.getenv("ALP_PAPER", "1") == "0":
+        import alpaca_wrapper  # noqa: F401
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
+    from src.alpaca_singleton import guard_sell_against_death_spiral, record_buy_price
 
     if qty <= 0:
         raise ValueError("qty must be positive")
+    guard_sell_against_death_spiral(symbol=symbol, side=side, price=float(limit_price))
     side_value = OrderSide.BUY if side == "buy" else OrderSide.SELL
     request = LimitOrderRequest(
         symbol=symbol,
@@ -2398,7 +2404,13 @@ def submit_limit_order(
         time_in_force=TimeInForce.DAY,
         limit_price=round(float(limit_price), 2),
     )
-    return client.submit_order(request)
+    order = client.submit_order(request)
+    if side == "buy":
+        try:
+            record_buy_price(symbol, float(limit_price))
+        except Exception as exc:
+            logger.warning("Failed to record buy price for %s: %s", symbol, exc)
+    return order
 
 
 # ── EOD overnight deleverage (Reg-T parity with xgbnew/live_trader) ────────
@@ -2643,6 +2655,9 @@ def eod_deleverage_tick(
                 reference_price=px,
                 aggressiveness_bps=aggressive_bps,
             )
+            from src.alpaca_singleton import guard_sell_against_death_spiral
+
+            guard_sell_against_death_spiral(sym, side, float(limit_price))
             order = submit_limit_order(
                 client, symbol=sym, qty=qty, side=side, limit_price=limit_price
             )
@@ -2661,7 +2676,7 @@ def eod_deleverage_tick(
             errors.append(msg)
 
     status = {
-        "action": "submitted" if submitted else "no_actionable_orders",
+        "action": "submitted" if submitted else ("order_error" if errors else "no_actionable_orders"),
         "submitted": submitted,
         "errors": errors,
         "minutes_to_close": mtc,
@@ -2715,7 +2730,7 @@ def compute_target_qty_from_values(
     target_notional = min(target_notional, buying_power * BUYING_POWER_USAGE_CAP)
     if target_notional <= 0:
         return 0.0
-    return round(target_notional / price, 4)
+    return math.floor((target_notional / price) * 10_000) / 10_000
 
 
 def _raw_portfolio_target_qty(
@@ -2731,7 +2746,7 @@ def _raw_portfolio_target_qty(
     target_notional *= max(0.0, float(allocation_fraction))
     if target_notional <= 0.0:
         return 0.0
-    return round(target_notional / price, 4)
+    return math.floor((target_notional / price) * 10_000) / 10_000
 
 
 def _portfolio_rebalance_targets(
@@ -2751,15 +2766,17 @@ def _portfolio_rebalance_targets(
     for symbol in all_symbols:
         existing_qty = max(0.0, float(existing_qty_by_symbol.get(symbol, 0.0) or 0.0))
         allocation_fraction = max(0.0, float(desired_allocations.get(symbol, 0.0) or 0.0))
+        buy_price = float(buy_prices.get(symbol, 0.0) or 0.0)
+        sell_price = float(sell_prices.get(symbol, 0.0) or 0.0)
+        target_price = sell_price if existing_qty > 0.0 and sell_price > 0.0 else buy_price
         raw_target = _raw_portfolio_target_qty(
             portfolio_value=portfolio_value,
-            price=float(buy_prices.get(symbol, 0.0) or 0.0),
+            price=target_price,
             total_allocation_pct=total_allocation_pct,
             allocation_fraction=allocation_fraction,
         )
         raw_targets[symbol] = raw_target
         sell_delta = max(0.0, existing_qty - raw_target)
-        sell_price = float(sell_prices.get(symbol, 0.0) or 0.0)
         if sell_delta > 0.0 and sell_price > 0.0:
             available_buy_notional += sell_delta * sell_price
 
@@ -2786,7 +2803,7 @@ def _portfolio_rebalance_targets(
             target_qty = raw_target
         else:
             target_qty = existing_qty + ((raw_target - existing_qty) * buy_scale)
-        target_qty = round(max(0.0, target_qty), 4)
+        target_qty = math.floor(max(0.0, target_qty) * 10_000) / 10_000
         planned[symbol] = PortfolioRebalanceTarget(
             symbol=symbol,
             existing_qty=existing_qty,
@@ -3090,6 +3107,7 @@ def execute_signal_with_trading_server(
         return managed_position is not None
 
     price = float(quotes.get(desired_symbol, 0.0) or 0.0)
+    limit_buy_price = _marketable_limit_price(price, "buy") if price > 0.0 else 0.0
     effective_allocation_pct = resolved_signal_allocation_pct(
         signal,
         base_allocation_pct=allocation_pct,
@@ -3099,7 +3117,7 @@ def execute_signal_with_trading_server(
     qty = compute_target_qty_from_server_snapshot(
         snapshot=snapshot,
         quotes=quotes,
-        price=price,
+        price=limit_buy_price or price,
         allocation_pct=effective_allocation_pct,
     )
     if qty <= 0:
@@ -3120,7 +3138,7 @@ def execute_signal_with_trading_server(
             symbol=desired_symbol,
             qty=qty,
             side="buy",
-            limit_price=_marketable_limit_price(price, "buy"),
+            limit_price=limit_buy_price,
             metadata={"strategy": "daily_stock_rl", "intent": "open_managed"},
         )
         state.last_order_id = str(order.get("order", {}).get("id", ""))
@@ -3470,10 +3488,13 @@ def execute_multi_position_signals_with_trading_server(
 
     equity = server_equity(snapshot, quotes)
     buy_prices = {
+        symbol: _marketable_limit_price(float(quotes.get(symbol, 0.0) or 0.0), "buy")
+        for symbol in set(existing_qty_by_symbol) | set(desired)
+    }
+    sell_prices = {
         symbol: float(quotes.get(symbol, 0.0) or 0.0)
         for symbol in set(existing_qty_by_symbol) | set(desired)
     }
-    sell_prices = dict(buy_prices)
     target_plan = _portfolio_rebalance_targets(
         desired_allocations=desired,
         existing_qty_by_symbol=existing_qty_by_symbol,
@@ -3517,8 +3538,9 @@ def execute_multi_position_signals_with_trading_server(
             continue
         if delta_qty < 0.0:
             logger.info("Server multi-pos: trimming %s qty=%.4f -> %.4f", sym, existing_qty, target_qty)
-            if not dry_run and price > 0.0:
-                sell_orders.append((sym, abs(delta_qty), price, "rebalance_portfolio_position"))
+            sell_price = sell_prices.get(sym, 0.0)
+            if not dry_run and sell_price > 0.0:
+                sell_orders.append((sym, abs(delta_qty), sell_price, "rebalance_portfolio_position"))
             continue
         logger.info(
             "Server multi-pos: buying %s qty=%.4f -> %.4f @ %.4f (alloc=%.1f%%)",
@@ -3565,7 +3587,7 @@ def execute_multi_position_signals_with_trading_server(
                 symbol=sym,
                 qty=qty,
                 side="buy",
-                limit_price=_marketable_limit_price(price, "buy"),
+                limit_price=price,
                 metadata={"strategy": "daily_stock_rl", "intent": intent},
             )
             actual_held[sym] = actual_held.get(sym, 0.0) + qty

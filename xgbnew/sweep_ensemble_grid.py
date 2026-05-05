@@ -128,6 +128,8 @@ class CellResult:
     short_allocation_scale: float = 0.5
     # Aggressive packing floor. 0 means classic min_score-gated behavior.
     min_picks: int = 0
+    # Cross-sectional top-score gap gate. 0 disables.
+    min_top_score_gap: float = 0.0
     # Opportunistic work-stealing entries: watch more names than top_n and
     # enter only when a posted buy limit below the open is penetrated.
     opportunistic_watch_n: int = 0
@@ -327,6 +329,7 @@ STRATEGY_PARAM_FIELDS = (
     "max_short_score",
     "short_allocation_scale",
     "min_picks",
+    "min_top_score_gap",
     "opportunistic_watch_n",
     "opportunistic_entry_discount_bps",
     "score_uncertainty_penalty",
@@ -680,6 +683,7 @@ def _cell_key_from_mapping(row: dict) -> tuple:
         _key_float(row.get("max_short_score", 0.45)),
         _key_float(row.get("short_allocation_scale", 0.5)),
         int(row.get("min_picks", 0)),
+        _key_float(row.get("min_top_score_gap", 0.0)),
         int(row.get("opportunistic_watch_n", 0)),
         _key_float(row.get("opportunistic_entry_discount_bps", 0.0)),
         _key_float(row.get("score_uncertainty_penalty", 0.0)),
@@ -737,6 +741,7 @@ def _cell_key_from_values(
     max_short_score: float,
     short_allocation_scale: float,
     min_picks: int,
+    min_top_score_gap: float,
     opportunistic_watch_n: int,
     opportunistic_entry_discount_bps: float,
     score_uncertainty_penalty: float,
@@ -779,6 +784,7 @@ def _cell_key_from_values(
             "max_short_score": max_short_score,
             "short_allocation_scale": short_allocation_scale,
             "min_picks": min_picks,
+            "min_top_score_gap": min_top_score_gap,
             "opportunistic_watch_n": opportunistic_watch_n,
             "opportunistic_entry_discount_bps": opportunistic_entry_discount_bps,
             "score_uncertainty_penalty": score_uncertainty_penalty,
@@ -848,6 +854,7 @@ def _run_cell(
     max_short_score: float = 0.45,
     short_allocation_scale: float = 0.5,
     min_picks: int = 0,
+    min_top_score_gap: float = 0.0,
     opportunistic_watch_n: int = 0,
     opportunistic_entry_discount_bps: float = 0.0,
     score_uncertainty_penalty: float = 0.0,
@@ -898,6 +905,7 @@ def _run_cell(
         max_short_score=float(max_short_score),
         short_allocation_scale=float(short_allocation_scale),
         min_picks=int(min_picks),
+        min_top_score_gap=float(min_top_score_gap),
         opportunistic_watch_n=int(opportunistic_watch_n),
         opportunistic_entry_discount_bps=float(opportunistic_entry_discount_bps),
         leverage=float(leverage),
@@ -1010,6 +1018,7 @@ def _run_cell(
             n_neg=0,
         )
         empty.min_picks = int(min_picks)
+        empty.min_top_score_gap = float(min_top_score_gap)
         empty.short_n = int(short_n)
         empty.max_short_score = float(max_short_score)
         empty.short_allocation_scale = float(short_allocation_scale)
@@ -1098,6 +1107,7 @@ def _run_cell(
         window_start_dates=window_start_dates,
         window_end_dates=window_end_dates,
         min_picks=int(min_picks),
+        min_top_score_gap=float(min_top_score_gap),
         opportunistic_watch_n=int(opportunistic_watch_n),
         opportunistic_entry_discount_bps=float(opportunistic_entry_discount_bps),
         score_uncertainty_penalty=float(score_uncertainty_penalty),
@@ -1206,6 +1216,7 @@ def _validate_sweep_grid_domains(
     max_short_score_grid: list[float] | None,
     short_allocation_scale_grid: list[float] | None,
     min_picks_grid: list[int] | None,
+    min_top_score_gap_grid: list[float] | None,
     opportunistic_watch_n_grid: list[int] | None,
     opportunistic_entry_discount_bps_grid: list[float] | None,
     min_dollar_vol: float,
@@ -1265,6 +1276,9 @@ def _validate_sweep_grid_domains(
         raise ValueError("min_picks_grid values must be >= 0")
     if any(min_picks > top_n for min_picks, top_n in product(minp, topn)):
         raise ValueError("min_picks_grid values must be <= top_n_grid values")
+    gap_grid = _float_grid("min_top_score_gap_grid", min_top_score_gap_grid, [0.0])
+    if any(x < 0.0 for x in gap_grid):
+        raise ValueError("min_top_score_gap_grid values must be >= 0")
     opp_watch = _int_grid("opportunistic_watch_n_grid", opportunistic_watch_n_grid, [0])
     if any(x < 0 for x in opp_watch):
         raise ValueError("opportunistic_watch_n_grid values must be >= 0")
@@ -1391,6 +1405,7 @@ def run_sweep(
     max_short_score_grid: list[float] | None = None,
     short_allocation_scale_grid: list[float] | None = None,
     min_picks_grid: list[int] | None = None,
+    min_top_score_gap_grid: list[float] | None = None,
     opportunistic_watch_n_grid: list[int] | None = None,
     opportunistic_entry_discount_bps_grid: list[float] | None = None,
     blend_mode: str = "mean",
@@ -1455,6 +1470,7 @@ def run_sweep(
         max_short_score_grid=max_short_score_grid,
         short_allocation_scale_grid=short_allocation_scale_grid,
         min_picks_grid=min_picks_grid,
+        min_top_score_gap_grid=min_top_score_gap_grid,
         opportunistic_watch_n_grid=opportunistic_watch_n_grid,
         opportunistic_entry_discount_bps_grid=opportunistic_entry_discount_bps_grid,
         min_dollar_vol=min_dollar_vol,
@@ -1627,6 +1643,7 @@ def run_sweep(
     corr_window_grid = [int(x) for x in (corr_window_days_grid or [0])]
     corr_max_grid = [float(x) for x in (corr_max_signed_grid or [1.0])]
     minp_grid = [int(x) for x in (min_picks_grid or [0])]
+    gap_grid = [float(x) for x in (min_top_score_gap_grid or [0.0])]
     # No-picks fallback axis — 0.0 means "no fallback" for legacy parity.
     # When the symbol is empty, alloc_grid is forced to [0.0] (no fallback
     # can fire without a target symbol).
@@ -1699,7 +1716,7 @@ def run_sweep(
         len(leverage_grid) * len(min_score_grid)
         * len(hold_through_grid) * len(top_n_grid) * len(shortn_grid)
         * len(max_short_score_grid) * len(short_alloc_scale_grid)
-        * len(minp_grid) * len(fee_regimes)
+        * len(minp_grid) * len(gap_grid) * len(fee_regimes)
         * len(opp_watch_grid) * len(opp_discount_grid)
         * len(inf_grid) * len(spread_grid) * len(vol_grid) * len(maxvol_grid)
         * len(skip_pairs) * len(fb_grid)
@@ -1712,7 +1729,7 @@ def run_sweep(
     )
     i = 0
     for (
-        lev, ms, ht, tn, shortn, max_short_score, short_alloc_scale, minp,
+        lev, ms, ht, tn, shortn, max_short_score, short_alloc_scale, minp, gap,
         opp_watch, opp_disc, reg, inf_dv,
         inf_spread, inf_vol, inf_maxvol, skip_pair, fb, rgw, vta, ivt,
         r20g, r5g, rgiqr, rgskew,
@@ -1721,7 +1738,7 @@ def run_sweep(
     ) in product(
         leverage_grid, min_score_grid, hold_through_grid, top_n_grid,
         shortn_grid, max_short_score_grid, short_alloc_scale_grid, minp_grid,
-        opp_watch_grid, opp_discount_grid, fee_regimes, inf_grid, spread_grid,
+        gap_grid, opp_watch_grid, opp_discount_grid, fee_regimes, inf_grid, spread_grid,
         vol_grid, maxvol_grid, skip_pairs, fb_grid, rgw_grid, vta_grid, ivt_grid,
         r20g_grid, r5g_grid, rgiqr_grid, rgskew_grid,
         corr_window_grid, corr_max_grid, fb_alloc_grid, conv_grid,
@@ -1740,6 +1757,7 @@ def run_sweep(
             max_short_score=max_short_score,
             short_allocation_scale=short_alloc_scale,
             min_picks=minp,
+            min_top_score_gap=gap,
             opportunistic_watch_n=opp_watch,
             opportunistic_entry_discount_bps=opp_disc,
             score_uncertainty_penalty=sup,
@@ -1778,10 +1796,10 @@ def run_sweep(
             resumed_cell.ensemble_needs_dispersion = bool(needs_disp)
             logger.info(
                 "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d sn=%d sms=%.2f sas=%.2f minp=%d "
-                "opp=%d/%.1fbps up=%.2f reg=%s "
+                "gap=%.4f opp=%d/%.1fbps up=%.2f reg=%s "
                 "alloc=%s/%.2f resumed from checkpoint",
                 i, total, lev, ms, ht, tn, shortn, max_short_score,
-                short_alloc_scale, minp,
+                short_alloc_scale, minp, gap,
                 opp_watch, opp_disc, sup, reg,
                 alloc_mode, alloc_temp,
             )
@@ -1795,6 +1813,7 @@ def run_sweep(
             top_n=tn, short_n=shortn, max_short_score=max_short_score,
             short_allocation_scale=short_alloc_scale,
             min_picks=minp,
+            min_top_score_gap=gap,
             opportunistic_watch_n=opp_watch,
             opportunistic_entry_discount_bps=opp_disc,
             score_uncertainty_penalty=sup,
@@ -1835,7 +1854,7 @@ def run_sweep(
         cell.ensemble_needs_dispersion = bool(needs_disp)
         logger.info(
             "cell %d/%d lev=%.2f ms=%.2f ht=%s tn=%d sn=%d sms=%.2f sas=%.2f minp=%d "
-            "opp=%d/%.1fbps up=%.2f reg=%s "
+            "gap=%.4f opp=%d/%.1fbps up=%.2f reg=%s "
             "inf_dv=%.0e vol=[%.3f,%.3f] skp=%.2f/%d fb=%.1f "
             "spread<=%.1f "
             "rgw=%d vta=%.2f ivt=%.2f r20g=%.2f r5g=%.2f "
@@ -1843,7 +1862,7 @@ def run_sweep(
             "fb_sym=%s fb_alloc=%.2f conv=%s alloc=%s/%.2f "
             "med=%+.2f%% p10=%+.2f%% neg=%d/%d%s",
             i, total, lev, ms, ht, tn, shortn, max_short_score,
-            short_alloc_scale, minp,
+            short_alloc_scale, minp, gap,
             opp_watch, opp_disc, sup, reg,
             inf_dv, inf_vol, inf_maxvol, sp, sseed,
             cell.fill_buffer_bps,
@@ -1871,6 +1890,7 @@ def _cells_to_rows(cells: list[CellResult]) -> list[dict]:
             "max_short_score": c.max_short_score,
             "short_allocation_scale": c.short_allocation_scale,
             "min_picks": c.min_picks,
+            "min_top_score_gap": c.min_top_score_gap,
             "opportunistic_watch_n": c.opportunistic_watch_n,
             "opportunistic_entry_discount_bps": c.opportunistic_entry_discount_bps,
             "score_uncertainty_penalty": c.score_uncertainty_penalty,
@@ -2295,6 +2315,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "0 or empty preserves classic min_score-gated "
                         "behavior; positive values force at least that many "
                         "best-ranked picks after live-replicable filters.")
+    p.add_argument("--min-top-score-gap-grid", type=str, default="",
+                   help="Cross-sectional conviction gap grid. 0 or empty "
+                        "disables. Positive values require the marginal "
+                        "selected score to beat the next unselected score by "
+                        "at least this many score points before the long/top "
+                        "ranked pack trades.")
     p.add_argument("--opportunistic-watch-n-grid", type=str, default="",
                    help="Work-stealing watchlist size grid. 0 or empty "
                         "disables. Positive values rank this many candidates "
@@ -2679,6 +2705,10 @@ def main(argv=None) -> int:
         min_picks_grid=(
             _parse_int_list(args.min_picks_grid)
             if args.min_picks_grid else None
+        ),
+        min_top_score_gap_grid=(
+            _parse_float_list(args.min_top_score_gap_grid)
+            if args.min_top_score_gap_grid else None
         ),
         opportunistic_watch_n_grid=(
             _parse_int_list(args.opportunistic_watch_n_grid)

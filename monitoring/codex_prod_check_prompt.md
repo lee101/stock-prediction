@@ -38,11 +38,13 @@ You are running with `--dangerously-bypass-approvals-and-sandbox`. Treat that as
      `alpacaprod.md`.
    - In the current manual daily-stock mode, the service name should look like
      `alpaca_wrapper_<pid>` for the `trading-server` process.
-5. Read current Alpaca state using the existing `xgbnew.live_trader._build_trading_client(paper=False)` read-only path:
+5. Read current Alpaca state through read-only Alpaca REST or
+   `monitoring/health_check.py` helper output. Do not import a second live
+   writer just to inspect state:
    - account status, trading_blocked flag, equity, cash, buying_power
    - open orders
    - positions and material market values
-   - BTC order `21ccf911-ff7a-46c5-85d0-8a911360e6c3` if still relevant
+   - stock orders submitted today and whether they were limit orders
 6. Check the live logs:
    - Logs for the canonical writer and trading algorithm from
      `alpacaprod.md`.
@@ -55,7 +57,14 @@ You are running with `--dangerously-bypass-approvals-and-sandbox`. Treat that as
    - Any new crypto buy/sell submission must be an explicit-priced limit order with `limit_price` in the log; market orders are an incident.
 8. For stock trading:
    - On weekends or holidays, no stock trades are expected.
-   - On trading days, no stock trade can be healthy if the conviction gate rejects all picks; distinguish logical hold-cash from broken scoring.
+   - On trading days, a live daemon with zero material stock position and zero
+     stock orders is an incident unless the latest decision log clearly
+     explains it. Record the latest `daily_stock_rl_run_events.jsonl` action,
+     confidence, value estimate, skip reason, and whether this is a strategy
+     no-trade problem rather than an infrastructure outage.
+   - Compare `strategy_state/trading_server/accounts/live_prod.json` against
+     the real Alpaca account; a >5% equity mismatch means local sizing state is
+     stale and must be called out.
    - Look for top score, candidate count, score diversity, and no-pick reason before calling it broken.
 
 ## If Something Looks Wrong

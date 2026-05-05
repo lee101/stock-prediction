@@ -59,6 +59,8 @@ def _build_engine(
     now_fn=None,
     quotes: list[dict] | None = None,
     live_executor=None,
+    live_cancel_executor=None,
+    live_account_provider=None,
     max_order_history: int | None = None,
     auth_token: str | None = None,
 ) -> TradingServerEngine:
@@ -83,6 +85,8 @@ def _build_engine(
         state_dir=tmp_path / "state",
         quote_provider=quote_provider,
         live_executor=live_executor,
+        live_cancel_executor=live_cancel_executor,
+        live_account_provider=live_account_provider,
         now_fn=now_fn or (lambda: current_now),
         quote_stale_seconds=300,
         max_order_history=max_order_history,
@@ -218,6 +222,92 @@ def test_account_state_saves_use_compact_json(tmp_path):
 
     assert "\n" not in payload
     assert json.loads(payload)["account"] == account
+
+
+def test_live_account_snapshot_syncs_from_broker_provider(tmp_path):
+    now = datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc)
+    broker_calls = 0
+
+    def live_account_provider():
+        nonlocal broker_calls
+        broker_calls += 1
+        return {
+            "cash": 1234.5,
+            "equity": 2345.6,
+            "buying_power": 3456.7,
+            "positions": {
+                "ETHUSD": {
+                    "symbol": "ETHUSD",
+                    "qty": 0.25,
+                    "avg_entry_price": 2000.0,
+                    "current_price": 2100.0,
+                },
+                "UNCONFIGURED": {
+                    "symbol": "UNCONFIGURED",
+                    "qty": 1.0,
+                    "avg_entry_price": 10.0,
+                    "current_price": 11.0,
+                },
+            },
+        }
+
+    engine = _build_engine(tmp_path, now=now, live_account_provider=live_account_provider)
+    account_path = engine._account_path("live_test")
+    account_path.parent.mkdir(parents=True, exist_ok=True)
+    account_path.write_text(
+        json.dumps(
+            {
+                "account": "live_test",
+                "mode": "live",
+                "cash": 99999.0,
+                "realized_pnl": 0.0,
+                "positions": {},
+                "open_orders": [],
+                "order_history": [],
+                "price_cache": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = engine.get_account_snapshot("live_test")
+    persisted = json.loads(account_path.read_text(encoding="utf-8"))
+
+    assert broker_calls == 1
+    assert snapshot["cash"] == pytest.approx(1234.5)
+    assert snapshot["equity"] == pytest.approx(2345.6)
+    assert snapshot["buying_power"] == pytest.approx(3456.7)
+    assert sorted(snapshot["positions"]) == ["ETHUSD"]
+    assert snapshot["positions"]["ETHUSD"]["qty"] == pytest.approx(0.25)
+    assert persisted["cash"] == pytest.approx(1234.5)
+    assert persisted["broker_equity"] == pytest.approx(2345.6)
+    assert persisted["broker_buying_power"] == pytest.approx(3456.7)
+    assert persisted["broker_synced_at"] == now.isoformat()
+
+
+def test_live_account_snapshot_uses_recent_sync_without_refetch(tmp_path):
+    now = datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc)
+    broker_calls = 0
+
+    def live_account_provider():
+        nonlocal broker_calls
+        broker_calls += 1
+        return {
+            "cash": 100.0,
+            "equity": 110.0,
+            "buying_power": 220.0,
+            "positions": {},
+        }
+
+    engine = _build_engine(tmp_path, now=now, live_account_provider=live_account_provider)
+
+    first = engine.get_account_snapshot("live_test")
+    second = engine.get_account_snapshot("live_test")
+
+    assert broker_calls == 1
+    assert first["cash"] == second["cash"] == pytest.approx(100.0)
+    assert first["equity"] == second["equity"] == pytest.approx(110.0)
+    assert first["buying_power"] == second["buying_power"] == pytest.approx(220.0)
 
 
 def test_registry_rejects_unsafe_allowed_bot_id(tmp_path):
@@ -1666,6 +1756,127 @@ def test_live_order_requires_ack_and_env_gate(tmp_path, monkeypatch):
     assert submitted[-1]["broker_status"] == "accepted"
 
 
+def test_live_cancel_requires_ack_and_calls_broker(tmp_path, monkeypatch):
+    broker_calls: list[dict] = []
+    cancel_calls: list[dict] = []
+
+    def fake_live_executor(order: dict) -> dict:
+        broker_calls.append(order)
+        return {"broker_order_id": "broker-cancel-1", "status": "accepted"}
+
+    def fake_live_cancel_executor(order: dict) -> dict:
+        cancel_calls.append(order)
+        return {"broker_order_id": "broker-cancel-1", "status": "canceled"}
+
+    engine = _build_engine(
+        tmp_path,
+        live_executor=fake_live_executor,
+        live_cancel_executor=fake_live_cancel_executor,
+    )
+    claim = engine.claim_writer(
+        type("Lease", (), {"account": "live_test", "bot_id": "live_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+    monkeypatch.setenv("ALLOW_ALPACA_LIVE_TRADING", "1")
+    app = create_app(engine)
+    with TestClient(app) as client:
+        accepted = client.post(
+            "/api/v1/orders",
+            json={
+                "account": "live_test",
+                "bot_id": "live_test_v1",
+                "session_id": claim["session_id"],
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.1,
+                "limit_price": 1000.0,
+                "execution_mode": "live",
+                "live_ack": "LIVE",
+            },
+        )
+        assert accepted.status_code == 200
+        order_id = accepted.json()["order"]["id"]
+
+        missing_ack = client.post(
+            "/api/v1/orders/cancel",
+            json={
+                "account": "live_test",
+                "bot_id": "live_test_v1",
+                "session_id": claim["session_id"],
+                "order_id": order_id,
+            },
+        )
+        assert missing_ack.status_code == 400
+        assert "live_ack must equal LIVE" in missing_ack.json()["detail"]
+
+        canceled = client.post(
+            "/api/v1/orders/cancel",
+            json={
+                "account": "live_test",
+                "bot_id": "live_test_v1",
+                "session_id": claim["session_id"],
+                "order_id": order_id,
+                "live_ack": "LIVE",
+            },
+        )
+        history = client.get("/api/v1/orders/live_test?include_history=true")
+
+    assert len(broker_calls) == 1
+    assert len(cancel_calls) == 1
+    assert cancel_calls[0]["id"] == order_id
+    assert canceled.status_code == 200
+    assert canceled.json()["canceled"] is True
+    assert canceled.json()["order"]["status"] == "canceled"
+    assert history.json()["open_orders"] == []
+    assert history.json()["order_history"][-1]["status"] == "canceled"
+    audit_events = _read_jsonl(tmp_path / "state" / "trading_server" / "events" / "live_test.audit.jsonl")
+    canceled_events = [event for event in audit_events if event["event_type"] == "order_canceled"]
+    assert canceled_events[-1]["order_id"] == order_id
+    assert canceled_events[-1]["broker_order_id"] == "broker-cancel-1"
+
+
+def test_cancel_paper_open_order_moves_it_to_history(tmp_path):
+    engine = _build_engine(tmp_path)
+    claim = engine.claim_writer(
+        type("Lease", (), {"account": "paper_test", "bot_id": "paper_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+    submitted = engine.submit_order(
+        type(
+            "Order",
+            (),
+            {
+                "account": "paper_test",
+                "bot_id": "paper_test_v1",
+                "session_id": claim["session_id"],
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.1,
+                "limit_price": 1000.0,
+                "execution_mode": "paper",
+                "allow_loss_exit": False,
+                "force_exit_reason": None,
+                "live_ack": None,
+                "metadata": {"tag": "cancel-me"},
+            },
+        )()
+    )
+
+    canceled = engine.cancel_order(
+        trading_server_module.CancelOrderRequest(
+            account="paper_test",
+            bot_id="paper_test_v1",
+            session_id=claim["session_id"],
+            order_id=submitted["order"]["id"],
+        )
+    )
+    orders = engine.get_orders("paper_test", include_history=True)
+
+    assert canceled["canceled"] is True
+    assert canceled["order"]["status"] == "canceled"
+    assert orders["open_orders"] == []
+    assert orders["order_history"][-1]["metadata"] == {"tag": "cancel-me"}
+    assert orders["order_history"][-1]["status"] == "canceled"
+
+
 def test_live_broker_failure_is_audited_and_logged(tmp_path, monkeypatch):
     def failing_live_executor(_order: dict) -> dict:
         raise RuntimeError("alpaca offline")
@@ -1770,6 +1981,55 @@ def test_live_order_updates_account_state_when_marketable(tmp_path, monkeypatch)
     assert orders["open_orders"] == []
     assert len(orders["order_history"]) == 1
     assert orders["order_history"][0]["fill_price"] == 2000.0
+
+
+def test_live_submit_does_not_block_on_post_submit_account_sync(tmp_path, monkeypatch):
+    account_sync_calls = 0
+
+    def live_account_provider():
+        nonlocal account_sync_calls
+        account_sync_calls += 1
+        return {
+            "cash": 1000.0,
+            "equity": 1000.0,
+            "buying_power": 2000.0,
+            "positions": {},
+        }
+
+    engine = _build_engine(
+        tmp_path,
+        live_executor=lambda order: {"broker_order_id": "broker-fast", "status": "accepted"},
+        live_account_provider=live_account_provider,
+    )
+    claim = engine.claim_writer(
+        type("Lease", (), {"account": "live_test", "bot_id": "live_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+    assert account_sync_calls == 1
+    monkeypatch.setenv("ALLOW_ALPACA_LIVE_TRADING", "1")
+
+    result = engine.submit_order(
+        type(
+            "Order",
+            (),
+            {
+                "account": "live_test",
+                "bot_id": "live_test_v1",
+                "session_id": claim["session_id"],
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.1,
+                "limit_price": 1000.0,
+                "execution_mode": "live",
+                "allow_loss_exit": False,
+                "force_exit_reason": None,
+                "live_ack": "LIVE",
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert result["filled"] is False
+    assert account_sync_calls == 2
 
 
 def test_order_history_is_capped_to_max_order_history(tmp_path):

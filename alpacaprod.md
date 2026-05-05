@@ -2,6 +2,194 @@
 
 ## Active Deployments
 
+### 2026-05-04 20:16 UTC -- live order/cancel smoke verified
+
+**Trading-server change**:
+- Added a server-owned live cancel endpoint: `POST /api/v1/orders/cancel`.
+  Cancel requests use the existing writer claim, require `live_ack=LIVE` for
+  live accounts, and call `alpaca_wrapper.cancel_order` from inside the single
+  live writer process.
+- Added trading-server client support for `cancel_order(...)`.
+- Removed the forced post-submit live account sync from the live order response
+  path. The broker submit had succeeded, but the HTTP client timed out because
+  the server waited for a full broker account refresh before returning.
+
+**Live smoke**:
+- Submitted a non-marketable explicit stock limit buy through `trading-server`:
+  `PLTR buy 1 @ $1.00`, broker order
+  `92ce0b5d-f3d8-44d9-b011-97c61a0e1d88`, Alpaca status `accepted`,
+  type `limit`, TIF `gtc`, filled quantity `0`.
+- Canceled the same order through `POST /api/v1/orders/cancel`. Alpaca then
+  reported status `canceled`, `filled_qty=0`, and broker open orders `[]`.
+- The earlier near-close fractional probe `PLTR buy 0.02 @ $50.00` also went
+  through as a limit order, but expired at the closing bell before Alpaca
+  recorded cancel status. It did not fill.
+
+**Validation**:
+- `.venv313/bin/python -m py_compile src/trading_server/server.py src/trading_server/client.py`
+- `.venv313/bin/pytest -q tests/test_trading_server.py tests/test_trading_server_client.py tests/test_alpaca_singleton.py`
+  (`132 passed` before the monitor tests were added; final combined targeted
+  run below is `141 passed`)
+
+### 2026-05-04 20:14 UTC -- monitor health restored
+
+**Root cause**:
+- `alpaca-monitor.service` was failing before it wrote a fresh
+  `monitor_current.log`: `monitoring/monitor_agent.sh` sourced
+  `~/.secretbashrc` while `set -u` was active, and the sparse systemd
+  environment left `SSH_AGENT_PID` unset.
+
+**Fix and cleanup**:
+- `monitoring/monitor_agent.sh` now disables `errexit`/`nounset` only while
+  sourcing `~/.secretbashrc`, then restores the previous shell flags.
+- Cleared the stale systemd failed state and verified
+  `sudo systemctl start alpaca-monitor.service` exits `0`.
+- Reclaimed disk space from unused Docker images/containers and old journals:
+  `/` is now `83%` full, down from `95%`.
+
+**Current health**:
+- `python monitoring/health_check.py --json` exits `0` at
+  `2026-05-04T20:14:27Z`.
+- Live path remains `trading-server` pid `1017227` owning
+  `alpaca_wrapper_1017227`; `daily-rl-trader` pid `971959` is attached.
+- Alpaca API key is valid; equity `$19,799.53`, buying power `$39,599.06`;
+  no material stock positions and no stale open orders.
+- Remaining warnings only: optional `llm-stock-trader`, inactive
+  `alpaca-cancel-multi-orders`, Codex audit dry-run status, and
+  `/nvme0n1-disk` at `86%`.
+
+### 2026-05-04 19:46 UTC -- fixed trading-server live equity hydration
+
+**Root cause**:
+- `trading-server` treated `live_prod` like a paper ledger for account cash:
+  it loaded persisted `strategy_state/trading_server/accounts/live_prod.json`
+  and only changed `cash` after server-recorded fills.
+- That file was originally created with `cash=28679.04` on
+  `2026-04-15`; the real Alpaca account is now `equity=19799.53`.
+  Because there was no live broker hydration path, snapshots and sizing used
+  the stale local cash value.
+
+**Fix**:
+- `src/trading_server/server.py` now has a live broker account provider. For
+  live accounts using the default Alpaca boundary, account snapshots, writer
+  lease claims, and order submissions sync cash, broker equity, broker buying
+  power, and configured-symbol positions from Alpaca.
+- `get_account_snapshot("live_prod")` now returns broker values for live
+  `equity`/`buying_power` instead of recomputing paper buying power from local
+  cash.
+- `config/trading_server/accounts.json` changed `live_prod.starting_cash` to
+  `0.0`; if broker sync ever fails on a fresh state file, the safe fallback is
+  no buying power rather than stale oversized cash.
+- `monitoring/health_check.py` now compares the synced `broker_equity` field
+  against real Alpaca equity.
+
+**Validation**:
+- `.venv313/bin/python -m py_compile src/trading_server/server.py monitoring/health_check.py`
+- `.venv313/bin/pytest -q tests/test_trading_server.py`
+  (`73 passed`)
+- `.venv313/bin/pytest -q tests/test_trading_server_client.py tests/test_alpaca_singleton.py`
+  (`54 passed`)
+
+**Reload and live read-only verification**:
+- Replaced orphaned manual pids with supervisor-managed processes:
+  `trading-server` pid `970433`, `daily-rl-trader` pid `971959`.
+- Forced a read-only `GET /api/v1/account/live_prod` through the trading-server
+  client. Snapshot now reports `cash=19799.53`, `equity=19799.53`,
+  `buying_power=39599.06`, `positions={}`, `open_orders=[]`.
+- `strategy_state/trading_server/accounts/live_prod.json` now stores
+  `cash=19799.53`, `broker_equity=19799.53`,
+  `broker_buying_power=39599.06`, `broker_synced_at=2026-05-04T19:46:11Z`.
+- Follow-up health check: `trading-server-live-sync` is `OK`; the remaining
+  real trading failure is still `alpaca-stock-flow` because the daily model
+  emitted `flat` today and submitted no stock orders.
+
+### 2026-05-04 16:55 UTC -- production monitoring now catches idle stock flow
+
+**Monitoring fixes**:
+- `monitoring/health_check.py` now reads Alpaca directly and fails when the
+  active manual daily-stock path has no material stock position and no stock
+  orders during an open trading session. This catches the current failure mode:
+  processes are alive but the model emitted `flat` and did not trade.
+- `monitoring/health_check.py` now compares
+  `strategy_state/trading_server/accounts/live_prod.json` against real Alpaca
+  account equity and fails on >5% drift. Current live state is stale:
+  trading-server local equity `$28,679.04` vs Alpaca equity `$19,799.53`
+  (`44.8%` high), so sizing must not trust the local account file.
+- `monitoring/algo_health_report.py` now switches to the current manual
+  `trading-server` + `daily-rl-trader` health model when that deployment is
+  active, instead of falsely checking the intentionally inert XGB path.
+- `monitoring/hourly_prod_check.sh` now delegates to the Codex production
+  checker instead of invoking the obsolete Claude audit path, which was
+  failing authentication.
+- `monitoring/codex_prod_check_prompt.md` now instructs agents to inspect
+  real Alpaca stock orders/positions, the latest daily RL decision event, and
+  the trading-server-vs-broker equity sync.
+
+**Validation**:
+- `.venv313/bin/python -m py_compile monitoring/health_check.py monitoring/algo_health_report.py`
+- `CODEX_PROD_CHECK_DRY_RUN=1 monitoring/hourly_prod_check.sh`
+- `.venv313/bin/python monitoring/algo_health_report.py --json`
+  now reports `mode=manual_daily_stock_trading_server` and fails for the two
+  real issues above, not for stale XGB/Claude assumptions.
+- `sudo -n systemctl reset-failed alpaca-monitor.service`; follow-up
+  `.venv313/bin/python monitoring/health_check.py --json` reports
+  `alpaca-monitor.timer active and enabled`.
+
+**Current monitor verdict**:
+- Infrastructure is alive: `trading-server` pid `313773` owns
+  `alpaca_wrapper_313773`; `daily-rl-trader` pid `318831` is attached;
+  Alpaca account is `ACTIVE`.
+- Stock trading is not healthy: `0` stock orders today, `0` material stock
+  positions, latest daily RL run action `flat`, skip reason `flat_signal`.
+
+### 2026-05-04 13:17 UTC -- daily RL prod math/safety audit + reload
+
+**Code fixes deployed to the active manual production path**:
+- `trade_daily_stock_prod.py` direct Alpaca order helpers now enforce the
+  Alpaca singleton only at order-submit time. The trading-server client can
+  still build a read-only market-clock client without competing for the live
+  writer lock.
+- Daily stock BUY quantities now floor to four decimals from the actual
+  explicit buy limit/reserve price, so `qty * limit_price` cannot exceed the
+  intended allocation/buying-power budget via rounding.
+- Trading-server single-position and multi-position opens size against the
+  same buffered buy limit they submit. Multi-position trims now submit at the
+  sell/mark price, not the buy-side buffered price.
+- Direct Alpaca limit sells and EOD deleverage sells pass through
+  `guard_sell_against_death_spiral` before submit; successful direct buys
+  record buy price for later guard checks.
+- `alpaca_wrapper.open_order_at_price_or_all` now has the same sell guard and
+  buy-price recording belt-and-suspenders path used by the trading server's
+  live executor.
+
+**Validation**:
+- `.venv313/bin/pytest -q tests/test_trade_daily_stock_prod.py tests/test_trade_daily_stock_prod_eod.py tests/prod/brokers/test_alpaca_wrapper.py`
+  (`243 passed, 2 skipped`)
+- `.venv313/bin/pytest -q tests/test_trading_server.py tests/test_trading_server_client.py tests/test_alpaca_singleton.py`
+  (`125 passed`)
+- `.venv313/bin/pytest -q tests/test_critical_math.py tests/test_validate_marketsim.py tests/test_validate_marketsim_shim.py`
+  (`18 passed, 1 skipped`)
+- `.venv313/bin/python -m py_compile trade_daily_stock_prod.py alpaca_wrapper.py src/trading_server/server.py`
+- Live-like trading-server replay, 120 trading days, current screened32
+  12-model ensemble, `allocation_pct=12.5`, `multi_position=1`:
+  `total_return=+1.92%`, `annualized=+4.06%`, `sortino=0.74`,
+  `max_drawdown=-3.05%`, `orders=33`, `trades=16`. This confirms the
+  current deployed RL ensemble is stable but far below the >=27% monthly
+  promotion target; no leverage/model promotion was made.
+
+**Reload**:
+- Restarted the manual broker boundary and client after tests:
+  `trading-server` pid `313773` owns `alpaca_wrapper_313773`;
+  `daily-rl-trader` pid `318831` is attached through `127.0.0.1:8050`.
+- Post-reload health check exits `0`: one active writer lock, no orphans,
+  Alpaca API OK, `0` open positions, `0` pending close. Remaining warnings
+  are optional services and disk capacity only.
+- First post-open live cycle ran at `2026-05-04T13:35:00Z`: Alpaca bars were
+  fresh (`latest=2026-05-01`), quotes came from Alpaca, the 12-policy ensemble
+  emitted `flat` (`confidence=6.1%`, value `-0.6449`), and no order was
+  submitted. Trading-server `live_prod` has `0` positions, `0` open orders,
+  and `0` order-history rows after the cycle.
+
 ### 2026-05-04 12:50 UTC -- Codex monitor real-run repaired
 
 **Monitoring change**:
@@ -43,8 +231,12 @@
 - Per-symbol BUY quantities are sized from the actual aggressive limit price
   and floored to four decimals, so fractional rounding/min-size handling cannot
   push submitted order value above the clipped budget.
+- Inverse-vol per-pick scaling preserves relative exposure but is renormalized
+  if it would exceed the clipped total buy budget.
 - Hold-through rotations split the clipped buy budget only across newly-added
   symbols, not picks already held across the session.
+- Embedded EOD deleverage long sells now pass through the same death-spiral
+  guard before order submission; all-guard-blocked ticks report `order_error`.
 - Stock orders still go through `_submit_limit_order` with explicit
   `limit_price`; no stock market-order path was introduced.
 - Trade logs emit `buy_notional_clipped` with requested, available, and
@@ -53,7 +245,7 @@
 **Validation**:
 - `.venv313/bin/python -m py_compile xgbnew/live_trader.py`
 - `.venv313/bin/pytest -q tests/test_xgbnew_live_trader_helpers.py`
-  (`69 passed`)
+  (`71 passed`)
 
 **Production status**:
 - No model/threshold/leverage promotion from this change. The active live

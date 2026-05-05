@@ -26,7 +26,7 @@ from .settings import (
 TradingMode = Literal["paper", "live"]
 ExecutionMode = Literal["paper", "live"]
 OrderSide = Literal["buy", "sell"]
-OrderStatus = Literal["open", "filled", "submitted"]
+OrderStatus = Literal["open", "filled", "submitted", "canceled"]
 TradingServerBaseUrlTransport = Literal["http", "https", "missing", "unsupported"]
 TradingServerBaseUrlScope = Literal["loopback", "remote", "invalid"]
 TradingServerBaseUrlSecurity = Literal["https", "loopback_http", "insecure_remote_http", "invalid"]
@@ -86,6 +86,11 @@ class TradingServerOrderSubmitResponse(TypedDict):
     order: TradingServerOrderPayload
     quote: TradingServerQuotePayload | None
     filled: bool
+
+
+class TradingServerOrderCancelResponse(TypedDict):
+    order: TradingServerOrderPayload
+    canceled: bool
 
 
 class TradingServerRefreshAccountResult(TypedDict):
@@ -151,6 +156,15 @@ class EngineOrderRequest:
     metadata: JsonObject
 
 
+@dataclass(frozen=True)
+class EngineCancelOrderRequest:
+    account: str
+    bot_id: str
+    session_id: str
+    order_id: str
+    live_ack: str | None
+
+
 class InProcessTradingServerEngineLike(Protocol):
     def claim_writer(self, request: EngineWriterLeaseRequest) -> TradingServerWriterLeaseResponse: ...
 
@@ -168,6 +182,8 @@ class InProcessTradingServerEngineLike(Protocol):
     def get_orders(self, account: str, *, include_history: bool = False) -> TradingServerOrdersResponse: ...
 
     def submit_order(self, request: EngineOrderRequest) -> TradingServerOrderSubmitResponse: ...
+
+    def cancel_order(self, request: EngineCancelOrderRequest) -> TradingServerOrderCancelResponse: ...
 
 
 def resolve_writer_ttl_seconds(ttl_seconds: int | None = None) -> int:
@@ -330,6 +346,13 @@ class TradingServerClientLike(Protocol):
         live_ack: str | None = None,
         metadata: JsonObject | None = None,
     ) -> TradingServerOrderSubmitResponse: ...
+
+    def cancel_order(
+        self,
+        *,
+        order_id: str,
+        live_ack: str | None = None,
+    ) -> TradingServerOrderCancelResponse: ...
 
     def refresh_prices(self, *, symbols: Iterable[str] | None = None) -> TradingServerRefreshResponse: ...
 
@@ -527,6 +550,21 @@ class TradingServerClient:
             payload["symbols"] = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
         return cast(TradingServerRefreshResponse, self._post("/api/v1/prices/refresh", payload))
 
+    def cancel_order(
+        self,
+        *,
+        order_id: str,
+        live_ack: str | None = None,
+    ) -> TradingServerOrderCancelResponse:
+        payload = {
+            "account": self.account,
+            "bot_id": self.bot_id,
+            "session_id": self.session_id,
+            "order_id": str(order_id).strip(),
+            "live_ack": live_ack,
+        }
+        return cast(TradingServerOrderCancelResponse, self._post("/api/v1/orders/cancel", payload))
+
     def get_account(self) -> TradingServerAccountSnapshot:
         return cast(TradingServerAccountSnapshot, self._get(f"/api/v1/account/{self.account}"))
 
@@ -629,5 +667,21 @@ class InMemoryTradingServerClient:
                 force_exit_reason=force_exit_reason,
                 live_ack=live_ack,
                 metadata=normalized_metadata,
+            )
+        )
+
+    def cancel_order(
+        self,
+        *,
+        order_id: str,
+        live_ack: str | None = None,
+    ) -> TradingServerOrderCancelResponse:
+        return self.engine.cancel_order(
+            EngineCancelOrderRequest(
+                account=self.account,
+                bot_id=self.bot_id,
+                session_id=self.session_id,
+                order_id=str(order_id).strip(),
+                live_ack=live_ack,
             )
         )

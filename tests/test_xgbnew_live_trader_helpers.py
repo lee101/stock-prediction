@@ -424,10 +424,18 @@ def test_eod_deleverage_tick_already_under_target(monkeypatch):
 
 
 def test_eod_deleverage_tick_submits_excess_equity_limit(monkeypatch):
+    import src.alpaca_singleton as singleton
+
     monkeypatch.setattr(live_trader, "_minutes_to_market_close", lambda _client: 30.0)
+    events: list[tuple[str, str, float]] = []
+
+    def _guard(sym, side, price):
+        events.append(("guard", sym, float(price)))
+
     submitted: list[dict] = []
 
     def _submit_limit(client, *, symbol, qty, side, limit_price):
+        events.append(("submit", symbol, float(qty)))
         submitted.append({
             "symbol": symbol,
             "qty": qty,
@@ -436,6 +444,7 @@ def test_eod_deleverage_tick_submits_excess_equity_limit(monkeypatch):
         })
         return SimpleNamespace(id="order-1")
 
+    monkeypatch.setattr(singleton, "guard_sell_against_death_spiral", _guard)
     monkeypatch.setattr(live_trader, "_submit_limit_order", _submit_limit)
     monkeypatch.setattr(live_trader, "_latest_stock_bid_ask", lambda sym: (149.0, 151.0))
     client = MagicMock()
@@ -455,6 +464,8 @@ def test_eod_deleverage_tick_submits_excess_equity_limit(monkeypatch):
 
     assert out["action"] == "submitted"
     assert out["submitted"] == 1
+    assert [event[0] for event in events] == ["guard", "submit"]
+    assert events[0][1:] == ("AAPL", 150.0)
     assert submitted[0]["symbol"] == "AAPL"
     assert submitted[0]["side"] == "sell"
     assert submitted[0]["qty"] > 0
@@ -463,7 +474,40 @@ def test_eod_deleverage_tick_submits_excess_equity_limit(monkeypatch):
     assert submitted[0]["limit_price"] == pytest.approx(149.0 * (1.0 - aggressiveness_bps / 10_000.0))
 
 
+def test_eod_deleverage_tick_guard_exception_blocks_submit(monkeypatch):
+    import src.alpaca_singleton as singleton
+
+    monkeypatch.setattr(live_trader, "_minutes_to_market_close", lambda _client: 30.0)
+    monkeypatch.setattr(
+        singleton,
+        "guard_sell_against_death_spiral",
+        MagicMock(side_effect=RuntimeError("death spiral")),
+    )
+    submit = MagicMock()
+    monkeypatch.setattr(live_trader, "_submit_limit_order", submit)
+    client = MagicMock()
+    client.get_account.return_value = SimpleNamespace(equity="1000")
+    client.get_all_positions.return_value = [
+        SimpleNamespace(symbol="AAPL", qty="20", market_value="3000", current_price="150", side="long"),
+    ]
+    args = SimpleNamespace(
+        eod_deleverage=True,
+        eod_deleverage_window_minutes=60,
+        eod_max_gross_leverage=2.0,
+        eod_force_market_minutes=5,
+    )
+
+    out = live_trader._eod_deleverage_tick(client, args)
+
+    assert out["action"] == "order_error"
+    assert out["submitted"] == 0
+    assert "death spiral" in out["errors"][0]
+    submit.assert_not_called()
+
+
 def test_eod_deleverage_tick_uses_aggressive_limit_in_force_window(monkeypatch):
+    import src.alpaca_singleton as singleton
+
     monkeypatch.setattr(live_trader, "_minutes_to_market_close", lambda _client: 3.0)
     submitted: list[dict] = []
 
@@ -471,6 +515,7 @@ def test_eod_deleverage_tick_uses_aggressive_limit_in_force_window(monkeypatch):
         submitted.append({"symbol": symbol, "qty": qty, "side": side, "limit_price": limit_price})
         return SimpleNamespace(id="order-1")
 
+    monkeypatch.setattr(singleton, "guard_sell_against_death_spiral", lambda *a, **k: None)
     monkeypatch.setattr(live_trader, "_submit_limit_order", _submit_limit)
     monkeypatch.setattr(live_trader, "_latest_stock_bid_ask", lambda sym: (149.0, 151.0))
     client = MagicMock()
@@ -685,9 +730,9 @@ def test_buy_notional_by_symbol_keeps_sub_budget_inverse_vol_scale():
         inv_vol_cap=3.0,
     )
 
-    assert sum(notionals.values()) == pytest.approx(3_750.0)
+    assert sum(notionals.values()) == pytest.approx(4_166.6667)
     assert notionals["LOWVOL"] == pytest.approx(2_500.0)
-    assert notionals["HIGHVOL"] == pytest.approx(1_250.0)
+    assert notionals["HIGHVOL"] == pytest.approx(1_666.6667)
 
 
 def test_buy_notional_by_symbol_bad_vol_uses_identity_scale():

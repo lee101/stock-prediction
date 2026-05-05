@@ -1745,6 +1745,7 @@ def _eod_deleverage_tick(client, args, *, now: datetime | None = None) -> dict:
     """
     if not bool(getattr(args, "eod_deleverage", False)) or client is None:
         return {"action": "disabled"}
+    from src.alpaca_singleton import guard_sell_against_death_spiral
 
     mtc = _minutes_to_market_close(client)
     window = float(getattr(args, "eod_deleverage_window_minutes", 60.0) or 60.0)
@@ -1808,6 +1809,8 @@ def _eod_deleverage_tick(client, args, *, now: datetime | None = None) -> dict:
             continue
         side = _position_close_side(pos)
         try:
+            if side == "sell":
+                guard_sell_against_death_spiral(sym, "sell", float(px))
             aggressive_bps = 25.0 if force_window else (5.0 + 20.0 * progress)
             limit_price = _stock_limit_price_near_market(
                 sym,
@@ -1832,8 +1835,9 @@ def _eod_deleverage_tick(client, args, *, now: datetime | None = None) -> dict:
             logger.error("EOD deleverage order failed: %s", msg)
             errors.append(msg)
 
+    action = "submitted" if submitted else ("order_error" if errors else "no_actionable_orders")
     status = {
-        "action": "submitted" if submitted else "no_actionable_orders",
+        "action": action,
         "submitted": submitted,
         "errors": errors,
         "minutes_to_close": mtc,

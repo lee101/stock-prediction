@@ -737,6 +737,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
     price = _passivize_limit_price(symbol, side, price)
+    guard_sell_against_death_spiral(symbol=symbol, side=side, price=float(price))
 
     # Check for existing orders - skip if essentially the same to prevent flapping
     current_open_orders = get_orders()
@@ -838,6 +839,11 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                 )
             )
             invalidate_orders_cache()  # Invalidate cache after successful order
+            if is_buy_side(side):
+                try:
+                    record_buy_price(symbol, float(price))
+                except Exception as _rec_exc:
+                    logger.warning(f"record_buy_price failed: {_rec_exc}")
             return result
 
         except Exception as e:

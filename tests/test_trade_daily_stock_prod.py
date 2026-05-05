@@ -698,6 +698,18 @@ def test_compute_target_qty_respects_buying_power_cap() -> None:
     assert qty == 19.0
 
 
+def test_compute_target_qty_floors_to_not_exceed_budget() -> None:
+    qty = daily_stock.compute_target_qty_from_values(
+        portfolio_value=100.0,
+        buying_power=100.0,
+        price=6.0,
+        allocation_pct=10.0,
+    )
+
+    assert qty == 1.6666
+    assert qty * 6.0 <= 10.0
+
+
 def test_build_signal_long_only_ensemble_masks_short_actions(tmp_path: Path) -> None:
     rows_aapl = []
     rows_msft = []
@@ -5996,9 +6008,9 @@ def test_execute_signal_with_trading_server_closes_managed_then_opens_new(tmp_pa
     assert changed is True
     snapshot = client.get_account()
     assert "AAPL" not in snapshot["positions"]
-    assert snapshot["positions"]["MSFT"]["qty"] == 50.0
+    assert snapshot["positions"]["MSFT"]["qty"] == pytest.approx(49.5049)
     assert state.active_symbol == "MSFT"
-    assert state.active_qty == 50.0
+    assert state.active_qty == pytest.approx(49.5049)
 
 
 def test_execute_signal_with_trading_server_rotation_close_does_not_force_loss_exit() -> None:
@@ -6084,6 +6096,48 @@ def test_execute_signal_with_trading_server_holds_position_when_loss_guard_block
     assert state.active_symbol == "AAPL"
     assert state.pending_close_symbol is None
     assert "Server rejected ordinary sell for AAPL" in caplog.text
+
+
+def test_execute_signal_with_trading_server_sizes_buy_against_buffered_limit() -> None:
+    submitted: list[dict[str, object]] = []
+
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 100.0,
+                "buying_power": 100.0,
+                "positions": {},
+            }
+
+        def refresh_prices(self, *, symbols):
+            return {"accounts": []}
+
+        def submit_limit_order(self, **kwargs):
+            submitted.append(dict(kwargs))
+            return {"order": {"id": "order-1"}}
+
+    changed = daily_stock.execute_signal_with_trading_server(
+        SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT"),
+        server_client=_FakeServerClient(),
+        quotes={"MSFT": 6.0},
+        state=daily_stock.StrategyState(),
+        symbols=["MSFT"],
+        allocation_pct=10.0,
+        dry_run=False,
+        now=datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert changed is True
+    assert submitted == [
+        {
+            "symbol": "MSFT",
+            "qty": pytest.approx(1.6501),
+            "side": "buy",
+            "limit_price": pytest.approx(daily_stock._marketable_limit_price(6.0, "buy")),
+            "metadata": {"strategy": "daily_stock_rl", "intent": "open_managed"},
+        }
+    ]
+    assert submitted[0]["qty"] * submitted[0]["limit_price"] <= 10.0
 
 
 def test_run_once_integrates_with_trading_server_and_submits_open(
@@ -6195,10 +6249,10 @@ def test_run_once_integrates_with_trading_server_and_submits_open(
     assert payload["execution_status"] == "submitted"
     assert payload["execution_submitted"] is True
     assert payload["server_snapshot"]["writer_claim"]["active"] is True
-    assert position["qty"] == 25.0
+    assert position["qty"] == pytest.approx(24.7524)
     assert position["avg_entry_price"] == 100.0
     assert saved_state.active_symbol == "AAPL"
-    assert saved_state.active_qty == 25.0
+    assert saved_state.active_qty == pytest.approx(24.7524)
     assert saved_state.entry_price == 100.0
 
 
@@ -7668,9 +7722,10 @@ def test_run_backtest_via_trading_server_matches_legacy_single_symbol(tmp_path: 
         buying_power_multiplier=2.0,
     )
 
-    assert server["total_return"] == legacy["total_return"]
-    assert server["annualized_return"] == legacy["annualized_return"]
-    assert server["sortino"] == legacy["sortino"]
+    assert server["total_return"] == pytest.approx(0.1279719159999999)
+    assert server["total_return"] < legacy["total_return"]
+    assert server["annualized_return"] < legacy["annualized_return"]
+    assert server["sortino"] < legacy["sortino"]
     assert server["max_drawdown"] == legacy["max_drawdown"]
     assert server["trades"] == legacy["trades"]
     assert server["orders"] == pytest.approx(1.0)
@@ -8008,9 +8063,10 @@ def test_run_backtest_via_trading_server_matches_legacy_multi_position(monkeypat
         multi_position=2,
     )
 
-    assert server["total_return"] == pytest.approx(legacy["total_return"])
-    assert server["annualized_return"] == pytest.approx(legacy["annualized_return"])
-    assert server["sortino"] == pytest.approx(legacy["sortino"])
+    assert server["total_return"] == pytest.approx(0.03143597999999992)
+    assert server["total_return"] < legacy["total_return"]
+    assert server["annualized_return"] < legacy["annualized_return"]
+    assert server["sortino"] < legacy["sortino"]
     assert server["max_drawdown"] == pytest.approx(legacy["max_drawdown"])
     assert server["trades"] == legacy["trades"]
     assert server["orders"] == pytest.approx(legacy["trades"])
@@ -8482,7 +8538,7 @@ def test_execute_multi_position_signals_dry_run_skips_order_submission(monkeypat
         dry_run=True,
     )
 
-    assert held == {"NVDA": pytest.approx(19.99)}
+    assert held == {"NVDA": pytest.approx(19.9899)}
     assert submitted == []
 
 
@@ -8603,13 +8659,13 @@ def test_execute_multi_position_signals_with_trading_server_batches_refresh(monk
         },
         {
             "symbol": "MSFT",
-            "qty": pytest.approx(55.0),
+            "qty": pytest.approx(54.4554),
             "side": "buy",
             "limit_price": pytest.approx(daily_stock._marketable_limit_price(50.0, "buy")),
             "metadata": {"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
         },
     ]
-    assert held == {"MSFT": pytest.approx(55.0)}
+    assert held == {"MSFT": pytest.approx(54.4554)}
 
 
 def test_execute_multi_position_signals_with_trading_server_respects_buying_power_cap() -> None:
@@ -8638,7 +8694,7 @@ def test_execute_multi_position_signals_with_trading_server_respects_buying_powe
         dry_run=True,
     )
 
-    assert held == {"NVDA": pytest.approx(9.5)}
+    assert held == {"NVDA": pytest.approx(9.4059)}
 
 
 def test_execute_multi_position_signals_with_trading_server_rebalances_existing_position() -> None:
@@ -8676,7 +8732,7 @@ def test_execute_multi_position_signals_with_trading_server_rebalances_existing_
     )
 
     assert refresh_calls == [["AAPL", "MSFT"]]
-    assert held == {"AAPL": pytest.approx(12.5), "MSFT": pytest.approx(75.0)}
+    assert held == {"AAPL": pytest.approx(12.5), "MSFT": pytest.approx(74.2574)}
     assert submitted == [
         {
             "symbol": "AAPL",
@@ -8687,7 +8743,7 @@ def test_execute_multi_position_signals_with_trading_server_rebalances_existing_
         },
         {
             "symbol": "MSFT",
-            "qty": pytest.approx(75.0),
+            "qty": pytest.approx(74.2574),
             "side": "buy",
             "limit_price": pytest.approx(daily_stock._marketable_limit_price(50.0, "buy")),
             "metadata": {"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
@@ -8768,7 +8824,7 @@ def test_execute_multi_position_signals_with_trading_server_scales_shared_buying
         dry_run=True,
     )
 
-    assert held == {"AAPL": pytest.approx(5.7), "MSFT": pytest.approx(3.8)}
+    assert held == {"AAPL": pytest.approx(5.6435), "MSFT": pytest.approx(3.7623)}
 
 
 def test_execute_multi_position_signals_with_trading_server_skips_malformed_allocation_fractions(
@@ -8802,7 +8858,7 @@ def test_execute_multi_position_signals_with_trading_server_skips_malformed_allo
             dry_run=True,
         )
 
-    assert held == {"AAPL": pytest.approx(125.0)}
+    assert held == {"AAPL": pytest.approx(123.7623)}
     assert "Skipping malformed server portfolio signal allocation for NVDA" in caplog.text
     assert "Skipping malformed server portfolio signal allocation for AMD" in caplog.text
 

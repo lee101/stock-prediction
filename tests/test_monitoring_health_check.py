@@ -1,4 +1,5 @@
 """Tests for monitoring/health_check.py — unit tests for each check function."""
+# ruff: noqa: I001
 
 import hashlib
 import json

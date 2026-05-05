@@ -312,3 +312,194 @@ def test_cross_sectional_regime_gate_drops_wide_dispersion_days():
     )
 
     assert [day.day for day in result.day_results] == [d1]
+
+
+def test_cross_sectional_regime_failure_can_short_top_ranked_names():
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    df = pd.DataFrame([
+        {"date": d1, "symbol": "A", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": -0.01},
+        {"date": d1, "symbol": "B", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": 0.01},
+        {"date": d2, "symbol": "A", "actual_open": 100.0, "actual_close": 90.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": -0.30},
+        {"date": d2, "symbol": "B", "actual_open": 100.0, "actual_close": 110.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0, "ret_5d": 0.30},
+    ])
+
+    result = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            regime_cs_iqr_max=0.05,
+            regime_failed_top_side=-1,
+            hold_through=False,
+        ),
+        precomputed_scores=pd.Series([0.9, 0.8, 0.9, 0.8], index=df.index),
+    )
+
+    assert [day.day for day in result.day_results] == [d1, d2]
+    assert result.day_results[0].trades[0].side == 1
+    assert result.day_results[1].trades[0].side == -1
+    assert result.day_results[1].trades[0].symbol == "A"
+    assert result.day_results[1].daily_return_pct > 0.0
+
+
+def test_loss_cooldown_skips_new_entries_after_realized_loss():
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    d3 = date(2025, 1, 6)
+    df = pd.DataFrame([
+        {"date": d1, "symbol": "A", "actual_open": 100.0, "actual_close": 95.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "A", "actual_open": 100.0, "actual_close": 120.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d3, "symbol": "A", "actual_open": 100.0, "actual_close": 110.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+    ])
+
+    result = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            fee_rate=0.0,
+            fill_buffer_bps=0.0,
+            loss_cooldown_days=1,
+            loss_cooldown_trigger_pct=1.0,
+        ),
+        precomputed_scores=pd.Series([0.9, 0.9, 0.9], index=df.index),
+    )
+
+    assert [day.day for day in result.day_results] == [d1, d3]
+    assert len(result.day_results) == 2
+
+
+def test_symbol_loss_cooldown_rotates_to_next_candidate():
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    d3 = date(2025, 1, 6)
+    df = pd.DataFrame([
+        {"date": d1, "symbol": "A", "actual_open": 100.0, "actual_close": 95.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d1, "symbol": "B", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "A", "actual_open": 100.0, "actual_close": 120.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "B", "actual_open": 100.0, "actual_close": 103.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d3, "symbol": "A", "actual_open": 100.0, "actual_close": 102.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+        {"date": d3, "symbol": "B", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 2.0, "dolvol_20d_log": 20.0},
+    ])
+
+    result = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            fee_rate=0.0,
+            fill_buffer_bps=0.0,
+            hold_through=True,
+            symbol_loss_cooldown_days=1,
+            symbol_loss_cooldown_trigger_pct=1.0,
+        ),
+        precomputed_scores=pd.Series(
+            [0.9, 0.8, 0.9, 0.8, 0.9, 0.8],
+            index=df.index,
+        ),
+    )
+
+    assert [day.trades[0].symbol for day in result.day_results] == ["A", "B", "A"]
+
+
+def test_symbol_pnl_score_penalty_rotates_after_realized_loss():
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    df = pd.DataFrame([
+        {"date": d1, "symbol": "A", "actual_open": 100.0, "actual_close": 90.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+        {"date": d1, "symbol": "B", "actual_open": 100.0, "actual_close": 102.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "A", "actual_open": 100.0, "actual_close": 105.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "B", "actual_open": 100.0, "actual_close": 102.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+    ])
+    scores = pd.Series([0.90, 0.80, 0.90, 0.80], index=df.index)
+
+    baseline = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            fee_rate=0.0,
+            fill_buffer_bps=0.0,
+        ),
+        precomputed_scores=scores,
+    )
+    assert [day.trades[0].symbol for day in baseline.day_results] == ["A", "A"]
+
+    penalized = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            fee_rate=0.0,
+            fill_buffer_bps=0.0,
+            symbol_pnl_half_life_days=5.0,
+            symbol_loss_score_penalty=0.05,
+            symbol_pnl_score_cap=1.0,
+        ),
+        precomputed_scores=scores,
+    )
+
+    assert [(day.day, day.trades[0].symbol) for day in penalized.day_results] == [
+        (d1, "A"),
+        (d2, "B"),
+    ]
+
+
+def test_min_top_score_gap_skips_crowded_low_conviction_day():
+    d1 = date(2025, 1, 2)
+    d2 = date(2025, 1, 3)
+    df = pd.DataFrame([
+        {"date": d1, "symbol": "A", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+        {"date": d1, "symbol": "B", "actual_open": 100.0, "actual_close": 103.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "A", "actual_open": 100.0, "actual_close": 101.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+        {"date": d2, "symbol": "B", "actual_open": 100.0, "actual_close": 103.0,
+         "spread_bps": 1.0, "dolvol_20d_log": 20.0},
+    ])
+
+    result = simulate(
+        df,
+        model=None,
+        config=BacktestConfig(
+            top_n=1,
+            min_dollar_vol=0.0,
+            max_spread_bps=10.0,
+            fee_rate=0.0,
+            fill_buffer_bps=0.0,
+            min_top_score_gap=0.03,
+        ),
+        precomputed_scores=pd.Series([0.90, 0.89, 0.90, 0.80], index=df.index),
+    )
+
+    assert [day.day for day in result.day_results] == [d2]
+    assert result.day_results[0].trades[0].symbol == "A"

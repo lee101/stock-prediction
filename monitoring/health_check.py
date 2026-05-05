@@ -13,6 +13,7 @@ Usage:
   python monitoring/health_check.py --json   # JSON output
   python monitoring/health_check.py --fix    # attempt auto-remediation
 """
+# ruff: noqa: I001
 
 from __future__ import annotations
 
@@ -23,10 +24,11 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone, timedelta
+import urllib.parse
+import urllib.request
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -108,11 +110,88 @@ def _xgb_supervisor_is_inert(pid: int | None) -> bool:
 
 def _trading_server_health() -> dict | None:
     try:
-        import urllib.request
         with urllib.request.urlopen("http://127.0.0.1:8050/health", timeout=3) as resp:
             return json.loads(resp.read())
     except Exception:
         return None
+
+
+def _alpaca_prod_credentials() -> tuple[str, str]:
+    _load_secretbashrc_env()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("env_real", REPO_ROOT / "env_real.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("env_real.py not found")
+    env_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(env_mod)
+    key_id = str(getattr(env_mod, "ALP_KEY_ID_PROD", "") or "").strip()
+    secret = str(getattr(env_mod, "ALP_SECRET_KEY_PROD", "") or "").strip()
+    if not key_id or not secret:
+        raise RuntimeError("ALP_KEY_ID_PROD or ALP_SECRET_KEY_PROD not set")
+    if key_id.startswith("alpaca-") or secret.startswith("alpaca-"):
+        raise RuntimeError(
+            "env_real using placeholder keys; source ~/.secretbashrc or export prod Alpaca keys"
+        )
+    return key_id, secret
+
+
+def _alpaca_get(path: str, params: dict[str, str] | None = None, timeout: int = 10) -> object:
+    key_id, secret = _alpaca_prod_credentials()
+    url = f"https://api.alpaca.markets{path}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "APCA-API-KEY-ID": key_id,
+            "APCA-API-SECRET-KEY": secret,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def _is_stock_symbol(symbol: object) -> bool:
+    normalized = str(symbol or "").upper()
+    return bool(normalized and not normalized.endswith("USD"))
+
+
+def _floatish(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _last_daily_rl_run_event() -> dict | None:
+    path = REPO_ROOT / "strategy_state" / "daily_stock_rl_run_events.jsonl"
+    if not path.exists():
+        return None
+    try:
+        lines = [line for line in path.read_text().splitlines() if line.strip()]
+    except Exception:
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if row.get("event") in {"daily_stock_run_once", "daily_stock_run_once_failed"}:
+            return row
+    return None
+
+
+def _manual_daily_stock_mode_active() -> bool:
+    lock_svc, _lock_pid = _live_writer_lock()
+    health = _trading_server_health()
+    return bool(
+        _manual_daily_rl_processes()
+        and lock_svc
+        and lock_svc.startswith("alpaca_wrapper_")
+        and health
+        and health.get("status") == "ok"
+        and bool(health.get("writer_lock_held_by_me"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +289,8 @@ def check_daily_rl_trader_stopped() -> CheckResult:
         return CheckResult(
             "daily-rl-trader",
             "fail",
-            f"daily-rl-trader is RUNNING but must be STOPPED (XGB holds the singleton) — "
-            f"immediate `sudo supervisorctl stop daily-rl-trader` needed",
+            "daily-rl-trader is RUNNING but must be STOPPED (XGB holds the singleton) — "
+            "immediate `sudo supervisorctl stop daily-rl-trader` needed",
             {"raw": out},
         )
     return CheckResult(
@@ -393,48 +472,203 @@ def _load_secretbashrc_env() -> None:
 def check_alpaca_api() -> CheckResult:
     """Quick API key validity check via positions endpoint."""
     try:
-        sys.path.insert(0, str(REPO_ROOT))
-        _load_secretbashrc_env()
-        # Try importing env_real to get credentials
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("env_real", REPO_ROOT / "env_real.py")
-        if spec is None or spec.loader is None:
-            return CheckResult("alpaca-api", "warn", "env_real.py not found")
-        env_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(env_mod)
-
-        key_id = getattr(env_mod, "ALP_KEY_ID_PROD", None)
-        secret = getattr(env_mod, "ALP_SECRET_KEY_PROD", None)
-        if not key_id or not secret:
-            return CheckResult("alpaca-api", "fail", "ALP_KEY_ID_PROD or ALP_SECRET_KEY_PROD not set")
-        if key_id.startswith("alpaca-") or secret.startswith("alpaca-"):
-            return CheckResult(
-                "alpaca-api", "warn",
-                "env_real using placeholder keys — source ~/.secretbashrc before calling, "
-                "or export ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD",
-            )
-
-        import urllib.request
         import urllib.error
-        req = urllib.request.Request(
-            "https://api.alpaca.markets/v2/account",
-            headers={
-                "APCA-API-KEY-ID": key_id,
-                "APCA-API-SECRET-KEY": secret,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            equity = float(data.get("equity", 0))
-            return CheckResult("alpaca-api", "ok",
-                               f"API key valid, equity=${equity:,.2f}",
-                               {"equity": equity, "buying_power": float(data.get("buying_power", 0))})
+        data = _alpaca_get("/v2/account")
+        if not isinstance(data, dict):
+            return CheckResult("alpaca-api", "fail", "account endpoint returned non-object JSON")
+        equity = float(data.get("equity", 0))
+        return CheckResult("alpaca-api", "ok",
+                           f"API key valid, equity=${equity:,.2f}",
+                           {"equity": equity, "buying_power": float(data.get("buying_power", 0))})
     except urllib.error.HTTPError as e:
         if e.code == 401:
             return CheckResult("alpaca-api", "fail", "API key EXPIRED (401 Unauthorized)")
         return CheckResult("alpaca-api", "fail", f"HTTP {e.code}: {e.reason}")
     except Exception as e:
         return CheckResult("alpaca-api", "warn", f"check failed: {e}")
+
+
+def check_alpaca_stock_orders_positions() -> CheckResult:
+    """Read real broker stock positions/orders; daemon liveness alone is not enough."""
+    try:
+        import urllib.error
+        now = datetime.now(timezone.utc)
+        after = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat().replace("+00:00", "Z")
+        account = _alpaca_get("/v2/account")
+        positions = _alpaca_get("/v2/positions")
+        orders = _alpaca_get(
+            "/v2/orders",
+            {
+                "status": "all",
+                "limit": "100",
+                "nested": "false",
+                "after": after,
+                "until": now.isoformat().replace("+00:00", "Z"),
+            },
+        )
+        clock = _alpaca_get("/v2/clock")
+    except urllib.error.HTTPError as e:
+        status = "fail" if e.code == 401 else "warn"
+        return CheckResult("alpaca-stock-flow", status, f"Alpaca REST HTTP {e.code}: {e.reason}")
+    except Exception as exc:
+        return CheckResult("alpaca-stock-flow", "warn", f"Alpaca broker read failed: {exc}")
+
+    if not isinstance(account, dict):
+        return CheckResult("alpaca-stock-flow", "fail", "account endpoint returned non-object JSON")
+    if not isinstance(positions, list):
+        return CheckResult("alpaca-stock-flow", "fail", "positions endpoint returned non-list JSON")
+    if not isinstance(orders, list):
+        return CheckResult("alpaca-stock-flow", "fail", "orders endpoint returned non-list JSON")
+    if not isinstance(clock, dict):
+        clock = {}
+
+    stock_positions = [
+        p for p in positions
+        if _is_stock_symbol(p.get("symbol")) and abs(_floatish(p.get("market_value"))) >= 1.0
+    ]
+    stock_orders = [
+        o for o in orders
+        if str(o.get("asset_class", "")).lower() == "us_equity" or _is_stock_symbol(o.get("symbol"))
+    ]
+    open_stock_orders = [o for o in stock_orders if str(o.get("status", "")).lower() not in {"filled", "canceled", "expired", "rejected"}]
+    stale_open: list[str] = []
+    for order in open_stock_orders:
+        submitted = str(order.get("submitted_at") or order.get("created_at") or "")
+        try:
+            submitted_at = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if submitted_at.tzinfo is None:
+            submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+        if (now - submitted_at).total_seconds() > 30 * 60:
+            stale_open.append(str(order.get("id") or order.get("client_order_id") or order.get("symbol")))
+
+    details = {
+        "account_status": account.get("status"),
+        "trading_blocked": account.get("trading_blocked"),
+        "account_blocked": account.get("account_blocked"),
+        "trade_suspended_by_user": account.get("trade_suspended_by_user"),
+        "equity": account.get("equity"),
+        "cash": account.get("cash"),
+        "buying_power": account.get("buying_power"),
+        "is_open": clock.get("is_open"),
+        "stock_positions": [
+            {
+                "symbol": p.get("symbol"),
+                "qty": p.get("qty"),
+                "market_value": p.get("market_value"),
+                "side": p.get("side"),
+            }
+            for p in stock_positions
+        ],
+        "stock_orders_today": [
+            {
+                "symbol": o.get("symbol"),
+                "side": o.get("side"),
+                "type": o.get("type"),
+                "limit_price": o.get("limit_price"),
+                "status": o.get("status"),
+                "submitted_at": o.get("submitted_at"),
+                "filled_at": o.get("filled_at"),
+            }
+            for o in stock_orders[-20:]
+        ],
+        "stale_open_orders": stale_open,
+    }
+    if account.get("status") != "ACTIVE" or account.get("trading_blocked") or account.get("account_blocked"):
+        return CheckResult("alpaca-stock-flow", "fail", "Alpaca account is not trade-ready", details)
+    if stale_open:
+        return CheckResult(
+            "alpaca-stock-flow",
+            "fail",
+            f"{len(stale_open)} open stock order(s) older than 30 minutes",
+            details,
+        )
+
+    last_run = _last_daily_rl_run_event() or {}
+    last_run_ts = str(last_run.get("timestamp") or "")
+    last_run_today = last_run_ts.startswith(datetime.now(timezone.utc).date().isoformat())
+    manual_mode = _manual_daily_stock_mode_active()
+    expected_stock_flow = bool(clock.get("is_open")) or bool(
+        last_run_today and last_run.get("market_open")
+    )
+    if manual_mode and expected_stock_flow and not stock_positions and not stock_orders:
+        status = "fail" if last_run_today else "warn"
+        action = str(last_run.get("action") or "missing")
+        reason = str(last_run.get("execution_skip_reason") or last_run.get("execution_status") or "unknown")
+        return CheckResult(
+            "alpaca-stock-flow",
+            status,
+            "manual daily-stock prod is live but has no material stock position "
+            f"and no stock orders today; last action={action} reason={reason}",
+            {**details, "last_daily_rl_run": last_run},
+        )
+
+    return CheckResult(
+        "alpaca-stock-flow",
+        "ok",
+        f"{len(stock_positions)} material stock position(s), {len(stock_orders)} stock order(s) today",
+        details,
+    )
+
+
+def check_trading_server_live_sync() -> CheckResult:
+    """Compare trading-server live_prod local state with the real Alpaca account."""
+    if not _manual_daily_stock_mode_active():
+        return CheckResult(
+            "trading-server-live-sync",
+            "ok",
+            "manual trading-server mode not active; live sync check skipped",
+        )
+
+    state_path = REPO_ROOT / "strategy_state" / "trading_server" / "accounts" / "live_prod.json"
+    if not state_path.exists():
+        return CheckResult("trading-server-live-sync", "fail", "live_prod account state file missing")
+    try:
+        local_state = json.loads(state_path.read_text())
+    except Exception as exc:
+        return CheckResult("trading-server-live-sync", "fail", f"live_prod account state unreadable: {exc}")
+    try:
+        broker = _alpaca_get("/v2/account")
+    except Exception as exc:
+        return CheckResult("trading-server-live-sync", "warn", f"broker account read failed: {exc}")
+    if not isinstance(broker, dict):
+        return CheckResult("trading-server-live-sync", "fail", "broker account endpoint returned non-object JSON")
+
+    if "broker_equity" in local_state:
+        local_equity = _floatish(local_state.get("broker_equity"))
+    else:
+        local_equity = _floatish(local_state.get("cash")) + sum(
+            _floatish(pos.get("qty")) * _floatish(pos.get("avg_entry_price"))
+            for pos in (local_state.get("positions") or {}).values()
+            if isinstance(pos, dict)
+        )
+    broker_equity = _floatish(broker.get("equity"))
+    diff = local_equity - broker_equity
+    diff_pct = abs(diff) / max(abs(broker_equity), 1.0)
+    details = {
+        "local_equity": local_equity,
+        "broker_equity": broker_equity,
+        "diff": diff,
+        "diff_pct": diff_pct,
+        "local_cash": local_state.get("cash"),
+        "broker_cash": broker.get("cash"),
+        "local_updated_at": local_state.get("updated_at"),
+    }
+    if diff_pct > 0.05:
+        return CheckResult(
+            "trading-server-live-sync",
+            "fail",
+            f"trading-server live_prod local equity ${local_equity:,.2f} differs "
+            f"from Alpaca equity ${broker_equity:,.2f} by {diff_pct:.1%}",
+            details,
+        )
+    return CheckResult(
+        "trading-server-live-sync",
+        "ok",
+        f"local equity ${local_equity:,.2f} matches Alpaca equity ${broker_equity:,.2f}",
+        details,
+    )
 
 
 def check_portfolio_state() -> CheckResult:
@@ -731,32 +965,32 @@ def _invalid_ok_status_artifacts(
 
     expected_names = _expected_ok_status_artifact_names(name, fields)
     if expected_names is None:
-        return [f"{field}:bad_name" for field in required]
+        return [f"{required_field}:bad_name" for required_field in required]
 
     invalid = _artifact_timestamp_errors(expected_names["log"], current_ts)
-    for field in required:
-        value = fields.get(field, "")
+    for required_field in required:
+        value = fields.get(required_field, "")
         if not value:
-            invalid.append(f"{field}:missing")
+            invalid.append(f"{required_field}:missing")
             continue
         path = _status_artifact_path(value)
-        if path.name != expected_names[field]:
-            invalid.append(f"{field}:bad_name")
+        if path.name != expected_names[required_field]:
+            invalid.append(f"{required_field}:bad_name")
             continue
         if not path.exists():
-            invalid.append(f"{field}:missing")
+            invalid.append(f"{required_field}:missing")
             continue
         if not _status_artifact_is_in_log_dir(path):
-            invalid.append(f"{field}:outside_log_dir")
+            invalid.append(f"{required_field}:outside_log_dir")
             continue
         try:
             if path.stat().st_size <= 0:
-                invalid.append(f"{field}:empty")
+                invalid.append(f"{required_field}:empty")
                 continue
         except OSError:
-            invalid.append(f"{field}:unreadable")
+            invalid.append(f"{required_field}:unreadable")
             continue
-        invalid.extend(_artifact_hash_errors(field, path, fields))
+        invalid.extend(_artifact_hash_errors(required_field, path, fields))
     return invalid
 
 
@@ -764,8 +998,12 @@ def check_scheduled_audit_status() -> CheckResult:
     """Check wrapper-owned current-status files for scheduled audit failures."""
     now = time.time()
     specs = [
-        ("codex", LOG_DIR / "codex_current.log", 48 * 3600),
+        ("codex", LOG_DIR / "codex_current.log", 48 * 3600, True),
     ]
+    hourly_current = LOG_DIR / "hourly_current.log"
+    if hourly_current.exists():
+        hourly_stale_after = 3 * 3600 if _hourly_audit_expected_now(now) else None
+        specs.append(("hourly", hourly_current, hourly_stale_after, False))
     missing: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
@@ -773,10 +1011,11 @@ def check_scheduled_audit_status() -> CheckResult:
     ok: list[str] = []
     details: dict[str, dict[str, str] | str] = {}
 
-    for name, path, stale_after_s in specs:
+    for name, path, stale_after_s, required in specs:
         if not path.exists():
-            missing.append(name)
-            details[name] = "missing"
+            if required:
+                missing.append(name)
+                details[name] = "missing"
             continue
         try:
             text = path.read_text().strip()
@@ -900,9 +1139,9 @@ def _monitor_status_contract_error(fields: dict[str, str]) -> str | None:
     if missing:
         return "missing field(s): " + ", ".join(missing)
 
-    for field in ["rc", "final_rc"]:
-        if not fields[field].isdigit():
-            return f"non-integer {field}={fields[field]}"
+    for numeric_field in ["rc", "final_rc"]:
+        if not fields[numeric_field].isdigit():
+            return f"non-integer {numeric_field}={fields[numeric_field]}"
     if fields["initial_rc"] != "NA" and not fields["initial_rc"].isdigit():
         return f"non-integer initial_rc={fields['initial_rc']}"
     agent_rc = fields["agent_rc"]
@@ -1242,6 +1481,8 @@ def run_all_checks() -> list[CheckResult]:
         check_llm_stock_trader,
         check_cancel_multi_orders,
         check_alpaca_api,
+        check_alpaca_stock_orders_positions,
+        check_trading_server_live_sync,
         check_portfolio_state,
         check_recent_activity,
         check_xgb_spy_provenance,
@@ -1299,7 +1540,7 @@ def main():
         print(f"  [{icon}] {r.name}: {r.message}")
 
     if args.fix and actions:
-        print(f"\nAuto-fix actions taken:")
+        print("\nAuto-fix actions taken:")
         for a in actions:
             print(f"  -> {a}")
 
