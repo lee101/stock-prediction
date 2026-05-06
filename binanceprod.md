@@ -1,5 +1,53 @@
 # Binance Production Systems
 
+## Hourly XGB Margin-Pack Still Paused After 2026-05-06 Refresh (2026-05-06 UTC)
+
+No new Binance XGB entries should be running.
+
+Operational state checked on fresh data:
+
+- No active Binance XGB writer process was found; only cache refresh tooling was
+  running.
+- Margin account was not all USDT: net equity was about `$3.1k`, with actionable
+  long exposure in `ETH`, `AAVE`, `DOGE`, `BTC`, and `SOL`, plus about `$1.26k`
+  free/net `USDT`.
+- Open margin orders were `5` covered long exits, all `SELL`: `BTC`, `ETH`,
+  `DOGE`, `SOL`, and `AAVE`.
+- Exit coverage was clean: `positions=5`, `covered=5`, `missing=0`,
+  `partial=0`.
+
+Fresh dry-run inference after hourly refresh:
+
+- Data refreshed through `2026-05-06T01:00:00Z`; dry-run decision timestamp was
+  `2026-05-05T23:00:00Z`.
+- The deployed runner remains short-only by design, so new entries are expected
+  to be `SELL`/short entries rather than buy orders.
+- Dry-run candidates were `ICPUSDT` and `RENDERUSDT` shorts, about `$3.03k`
+  notional each, with matching post-fill `BUY` exits planned.
+
+Fresh current-code revalidation through `2026-05-06T01:00:00Z`:
+
+- Exact current deployed pack, short-only:
+  `+1.99%/mo`, `+8.16%` total, `34.08%` max DD, Sortino `1.07`, `152` trades.
+- Same config, long-only:
+  `-18.03%/mo`, `-54.70%` total, `57.77%` max DD.
+- Same config, both sides:
+  `-13.69%/mo`, `-44.36%` total, `47.08%` max DD.
+- A 120-row refreshed short-only sweep found one row above the monthly return
+  gate, but only with `45.48%` max DD:
+  `+30.97%/mo`, `+192.90%` total, Sortino `4.12`.
+- Best controlled leverage clamp on that family:
+  `+20.90%/mo`, `+112.99%` total, `19.70%` max DD, Sortino `3.62`,
+  using `risk=0.35`, `cvar=0.5`, `max_positions=2`, `max_leverage=2.0`.
+- A slightly higher return clamp row reached `+21.86%/mo` with `20.83%` DD, but
+  still missed the production monthly return gate.
+
+Decision: hold paused. The "all sells" observation is consistent with the
+currently deployed short-only XGB runner, not an order-direction bug. Adding
+longs to this signal made the refreshed replay materially worse. Do not restart
+or promote this runner until a fresh candidate clears the `>=27%/mo` production
+return gate with acceptable drawdown on binary fills.
+
 ## Hourly XGB Margin-Pack Paused After Fresh Revalidation (2026-05-04 NZ / 2026-05-04 UTC)
 
 No new Binance XGB entries are currently running.
