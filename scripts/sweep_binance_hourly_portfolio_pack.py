@@ -749,15 +749,27 @@ def _monthly_return(total_return: float, start: pd.Timestamp, end: pd.Timestamp)
 def compute_pack_selection_score(row: dict[str, Any], *, min_result_trades: int = 10) -> float:
     """Rank configs by return/risk while rejecting "smooth because idle" rows."""
     num_sells = int(row.get("num_sells", 0) or 0)
+    num_buys = int(row.get("num_buys", 0) or 0)
     min_trades = max(0, int(min_result_trades))
     trade_shortfall = max(0, min_trades - num_sells)
     idle_penalty = 100.0 if num_sells <= 0 else 0.0
+    idle_cash_pct = 100.0 * max(0.0, min(1.0, float(row.get("avg_idle_cash_fraction", 0.0) or 0.0)))
+    working_capital_pct = 100.0 * max(0.0, min(2.5, float(row.get("avg_working_capital_fraction", 0.0) or 0.0)))
+    trade_balance_ratio = max(0.0, min(1.0, float(row.get("trade_balance_ratio", 0.0) or 0.0)))
+    trade_imbalance_penalty = 20.0 * (1.0 - trade_balance_ratio) if max(num_buys, num_sells) > 0 else 0.0
+    unrealized_gap_pct = max(0.0, float(row.get("unrealized_drawdown_gap_pct", 0.0) or 0.0))
+    realized_dd_pct = max(0.0, float(row.get("realized_max_drawdown_pct", 0.0) or 0.0))
     return float(
         row["monthly_return_pct"]
         + 8.0 * row["sortino"]
         + 20.0 * row["pnl_smoothness_score"]
         + 5.0 * row["goodness_score"]
+        + 0.20 * working_capital_pct
         - 1.5 * row["max_drawdown_pct"]
+        - 0.75 * realized_dd_pct
+        - 0.75 * unrealized_gap_pct
+        - 0.35 * idle_cash_pct
+        - trade_imbalance_penalty
         - idle_penalty
         - 4.0 * trade_shortfall
     )
@@ -855,6 +867,13 @@ def evaluate_pack(
         "target_exits": int(result.metrics.get("target_exits", 0)),
         "timeout_exits": int(result.metrics.get("timeout_exits", 0)),
         "forced_hour_exits": int(result.metrics.get("forced_hour_exits", 0)),
+        "realized_max_drawdown_pct": 100.0 * float(result.metrics.get("realized_max_drawdown", 0.0)),
+        "unrealized_drawdown_gap_pct": 100.0 * float(result.metrics.get("unrealized_drawdown_gap", 0.0)),
+        "avg_gross_exposure_fraction": float(result.metrics.get("avg_gross_exposure_fraction", 0.0)),
+        "avg_pending_entry_fraction": float(result.metrics.get("avg_pending_entry_fraction", 0.0)),
+        "avg_working_capital_fraction": float(result.metrics.get("avg_working_capital_fraction", 0.0)),
+        "avg_idle_cash_fraction": float(result.metrics.get("avg_idle_cash_fraction", 0.0)),
+        "trade_balance_ratio": float(result.metrics.get("trade_balance_ratio", 0.0)),
     }
     row["entry_block_hours_utc"] = str(args.entry_block_hours_utc)
     row["force_exit_hours_utc"] = str(args.force_exit_hours_utc)

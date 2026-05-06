@@ -761,8 +761,34 @@ def test_selection_score_penalizes_idle_configs():
         "pnl_smoothness_score": 1.0,
         "goodness_score": 0.5,
         "max_drawdown_pct": 0.0,
+        "realized_max_drawdown_pct": 0.0,
+        "unrealized_drawdown_gap_pct": 0.0,
+        "avg_working_capital_fraction": 0.5,
+        "avg_idle_cash_fraction": 0.5,
+        "trade_balance_ratio": 1.0,
     }
     idle = dict(base, num_sells=0)
-    active = dict(base, num_sells=10)
+    active = dict(base, num_buys=10, num_sells=10, avg_working_capital_fraction=0.9, avg_idle_cash_fraction=0.1)
 
     assert compute_pack_selection_score(active) > compute_pack_selection_score(idle)
+
+
+def test_selection_score_penalizes_idle_cash_and_imbalanced_trade_counts():
+    base = {
+        "monthly_return_pct": 2.0,
+        "sortino": 1.0,
+        "pnl_smoothness_score": 0.5,
+        "goodness_score": 0.5,
+        "max_drawdown_pct": 4.0,
+        "realized_max_drawdown_pct": 1.0,
+        "unrealized_drawdown_gap_pct": 2.0,
+        "num_buys": 20,
+        "num_sells": 20,
+        "trade_balance_ratio": 1.0,
+    }
+    working = dict(base, avg_working_capital_fraction=0.9, avg_idle_cash_fraction=0.1)
+    idle = dict(base, avg_working_capital_fraction=0.1, avg_idle_cash_fraction=0.9)
+    imbalanced = dict(working, num_buys=20, num_sells=2, trade_balance_ratio=0.1)
+
+    assert compute_pack_selection_score(working) > compute_pack_selection_score(idle)
+    assert compute_pack_selection_score(working) > compute_pack_selection_score(imbalanced)

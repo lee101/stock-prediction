@@ -231,6 +231,54 @@ def test_select_live_candidates_allocates_two_short_orders(monkeypatch: pytest.M
     assert min(candidate.notional_usdt for candidate in selected) >= 100.0 - 1e-9
 
 
+def test_candidate_filter_diagnostics_counts_active_symbol_blocks() -> None:
+    actions = pd.DataFrame(
+        [
+            {"symbol": "AAAUSDT", "sell_amount": 100.0, "sell_price": 101.0, "buy_price": 99.0},
+            {"symbol": "BBBUSDT", "sell_amount": 50.0, "sell_price": 102.0, "buy_price": 98.0},
+            {"symbol": "CCCUSDT", "sell_amount": 0.0, "sell_price": 103.0, "buy_price": 97.0},
+        ]
+    )
+
+    diagnostics = trader._candidate_filter_diagnostics(actions, {"AAAUSDT", "DOGEUSDT"})
+
+    assert diagnostics == {
+        "active_short_signals": 2,
+        "active_short_symbols": 2,
+        "blocked_by_active_margin_symbol": 1,
+        "blocked_symbols": ["AAAUSDT"],
+        "eligible_short_symbols_after_active_filter": 1,
+    }
+
+
+def test_active_margin_symbols_ignores_non_actionable_dust(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.binan import binance_margin, binance_wrapper
+
+    monkeypatch.setattr(
+        binance_margin,
+        "get_margin_account",
+        lambda: {
+            "userAssets": [
+                {"asset": "LINK", "netAsset": "0.01"},
+                {"asset": "AAVE", "netAsset": "2.0"},
+                {"asset": "USDT", "netAsset": "100.0"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        binance_margin,
+        "get_open_margin_orders",
+        lambda: [{"symbol": "DOGEUSDT"}],
+    )
+    monkeypatch.setattr(
+        binance_wrapper,
+        "get_symbol_price",
+        lambda pair: {"LINKUSDT": 10.0, "AAVEUSDT": 100.0}.get(pair),
+    )
+
+    assert trader._active_margin_symbols() == {"AAVEUSDT", "DOGEUSDT"}
+
+
 def test_place_entry_orders_places_exit_for_immediate_fill(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 

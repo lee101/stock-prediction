@@ -60,4 +60,11 @@ def test_portfolio_simulation_emits_goodness_metrics() -> None:
     assert result.metrics["pnl_smoothness_score"] == 1.0
     assert result.metrics["ulcer_index"] == 0.0
     assert result.metrics["trade_rate"] == 1.0 / 24.0
+    assert result.metrics["realized_max_drawdown"] == 0.0
+    assert result.metrics["unrealized_drawdown_gap"] == 0.0
+    assert result.metrics["avg_gross_exposure_fraction"] == 1.0
+    assert result.metrics["avg_pending_entry_fraction"] == 0.0
+    assert result.metrics["avg_working_capital_fraction"] == 1.0
+    assert result.metrics["avg_idle_cash_fraction"] == 0.5
+    assert result.metrics["trade_balance_ratio"] == 1.0
     assert result.metrics["goodness_score"] > 0.0

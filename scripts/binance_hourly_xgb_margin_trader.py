@@ -350,6 +350,25 @@ def _current_price(symbol: str, fallback: float, *, use_live_price: bool) -> flo
     return float(fallback)
 
 
+def _margin_position_value_usdt(asset: str, net_qty: float) -> float | None:
+    base = str(asset or "").upper().strip()
+    if not base:
+        return None
+    qty = abs(float(net_qty))
+    if base in {"USDT", "FDUSD", "BUSD", "USDC"}:
+        return qty
+    try:
+        from src.binan import binance_wrapper
+
+        for pair in (f"{base}USDT", f"{base}FDUSD", f"{base}BUSD", f"{base}USDC"):
+            price = binance_wrapper.get_symbol_price(pair)
+            if price is not None and float(price) > 0.0:
+                return qty * float(price)
+    except Exception:
+        return None
+    return None
+
+
 def _active_margin_symbols() -> set[str]:
     try:
         from src.binan.binance_margin import get_margin_account, get_open_margin_orders
@@ -368,6 +387,9 @@ def _active_margin_symbols() -> set[str]:
             except (TypeError, ValueError):
                 net_qty = 0.0
             if abs(net_qty) > 1e-12:
+                position_value = _margin_position_value_usdt(asset, net_qty)
+                if position_value is not None and position_value < MIN_TRADE_USDT:
+                    continue
                 active.add(f"{asset}USDT")
     except Exception:
         pass
@@ -380,6 +402,32 @@ def _active_margin_symbols() -> set[str]:
     except Exception:
         pass
     return active
+
+
+def _candidate_filter_diagnostics(actions: pd.DataFrame, active_symbols: set[str]) -> dict[str, Any]:
+    required = {"sell_amount", "sell_price", "buy_price", "symbol"}
+    if actions.empty or not required.issubset(actions.columns):
+        return {
+            "active_short_signals": 0,
+            "active_short_symbols": 0,
+            "blocked_by_active_margin_symbol": 0,
+            "blocked_symbols": [],
+            "eligible_short_symbols_after_active_filter": 0,
+        }
+    active = actions[
+        (actions["sell_amount"].astype(float) > 0.0)
+        & (actions["sell_price"].astype(float) > 0.0)
+        & (actions["buy_price"].astype(float) > 0.0)
+    ].copy()
+    symbols = {str(symbol).upper().strip() for symbol in active.get("symbol", []) if str(symbol).strip()}
+    blocked = sorted(symbol for symbol in symbols if symbol in active_symbols)
+    return {
+        "active_short_signals": len(active),
+        "active_short_symbols": len(symbols),
+        "blocked_by_active_margin_symbol": len(blocked),
+        "blocked_symbols": blocked,
+        "eligible_short_symbols_after_active_filter": len(symbols - set(blocked)),
+    }
 
 
 def build_order_payloads(candidate: XGBLiveCandidate) -> tuple[XGBOrderPayload, XGBOrderPayload]:
@@ -939,6 +987,7 @@ def run_once(args: argparse.Namespace) -> int:
         "max_total_entry_notional_usdt": float(remaining_entry_cap),
         "entry_fill_wait_seconds": float(_entry_fill_wait_seconds(args)),
         "active_margin_symbols": sorted(active_symbols),
+        "candidate_filter_diagnostics": _candidate_filter_diagnostics(actions, active_symbols),
         "candidates": [asdict(candidate) for candidate in candidates],
         "orders": [
             {"entry": asdict(entry), "exit_after_fill": asdict(exit_after_fill)}

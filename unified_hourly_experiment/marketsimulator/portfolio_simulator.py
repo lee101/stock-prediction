@@ -24,6 +24,7 @@ from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, pr
 from src.metrics_utils import annualized_sortino
 from src.robust_trading_metrics import (
     compute_market_sim_goodness_score,
+    compute_max_drawdown,
     compute_pnl_smoothness_from_equity,
     compute_trade_rate,
     compute_ulcer_index,
@@ -150,6 +151,9 @@ def _build_portfolio_result(
     initial_cash: float,
     symbols: Sequence[str],
     final_equity: float,
+    realized_equity_values: np.ndarray | None = None,
+    gross_exposure_values: np.ndarray | None = None,
+    pending_entry_values: np.ndarray | None = None,
 ) -> PortfolioResult:
     if len(equity_values) > 0:
         equity_curve = pd.Series(equity_values, index=equity_index)
@@ -193,6 +197,45 @@ def _build_portfolio_result(
         trade_rate=trade_rate,
         period_count=len(equity_curve),
     )
+    realized_values = (
+        np.asarray(realized_equity_values, dtype=np.float64)
+        if realized_equity_values is not None
+        else np.asarray([], dtype=np.float64)
+    )
+    gross_values = (
+        np.asarray(gross_exposure_values, dtype=np.float64)
+        if gross_exposure_values is not None
+        else np.asarray([], dtype=np.float64)
+    )
+    pending_values = (
+        np.asarray(pending_entry_values, dtype=np.float64)
+        if pending_entry_values is not None
+        else np.asarray([], dtype=np.float64)
+    )
+    if len(realized_values) == len(equity_values) and len(realized_values) > 0:
+        realized_max_drawdown = compute_max_drawdown(realized_values)
+        unrealized_drawdown_gap = max(0.0, max_drawdown - realized_max_drawdown)
+    else:
+        realized_max_drawdown = 0.0
+        unrealized_drawdown_gap = max_drawdown
+    if len(gross_values) == len(equity_values) and len(equity_values) > 0:
+        equity_denominator = np.maximum(np.asarray(equity_values, dtype=np.float64), 1e-12)
+        pending_for_fraction = pending_values if len(pending_values) == len(equity_values) else np.zeros_like(gross_values)
+        working_fraction = np.clip((gross_values + pending_for_fraction) / equity_denominator, 0.0, 10.0)
+        avg_gross_exposure_fraction = float(np.mean(np.clip(gross_values / equity_denominator, 0.0, 10.0)))
+        avg_pending_entry_fraction = float(np.mean(np.clip(pending_for_fraction / equity_denominator, 0.0, 10.0)))
+        avg_working_capital_fraction = float(np.mean(working_fraction))
+        avg_idle_cash_fraction = float(np.mean(np.clip(1.0 - working_fraction, 0.0, 1.0)))
+    else:
+        avg_gross_exposure_fraction = 0.0
+        avg_pending_entry_fraction = 0.0
+        avg_working_capital_fraction = 0.0
+        avg_idle_cash_fraction = 1.0 if len(equity_values) > 0 else 0.0
+    trade_balance_ratio = (
+        min(n_buys, n_sells) / max(n_buys, n_sells)
+        if max(n_buys, n_sells) > 0
+        else 0.0
+    )
 
     metrics = {
         "total_return": total_return,
@@ -211,6 +254,13 @@ def _build_portfolio_result(
         "timeout_exits": timeouts,
         "eod_exits": eods,
         "forced_hour_exits": forced_hour_exits,
+        "realized_max_drawdown": realized_max_drawdown,
+        "unrealized_drawdown_gap": unrealized_drawdown_gap,
+        "avg_gross_exposure_fraction": avg_gross_exposure_fraction,
+        "avg_pending_entry_fraction": avg_pending_entry_fraction,
+        "avg_working_capital_fraction": avg_working_capital_fraction,
+        "avg_idle_cash_fraction": avg_idle_cash_fraction,
+        "trade_balance_ratio": trade_balance_ratio,
     }
     return PortfolioResult(equity_curve=equity_curve, trades=trades, metrics=metrics)
 
@@ -770,6 +820,9 @@ def run_portfolio_simulation(
     pending_entries: Dict[str, Dict[str, Any]] = {}
     last_close: Dict[str, float] = {}
     equity_values: List[Tuple[pd.Timestamp, float]] = []
+    realized_equity_values: List[float] = []
+    gross_exposure_values: List[float] = []
+    pending_entry_values: List[float] = []
     trades: List[UnifiedTradeRecord] = []
     force_exit_hours = _normalized_force_exit_hours(cfg.force_exit_hours_utc)
     entry_pause_until: pd.Timestamp | None = None
@@ -787,6 +840,28 @@ def run_portfolio_simulation(
 
     def _equity():
         return cash + _mtm()
+
+    def _entry_mark_mtm():
+        total = 0.0
+        for pos in positions.values():
+            total += pos.qty * pos.entry_price
+        return total
+
+    def _gross_exposure():
+        total = 0.0
+        for pos in positions.values():
+            price = last_close.get(pos.symbol, pos.entry_price)
+            total += abs(pos.qty * price)
+        return total
+
+    def _pending_entry_notional():
+        total = 0.0
+        for pending in pending_entries.values():
+            try:
+                total += abs(float(pending.get("qty", 0.0)) * float(pending.get("entry_price", 0.0)))
+            except (TypeError, ValueError):
+                continue
+        return total
 
     def _bar_margin_for_symbol(sym: str) -> float:
         del sym
@@ -830,6 +905,9 @@ def run_portfolio_simulation(
 
     def _append_equity_snapshot(ts: pd.Timestamp) -> bool:
         equity_values.append((ts, _equity()))
+        realized_equity_values.append(cash + _entry_mark_mtm())
+        gross_exposure_values.append(_gross_exposure())
+        pending_entry_values.append(_pending_entry_notional())
         if not bool(cfg.drawdown_profit_early_exit):
             return False
         early_exit = evaluate_drawdown_vs_profit_early_exit(
@@ -1345,4 +1423,7 @@ def run_portfolio_simulation(
         initial_cash=float(cfg.initial_cash),
         symbols=symbols,
         final_equity=float(final_equity),
+        realized_equity_values=np.asarray(realized_equity_values, dtype=np.float64),
+        gross_exposure_values=np.asarray(gross_exposure_values, dtype=np.float64),
+        pending_entry_values=np.asarray(pending_entry_values, dtype=np.float64),
     )
