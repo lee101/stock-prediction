@@ -232,6 +232,64 @@ def get_borrow_repay_records(
     return [e for e in rows if isinstance(e, dict)]
 
 
+def get_small_liability_exchange_assets(client: Client | None = None) -> List[Dict[str, Any]]:
+    """Return cross-margin liabilities eligible for Binance small-liability exchange."""
+    client = _resolve_client(client)
+    try:
+        result = client.get_small_liability_exchange_assets()
+    except Exception as exc:
+        logger.error(f"Failed to fetch small liability exchange assets: {exc}")
+        return []
+    if not isinstance(result, list):
+        return []
+    return [e for e in result if isinstance(e, dict)]
+
+
+def exchange_small_liability_assets(
+    assets: List[str],
+    client: Client | None = None,
+) -> Dict[str, Any]:
+    """Exchange tiny cross-margin liabilities into their liability asset."""
+    client = _resolve_client(client)
+    cleaned = [str(asset).strip().upper() for asset in assets if str(asset).strip()]
+    if not cleaned:
+        raise ValueError("assets cannot be empty")
+    try:
+        result = client.exchange_small_liability_assets(assetNames=cleaned)
+    except Exception as exc:
+        logger.error(f"Failed to exchange small liabilities {cleaned}: {exc}")
+        raise
+    return result if isinstance(result, dict) else {"result": result}
+
+
+def get_margin_dust_assets(client: Client | None = None) -> Dict[str, Any]:
+    """Return cross-margin dust assets eligible for conversion to BNB."""
+    client = _resolve_client(client)
+    try:
+        result = client.get_margin_dust_assets()
+    except Exception as exc:
+        logger.error(f"Failed to fetch margin dust assets: {exc}")
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def transfer_margin_dust(
+    assets: List[str],
+    client: Client | None = None,
+) -> Dict[str, Any]:
+    """Convert tiny cross-margin asset balances to BNB."""
+    client = _resolve_client(client)
+    cleaned = [str(asset).strip().upper() for asset in assets if str(asset).strip()]
+    if not cleaned:
+        raise ValueError("assets cannot be empty")
+    try:
+        result = client.transfer_margin_dust(asset=cleaned)
+    except Exception as exc:
+        logger.error(f"Failed to transfer margin dust {cleaned}: {exc}")
+        raise
+    return result if isinstance(result, dict) else {"result": result}
+
+
 # --- Orders ---
 
 

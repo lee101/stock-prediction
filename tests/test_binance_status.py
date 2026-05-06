@@ -41,11 +41,14 @@ def test_margin_exit_coverage_rows_split_actionable_and_dust() -> None:
         {"asset": "ETH", "net": 0.2, "value_usdt": 500.0},
         {"asset": "AAVE", "net": 3.0, "value_usdt": 300.0},
         {"asset": "ADA", "net": 0.05, "value_usdt": 0.02},
+        {"asset": "TON", "net": -0.02, "value_usdt": -0.04},
+        {"asset": "DOGE", "net": -100.0, "value_usdt": -15.0},
     ]
     open_margin_orders = [
         {"symbol": "BTCFDUSD", "side": "SELL", "origQty": "0.01", "executedQty": "0"},
         {"symbol": "ETHUSDT", "side": "SELL", "origQty": "0.1", "executedQty": "0"},
         {"symbol": "ADAUSDT", "side": "BUY", "origQty": "1.0", "executedQty": "0"},
+        {"symbol": "DOGEUSDT", "side": "BUY", "origQty": "100", "executedQty": "0"},
     ]
 
     rows = binance_status._margin_exit_coverage_rows(margin_rows, open_margin_orders)
@@ -57,6 +60,9 @@ def test_margin_exit_coverage_rows_split_actionable_and_dust() -> None:
     assert by_asset["AAVE"]["status"] == "missing"
     assert by_asset["ADA"]["status"] == "dust"
     assert by_asset["ADA"]["buy_qty"] == 1.0
+    assert by_asset["TON"]["status"] == "dust_liability"
+    assert by_asset["DOGE"]["status"] == "covered"
+    assert by_asset["DOGE"]["buy_qty"] == 100.0
     assert "USDT" not in by_asset
 
 

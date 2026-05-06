@@ -184,18 +184,21 @@ def _margin_exit_coverage_rows(margin_rows, open_margin_orders):
         net = float(row.get("net") or 0.0)
         value = row.get("value_usdt")
         value = float(value) if value is not None else 0.0
-        if net <= 0.0:
-            continue
         pair_candidates = _stable_quote_pair_candidates(asset)
         sell_qty = sum(sell_qty_by_pair.get(pair, 0.0) for pair in pair_candidates)
         buy_qty = sum(buy_qty_by_pair.get(pair, 0.0) for pair in pair_candidates)
-        ratio = sell_qty / max(net, 1e-12)
-        actionable = value >= MIN_ACTIONABLE_MARGIN_VALUE_USDT
+        position_qty = abs(net)
+        if net < 0.0:
+            coverage_qty = buy_qty
+        else:
+            coverage_qty = sell_qty
+        ratio = coverage_qty / max(position_qty, 1e-12)
+        actionable = abs(value) >= MIN_ACTIONABLE_MARGIN_VALUE_USDT
         if not actionable:
-            status = "dust"
+            status = "dust_liability" if net < 0.0 else "dust"
         elif ratio >= 0.98:
             status = "covered"
-        elif sell_qty > 0.0:
+        elif coverage_qty > 0.0:
             status = "partial"
         else:
             status = "missing"
@@ -296,15 +299,17 @@ def main():
 
     if margin_rows:
         coverage_rows = _margin_exit_coverage_rows(margin_rows, margin_orders)
-        actionable = [row for row in coverage_rows if row["status"] != "dust"]
+        actionable = [row for row in coverage_rows if row["status"] not in {"dust", "dust_liability"}]
         covered = sum(1 for row in actionable if row["status"] == "covered")
         partial = sum(1 for row in actionable if row["status"] == "partial")
         missing = sum(1 for row in actionable if row["status"] == "missing")
         dust = [row for row in coverage_rows if row["status"] == "dust"]
+        dust_liability = [row for row in coverage_rows if row["status"] == "dust_liability"]
         print(
             f"\n-- MARGIN EXIT COVERAGE "
             f"(actionable {covered}/{len(actionable)} covered, partial={partial}, missing={missing}, "
-            f"dust={len(dust)} below ${MIN_ACTIONABLE_MARGIN_VALUE_USDT:.0f}) --"
+            f"dust={len(dust)}, liability_dust={len(dust_liability)} below "
+            f"${MIN_ACTIONABLE_MARGIN_VALUE_USDT:.0f}) --"
         )
         rows = []
         for row in coverage_rows:
