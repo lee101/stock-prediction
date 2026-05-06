@@ -14,18 +14,19 @@ import hashlib
 import json
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
-import numpy as np
 import pandas as pd
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from scripts.sweep_binance_hourly_portfolio_pack import (
+from scripts.sweep_binance_hourly_portfolio_pack import (  # noqa: E402
     PackConfig,
     _discover_symbols,
     _filter_liquid_frames,
@@ -143,7 +144,7 @@ def load_candidate_configs(
             continue
         rank_key = rank_by if rank_by in rows[0] else "monthly_return_pct"
 
-        def rank_value(item: tuple[int, dict[str, str]]) -> float:
+        def rank_value(item: tuple[int, dict[str, str]], rank_key: str = rank_key) -> float:
             try:
                 return float(item[1].get(rank_key, "-inf"))
             except ValueError:
@@ -205,7 +206,7 @@ def summarize_results(rows: list[dict[str, Any]], *, min_trades: int) -> list[di
             "min_take_profit_bps": float(first.get("min_take_profit_bps", 0.0)),
             "source": first["source"],
             "source_row": int(first["source_row"]),
-            "cells": int(len(group)),
+            "cells": len(group),
             "negative_cells": int((monthly < 0.0).sum()),
             "median_monthly_return_pct": float(monthly.median()),
             "worst_monthly_return_pct": float(monthly.min()),
@@ -250,6 +251,7 @@ def _eval_args(
         max_exit_gap_bps=float(args.max_exit_gap_bps),
         fee_rate=float(args.fee_rate),
         top_candidates_per_hour=int(args.top_candidates_per_hour),
+        top_candidates_include_inactive=bool(args.top_candidates_include_inactive),
         initial_cash=float(args.initial_cash),
         entry_intensity_power=float(args.entry_intensity_power),
         entry_min_intensity_fraction=float(args.entry_min_intensity_fraction),
@@ -258,6 +260,18 @@ def _eval_args(
         decision_lag=int(args.decision_lag),
         entry_allocator_max_single_position_fraction=float(args.entry_allocator_max_single_position_fraction),
         entry_allocator_reserve_fraction=float(args.entry_allocator_reserve_fraction),
+        entry_allocator_min_active_positions=int(args.entry_allocator_min_active_positions),
+        entry_allocator_min_second_position_fraction=float(args.entry_allocator_min_second_position_fraction),
+        entry_drawdown_pause_threshold=float(args.entry_drawdown_pause_threshold),
+        entry_drawdown_resume_threshold=float(args.entry_drawdown_resume_threshold),
+        entry_drawdown_cooldown_hours=int(args.entry_drawdown_cooldown_hours),
+        entry_drawdown_scale_start=float(args.entry_drawdown_scale_start),
+        entry_drawdown_scale_full=float(args.entry_drawdown_scale_full),
+        entry_drawdown_scale_floor=float(args.entry_drawdown_scale_floor),
+        entry_diversify_buckets=int(args.entry_diversify_buckets),
+        entry_corr_window_bars=int(args.entry_corr_window_bars),
+        entry_corr_min_periods=int(args.entry_corr_min_periods),
+        entry_corr_max_signed=float(args.entry_corr_max_signed),
         fill_buffer_bps=float(fill_buffer_bps),
         side_mode=str(args.side_mode),
         entry_block_hours_utc=str(args.entry_block_hours_utc),
@@ -329,7 +343,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-symbols-by-dollar-volume", type=int, default=0)
     parser.add_argument("--train-days", type=int, default=720)
     parser.add_argument("--eval-days", type=int, default=120)
-    parser.add_argument("--end-dates", default="2025-07-22T21:00:00+00:00,2025-11-19T21:00:00+00:00,2026-03-19T21:00:00+00:00")
+    parser.add_argument(
+        "--end-dates", default="2025-07-22T21:00:00+00:00,2025-11-19T21:00:00+00:00,2026-03-19T21:00:00+00:00"
+    )
     parser.add_argument("--label-horizon", type=int, default=24)
     parser.add_argument("--rounds", type=int, default=80)
     parser.add_argument("--device", default="cuda")
@@ -349,10 +365,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-entry-gap-bps", type=float, default=120.0)
     parser.add_argument("--max-exit-gap-bps", type=float, default=250.0)
     parser.add_argument("--top-candidates-per-hour", type=int, default=15)
+    parser.add_argument("--top-candidates-include-inactive", action="store_true")
     parser.add_argument("--entry-intensity-power", type=float, default=1.0)
     parser.add_argument("--entry-min-intensity-fraction", type=float, default=0.0)
     parser.add_argument("--entry-allocator-max-single-position-fraction", type=float, default=0.35)
     parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.05)
+    parser.add_argument("--entry-allocator-min-active-positions", type=int, default=0)
+    parser.add_argument("--entry-allocator-min-second-position-fraction", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-pause-threshold", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-resume-threshold", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-cooldown-hours", type=int, default=0)
+    parser.add_argument("--entry-drawdown-scale-start", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-scale-full", type=float, default=0.0)
+    parser.add_argument("--entry-drawdown-scale-floor", type=float, default=1.0)
+    parser.add_argument("--entry-diversify-buckets", type=int, default=0)
+    parser.add_argument("--entry-corr-window-bars", type=int, default=0)
+    parser.add_argument("--entry-corr-min-periods", type=int, default=24)
+    parser.add_argument("--entry-corr-max-signed", type=float, default=1.0)
     parser.add_argument("--side-mode", choices=("long", "short"), default="long")
     parser.add_argument(
         "--entry-block-hours-utc",

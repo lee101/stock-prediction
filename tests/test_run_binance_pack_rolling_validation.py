@@ -161,6 +161,23 @@ def test_eval_args_passes_time_controls_to_pack_evaluator():
             "14",
             "--side-mode",
             "short",
+            "--top-candidates-include-inactive",
+            "--entry-allocator-min-active-positions",
+            "2",
+            "--entry-allocator-min-second-position-fraction",
+            "0.2",
+            "--entry-drawdown-scale-start",
+            "0.045",
+            "--entry-drawdown-scale-full",
+            "0.15",
+            "--entry-drawdown-scale-floor",
+            "0.32",
+            "--entry-corr-window-bars",
+            "168",
+            "--entry-corr-min-periods",
+            "48",
+            "--entry-corr-max-signed",
+            "0.8",
         ]
     )
 
@@ -171,3 +188,12 @@ def test_eval_args_passes_time_controls_to_pack_evaluator():
     assert eval_args.force_exit_hours_utc == "14"
     assert eval_args.fill_buffer_bps == 20.0
     assert eval_args.min_take_profit_bps == 75.0
+    assert eval_args.top_candidates_include_inactive is True
+    assert eval_args.entry_allocator_min_active_positions == 2
+    assert eval_args.entry_allocator_min_second_position_fraction == 0.2
+    assert eval_args.entry_drawdown_scale_start == 0.045
+    assert eval_args.entry_drawdown_scale_full == 0.15
+    assert eval_args.entry_drawdown_scale_floor == 0.32
+    assert eval_args.entry_corr_window_bars == 168
+    assert eval_args.entry_corr_min_periods == 48
+    assert eval_args.entry_corr_max_signed == 0.8

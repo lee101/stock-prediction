@@ -48,6 +48,25 @@ longs to this signal made the refreshed replay materially worse. Do not restart
 or promote this runner until a fresh candidate clears the `>=27%/mo` production
 return gate with acceptable drawdown on binary fills.
 
+Follow-up research after considering a safer clamp switch:
+
+- The controlled clamp candidate (`risk=0.35`, `cvar=0.5`, `max_positions=2`,
+  `max_leverage=2.0`) should not replace production. A three-window rolling
+  validation over `2025-09-06`, `2026-01-06`, and `2026-05-06` showed the best
+  family member at only `+1.52%` median monthly, `-0.34%` worst monthly, and
+  `49.39%` worst DD across `5/10/20bps` fill cells.
+- The controlled clamp row itself had `3/9` negative rolling cells, `+4.60%`
+  median monthly, `-2.72%` worst monthly, and `60.79%` worst DD.
+- A daily walk-forward retrain harness was added to test "train each day, infer
+  that day, retrain next day" without leaking the traded day's labels.
+- First 14-day daily-retrain controlled-clamp run through
+  `2026-05-06T01:00:00Z` was not promising: best fill cell was `-5.86%/mo`,
+  `-2.78%` total, `9.79%` DD, Sortino `-0.76`, `15` exits.
+
+Decision remains: do not switch the live runner to the controlled clamp. The
+recent-window clamp improvement appears unstable across time, and the daily
+retrain idea needs broader sweeps before it can be considered for deployment.
+
 ## Hourly XGB Margin-Pack Paused After Fresh Revalidation (2026-05-04 NZ / 2026-05-04 UTC)
 
 No new Binance XGB entries are currently running.
