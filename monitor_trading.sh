@@ -1,11 +1,12 @@
 #!/bin/bash
 # Trading monitor - runs via at/cron during market hours
-# DO NOT COMMIT - contains sudo password
+# Requires SUDO_PASSWORD from ~/.secretbashrc for sudo access.
 
 cd /home/lee/code/stock
 source .venv/bin/activate
 
-echo "ilu" | sudo -S claude --dangerously-skip-permissions -p "Check the live stock trading bot status:
+source ~/.secretbashrc
+sudo -S claude --dangerously-skip-permissions -p "Check the live stock trading bot status:
 1. Read /tmp/pufferlib_stocks_live.log - check recent activity
 2. Run: source .venv/bin/activate && python -c \"
 from alpaca.trading.client import TradingClient
@@ -19,4 +20,4 @@ for o in api.get_orders(): print(f'  {o.side} {o.symbol} @ {o.limit_price or o.t
 3. Are orders at reasonable prices? Is the bot trading correctly?
 4. Is SOL/USD sell order still active?
 5. Any issues to fix?
-Keep response brief." 2>&1 | tee -a /tmp/claude_trading_monitor.log
+Keep response brief." <<< "$SUDO_PASSWORD" 2>&1 | tee -a /tmp/claude_trading_monitor.log

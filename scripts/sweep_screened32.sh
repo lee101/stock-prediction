@@ -16,7 +16,7 @@ cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
 
 # earlyoom kills training processes under memory pressure — stop it
-echo "ilu" | sudo -S systemctl stop earlyoom 2>/dev/null && echo "[sweep] earlyoom stopped" || echo "[sweep] earlyoom already stopped"
+source ~/.secretbashrc && sudo -S systemctl stop earlyoom <<< "$SUDO_PASSWORD" 2>/dev/null && echo "[sweep] earlyoom stopped" || echo "[sweep] earlyoom already stopped"
 
 export TMPDIR="$(pwd)/.tmp_train"
 mkdir -p "$TMPDIR"

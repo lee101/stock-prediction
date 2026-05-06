@@ -164,7 +164,7 @@ def train_config(cfg_dict: dict) -> dict:
     }
 
 
-def deploy_checkpoint(checkpoint_path: str, sudo_password: str = None):
+def deploy_checkpoint(checkpoint_path: str):
     """Update supervisor config and restart selector."""
     selector_conf = Path("/etc/supervisor/conf.d/binanceexp1-selector.conf")
     if not selector_conf.exists():
@@ -188,12 +188,22 @@ def deploy_checkpoint(checkpoint_path: str, sudo_password: str = None):
     tmp_conf = Path("/tmp/binanceexp1-selector.conf")
     tmp_conf.write_text(new_content)
 
-    cmd = f"sudo cp {tmp_conf} {selector_conf} && sudo supervisorctl reread && sudo supervisorctl update && sudo supervisorctl restart binanceexp1-selector"
-    if sudo_password:
-        cmd = f"echo '{sudo_password}' | sudo -S bash -c \"{cmd}\""
+    cmd = (
+        f"cp {tmp_conf} {selector_conf} && "
+        "supervisorctl reread && "
+        "supervisorctl update && "
+        "supervisorctl restart binanceexp1-selector"
+    )
+    sudo_password = os.environ.get("SUDO_PASSWORD", "")
+    sudo_input = f"{sudo_password}\n" if sudo_password else None
 
     print(f"Deploying {checkpoint_path}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    result = subprocess.run(
+        ["sudo", "-S", "bash", "-c", cmd],
+        input=sudo_input,
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
         print(f"Deploy failed: {result.stderr}")
         return False
@@ -205,7 +215,6 @@ def deploy_checkpoint(checkpoint_path: str, sudo_password: str = None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--deploy", action="store_true", help="Auto-deploy best model")
-    parser.add_argument("--password", help="Sudo password for deploy")
     parser.add_argument("--config-idx", type=int, help="Run specific config by index")
     args = parser.parse_args()
 
@@ -235,8 +244,8 @@ def main():
                 }
                 save_result(best)
 
-                if args.deploy and args.password:
-                    deploy_checkpoint(result["checkpoint"], args.password)
+                if args.deploy:
+                    deploy_checkpoint(result["checkpoint"])
         except Exception as e:
             print(f"Error training {cfg['name']}: {e}")
             import traceback

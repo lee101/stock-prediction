@@ -148,6 +148,20 @@ class Position:
 
 
 @dataclass(frozen=True)
+class TradeEvent:
+    step: int
+    bar_index: int
+    symbol: str
+    symbol_index: int
+    side: str
+    price: float
+    qty: float
+    action: int
+    reason: str
+    is_short: bool
+
+
+@dataclass(frozen=True)
 class InitialPositionSpec:
     symbol: str
     side: str = "long"
@@ -177,6 +191,7 @@ class DailySimResult:
     evaluated_steps: int = 0
     equity_curve: np.ndarray | None = None
     position_history: list[Position | None] | None = None
+    trade_events: list[TradeEvent] | None = None
 
 
 def _clone_position(pos: Optional[Position]) -> Optional[Position]:
@@ -699,8 +714,9 @@ def simulate_daily_policy(
             )
         effective_max_leverage = float(min(float(max_leverage), cap))
 
+    symbols_upper = [s.upper() for s in data.symbols]
     init_state = _build_initial_portfolio_state(
-        symbols=[s.upper() for s in data.symbols],
+        symbols=symbols_upper,
         initial_cash=initial_cash,
         initial_position=initial_position,
         fee_rate=effective_fee,
@@ -729,10 +745,56 @@ def simulate_daily_policy(
     actions = np.zeros((max_steps,), dtype=np.int32)
     equity_history: list[float] = [float(initial_equity)]
     position_history: list[Position | None] = []
+    trade_events: list[TradeEvent] = []
     alloc_bins = max(1, int(action_allocation_bins))
     level_bins = max(1, int(action_level_bins))
     per_symbol_actions = alloc_bins * level_bins
     side_block = S * per_symbol_actions
+
+    def _record_close_event(
+        closed_pos: Position,
+        *,
+        price: float,
+        bar_index: int,
+        action_value: int,
+        reason: str,
+    ) -> None:
+        trade_events.append(
+            TradeEvent(
+                step=int(step),
+                bar_index=int(bar_index),
+                symbol=symbols_upper[int(closed_pos.sym)],
+                symbol_index=int(closed_pos.sym),
+                side="buy_cover" if bool(closed_pos.is_short) else "sell",
+                price=float(price),
+                qty=float(closed_pos.qty),
+                action=int(action_value),
+                reason=str(reason),
+                is_short=bool(closed_pos.is_short),
+            )
+        )
+
+    def _record_open_event(
+        opened_pos: Position,
+        *,
+        bar_index: int,
+        action_value: int,
+        reason: str,
+    ) -> None:
+        trade_events.append(
+            TradeEvent(
+                step=int(step),
+                bar_index=int(bar_index),
+                symbol=symbols_upper[int(opened_pos.sym)],
+                symbol_index=int(opened_pos.sym),
+                side="short_sell" if bool(opened_pos.is_short) else "buy",
+                price=float(opened_pos.entry_price),
+                qty=float(opened_pos.qty),
+                action=int(action_value),
+                reason=str(reason),
+                is_short=bool(opened_pos.is_short),
+            )
+        )
 
     while True:
         t = step
@@ -780,6 +842,7 @@ def simulate_daily_policy(
                     stale_after_bars=death_spiral_stale_after_bars,
                 ) if not pos.is_short else False
                 if cur_tradable and not refused:
+                    _record_close_event(pos, price=price_cur, bar_index=t, action_value=action, reason="flat_action")
                     cash, win = _close_position(cash, pos, price_cur, effective_fee)
                     num_trades += 1
                     winning_trades += int(win)
@@ -825,6 +888,7 @@ def simulate_daily_policy(
                     hold_steps += 1
                 else:
                     if pos is not None:
+                        _record_close_event(pos, price=price_cur, bar_index=t, action_value=action, reason="switch")
                         cash, win = _close_position(cash, pos, price_cur, effective_fee)
                         num_trades += 1
                         winning_trades += int(win)
@@ -867,6 +931,7 @@ def simulate_daily_policy(
                         # Initialise peak price to the fill price for trailing stop
                         pos_peak_price = float(pos.entry_price) if pos is not None else 0.0
                     if pos is not None and ((S + pos.sym) if pos.is_short else pos.sym) == target_pos_id:
+                        _record_open_event(pos, bar_index=t, action_value=action, reason="target_action")
                         hold_steps = 0
         else:
             if pos is not None:
@@ -910,6 +975,13 @@ def simulate_daily_policy(
                     # Prod guard refuses — trailing stop cannot fire either.
                     pass
                 else:
+                    _record_close_event(
+                        pos,
+                        price=price_new,
+                        bar_index=t_new,
+                        action_value=action,
+                        reason="trailing_stop",
+                    )
                     cash, win = _close_position(cash, pos, price_new, effective_fee)
                     num_trades += 1
                     winning_trades += int(win)
@@ -932,6 +1004,13 @@ def simulate_daily_policy(
                     )
                 )
                 if not refused_max_hold:
+                    _record_close_event(
+                        pos,
+                        price=price_new,
+                        bar_index=t_new,
+                        action_value=action,
+                        reason="max_hold",
+                    )
                     cash, win = _close_position(cash, pos, price_new, effective_fee)
                     num_trades += 1
                     winning_trades += int(win)
@@ -1012,6 +1091,13 @@ def simulate_daily_policy(
                     # For reporting, mark-to-market the unrealized equity.
                     final_equity = _compute_equity(cash, pos, price_end)
                 else:
+                    _record_close_event(
+                        pos,
+                        price=price_end,
+                        bar_index=t_new,
+                        action_value=action,
+                        reason="terminal_close",
+                    )
                     cash, win = _close_position(cash, pos, price_end, effective_fee)
                     num_trades += 1
                     winning_trades += int(win)
@@ -1045,6 +1131,7 @@ def simulate_daily_policy(
                 evaluated_steps=int(step),
                 equity_curve=np.asarray(equity_history, dtype=np.float64),
                 position_history=position_history,
+                trade_events=trade_events,
             )
 
 

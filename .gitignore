@@ -119,6 +119,22 @@ experiments/sui_sortino_max/artifacts/
 experiments/shortable_full_auto/run_*
 experiments/alpaca_stock_modern_rlcuda_*/
 experiments/v13_results/
+!experiments/binance_transition_graph/
+!experiments/binance_transition_graph/*.py
+!experiments/binance_transition_graph/README.md
+experiments/binance_transition_graph/results*/
+!experiments/binance_expm_ssm/
+!experiments/binance_expm_ssm/*.py
+!experiments/binance_expm_ssm/README.md
+experiments/binance_expm_ssm/results*/
+!experiments/binance_deepseek_planner/
+!experiments/binance_deepseek_planner/*.py
+!experiments/binance_deepseek_planner/README.md
+experiments/binance_deepseek_planner/results*/
+!experiments/binance_openai_planner/
+!experiments/binance_openai_planner/*.py
+!experiments/binance_openai_planner/README.md
+experiments/binance_openai_planner/results*/
 experimental/
 
 # Logs and results
@@ -206,6 +222,9 @@ backtestdata
 cache
 resources
 reports
+!/reports/
+/reports/*
+!/reports/binance_expm_graph_deepseek_20260427.md
 runs
 forecast_cache
 

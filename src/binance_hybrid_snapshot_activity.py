@@ -123,11 +123,11 @@ def find_missing_exit_order_coverage(
     *,
     min_position_value_usd: float = 12.0,
 ) -> tuple[list[str], list[str]]:
-    sell_qty_by_market_symbol: dict[str, float] = {}
+    coverage_qty_by_market_symbol_side: dict[tuple[str, str], float] = {}
     for order in iter_snapshot_active_orders(snapshot):
         symbol = str(order.get("symbol") or "").strip().upper()
         side = str(order.get("side") or "").strip().upper()
-        if not symbol or side != "SELL":
+        if not symbol or side not in {"BUY", "SELL"}:
             continue
         orig_qty = safe_float(order.get("origQty"))
         if orig_qty is None:
@@ -141,7 +141,10 @@ def find_missing_exit_order_coverage(
         remaining_qty = max(0.0, float(orig_qty or 0.0) - float(executed_qty))
         if remaining_qty <= _EPSILON:
             continue
-        sell_qty_by_market_symbol[symbol] = sell_qty_by_market_symbol.get(symbol, 0.0) + remaining_qty
+        key = (symbol, side)
+        coverage_qty_by_market_symbol_side[key] = (
+            coverage_qty_by_market_symbol_side.get(key, 0.0) + remaining_qty
+        )
 
     missing_exit_price_symbols: set[str] = set()
     missing_exit_order_symbols: set[str] = set()
@@ -152,9 +155,14 @@ def find_missing_exit_order_coverage(
         if not symbol or symbol not in allowed_symbols:
             continue
         current_qty = safe_float(detail.get("current_qty")) or 0.0
-        current_value = safe_float(detail.get("current_value")) or 0.0
-        if current_qty <= _EPSILON or current_value < float(min_position_value_usd):
+        current_value = abs(safe_float(detail.get("current_value")) or 0.0)
+        abs_qty = abs(float(current_qty))
+        if abs_qty <= _EPSILON or current_value < float(min_position_value_usd):
             continue
+        position_side = str(detail.get("position_side") or "").strip().lower()
+        if position_side not in {"long", "short"}:
+            position_side = "short" if current_qty < -_EPSILON else "long"
+        coverage_side = "BUY" if position_side == "short" else "SELL"
         exit_price = safe_float(detail.get("exit_price"))
         if exit_price is None or exit_price <= 0.0:
             missing_exit_price_symbols.add(symbol)
@@ -163,11 +171,11 @@ def find_missing_exit_order_coverage(
         if not market_symbol:
             missing_exit_order_symbols.add(symbol)
             continue
-        covered_qty = sell_qty_by_market_symbol.get(market_symbol, 0.0)
-        uncovered_qty = max(0.0, current_qty - covered_qty)
-        current_price = current_value / current_qty if current_qty > _EPSILON else 0.0
+        covered_qty = coverage_qty_by_market_symbol_side.get((market_symbol, coverage_side), 0.0)
+        uncovered_qty = max(0.0, abs_qty - covered_qty)
+        current_price = current_value / abs_qty if abs_qty > _EPSILON else 0.0
         uncovered_value = uncovered_qty * current_price
-        if uncovered_qty > current_qty * 0.02 and uncovered_value >= float(min_position_value_usd):
+        if uncovered_qty > abs_qty * 0.02 and uncovered_value >= float(min_position_value_usd):
             missing_exit_order_symbols.add(symbol)
 
     return sorted(missing_exit_price_symbols), sorted(missing_exit_order_symbols)

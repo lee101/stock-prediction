@@ -59,7 +59,8 @@ if [[ "$REMOVE_RL" -eq 1 ]]; then
     echo "Removed --rl-checkpoint from launch.sh"
     echo ""
     echo "Restarting $SUPERVISOR_PROG..."
-    echo "ilu" | sudo -S supervisorctl restart "$SUPERVISOR_PROG" 2>/dev/null
+    source ~/.secretbashrc
+    sudo -S supervisorctl restart "$SUPERVISOR_PROG" <<< "$SUDO_PASSWORD" 2>/dev/null
     echo "Done."
     exit 0
 fi
@@ -121,7 +122,8 @@ echo "--- end ---"
 
 echo ""
 echo "Restarting $SUPERVISOR_PROG..."
-echo "ilu" | sudo -S supervisorctl restart "$SUPERVISOR_PROG" 2>/dev/null
+source ~/.secretbashrc
+sudo -S supervisorctl restart "$SUPERVISOR_PROG" <<< "$SUDO_PASSWORD" 2>/dev/null
 
 sleep 5
 if [[ -f "$LOG" ]]; then

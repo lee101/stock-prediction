@@ -80,11 +80,23 @@ class PortfolioConfig:
     entry_allocator_edge_power: float = 2.0
     entry_allocator_max_single_position_fraction: float = 0.6
     entry_allocator_reserve_fraction: float = 0.1
+    entry_allocator_min_active_positions: int = 0
+    entry_allocator_min_second_position_fraction: float = 0.0
+    entry_diversify_bucket_column: str = ""
+    entry_corr_window_bars: int = 0
+    entry_corr_min_periods: int = 24
+    entry_corr_max_signed: float = 1.0
     max_pending_entries: Optional[int] = None
     apply_leverage_to_crypto: bool = False
     allow_crypto_shorts: bool = False
     sim_backend: str = "auto"  # auto prefers native when safe, else falls back to python
     drawdown_profit_early_exit: bool = True
+    entry_drawdown_pause_threshold: float = 0.0
+    entry_drawdown_resume_threshold: float = 0.0
+    entry_drawdown_cooldown_hours: int = 0
+    entry_drawdown_scale_start: float = 0.0
+    entry_drawdown_scale_full: float = 0.0
+    entry_drawdown_scale_floor: float = 1.0
     force_exit_hours_utc: Sequence[int] = field(default_factory=tuple)
 
 
@@ -113,6 +125,16 @@ def _as_valid_positive(value: object) -> Optional[float]:
         return None
     if not np.isfinite(v) or v <= 0:
         return None
+    return v
+
+
+def _as_nonnegative_float(value: object, *, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not np.isfinite(v) or v < 0.0:
+        return float(default)
     return v
 
 
@@ -212,6 +234,188 @@ def _normalized_force_exit_hours(hours: Sequence[int] | None) -> set[int]:
             raise ValueError(f"force_exit_hours_utc entries must be in [0, 23], got {hour!r}")
         normalized.add(hour_int)
     return normalized
+
+
+def _enforce_min_second_allocation_share(
+    allocations: Sequence[float],
+    *,
+    min_fraction: float,
+) -> list[float]:
+    """Keep the second selected entry from becoming a token hedge."""
+
+    adjusted = [max(float(value), 0.0) for value in allocations]
+    if len(adjusted) < 2:
+        return adjusted
+
+    share = min(max(float(min_fraction), 0.0), 0.5)
+    if share <= 0.0:
+        return adjusted
+
+    total_pair_alloc = adjusted[0] + adjusted[1]
+    if total_pair_alloc <= 0.0:
+        return adjusted
+
+    min_second = total_pair_alloc * share
+    if adjusted[1] >= min_second:
+        return adjusted
+
+    adjusted[1] = min_second
+    adjusted[0] = max(0.0, total_pair_alloc - min_second)
+    return adjusted
+
+
+def _normalize_diversify_bucket(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
+
+
+def _select_diversified_entry_candidates(
+    candidates: Sequence[dict[str, Any]],
+    candidate_slots: int,
+) -> list[dict[str, Any]]:
+    slots = max(int(candidate_slots), 0)
+    if slots <= 0 or not candidates:
+        return []
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+    used_buckets: set[str] = set()
+
+    for cand in candidates:
+        if len(selected) >= slots:
+            break
+        bucket = _normalize_diversify_bucket(cand.get("diversify_bucket"))
+        if bucket is not None and bucket in used_buckets:
+            continue
+        selected.append(cand)
+        selected_ids.add(id(cand))
+        if bucket is not None:
+            used_buckets.add(bucket)
+
+    for cand in candidates:
+        if len(selected) >= slots:
+            break
+        if id(cand) in selected_ids:
+            continue
+        selected.append(cand)
+        selected_ids.add(id(cand))
+    return selected
+
+
+def _direction_sign(direction: object) -> float:
+    return -1.0 if str(direction).lower() == "short" else 1.0
+
+
+def _candidate_signed_corr(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    corr_returns: np.ndarray,
+    corr_ts_pos: int,
+    corr_symbol_to_col: dict[str, int],
+    window_bars: int,
+    min_periods: int,
+) -> float:
+    left_col = corr_symbol_to_col.get(str(left.get("symbol")))
+    right_col = corr_symbol_to_col.get(str(right.get("symbol")))
+    if left_col is None or right_col is None:
+        return 0.0
+    start = max(0, int(corr_ts_pos) - max(int(window_bars), 1) + 1)
+    window = corr_returns[start : int(corr_ts_pos) + 1, [left_col, right_col]]
+    if window.size == 0:
+        return 0.0
+    mask = np.isfinite(window[:, 0]) & np.isfinite(window[:, 1])
+    if int(mask.sum()) < max(int(min_periods), 1):
+        return 0.0
+    lhs = window[mask, 0]
+    rhs = window[mask, 1]
+    if float(np.std(lhs)) <= 1e-12 or float(np.std(rhs)) <= 1e-12:
+        return 0.0
+    corr = float(np.corrcoef(lhs, rhs)[0, 1])
+    if not np.isfinite(corr):
+        return 0.0
+    return _direction_sign(left.get("direction")) * _direction_sign(right.get("direction")) * corr
+
+
+def _select_correlation_aware_entry_candidates(
+    candidates: Sequence[dict[str, Any]],
+    candidate_slots: int,
+    *,
+    corr_returns: np.ndarray,
+    corr_ts_pos: int,
+    corr_symbol_to_col: dict[str, int],
+    window_bars: int,
+    min_periods: int,
+    max_signed_corr: float,
+    diversify_buckets: bool,
+) -> list[dict[str, Any]]:
+    slots = max(int(candidate_slots), 0)
+    if slots <= 0 or not candidates:
+        return []
+
+    selected: list[dict[str, Any]] = []
+    used_buckets: set[str] = set()
+    threshold = min(max(float(max_signed_corr), -1.0), 1.0)
+    for cand in candidates:
+        if len(selected) >= slots:
+            break
+        if diversify_buckets:
+            bucket = _normalize_diversify_bucket(cand.get("diversify_bucket"))
+            if bucket is not None and bucket in used_buckets:
+                continue
+        too_correlated = False
+        for prev in selected:
+            signed_corr = _candidate_signed_corr(
+                prev,
+                cand,
+                corr_returns=corr_returns,
+                corr_ts_pos=int(corr_ts_pos),
+                corr_symbol_to_col=corr_symbol_to_col,
+                window_bars=int(window_bars),
+                min_periods=int(min_periods),
+            )
+            if signed_corr > threshold:
+                too_correlated = True
+                break
+        if too_correlated:
+            continue
+        selected.append(cand)
+        if diversify_buckets:
+            bucket = _normalize_diversify_bucket(cand.get("diversify_bucket"))
+            if bucket is not None:
+                used_buckets.add(bucket)
+    return selected
+
+
+def _entry_drawdown_risk_scale(
+    drawdown: float,
+    *,
+    start: float,
+    full: float,
+    floor: float,
+) -> float:
+    """Linearly shrink new-entry risk as equity draws down from its peak."""
+    start = max(float(start), 0.0)
+    full = max(float(full), start)
+    floor = min(max(float(floor), 0.0), 1.0)
+    if start <= 0.0 and full <= 0.0:
+        return 1.0
+    drawdown = max(float(drawdown), 0.0)
+    if drawdown <= start:
+        return 1.0
+    if full <= start:
+        return floor
+    progress = min(max((drawdown - start) / (full - start), 0.0), 1.0)
+    return float(1.0 - progress * (1.0 - floor))
 
 
 def _get_numeric_column(frame: pd.DataFrame, name: str, *, default: float) -> np.ndarray:
@@ -512,6 +716,18 @@ def run_portfolio_simulation(
 
     direction_by_symbol = {sym: _direction(sym) for sym in symbols}
 
+    def _entry_direction_for_row(row: Any, sym: str) -> str:
+        direction = direction_by_symbol.get(sym, "long")
+        if not (bool(cfg.allow_crypto_shorts) and is_crypto_symbol(sym)):
+            return direction
+        buy_amount = _as_nonnegative_float(getattr(row, "buy_amount", None), default=0.0)
+        sell_amount = _as_nonnegative_float(getattr(row, "sell_amount", None), default=0.0)
+        if sell_amount > 0.0 and sell_amount >= buy_amount:
+            return "short"
+        if buy_amount > 0.0:
+            return "long"
+        return direction
+
     backend = _normalize_backend(cfg.sim_backend)
     # Python-only feature: pending entry order lifecycle.
     native_allowed = (
@@ -522,6 +738,14 @@ def run_portfolio_simulation(
         and not bool(cfg.apply_leverage_to_crypto)
         and not bool(cfg.allow_crypto_shorts)
         and not bool(cfg.force_exit_hours_utc)
+        and int(cfg.entry_allocator_min_active_positions) <= 0
+        and float(cfg.entry_allocator_min_second_position_fraction) <= 0.0
+        and not str(cfg.entry_diversify_bucket_column or "").strip()
+        and int(cfg.entry_corr_window_bars) <= 0
+        and float(cfg.entry_drawdown_pause_threshold) <= 0.0
+        and float(cfg.entry_drawdown_scale_start) <= 0.0
+        and float(cfg.entry_drawdown_scale_full) <= 0.0
+        and float(cfg.entry_drawdown_scale_floor) >= 1.0
     )
     if backend in {"native", "auto"} and native_allowed:
         native_result = _run_portfolio_simulation_native(
@@ -548,6 +772,8 @@ def run_portfolio_simulation(
     equity_values: List[Tuple[pd.Timestamp, float]] = []
     trades: List[UnifiedTradeRecord] = []
     force_exit_hours = _normalized_force_exit_hours(cfg.force_exit_hours_utc)
+    entry_pause_until: pd.Timestamp | None = None
+    entry_risk_peak_equity = float(cfg.initial_cash)
 
     def _mtm():
         total = 0
@@ -578,6 +804,29 @@ def run_portfolio_simulation(
 
     groups = merged.groupby("timestamp", sort=True)
     total_steps = int(merged["timestamp"].nunique())
+    entry_corr_enabled = (
+        int(cfg.entry_corr_window_bars) > 0
+        and float(cfg.entry_corr_max_signed) < 1.0
+    )
+    corr_returns = np.empty((0, 0), dtype=np.float64)
+    corr_symbol_to_col: dict[str, int] = {}
+    corr_timestamp_to_pos: dict[pd.Timestamp, int] = {}
+    if entry_corr_enabled:
+        close_wide = (
+            merged[["timestamp", "symbol", "close"]]
+            .drop_duplicates(subset=["timestamp", "symbol"], keep="last")
+            .pivot(index="timestamp", columns="symbol", values="close")
+            .sort_index()
+            .reindex(columns=sorted(symbols))
+            .astype(float)
+        )
+        returns_wide = close_wide.pct_change(fill_method=None).shift(1).replace([np.inf, -np.inf], np.nan)
+        corr_returns = returns_wide.to_numpy(dtype=np.float64, copy=False)
+        corr_symbol_to_col = {str(symbol): idx for idx, symbol in enumerate(returns_wide.columns)}
+        corr_timestamp_to_pos = {
+            pd.Timestamp(timestamp): idx
+            for idx, timestamp in enumerate(returns_wide.index)
+        }
 
     def _append_equity_snapshot(ts: pd.Timestamp) -> bool:
         equity_values.append((ts, _equity()))
@@ -778,6 +1027,43 @@ def run_portfolio_simulation(
         # consume the same budget as positions for backward compatibility. When
         # max_pending_entries is explicit, pending watcher orders can outnumber
         # actual position slots; capital is only consumed after a watcher fills.
+        equity_for_entries = _equity()
+        entry_risk_peak_equity = max(entry_risk_peak_equity, equity_for_entries)
+        entry_drawdown = (
+            (entry_risk_peak_equity - equity_for_entries) / entry_risk_peak_equity
+            if entry_risk_peak_equity > 0.0
+            else 0.0
+        )
+        pause_threshold = max(float(cfg.entry_drawdown_pause_threshold), 0.0)
+        if pause_threshold > 0.0:
+            resume_threshold = min(
+                max(float(cfg.entry_drawdown_resume_threshold), 0.0),
+                pause_threshold,
+            )
+            if entry_pause_until is not None and entry_drawdown <= resume_threshold:
+                entry_pause_until = None
+            if entry_drawdown >= pause_threshold:
+                cooldown_hours = max(int(cfg.entry_drawdown_cooldown_hours), 0)
+                if cooldown_hours > 0:
+                    candidate_pause_until = ts + pd.Timedelta(hours=cooldown_hours)
+                    if entry_pause_until is None or candidate_pause_until > entry_pause_until:
+                        entry_pause_until = candidate_pause_until
+                else:
+                    sentinel = pd.Timestamp("2262-04-11")
+                    if getattr(ts, "tzinfo", None) is not None:
+                        sentinel = sentinel.tz_localize(ts.tzinfo)
+                    entry_pause_until = sentinel
+            if entry_pause_until is not None and ts < entry_pause_until:
+                if _append_equity_snapshot(ts):
+                    break
+                continue
+        entry_risk_scale = _entry_drawdown_risk_scale(
+            entry_drawdown,
+            start=float(cfg.entry_drawdown_scale_start),
+            full=float(cfg.entry_drawdown_scale_full),
+            floor=float(cfg.entry_drawdown_scale_floor),
+        )
+
         position_slots = max(0, int(cfg.max_positions) - len(positions))
         if cfg.max_pending_entries is None:
             candidate_slots = max(0, int(cfg.max_positions) - len(positions) - len(pending_entries))
@@ -792,7 +1078,6 @@ def run_portfolio_simulation(
             continue
 
         held_symbols = set(positions.keys()) | set(pending_entries.keys())
-        equity_for_entries = _equity()
         candidates = []
         for row in group.itertuples(index=False):
             sym = row.symbol
@@ -801,7 +1086,7 @@ def run_portfolio_simulation(
             if cfg.enforce_market_hours and not is_crypto_symbol(sym) and not _is_market_open(ts, sym):
                 continue
 
-            direction = direction_by_symbol.get(sym, "long")
+            direction = _entry_direction_for_row(row, sym)
             is_long = direction == "long"
             buy_price = _as_valid_positive(getattr(row, "buy_price", None))
             sell_price = _as_valid_positive(getattr(row, "sell_price", None))
@@ -876,6 +1161,10 @@ def run_portfolio_simulation(
             symbol_leverage = float(cfg.max_leverage) if (
                 bool(cfg.apply_leverage_to_crypto) or not is_crypto_symbol(sym)
             ) else 1.0
+            diversify_bucket = None
+            bucket_column = str(cfg.entry_diversify_bucket_column or "").strip()
+            if bucket_column:
+                diversify_bucket = getattr(row, bucket_column, None)
             candidates.append({
                 "symbol": sym,
                 "edge": edge,
@@ -891,21 +1180,60 @@ def run_portfolio_simulation(
                     entry_price=actual_entry_price,
                     is_long=is_long,
                 ),
-                "slot_budget": (equity_for_entries * symbol_leverage) / cfg.max_positions,
+                "diversify_bucket": diversify_bucket,
+                "slot_budget": (
+                    max(0.0, equity_for_entries)
+                    * symbol_leverage
+                    * entry_risk_scale
+                    / max(int(cfg.max_positions), 1)
+                ),
                 "fee_rate": fee,
             })
 
-        if cfg.entry_selection_mode == "first_trigger":
+        selection_mode = str(cfg.entry_selection_mode or "edge_rank").strip().lower()
+        if selection_mode in {"first_trigger", "diversified_first_trigger", "first_trigger_diversified"}:
             candidates.sort(key=lambda x: (x["required_move_frac"], -x["edge"]))
         else:
             candidates.sort(key=lambda x: x["edge"], reverse=True)
-        selected_candidates = candidates[:candidate_slots]
+        corr_ts_pos = corr_timestamp_to_pos.get(pd.Timestamp(ts))
+        if entry_corr_enabled and corr_ts_pos is not None:
+            selected_candidates = _select_correlation_aware_entry_candidates(
+                candidates,
+                candidate_slots,
+                corr_returns=corr_returns,
+                corr_ts_pos=int(corr_ts_pos),
+                corr_symbol_to_col=corr_symbol_to_col,
+                window_bars=int(cfg.entry_corr_window_bars),
+                min_periods=int(cfg.entry_corr_min_periods),
+                max_signed_corr=float(cfg.entry_corr_max_signed),
+                diversify_buckets="diversified" in selection_mode,
+            )
+        elif "diversified" in selection_mode:
+            selected_candidates = _select_diversified_entry_candidates(candidates, candidate_slots)
+        else:
+            selected_candidates = candidates[:candidate_slots]
+        min_active_positions = min(
+            max(int(cfg.entry_allocator_min_active_positions), 0),
+            max(int(cfg.max_positions), 1),
+        )
+        if min_active_positions > 0:
+            active_entry_count = len(positions) + len(pending_entries)
+            required_new = max(0, min_active_positions - active_entry_count)
+            if len(selected_candidates) < required_new:
+                selected_candidates = []
+
         allocator_mode = normalize_entry_allocator_mode(cfg.entry_allocator_mode)
+        min_second_fraction = float(cfg.entry_allocator_min_second_position_fraction)
         ready_candidates: list[dict[str, Any]] = []
 
         if allocator_mode == "concentrated" and selected_candidates:
             reserve_fraction = min(max(float(cfg.entry_allocator_reserve_fraction), 0.0), 1.0)
-            deployable_budget = max(0.0, equity_for_entries) * (1.0 - reserve_fraction)
+            deployable_budget = (
+                max(0.0, equity_for_entries)
+                * max(float(cfg.max_leverage), 0.0)
+                * entry_risk_scale
+                * (1.0 - reserve_fraction)
+            )
             target_values = allocate_concentrated_entry_budget(
                 [
                     EntryAllocationCandidate(
@@ -921,7 +1249,11 @@ def run_portfolio_simulation(
                 edge_power=float(cfg.entry_allocator_edge_power),
                 max_single_position_fraction=float(cfg.entry_allocator_max_single_position_fraction),
             )
-            for cand, target_value in zip(selected_candidates, target_values, strict=False):
+            target_values = _enforce_min_second_allocation_share(
+                target_values,
+                min_fraction=min_second_fraction,
+            )
+            for cand, target_value in zip(selected_candidates, target_values):
                 fee = float(cand["fee_rate"])
                 entry_price = float(cand["entry_price"])
                 sizing_price = float(cand.get("sizing_price", entry_price))
@@ -937,16 +1269,22 @@ def run_portfolio_simulation(
                 cand["qty"] = float(qty)
                 ready_candidates.append(cand)
         else:
-            for cand in selected_candidates:
+            target_values = [
+                float(cand["slot_budget"]) * float(cand["intensity_fraction"])
+                for cand in selected_candidates
+            ]
+            target_values = _enforce_min_second_allocation_share(
+                target_values,
+                min_fraction=min_second_fraction,
+            )
+            for cand, alloc in zip(selected_candidates, target_values):
                 fee = float(cand["fee_rate"])
                 entry_price = float(cand["entry_price"])
                 sizing_price = float(cand.get("sizing_price", entry_price))
-                intensity_frac = float(cand["intensity_fraction"])
-                alloc = float(cand["slot_budget"]) * intensity_frac
                 qty_denominator = sizing_price * (1.0 + fee if cfg.entry_fee_inclusive_sizing else 1.0)
                 if qty_denominator <= 0:
                     continue
-                qty = alloc / qty_denominator
+                qty = float(alloc) / qty_denominator
                 if cfg.int_qty:
                     qty = float(int(qty))
                 if qty <= 0:

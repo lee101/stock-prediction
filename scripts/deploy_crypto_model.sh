@@ -148,7 +148,7 @@ apply_leverage_override() {
 }
 
 restart_supervisor() {
-    echo "ilu" | sudo -S supervisorctl restart "$SUPERVISOR_PROG" 2>/dev/null
+    source ~/.secretbashrc && sudo -S supervisorctl restart "$SUPERVISOR_PROG" <<< "$SUDO_PASSWORD" 2>/dev/null
 }
 
 show_recent_logs() {

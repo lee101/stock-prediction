@@ -3,7 +3,7 @@
 You are the senior engineer on the live Alpaca stock trading system. Every hour during the trading day you audit prod, fix anything broken, then — if production is healthy — actively try to **beat the current best deployed model** and **redeploy it if you succeed**. This is a live-capital system; act with care, but do not wait for permission when the gate says you've got a winner. The user has pre-authorized autonomous redeploy when the deploy gate passes.
 
 **Working directory**: `/nvme0n1-disk/code/stock-prediction` (cron sets this for you).
-**Sudo password** (needed for supervisorctl / log reads): `ilu` — pipe via `echo ilu | sudo -S <cmd>`.
+**Sudo access**: source `~/.secretbashrc` and pass `$SUDO_PASSWORD` via stdin when needed.
 **Python env**: `source .venv/bin/activate` (uv-managed; do NOT `pip install` blindly — use `uv pip` if you need a package).
 **Claude Code settings**: `--dangerously-skip-permissions` is on; model is opus with xhigh effort. Use parallel tool calls aggressively. Hundreds of tool calls per hour is fine.
 
@@ -79,10 +79,10 @@ Do these reads **in parallel** where possible:
 
 2. **XGB live trader liveness + most recent session** — this is the primary service.
    ```bash
-   echo ilu | sudo -S supervisorctl status xgb-daily-trader-live
+   source ~/.secretbashrc && sudo -S supervisorctl status xgb-daily-trader-live <<< "$SUDO_PASSWORD"
    pgrep -af "xgbnew.live_trader" | head
-   echo ilu | sudo -S tail -200 /var/log/supervisor/xgb-daily-trader-live.log 2>/dev/null | tail -80
-   echo ilu | sudo -S tail -100 /var/log/supervisor/xgb-daily-trader-live-error.log 2>/dev/null | tail -40
+   source ~/.secretbashrc && sudo -S tail -200 /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD" 2>/dev/null | tail -80
+   source ~/.secretbashrc && sudo -S tail -100 /var/log/supervisor/xgb-daily-trader-live-error.log <<< "$SUDO_PASSWORD" 2>/dev/null | tail -40
    ```
    The stdout log should show a recent `Scoring N symbols` line, followed by either a `Conviction filter min_score=0.85: K/M candidates pass` + `BUY ` pair OR a `No picks today` line, plus periodic "sleeping until 09:20 ET" lines between sessions. The error log should show singleton-claim success at startup and nothing else urgent.
 
@@ -94,7 +94,7 @@ Do these reads **in parallel** where possible:
 3. **Singleton lock holder** — the LIVE Alpaca writer lock must be held by `xgb_live_trader` and its pid must match supervisor's process.
    ```bash
    cat strategy_state/account_locks/alpaca_live_writer.lock | python -m json.tool
-   SUP_PID=$(echo ilu | sudo -S supervisorctl status xgb-daily-trader-live | awk '{for(i=1;i<=NF;i++) if ($i=="pid") print $(i+1)}' | tr -d ',')
+   SUP_PID=$(source ~/.secretbashrc && sudo -S supervisorctl status xgb-daily-trader-live <<< "$SUDO_PASSWORD" | awk '{for(i=1;i<=NF;i++) if ($i=="pid") print $(i+1)}' | tr -d ',')
    echo "supervisor says pid=$SUP_PID"
    ```
    The lock's `service_name` MUST be `xgb_live_trader` and its `pid` MUST match the supervisor-reported pid. **If they diverge, that is a singleton violation** → jump to Phase 2 (R1 stale-lock recovery) — do NOT proceed to Phase 3.
@@ -144,7 +144,7 @@ Do these reads **in parallel** where possible:
        print(f'  {f[\"transaction_time\"][:19]} {f[\"symbol\"]} {f[\"side\"]} qty={f[\"qty\"]} px={f[\"price\"]}')
    "
    # XGB session markers on the service side over the same window
-   echo ilu | sudo -S grep -E 'Scoring |Conviction filter|BUY |SELL |No picks today|death-spiral' /var/log/supervisor/xgb-daily-trader-live.log 2>/dev/null | tail -40
+   source ~/.secretbashrc && sudo -S grep -E 'Scoring |Conviction filter|BUY |SELL |No picks today|death-spiral' /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD" 2>/dev/null | tail -40
    # Trade log top-score distribution — the real signal-health indicator
    ls -1t analysis/xgb_live_trade_log/*.jsonl 2>/dev/null | head -10 | xargs -I{} python -c "
    import json, sys, pathlib
@@ -182,14 +182,14 @@ Do these reads **in parallel** where possible:
 
 10. **Error-log scan** — last hour across all prod log sources:
     ```bash
-    echo ilu | sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live.log 2>/dev/null | grep -iE 'traceback|error|exception|failed|refused|401|403|500|death-spiral' | tail -20
-    echo ilu | sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live-error.log 2>/dev/null | tail -40
+    source ~/.secretbashrc && sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD" 2>/dev/null | grep -iE 'traceback|error|exception|failed|refused|401|403|500|death-spiral' | tail -20
+    source ~/.secretbashrc && sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live-error.log <<< "$SUDO_PASSWORD" 2>/dev/null | tail -40
     ```
     Known-benign lines you can ignore: `DeprecationWarning`, `UserWarning: TORCH_COMPILE`, `InsecureRequestWarning`, `market is closed` (benign outside RTH). Everything else → investigate root cause before Phase 3.
 
 11. **Confirm the RL path stays DOWN** — the two services must remain stopped. Seeing either active is a violation of the current deploy contract.
     ```bash
-    echo ilu | sudo -S supervisorctl status daily-rl-trader trading-server 2>&1
+    source ~/.secretbashrc && sudo -S supervisorctl status daily-rl-trader trading-server <<< "$SUDO_PASSWORD" 2>&1
     # Expected: both "STOPPED" (or not in supervisor state at all).
     pgrep -af "trade_daily_stock_prod|trading_server" | grep -v grep
     # Expected: no processes.
@@ -213,7 +213,7 @@ Do these reads **in parallel** where possible:
 
 You are authorized to take these actions without asking:
 
-- **XGB supervisor unit dead** → `echo ilu | sudo -S supervisorctl restart xgb-daily-trader-live`. Re-verify liveness. If it re-dies, `tail -200` of the error log, identify crash signature, patch the cause if obvious, else escalate.
+- **XGB supervisor unit dead** → `source ~/.secretbashrc && sudo -S supervisorctl restart xgb-daily-trader-live <<< "$SUDO_PASSWORD"`. Re-verify liveness. If it re-dies, `tail -200` of the error log, identify crash signature, patch the cause if obvious, else escalate.
 - **Singleton lock violation** (service_name ≠ `xgb_live_trader` OR pid ≠ supervisor's) → Recovery R1 below.
 - **Death-spiral guard fired** (`.marker` or `death-spiral` in log) → Recovery R2 below.
 - **Alpaca 401** → Recovery R3. Human-only; flag + stop. Do not proceed to Phase 3.
@@ -261,7 +261,7 @@ done
 ```bash
 ls -lat strategy_state/alpaca_singleton/markers/ 2>/dev/null | head
 cat strategy_state/alpaca_singleton/alpaca_live_writer_buys.json 2>/dev/null | python -m json.tool | head -40
-echo ilu | sudo -S grep -B2 -A20 'death-spiral\|guard_sell' /var/log/supervisor/xgb-daily-trader-live.log | tail -80
+source ~/.secretbashrc && sudo -S grep -B2 -A20 'death-spiral\|guard_sell' /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD" | tail -80
 ```
 
 **Interpretation and fix path**:
@@ -281,7 +281,7 @@ echo ilu | sudo -S grep -B2 -A20 'death-spiral\|guard_sell' /var/log/supervisor/
 🚨 PROD KEY ROTATION REQUIRED — <ISO timestamp>
 Alpaca returned 401 on /v2/account. xgb-daily-trader-live is crash-looping.
 Human action: regenerate ALP_KEY_ID_PROD + ALP_SECRET_KEY_PROD at alpaca.markets dashboard,
-edit env_real.py, then `echo ilu | sudo -S supervisorctl restart xgb-daily-trader-live`.
+edit env_real.py, then `source ~/.secretbashrc && sudo -S supervisorctl restart xgb-daily-trader-live <<< "$SUDO_PASSWORD"`.
 ```
 Stop Phase 3 — don't attempt to beat the bar when the writer path is broken.
 
@@ -293,7 +293,7 @@ Stop Phase 3 — don't attempt to beat the bar when the writer path is broken.
 **Fix (ranked by safety — do the earliest that frees enough)**:
 ```bash
 # 1. Always-safe: rotate old journal (frees 3-5 GB on / typically)
-echo ilu | sudo -S journalctl --vacuum-size=500M
+source ~/.secretbashrc && sudo -S journalctl --vacuum-size=500M <<< "$SUDO_PASSWORD"
 # 2. /nvme0n1-disk/.tmp_train logs older than 14 days
 find .tmp_train -name '*.log' -mtime +14 -delete
 # 3. Intermediate sweep checkpoints (keep best.pt, val_best.pt, final.pt)
@@ -313,19 +313,19 @@ find analysis -name '*.bin' -mtime +30 -print
 **Fix**:
 ```bash
 # Stop the RL path without touching XGB:
-echo ilu | sudo -S supervisorctl stop daily-rl-trader trading-server
+source ~/.secretbashrc && sudo -S supervisorctl stop daily-rl-trader trading-server <<< "$SUDO_PASSWORD"
 # Verify:
 pgrep -af "trade_daily_stock_prod|trading_server"  # expected: empty
 ss -ltnp 2>/dev/null | grep ':8050'                # expected: empty
 # If XGB dropped the lock during the race, restart it:
-echo ilu | sudo -S supervisorctl status xgb-daily-trader-live
+source ~/.secretbashrc && sudo -S supervisorctl status xgb-daily-trader-live <<< "$SUDO_PASSWORD"
 # Only if STOPPED/FATAL:
-echo ilu | sudo -S supervisorctl start xgb-daily-trader-live
+source ~/.secretbashrc && sudo -S supervisorctl start xgb-daily-trader-live <<< "$SUDO_PASSWORD"
 ```
 
 Then investigate: who/what brought the RL path back up? Check:
 ```bash
-echo ilu | sudo -S journalctl --since '2 hours ago' -u supervisor --no-pager | grep -iE 'daily-rl|trading-server'
+source ~/.secretbashrc && sudo -S journalctl --since '2 hours ago' -u supervisor --no-pager <<< "$SUDO_PASSWORD" | grep -iE 'daily-rl|trading-server'
 ls -la /etc/supervisor/conf.d/ | grep -iE 'daily-rl|trading-server'
 ```
 If the conf files still exist as `*.conf`: they can be started manually; that's fine for the rollback path. If something kicked them automatically → check cron, systemd boot units, external MCP tools.
@@ -336,7 +336,7 @@ If the conf files still exist as `*.conf`: they can be started manually; that's 
 **Diagnose** (run these first — they distinguish R9a from R9b):
 ```bash
 # Session-loop progression
-echo ilu | sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live.log \
+source ~/.secretbashrc && sudo -S tail -500 /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD" \
     | grep -E 'Scoring |Conviction filter|No picks|sleeping|ensemble|Trading day check' | tail -40
 # Top-score distribution across the last 10 trade-log sessions
 ls -1t analysis/xgb_live_trade_log/*.jsonl 2>/dev/null | head -10 | while read p; do
@@ -519,9 +519,9 @@ If Phase 3 produced a candidate (e.g. a 16-seed ensemble OR a retrained 5-seed w
 
 4. **Restart XGB under supervisor** and verify the new model loads:
    ```bash
-   echo ilu | sudo -S supervisorctl restart xgb-daily-trader-live
+   source ~/.secretbashrc && sudo -S supervisorctl restart xgb-daily-trader-live <<< "$SUDO_PASSWORD"
    sleep 20
-   echo ilu | sudo -S tail -50 /var/log/supervisor/xgb-daily-trader-live.log | grep -E 'loaded|ensemble|model' | tail -10
+   source ~/.secretbashrc && sudo -S tail -50 /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD" | grep -E 'loaded|ensemble|model' | tail -10
    cat strategy_state/account_locks/alpaca_live_writer.lock | python -m json.tool  # pid must have moved
    ```
 

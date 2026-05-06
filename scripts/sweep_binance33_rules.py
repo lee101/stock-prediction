@@ -127,17 +127,20 @@ def _make_policy(
                 return 0
 
         scores = _score_vector(feat, config.score)
+        valid = np.isfinite(scores)
         if data.tradable is not None:
             tradable_idx = max(0, min(step, data.num_timesteps - 1))
             tradable = np.asarray(data.tradable[tradable_idx], dtype=bool)
-            scores = np.where(tradable, scores, -np.inf)
-        if not np.isfinite(scores).any():
+            valid &= tradable
+        if not valid.any():
             state["last_action"] = 0
             return 0
 
-        best_idx = int(np.nanargmax(scores))
+        valid_idx = np.flatnonzero(valid)
+        valid_scores = scores[valid_idx]
+        best_idx = int(valid_idx[int(np.nanargmax(valid_scores))])
         best = float(scores[best_idx])
-        worst_idx = int(np.nanargmin(scores))
+        worst_idx = int(valid_idx[int(np.nanargmin(valid_scores))])
         worst = float(scores[worst_idx])
         threshold = float(config.min_abs_score)
 

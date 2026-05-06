@@ -1,6 +1,36 @@
 # Binance Progress Log
 
-Updated: 2026-04-27
+Updated: 2026-04-30
+
+## Binance Head-to-Head Re-Audit (2026-04-30)
+
+- Added `scripts/binance_head_to_head.py` to normalize the fragmented Binance eval artifacts into one comparable leaderboard across:
+  - daily Binance33 PPO checkpoints,
+  - deterministic daily rules,
+  - daily XGBoost rankers,
+  - daily XGBoost portfolio packs,
+  - hourly portfolio-pack rolling validation.
+- Added `scripts/sweep_binance33_rule_portfolio_pack.py` to test whether the strongest deterministic daily short-reversion signal improves when diversified across top-N symbols instead of taking one concentrated short.
+- Added `scripts/sweep_binance33_rule_risk_controls.py` and `scripts/search_binance33_linear_rules.py` to test risk controls, symbol pruning, and random linear cross-sectional short rules around the recent short-reversion edge.
+- Focused eval artifacts:
+  - `analysis/binance_head_to_head_20260430_after_linear.csv`: `11607` normalized rows. Recent-window linear rule `rand0045` at `1.305x` passes the 30% / 20% drawdown screen on 120d validation, but fails older-history validation, so it is research-only.
+  - `analysis/binance33_rule_reversal5_lev125_20260430.csv` through `analysis/binance33_rule_reversal5_lev200_20260430.csv`: the BTC-gated `reversal5_short_bottom_rb1_thr0` family scales from about `22.2%/mo` at 1.25x to `33.5%/mo` at 2.0x on recent 120d/20bps, but p90 drawdown rises from `24.8%` to `37.6%`.
+  - `analysis/binance33_rule_reversal5_lev150_trainhistory_stride10_20260430.csv`, `...lev175...`, `...lev200...`: older-history 120d stride-10 validation collapses to `0%` median with `27/162` negative windows.
+  - `analysis/binance33_rule_portfolio_pack_reversal5_thr0_gate_20260430.csv`: diversification did not rescue the edge; best 120d/20bps row is only about `13.5%/mo` with `55.1%` p90 drawdown.
+  - `analysis/binance33_easy_universe_xgb_prune_aug_20260430.csv`: calibration-ranked "easy symbol" pruning plus raw/aug retraining did not clear the gate; best 120d/20bps row was `xgb08` augmented, top-12 symbols, 1.25x at `21.7%/mo`, p10 `10.0%/mo`, `0/45` negative windows, and `37.6%` p90 drawdown.
+  - `analysis/binance33_rule_reversal5_leave_one_out_20260430.csv`: excluding `RNDRUSD` raises the original short-reversion median return, but does not reduce the drawdown enough to clear the gate.
+  - `analysis/binance33_rule_risk_controls_cb_rndr_20260430.csv`: drawdown circuit breakers did not hold up exhaustively; high-return rows introduced negative windows and still exceeded the drawdown cap.
+  - `analysis/binance33_linear_rule_rand0045_validate_20260430.csv` and `analysis/binance33_linear_rule_rand0045_leverage_boundary_20260430.csv`: recent validation is strong. At `1.305x`, `rand0045` scores `30.04%/mo`, p10 `19.54%/mo`, worst `7.54%/mo`, `0/45` negative windows, p90 DD `19.96%`, and 37 median trades. The same rule on older train-history stride-10 windows is `-20.47%/mo` at `1.25x` with `134/162` negative windows, so no deployment.
+- Latest-library / extra-backend pass:
+  - Upgraded `.venv312` XGBoost from `3.1.1` to `3.2.0`; targeted rerun artifact `analysis/binance33_xgb_latest_3p2_targeted_20260430.csv` did not improve the frontier. Best row was `25.9%/mo` with `77.6%` p90 DD and `1/45` negative windows.
+  - Added `scripts/sweep_binance33_lgbm.py` and ran LightGBM `4.6.0` targeted sweep: `analysis/binance33_lgbm_latest_targeted_20260430.csv`. Best row was only `14.3%/mo` with `52.2%` p90 DD.
+  - Added `scripts/search_binance33_regime_gates.py`. Best full recent gate `mkt_ret20gt-0.1` on `rand0045` scores `30.05%/mo`, p10 `17.83%/mo`, `0/45` negative windows, p90 DD `15.36%`, and 26 trades (`analysis/binance33_regime_gate_rand0045_mktret20_validate_20260430.csv`), but older train-history remains deeply negative (`-18.01%/mo`, `137/162` negative windows).
+  - `analysis/binance_head_to_head_20260430_after_latest_libs.csv`: `12488` normalized rows after adding XGBoost 3.2, LightGBM, and regime gates. Full recent validation has two `pass30` rows, both `rand0045` variants, both rejected for older-history failure.
+- Runtime scan found production isolation drift:
+  - documented `binance-hybrid-spot` still running,
+  - retired `trade_margin_meta` and `binance_worksteal.trade_live` still SIGSTOP'ed,
+  - new `binanceleveragesui.trade_margin_sui` process running but not recorded in the 2026-04-27 prod ledger.
+- Decision: no Binance strategy is deployable from this pass. The recent-slice frontier improved past 30% monthly with sub-20% p90 drawdown, but the edge is regime-specific and fails older-history validation; production work should first clean live writer isolation, then test a regime-conditioned learner with explicit out-of-regime cash gating.
 
 ## PPO Binance Realism Reset (2026-04-27)
 
@@ -65,6 +95,34 @@ Updated: 2026-04-27
   - `xgb14` at 2x reaches 30-day median `+27.65%`, but p10 is `-37.15%` and p90 DD is `79.45%`.
   - 3x rows push median higher (`xgb14` `+31.54%`, `xgb08` `+28.95%`) but have tail losses worse than `-80%` to `-112%` and p90 DD above `90%`.
   - Verdict: no XGBoost candidate should be promoted or deployed; leverage is amplifying a fragile short-reversion edge, not creating a smooth strategy.
+
+## Expm SSM + Transition Graph + DeepSeek Planner (2026-04-27)
+
+- Added three isolated research directories:
+  - `experiments/binance_expm_ssm/`: differentiable CTMC/SSM prototype that learns `Q_t`, uses `torch.matrix_exp(Q_t)`, and maps exact transition probabilities into portfolio weights.
+  - `experiments/binance_transition_graph/`: sequential hourly graph-policy simulator/optimizer for rotation edges such as winner-to-dip, regime-cash, and optional bearish shorts.
+  - `experiments/binance_deepseek_planner/`: direct DeepSeek API candidate generator that asks `deepseek-v4-pro` for graph-policy JSON and evaluates it offline with the same sequential simulator.
+- The graph simulator walks each hour sequentially with `decision_lag_hours=2`, fees, slippage, leverage, borrow cost, and pre-holdout warmup context. It is research-only; winners still require pufferlib C binary-fill validation.
+- 90d train / 30d holdout transition-graph search over BTC/ETH/SOL/DOGE/AAVE/LINK:
+  - artifact: `experiments/binance_transition_graph/results/graph_experiment_20260427_122113.md`
+  - best holdout row was `graph_cash` at `+0.00%` monthly and `0.00%` drawdown.
+  - best non-cash row was `rand_graph_1337_0083` at `-5.68%` worst-slippage monthly and `11.44%` drawdown.
+  - Verdict: harness works, but no production candidate.
+- Expm SSM smoke on 30d train / 7d eval:
+  - artifact: `experiments/binance_expm_ssm/results/expm_ssm_20260427_122119.json`
+  - eval monthly `-22.58%`, eval max drawdown `9.59%`.
+  - Verdict: exact differentiable transition path works technically, but the initial objective learned a low-turnover static allocation rather than a profitable policy.
+- DeepSeek `deepseek-v4-pro` direct run:
+  - artifact: `experiments/binance_deepseek_planner/results/deepseek_eval_20260427_122810.json`
+  - candidate `Adaptive Risk-Aware Rotation` scored `-27.21%` worst-slippage monthly with `14.04%` drawdown.
+  - first 3-candidate `v4-pro` response was truncated JSON; raw saved at `experiments/binance_deepseek_planner/results/deepseek_raw_20260427_122539.txt`. The runner now requests JSON-object formatting when supported and writes parse-error artifacts.
+  - Verdict: direct `deepseek-v4-pro` integration works, but the first parsed candidate is not profitable.
+- Added `experiments/binance_openai_planner/`, an OpenAI Responses API planner using strict Structured Outputs (`json_schema`, `strict: true`).
+  - default cheap smoke model: `gpt-5.4-nano`, reasoning `low`.
+  - production gate metadata: if worst-slippage monthly `>=27%` and drawdown `<=20%`, route production-time planning to `gpt-5.5` with reasoning effort `xhigh`; no production-model test call is required during cheap research.
+  - offline smoke artifact: `experiments/binance_openai_planner/results_smoke/openai_eval_20260427_123457.json`; best row `graph_regime_short` scored `+16.18%` worst-slippage monthly with `13.18%` drawdown, below gate, so `prod_route=False`.
+  - live `gpt-5.4-nano` structured-output call reached OpenAI but failed with `insufficient_quota` (HTTP 429); artifact: `experiments/binance_openai_planner/results/openai_eval_20260427_123457.json`.
+- Full report: `reports/binance_expm_graph_deepseek_20260427.md`.
 
 ## Worksteal Audit (2026-03-26)
 
@@ -1378,3 +1436,294 @@ Key insights:
 2. return_weight=0.012 is optimal (not 0.01 or 0.008)
 3. All horizons (1,4,24) outperform single horizon
 4. Longer training (25-30 epochs) increases return but reduces Sortino
+
+## Binance Hourly XGB Portfolio Packing (2026-04-27)
+
+Built `scripts/sweep_binance_hourly_portfolio_pack.py` to test the NVIDIA-blueprint-inspired split:
+forecast return scenarios first, then apply a CVaR/downside-aware portfolio packing layer.  The script trains
+hourly XGBoost high/low/close return forecasters across Binance USDT pairs, converts them into opportunistic
+limit-entry watchers, and evaluates them through the multi-position portfolio simulator with binary OHLC fills.
+
+Simulator upgrades:
+- `PortfolioConfig.max_pending_entries` lets watcher orders outnumber actual position slots, so the sim can watch
+  more pairs without spending equity until fills occur.
+- `PortfolioConfig.apply_leverage_to_crypto` makes `max_leverage` affect Binance/crypto sizing when explicitly enabled.
+
+120d unseen 1x sampled sweep:
+- Command: `source .venv312/bin/activate && python scripts/sweep_binance_hourly_portfolio_pack.py --min-bars 5000 --min-symbols-per-hour 20 --train-days 720 --eval-days 120 --label-horizon 24 --rounds 80 --device cuda --max-configs 20 --max-leverage-grid 1.0 --out analysis/binance_hourly_portfolio_pack_1x_120d_20260427.csv --html-out analysis/binance_hourly_portfolio_pack_1x_120d_20260427.html --trace-json-out analysis/binance_hourly_portfolio_pack_1x_120d_20260427.json --mp4-out analysis/binance_hourly_portfolio_pack_1x_120d_20260427.mp4`
+- Data: 42 loaded symbols, 40 eval symbols, 770,306 model rows; train `2023-11-30 21:00 UTC` to `2025-11-19 21:00 UTC`; eval `2025-11-19 21:00 UTC` to `2026-03-19 21:00 UTC`.
+- Best sampled config: +6.81% total return over 120d, +1.66% monthly, Sortino 1.17, max DD 16.81%, 152 exits.
+- Best config details: risk_penalty=0.5, cvar_weight=0.0, entry_gap=75 bps, edge_threshold=0.006, max_positions=5, max_pending_entries=12, ttl=3h, edge_rank selection, concentrated allocation, 1x leverage.
+- Artifact HTML: `analysis/binance_hourly_portfolio_pack_1x_120d_20260427.html`
+- Artifact trace: `analysis/binance_hourly_portfolio_pack_1x_120d_20260427.json`
+- Artifact MP4: full 14d render was too slow with the existing per-frame matplotlib renderer; produced a 3d review video at `analysis/binance_hourly_portfolio_pack_1x_120d_20260427_3d.mp4`.
+
+Conclusion: the portfolio packing/watcher mechanics work, but this long-only hourly XGB level model is not production
+quality.  It is far below the >=27% monthly 1x target and the drawdown is too high.  The next useful direction is not
+more leverage; it is a stricter trade-quality gate or a different label/objective, likely optimizing realized
+post-fill expectancy and adverse excursion rather than only future high/low/close returns.
+
+## GPT-5.5/xhigh Daily Crypto Replanner (2026-04-27)
+
+Built `experiments/binance_openai_planner/gpt55_week_replanner.py` to test the stockagent-style idea directly with
+the large model: one complete portfolio allocation plan per simulated day, then hourly execution over the next 24 bars.
+The run used Codex CLI provider `gpt-5.5`, reasoning `xhigh`, schema-constrained JSON output, BTC/ETH/SOL/DOGE/AAVE/LINK,
+10 bps fee, 5 bps slippage, two-hour decision lag, one entry per symbol per day, and daily forced flattening.
+
+Result over the 7-day Binance hourly window:
+- Initial cash: $10,000.00
+- Final equity: $9,669.20
+- Total return: -3.31%
+- Monthly-equivalent return: -13.50%
+- Max drawdown: 4.56%
+- Sortino: -8.02
+- Trades: 62
+- Artifact report: `experiments/binance_openai_planner/results/gpt55_week_replanner_20260427_124238.md`
+- Artifact JSON: `experiments/binance_openai_planner/results/gpt55_week_replanner_20260427_124238.json`
+
+Conclusion: the big-model planner made coherent daily plans, but it did not make money.  The main failure was not
+graph complexity by itself; the plans were mostly correlated crypto-beta longs with tight stops, so realistic friction
+and selloff days overwhelmed the few winners.  This should not route to production.  The next useful variant is
+simulator-in-the-loop planning: generate multiple candidate daily plans, simulate them, feed back the failure modes,
+and only then pick the plan for the next day.
+
+## DeepSeek Simulator-In-The-Loop Daily Replanner (2026-04-27)
+
+Built `experiments/binance_deepseek_planner/deepseek_iterative_replanner.py` as the new DeepSeek-first research path.
+The prompt now explicitly tells the planner that correlated crypto-beta longs with tight stops failed after fees, and
+the planner emits daily templates instead of absolute one-shot levels.  Local code mutates the templates, scores them
+only on trailing calibration days, then executes the selected template on the next unseen 24-hour window.  This avoids
+future-day lookahead while still putting simulator feedback in the loop.
+
+Production routing is represented but not used in research: `--prod-inference` flips the same structured template
+interface to OpenAI `gpt-5.5` with `xhigh` reasoning.  The artifact gate still requires >=27% monthly and <=20% max DD
+before any production route is considered.
+
+7-day DeepSeek run, guarded selector:
+- Command used DeepSeek `deepseek-v4-pro`, 7 days, 168h history, 4 trailing calibration days, 1 candidate/day, BTC/ETH/SOL/DOGE/AAVE/LINK, 10 bps fee, 5 bps slippage, decision lag 2.
+- Result: $10,000.00 final equity, +0.00% total, +0.00% monthly-equivalent, 0.00% max DD, 0 trades.
+- Artifact report: `experiments/binance_deepseek_planner/results/deepseek_iter_replanner_20260427_133224.md`
+- Artifact JSON: `experiments/binance_deepseek_planner/results/deepseek_iter_replanner_20260427_133224.json`
+
+Active-only replay using the same DeepSeek raw responses:
+- Result: $10,008.23 final equity, +0.08% total, +0.36% monthly-equivalent, 0.38% max DD, Sortino 1.36, 18 trades.
+- Artifact report: `experiments/binance_deepseek_planner/results/deepseek_iter_replanner_20260427_134452.md`
+- Artifact JSON: `experiments/binance_deepseek_planner/results/deepseek_iter_replanner_20260427_134452.json`
+
+Conclusion: the workflow is better than the one-shot GPT-5.5 planner, which lost -3.31% on this week, but the edge is
+still far below production quality.  The guarded selector was too conservative for gains, while active-only was only
+slightly positive.  Next step is a true iterative mutation loop: keep the best active templates, feed their simulated
+failure modes back to DeepSeek, and ask for constrained mutations rather than fresh daily plans.
+
+## LLM Reasoning + Price-Line Prompt Ablation (2026-04-27)
+
+Added prompt ablation knobs to the LLM replanners:
+- `--prompt-mode minimal` suppresses analysis and explicitly forbids web search, tools, code, external facts, and
+  explanatory text.
+- `--feature-style line_pct` encodes recent OHLC bars as bps moves from previous close.
+- `--feature-style ohlc_mid` encodes close return plus OHLC offsets from each bar midpoint and midpoint-normalized range.
+- `--reasoning-effort low` is supported for the GPT-5.5 Codex/OpenAI path.
+
+7-day GPT-5.5/Codex replanner comparison on BTC/ETH/SOL/DOGE/AAVE/LINK:
+- Previous xhigh/summary one-shot baseline: -3.31% total, -13.50% monthly-equivalent, 4.56% max DD, 62 trades.
+- Low reasoning, standard summary prompt: -2.25% total, -9.33% monthly-equivalent, 2.75% max DD, 46 trades.
+- Low reasoning, minimal prompt, OHLC midpoint line tokens: -0.66% total, -2.81% monthly-equivalent, 1.34% max DD, 38 trades.
+- Low reasoning, minimal prompt, previous-close OHLC pct line tokens: -1.14% total, -4.81% monthly-equivalent, 2.50% max DD, 32 trades.
+
+DeepSeek Pro minimal/OHLC-midpoint active-only run:
+- Result: -1.08% total, -4.56% monthly-equivalent, 1.40% max DD, 18 trades.
+- DeepSeek required repeated retries for empty/malformed responses, so provider reliability is still a practical issue.
+
+Conclusion: the user's theory is supported directionally for GPT-5.5 on this week.  Less reasoning was less bad than
+xhigh, and compact price-action line tokens were better than broad feature summaries.  Midpoint-normalized OHLC was
+better than previous-close OHLC, likely because it gives the model intrabar range/position information directly relevant
+to limit/stop placement.  Still not production: the best variant was only -0.66% over the week.
+
+## DeepSeek Energy Refit Agent (2026-04-27)
+
+Built `experiments/binance_deepseek_planner/deepseek_energy_refit_agent.py` for the staged planner idea:
+DeepSeek JSON seed -> local boosted-tree refit -> optional DeepSeek constrained refit -> Torch MLP refit.  Templates are
+vectors over side/allocation/entry/take-profit/stop for each symbol, and every candidate is scored on trailing
+calibration-day simulation before executing the selected template on the next unseen day.
+
+Implementation notes:
+- DeepSeek prompts now follow the JSON-output docs more closely: `response_format={"type":"json_object"}`, the word
+  `json` in the prompt, an explicit JSON shape example, bounded tokens, and retries for empty/truncated content.
+- `deepseek-v4-flash` is the default low/no-thinking model for this path.
+- `xgboost` and `catboost` are not installed in `.venv313`, so the boosted refit currently uses sklearn
+  `HistGradientBoostingRegressor`. Torch is available and used for the neural refit stage.
+- A `no_think` prompt mode was added for GPT/DeepSeek, but GPT-5.5 still uses `reasoning_effort=low` because there is no
+  literal zero-reasoning Codex setting exposed here.
+
+7-day results on BTC/ETH/SOL/DOGE/AAVE/LINK:
+- GPT-5.5 low + no_think + OHLC midpoint: -1.75% total, -7.34% monthly-equivalent, 2.61% max DD, 32 trades.
+- DeepSeek flash no_think energy refit: -1.50% total, -6.30% monthly-equivalent, 1.56% max DD, 12 trades.
+- Same flash seeds with risk clamps (`risk_scale=0.35`, max 20%/symbol, max 60% gross): -0.87% total, -3.70% monthly-equivalent, 1.03% max DD, 10 trades.
+- Risk clamps + cash guard: -0.45% total, -1.91% monthly-equivalent, 0.45% max DD, 10 trades.
+- Risk clamps + cash guard + min calibration score hurdle 0.0025: +0.00% total, 0.00% max DD, 0 trades.
+
+Conclusion: the advanced agent infrastructure works, but the local refitters overfit the short trailing calibration
+window.  The no_think prompt was worse than the previous GPT-5.5 low/minimal/OHLC-midpoint run (-1.75% vs -0.66%).
+DeepSeek flash completed and was more reliable than Pro under no_think prompting; DeepSeek Pro repeatedly returned empty
+or malformed JSON and the Pro energy run was stopped.  Next step is not more agent stages; it is training the boosted
+and neural refitters on many rolling windows so their score predictions generalize beyond a 4-day calibration slice.
+
+## Energy Agent Gradient/RL Refit Expansion (2026-04-27)
+
+Extended `deepseek_energy_refit_agent.py` with two additional frontier-style local refinement stages:
+- `gradient_refit`: direct gradient ascent through the Torch MLP score surrogate over side/allocation/entry/take-profit/stop vectors.
+- `cem_rl_refit`: cross-entropy/evolution-strategy refinement that samples pair changes, amount changes, price levels, take-profit, and stop-loss, then evaluates candidates through the simulator.
+
+Also added robustness controls:
+- `--selection-mode robust` reranks by base score plus latest/worst calibration performance.
+- `--min-positive-calibration-days` requires repeated calibration wins before active selection.
+- `--require-latest-calibration-positive` rejects candidates failing the latest calibration day.
+- `--min-calibration-score` with `--include-cash-guard` forces cash when the apparent edge is below a hurdle.
+
+Replay results using the same DeepSeek flash seed responses:
+- Gradient + CEM/RL active replay, 4d calibration: -1.24% total, -5.24% monthly-equivalent, 1.24% max DD, 8 trades.
+- Gradient + CEM/RL robust 4d gates: -0.74% total, -3.14% monthly-equivalent, 0.76% max DD, 8 trades.
+- Gradient + CEM/RL robust 10d calibration + score hurdle: +0.00% total, 0.00% max DD, 0 trades.
+
+Conclusion: the added gradient/RL stages can raise calibration scores, but they still overfit unless the robustness gates
+are strong enough to reject trades.  With stronger 10-day gates, the agent correctly stayed in cash.  More iterations
+will only help if the surrogate/refit objective is trained over many rolling windows with held-out validation; otherwise
+the optimizer learns calibration quirks rather than transferable daily edge.
+
+## Rolling GPU Energy Trainer (2026-04-27)
+
+Built `experiments/binance_deepseek_planner/rolling_energy_trainer.py` to address the calibration-overfit problem in
+the staged DeepSeek/gradient/RL agent.  Instead of scoring candidates only on a 4-10 day trailing slice, it generates
+many random daily plan templates across rolling historical days, simulates each template's next-day result, and trains a
+Torch MLP scorer on market features plus the template vector.  At inference it samples thousands of candidate templates,
+scores them on GPU, gradient-refines the top candidates through the learned scorer, then executes only if the predicted
+edge clears a validation-calibrated active threshold.
+
+Implementation notes:
+- Template vector dimensions are side/allocation/entry-offset/take-profit/stop-loss for each symbol.
+- Market features include recent return, volatility, drawdown, and cross-symbol correlation summaries.
+- The score objective penalizes realized drawdown and trade count in addition to return.
+- `--threshold-mode validation_topday` groups validation candidates by day, looks at the top predicted candidate per
+  validation day, and learns the minimum prediction threshold from validation expectancy rather than the eval week.
+- CUDA was used in the tested `.venv313` environment (`training scorer on cuda`).
+
+7-day BTC/ETH/SOL/DOGE/AAVE/LINK results, 240d train + 45d validation:
+- Base rolling scorer, 2048 eval candidates, 64 gradient candidates, 40 gradient steps, fixed `0.0005` hurdle:
+  -0.13% total, -0.56% monthly-equivalent, 0.50% max DD, 18 trades, validation correlation 0.2617.
+- Same setup with manually stricter `0.0010` hurdle after inspection:
+  +0.14% total, +0.62% monthly-equivalent, 0.25% max DD, 14 trades.  This was diagnostic only because the threshold
+  was chosen after seeing the eval week.
+- Validation-calibrated hurdle selected `0.000914` from 16 of 45 validation top-days and reproduced the improved result:
+  +0.14% total, +0.62% monthly-equivalent, 0.25% max DD, 14 trades.
+- Higher inference-compute variant, 8192 eval candidates, 128 gradient candidates, 60 gradient steps, same validation
+  threshold:
+  +0.18% total, +0.77% monthly-equivalent, 0.08% max DD, 12 trades.
+
+Artifacts:
+- `experiments/binance_deepseek_planner/results/rolling_energy_trainer_20260427_193720.md`
+- `experiments/binance_deepseek_planner/results/rolling_energy_trainer_20260427_193907.md`
+- `experiments/binance_deepseek_planner/results/rolling_energy_trainer_20260427_194218.md`
+- `experiments/binance_deepseek_planner/results/rolling_energy_trainer_20260427_194511.md`
+
+Conclusion: this is still nowhere near the >=27% monthly production gate, but it is the first version of this
+agent-refit path where the infrastructure behaves in the intended direction: validation calibration rejects marginal
+active days, GPU batch scoring is used, and scaling inference candidates/gradient refit improved both realized return
+and drawdown on the same unseen 7-day window.  The next serious step is a rolling multi-window sweep so candidate-count
+scaling is judged by median/p10 monthly return rather than one favorable week.
+
+Follow-up optimizer work:
+- Added `--candidate-style legacy|frontier|mixed`.  The new frontier generator uses volatility-aware entry/TP/SL
+  distances and cross-sectional long-short modes, but the first full conservative run rejected all trades.  A forced
+  active, return-weighted/high-gross diagnostic lost -1.02% total with 1.21% max DD, so this generator is not better
+  yet.
+- Added configurable score weights plus `--label-target score|total_return`.  Training directly on raw next-day return
+  was worse on the same week: -0.17% total, -0.73% monthly-equivalent, 0.37% max DD, 4 trades.
+- Added top-k trailing simulator reranking via `--rerank-calibration-days`.  On the known-good legacy setup it reduced
+  max DD from 0.08% to 0.06%, but return fell from +0.18% to +0.13%, so it is not the new best.
+- Added GPU scorer ensembling via `--ensemble-size` and `--uncertainty-penalty`.  A 2-member average improved validation
+  correlation to 0.2923 but only made +0.05% total, +0.22% monthly-equivalent, 0.15% max DD.  A 3-member uncertainty
+  penalty of 0.5 was too conservative and rejected all validation trades.
+- A 12-symbol universe with the same label budget also rejected all validation trades; wider universes need a pair
+  preselector or much denser labels before they help.
+
+Current best remains `rolling_energy_trainer_20260427_194511.md`: +0.18% total, +0.77% monthly-equivalent, 0.08% max
+DD, 12 trades.  The useful lesson is that validation gates are doing their job: most plausible PnL-seeking variants get
+rejected or lose when forced active.  More inference compute should only be scaled after a multi-window sweep shows
+median and p10 improvement, not just a single seed/week improvement.
+
+## NVIDIA-style CVaR Packing and Symbol Filtering (2026-04-30)
+
+Followed up on the NVIDIA Quantitative Portfolio Optimization blueprint idea with two Binance33 integrations around the
+current best linear short rule `rand0045_rb1_thr0.5_btcmom20gt-0.05`.
+
+Implemented:
+- `scripts/sweep_binance33_linear_cvar_pack.py`
+  - Binance33-specific portfolio packer for the linear rule.
+  - Uses rolling historical tail risk / CVaR-style allocation modes (`cvar`, `kelly_cvar`, score/equal baselines).
+  - Preserves the important simulator realism pieces for this path: decision lag 2, 20 bps slippage, 10 bps fee,
+    5 bps binary short-fill buffer, short borrow, and hold-vs-full rebalance modes.
+  - Added tests for allocation caps, CVaR risk weighting, and binary short-fill behavior.
+- `scripts/search_binance33_linear_symbol_filter.py`
+  - Greedy train-history-only symbol exclusion for the same linear rule.
+  - Validates each selected exclusion set on untouched validation over a leverage grid.
+- Head-to-head normalization now includes `linear_cvar_pack` and `linear_symbol_filter` artifacts.
+
+Results:
+- CVaR/portfolio packing did not help. Best targeted 120d validation row was only `+5.18%/mo`, p10 `+3.17%/mo`,
+  p90 DD `19.19%`, but `2/45` negative windows. It is much smoother in some cells but destroys the concentrated
+  edge that made the single-symbol rule attractive.
+- Train-only symbol filtering selected bad-history exclusions in this order:
+  `SOLUSD`, `DOGEUSD`, `ETHUSD`, `BTCUSD`, `AAVEUSD`, `SHIBUSD`.
+  Training-history goodness improved, but remained deeply non-production:
+  final selected set was `+0.00%/mo`, p90 DD `80.25%`, `61/162` negative windows.
+- Validation was mostly unchanged for the first excluded sets because the validation winner was not meaningfully using
+  those symbols:
+  - no exclusion, leverage `1.305`: `+30.0387%/mo`, p10 `+19.5390%/mo`, p90 DD `19.9609%`, `0/45` negative windows.
+  - `SOLUSD`, `DOGEUSD`, `ETHUSD` excluded: same validation numbers.
+  - larger train-selected exclusions reduced validation PnL below the 30%/mo target.
+- Combined head-to-head artifact:
+  `analysis/binance_head_to_head_20260430_after_nvidia_cvar_symbolfilter.csv`.
+
+Conclusion: the NVIDIA-style Mean-CVaR idea is useful as a risk overlay, but on this Binance33 rule it is not the route
+to higher PnL. The profitable recent signal is concentrated; packing it diversifies away the edge. Symbol filtering
+does not rescue old-history robustness either. No deployment: the recent 30%/mo rows still fail the broader robustness
+standard because train-history remains structurally bad.
+
+## Meta-Annealed Strategy Blends (2026-05-01)
+
+Implemented `scripts/search_binance33_meta_anneal.py` to test inference-time learning / temperature-cooled strategy
+combination:
+- score channels from linear rules, handcrafted momentum/drawdown features, and optional XGBoost experiments
+- simulated-annealing loop over channel weights, threshold, BTC/market gates, rebalance cadence, leverage, and
+  single-vs-portfolio book mode
+- fast vectorized short-only simulator for search
+- exact `simulate_daily_policy` replay for best single-position candidates
+- `--train-tail-days` to test recent-regime adaptation without directly fitting validation
+
+Artifacts:
+- `analysis/binance33_meta_anneal_linear_hand_20260501.csv`
+- `analysis/binance33_meta_anneal_single_linear_hand_20260501.csv`
+- `analysis/binance33_meta_anneal_xgb_linear_20260501.csv`
+- `analysis/binance33_meta_anneal_recent_tail_linear_hand_20260501.csv`
+- `analysis/binance33_meta_channel_gate_grid_20260501.csv`
+- `analysis/binance_head_to_head_20260501_after_meta_anneal.csv`
+
+Results:
+- Full-history anneal cooled into low-return / low-drawdown portfolio books. Best validation fast portfolio row:
+  about `+4.61%/mo`, p10 `+1.49%/mo`, p90 DD `10.02%`, `0/45` negative windows.
+- Single-position full-history anneal exact replay was not competitive. Best useful exact rows were around
+  `+4-8%/mo`; some high fast rows collapsed under exact replay with negative p10 or high DD.
+- XGBoost-channel anneal (`xgb08,xgb11`, XGBoost 3.2.0 in `.venv312`) improved stability but not PnL:
+  best exact row was `+4.89%/mo`, p10 `+4.77%/mo`, p90 DD `0.29%`, but only 6 median trades and far below target.
+- Recent-tail anneal (`--train-tail-days 420`) found the simple recent-regime idea: short 20-day winners.
+  Exact validation reached about `+17.95%/mo`, p10 `+12.95%/mo`, but p90 DD was `74.15%`, so it is not acceptable.
+- Focused exact channel/gate grid confirmed:
+  - blend-normalized rand0045-like channel: best `+26.69%/mo`, p10 `+16.46%/mo`, p90 DD `19.96%`.
+  - handcrafted low-vol 5d winner short: best `+24.78%/mo`, p10 `+18.54%/mo`, p90 DD `20.84%`.
+  Neither clears the `>=30%/mo` and `<20% DD` gate.
+
+Conclusion: annealing and XGBoost blending improved smoothness, but every robust blend gives up too much PnL. Recent
+tail fitting can raise return, but it recreates the unacceptable drawdown problem. The next scaling direction is wider
+crypto universes (`crypto40/70+`) with a two-stage pipeline: cheap cross-sectional preselector over many Binance pairs,
+then exact simulator validation only on the selected subset. Current Binance33 signals are too concentrated to become a
+good diversified portfolio by post-hoc packing alone.

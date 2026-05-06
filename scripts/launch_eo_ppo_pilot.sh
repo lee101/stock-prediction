@@ -21,7 +21,7 @@ VAL_WINDOWS="${6:-50}"
 VAL_DATA_OVERRIDE="${7:-}"
 
 # earlyoom kills training processes under memory pressure — stop it first.
-echo "ilu" | sudo -S systemctl stop earlyoom 2>/dev/null \
+source ~/.secretbashrc && sudo -S systemctl stop earlyoom <<< "$SUDO_PASSWORD" 2>/dev/null \
   && echo "[eo-ppo] earlyoom stopped" \
   || echo "[eo-ppo] earlyoom already stopped"
 

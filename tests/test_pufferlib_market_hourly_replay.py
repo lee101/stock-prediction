@@ -191,6 +191,25 @@ def test_simulate_daily_policy_charges_margin_borrow_for_leveraged_long() -> Non
     assert res_2x.total_return < -expected_first_step_fee / 10_000.0
 
 
+def test_simulate_daily_policy_records_trade_events() -> None:
+    data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
+
+    result = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+
+    assert result.trade_events is not None
+    assert [(event.side, event.symbol, event.bar_index, event.price) for event in result.trade_events] == [
+        ("buy", "AAA", 0, 100.0),
+        ("sell", "AAA", 2, 121.0),
+    ]
+
+
 def test_hourly_replay_respects_fill_buffer_and_slippage() -> None:
     data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
     market_index = pd.date_range("2024-01-01T00:00:00Z", "2024-01-03T23:00:00Z", freq="h", tz="UTC")

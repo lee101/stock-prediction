@@ -628,7 +628,7 @@ as auto-deploy inference floors but does NOT list `--min-score` (and lists
 sed -i 's/--min-score 0.85/--min-score 0.87/' deployments/xgb-daily-trader-live/launch.sh
 scripts/deploy_live_trader.sh --allow-unmodeled-live-sidecars xgb-daily-trader-live
 # Verify:
-echo ilu | sudo -S tail -30 /var/log/supervisor/xgb-daily-trader-live.log
+source ~/.secretbashrc && sudo -S tail -30 /var/log/supervisor/xgb-daily-trader-live.log <<< "$SUDO_PASSWORD"
 # Should show "--min-score 0.87" in the new session log + new pid in lock.
 ```
 
@@ -1287,7 +1287,7 @@ Picks top-K models by trailing return, follows their signal.
 
 **New sweeps started (2026-04-14)**:
 - **P variant** (50-day episodes matching eval window): seeds 1-20 — testing short-horizon training
-- **Q variant** (h=2048 wider MLP, Muon tp=0.05): seeds 1-5 — testing capacity increase  
+- **Q variant** (h=2048 wider MLP, Muon tp=0.05): seeds 1-5 — testing capacity increase
 - **F extended** (AdamW tp=0.05): seeds 8-20 — AdamW diversity at D's trade-penalty
 - monitor_sweeps.sh updated to test vs **9-model ensemble** (was 8-model)
 
