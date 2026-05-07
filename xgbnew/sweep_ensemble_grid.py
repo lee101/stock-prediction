@@ -25,7 +25,7 @@ analysis/xgbnew_daily/alltrain_ensemble_gpu/alltrain_seed197.pkl \
         --leverage-grid 2.0,2.25,2.5,2.75,3.0 \
         --min-score-grid 0.80,0.85,0.90 \
         --hold-through \
-        --fee-regimes deploy,prod10bps,stress36x \
+        --fee-regimes deploy,stress36x \
         --output-dir analysis/xgbnew_ensemble_sweep
 """
 from __future__ import annotations
@@ -44,6 +44,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from xgbnew.artifacts import write_json_atomic
 from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache, load_fm_latents
 from xgbnew.features import (
@@ -84,13 +85,23 @@ def _infer_required_fm_latents(
 
 
 # ── Fee regimes ───────────────────────────────────────────────────────────────
-# "deploy" is the historical Alpaca fee baseline kept for compatibility.
-# "prod10bps" is the current production-realism fee at the normal fill buffer.
+# "deploy" is the current production-realism fee at the normal fill buffer.
+# "prod10bps" is kept as a compatibility alias for older manifests/scripts.
+# "legacy_alpaca_0278bps" is the old low-friction diagnostic baseline.
 # "stress36x" is the harsher realism-gate stress cell.
 FEE_REGIMES: dict[str, dict[str, float]] = {
-    "deploy": {"fee_rate": 0.0000278, "fill_buffer_bps": 5.0, "commission_bps": 0.0},
+    "deploy": {
+        "fee_rate": PRODUCTION_STOCK_FEE_RATE,
+        "fill_buffer_bps": 5.0,
+        "commission_bps": 0.0,
+    },
     "prod10bps": {
         "fee_rate": PRODUCTION_STOCK_FEE_RATE,
+        "fill_buffer_bps": 5.0,
+        "commission_bps": 0.0,
+    },
+    "legacy_alpaca_0278bps": {
+        "fee_rate": 0.0000278,
         "fill_buffer_bps": 5.0,
         "commission_bps": 0.0,
     },
@@ -2232,10 +2243,7 @@ def _ensemble_manifest_metadata(model_paths: list[Path]) -> dict | None:
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)
+    write_json_atomic(path, payload)
 
 
 def _load_checkpoint_rows(

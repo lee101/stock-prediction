@@ -173,7 +173,7 @@ def _valid_result_payload() -> dict[str, object]:
         "fee_regimes": {
             "deploy": {
                 "commission_bps": 0.0,
-                "fee_rate": 0.0000278,
+                "fee_rate": 0.001,
                 "fill_buffer_bps": 5.0,
             },
             "prod10bps": {
@@ -596,7 +596,7 @@ if not os.environ.get("FAKE_SWEEP_NO_RESULT"):
         "fee_regimes": {
             "deploy": {
                 "commission_bps": 0.0,
-                "fee_rate": 0.0000278,
+                "fee_rate": 0.001,
                 "fill_buffer_bps": 5.0,
             },
             "prod10bps": {

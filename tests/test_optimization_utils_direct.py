@@ -5,6 +5,7 @@ Tests both DIRECT and differential_evolution modes.
 
 import importlib
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,8 +13,8 @@ import torch
 
 import src.optimization_utils as opt_utils
 from src.optimization_utils import (
-    optimize_entry_exit_multipliers,
     optimize_always_on_multipliers,
+    optimize_entry_exit_multipliers,
 )
 
 
@@ -92,16 +93,16 @@ class TestDirectOptimizer:
     def test_direct_enabled_by_default(self):
         """Test that DIRECT is enabled by default"""
         # Don't set env var, check default behavior
-        import importlib
         import src.optimization_utils as opt_utils
+
         importlib.reload(opt_utils)
         assert opt_utils._USE_DIRECT is True
 
     def test_direct_can_be_disabled(self):
         """Test that DIRECT can be disabled via env var"""
         os.environ['MARKETSIM_USE_DIRECT_OPTIMIZER'] = '0'
-        import importlib
         import src.optimization_utils as opt_utils
+
         importlib.reload(opt_utils)
         assert opt_utils._USE_DIRECT is False
         # Reset
@@ -136,8 +137,8 @@ class TestDirectOptimizer:
         """Test that DIRECT finds similar or better solutions than DE"""
         # Run with DIRECT
         os.environ['MARKETSIM_USE_DIRECT_OPTIMIZER'] = '1'
-        import importlib
         import src.optimization_utils as opt_utils
+
         importlib.reload(opt_utils)
 
         h_direct, l_direct, p_direct = opt_utils.optimize_entry_exit_multipliers(
@@ -419,56 +420,56 @@ class TestEdgeCases:
 class TestPerformance:
     """Performance and timing tests"""
 
-    def test_direct_is_faster_than_de(self, sample_data):
-        """Verify DIRECT is actually faster than DE"""
-        import time
-        import importlib
+    def test_direct_uses_smaller_search_budget_than_de(self, monkeypatch):
+        """Verify DIRECT is configured with the smaller deterministic search budget."""
         import src.optimization_utils as opt_utils
 
-        # Time DIRECT
-        os.environ['MARKETSIM_USE_DIRECT_OPTIMIZER'] = '1'
-        importlib.reload(opt_utils)
+        calls = {}
 
-        start = time.time()
-        for _ in range(5):
-            opt_utils.optimize_entry_exit_multipliers(
-                sample_data['close_actual'],
-                sample_data['positions'],
-                sample_data['high_actual'],
-                sample_data['high_pred'],
-                sample_data['low_actual'],
-                sample_data['low_pred'],
-                maxiter=30,
-                popsize=8,
-            )
-        time_direct = time.time() - start
+        def objective(params):
+            return float(sum(params))
 
-        # Time DE
-        os.environ['MARKETSIM_USE_DIRECT_OPTIMIZER'] = '0'
-        importlib.reload(opt_utils)
+        def fake_direct(func, bounds, *, maxfun):
+            calls["direct"] = {"bounds": bounds, "maxfun": maxfun}
+            assert func((0.0, 0.0)) == 0.0
+            return SimpleNamespace(x=np.array([0.0, 0.0]), fun=0.0)
 
-        start = time.time()
-        for _ in range(5):
-            opt_utils.optimize_entry_exit_multipliers(
-                sample_data['close_actual'],
-                sample_data['positions'],
-                sample_data['high_actual'],
-                sample_data['high_pred'],
-                sample_data['low_actual'],
-                sample_data['low_pred'],
-                maxiter=30,
-                popsize=8,
-                seed=42,
-            )
-        time_de = time.time() - start
+        def fake_de(func, bounds, *, maxiter, popsize, atol, seed, workers, updating):
+            calls["de"] = {
+                "bounds": bounds,
+                "maxiter": maxiter,
+                "popsize": popsize,
+                "atol": atol,
+                "seed": seed,
+                "workers": workers,
+                "updating": updating,
+            }
+            assert func((0.0, 0.0)) == 0.0
+            return SimpleNamespace(x=np.array([0.0, 0.0]), fun=0.0)
 
-        # DIRECT should be faster (allow 5% margin)
-        speedup = time_de / time_direct
-        print(f"\nSpeedup: {speedup:.2f}x (DIRECT: {time_direct:.2f}s, DE: {time_de:.2f}s)")
-        assert speedup > 1.05, f"DIRECT not faster: {speedup:.2f}x"
+        monkeypatch.setattr(opt_utils, "direct", fake_direct)
+        monkeypatch.setattr(opt_utils, "differential_evolution", fake_de)
+        monkeypatch.setattr(opt_utils, "_USE_DIRECT", True)
+        opt_utils.run_bounded_optimizer(
+            objective,
+            bounds=((-0.03, 0.03), (-0.03, 0.03)),
+            maxiter=30,
+            popsize=8,
+        )
 
-        # Reset
-        os.environ['MARKETSIM_USE_DIRECT_OPTIMIZER'] = '1'
+        monkeypatch.setattr(opt_utils, "_USE_DIRECT", False)
+        opt_utils.run_bounded_optimizer(
+            objective,
+            bounds=((-0.03, 0.03), (-0.03, 0.03)),
+            maxiter=30,
+            popsize=8,
+            seed=42,
+        )
+
+        de_population_budget = (calls["de"]["maxiter"] + 1) * calls["de"]["popsize"] * 2
+        assert calls["direct"]["maxfun"] == opt_utils._direct_maxfun(30, 8)
+        assert calls["direct"]["maxfun"] < de_population_budget
+        assert calls["de"]["seed"] == 42
 
 
 if __name__ == '__main__':

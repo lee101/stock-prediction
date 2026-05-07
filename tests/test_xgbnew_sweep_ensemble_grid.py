@@ -612,14 +612,22 @@ def test_min_score_gate_changes_outcome(monkeypatch, tmp_path):
 
 
 def test_fee_regimes_in_registry():
-    assert set(sweep.FEE_REGIMES) >= {"deploy", "prod10bps", "stress36x"}
+    assert set(sweep.FEE_REGIMES) >= {
+        "deploy",
+        "prod10bps",
+        "legacy_alpaca_0278bps",
+        "stress36x",
+    }
     d = sweep.FEE_REGIMES["deploy"]
     p = sweep.FEE_REGIMES["prod10bps"]
+    legacy = sweep.FEE_REGIMES["legacy_alpaca_0278bps"]
     s = sweep.FEE_REGIMES["stress36x"]
-    assert p["fee_rate"] == pytest.approx(0.001)
+    assert d["fee_rate"] == pytest.approx(0.001)
+    assert p == d
     assert p["fill_buffer_bps"] == d["fill_buffer_bps"]
     assert p["commission_bps"] == d["commission_bps"]
-    assert p["fee_rate"] > d["fee_rate"]
+    assert legacy["fee_rate"] < d["fee_rate"]
+    assert legacy["fill_buffer_bps"] == d["fill_buffer_bps"]
     # stress must be meaningfully more pessimistic on every axis
     assert s["fee_rate"] >= p["fee_rate"]
     assert s["fill_buffer_bps"] > p["fill_buffer_bps"]
@@ -1234,6 +1242,16 @@ def test_require_production_target_flag_parses():
     ])
 
     assert args.require_production_target is True
+
+
+def test_sweep_default_fee_regime_is_production_realistic():
+    args = sweep.parse_args([
+        "--symbols-file", "symbols.txt",
+        "--model-paths", "model.pkl",
+    ])
+
+    assert args.fee_regimes == "deploy"
+    assert sweep.FEE_REGIMES[args.fee_regimes]["fee_rate"] == pytest.approx(0.001)
 
 
 def test_friction_robust_strategy_rows_take_worst_fee_cell():

@@ -1,46 +1,46 @@
 import json
+import math
 import os
 import re
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import sleep, monotonic
 from threading import Lock
+from time import monotonic, sleep
+from types import SimpleNamespace
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import cachetools
 import diskcache
-import math
 import pandas as pd
 import requests.exceptions
 from alpaca.data import (
-    StockBarsRequest,
-    StockHistoricalDataClient,
     CryptoBarsRequest,
     CryptoHistoricalDataClient,
     CryptoLatestQuoteRequest,
+    StockBarsRequest,
+    StockHistoricalDataClient,
     StockLatestQuoteRequest,
     TimeFrame,
     TimeFrameUnit,
 )
 from alpaca.data.enums import DataFeed
-from alpaca.trading import OrderType, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading import GetOrdersRequest, LimitOrderRequest, OrderType
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca_trade_api.rest import APIError
-from loguru import logger
+from env_real import ALP_KEY_ID, ALP_KEY_ID_PROD, ALP_SECRET_KEY, ALP_SECRET_KEY_PROD, PAPER
 from retry import retry
 
-from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT, PAPER
-from typing import Iterable, Dict, Any, List, Optional, Tuple
-from types import SimpleNamespace
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
-from src.fixtures import crypto_symbols, all_crypto_symbols
-from src.logging_utils import setup_logging, get_log_filename
+from src.fixtures import crypto_symbols
+from src.logging_utils import get_log_filename, setup_logging
 from src.stock_utils import pairs_equal, remap_symbols
 from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
+
 
 _is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
 logger = setup_logging(get_log_filename("alpaca_cli.log", is_hourly=_is_hourly))
@@ -61,6 +61,7 @@ from src.alpaca_singleton import (  # noqa: E402
     guard_sell_against_death_spiral,
     record_buy_price,
 )
+
 
 # Run the singleton lock acquisition exactly once per process import.
 _ALPACA_SINGLETON_LOCK = enforce_live_singleton(
@@ -115,7 +116,7 @@ def _get_min_order_notional(symbol: str) -> float:
     try:
         return max(float(raw_value), 0.0)
     except Exception:
-        logger.warning(f"Invalid min notional override for %s=%r; defaulting to $1.00", symbol, raw_value)
+        logger.warning("Invalid min notional override for %s=%r; defaulting to $1.00", symbol, raw_value)
         return 1.0
 
 
@@ -1177,6 +1178,12 @@ def close_position_at_current_price(position, row):
     try:
         if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
+                limit_price = round(float(row["close_last_price_minute"]), 2)
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1184,10 +1191,16 @@ def close_position_at_current_price(position, row):
                         side=OrderSide.SELL,
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(round(float(row["close_last_price_minute"]), 2)),
+                        limit_price=str(limit_price),
                     )
                 )
             else:
+                limit_price = math.ceil(float(row["close_last_price_minute"]))
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1195,7 +1208,7 @@ def close_position_at_current_price(position, row):
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(math.ceil(float(row["close_last_price_minute"]))),
+                        limit_price=str(limit_price),
                     )
                 )
         else:
@@ -1278,6 +1291,12 @@ def close_position_at_almost_current_price(position, row):
     try:
         if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
+                limit_price = round(row["close_last_price_minute"] * 1.0003, 1)
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1285,10 +1304,16 @@ def close_position_at_almost_current_price(position, row):
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+                        limit_price=str(limit_price),
                     )
                 )
             else:
+                limit_price = round(row["close_last_price_minute"] * 1.0003, 1)
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1296,7 +1321,7 @@ def close_position_at_almost_current_price(position, row):
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+                        limit_price=str(limit_price),
                     )
                 )
         else:

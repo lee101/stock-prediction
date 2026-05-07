@@ -2,6 +2,25 @@
 
 ## Active Deployments
 
+### 2026-05-05 -- Alpaca wrapper non-force close guard hardening
+
+**Code change prepared, not a strategy promotion**:
+- `alpaca_wrapper.close_position_at_current_price()` and
+  `close_position_at_almost_current_price()` now call
+  `guard_sell_against_death_spiral` before submitting long-position SELL limit
+  orders.
+- This closes a wrapper-level gap in automatic backout paths: these helpers
+  are not explicit force-exit APIs, so a guard refusal now blocks submission
+  instead of letting a non-force close realize a protected loss.
+- Explicit force-style helpers such as `close_position_violently()` are
+  unchanged.
+
+**Validation**:
+- `.venv313/bin/pytest -q tests/prod/brokers/test_alpaca_wrapper.py tests/test_xgbnew_live_trader_helpers.py tests/test_xgbnew_live_trader_guard.py`
+  (`132 passed, 2 skipped`)
+- `.venv313/bin/python -m py_compile alpaca_wrapper.py tests/prod/brokers/test_alpaca_wrapper.py`
+- `.venv313/bin/ruff check --select I,F,E9 alpaca_wrapper.py tests/prod/brokers/test_alpaca_wrapper.py`
+
 ### 2026-05-04 20:16 UTC -- live order/cancel smoke verified
 
 **Trading-server change**:
