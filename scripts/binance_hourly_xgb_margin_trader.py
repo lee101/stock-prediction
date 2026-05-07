@@ -792,6 +792,22 @@ def _load_post_execute_coverage(args: argparse.Namespace) -> list[Any]:
     return load_coverage(min_value_usdt=MIN_TRADE_USDT)
 
 
+def _entry_fill_wait_seconds(args: argparse.Namespace) -> float:
+    explicit = getattr(args, "entry_fill_wait_seconds", None)
+    if explicit is not None:
+        return max(0.0, float(explicit))
+    return max(0.0, float(best_pack_config().entry_ttl_hours) * 3600.0)
+
+
+def _cycle_seconds(args: argparse.Namespace) -> float:
+    return max(1.0, float(getattr(args, "cycle_minutes", 60.0)) * 60.0)
+
+
+def _successful_cycle_sleep_seconds(args: argparse.Namespace, cycle_started_monotonic: float) -> float:
+    elapsed = max(0.0, time.monotonic() - float(cycle_started_monotonic))
+    return max(1.0, _cycle_seconds(args) - elapsed)
+
+
 def _existing_margin_gross_usdt(rows: list[Any]) -> float:
     total = 0.0
     for row in rows:
@@ -856,7 +872,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repair-existing-coverage", action="store_true")
     parser.add_argument("--coverage-repair-markup-pct", type=float, default=0.20)
     parser.add_argument("--max-data-staleness-hours", type=float, default=4.0)
-    parser.add_argument("--entry-fill-wait-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--entry-fill-wait-seconds",
+        type=float,
+        default=None,
+        help="Seconds to supervise entry fills before canceling unfilled entries; defaults to config entry_ttl_hours.",
+    )
     parser.add_argument("--entry-fill-poll-seconds", type=float, default=3.0)
     parser.add_argument("--post-cycle-settle-seconds", type=float, default=10.0)
     parser.add_argument("--leave-unfilled-entries-open", action="store_true")
@@ -916,6 +937,7 @@ def run_once(args: argparse.Namespace) -> int:
         "drawdown_state": state,
         "existing_margin_gross_usdt": float(existing_gross),
         "max_total_entry_notional_usdt": float(remaining_entry_cap),
+        "entry_fill_wait_seconds": float(_entry_fill_wait_seconds(args)),
         "active_margin_symbols": sorted(active_symbols),
         "candidates": [asdict(candidate) for candidate in candidates],
         "orders": [
@@ -931,7 +953,7 @@ def run_once(args: argparse.Namespace) -> int:
         _preflight_live(args, end=end)
         payload["placed"] = _place_entry_orders(
             candidates,
-            wait_seconds=float(args.entry_fill_wait_seconds),
+            wait_seconds=float(_entry_fill_wait_seconds(args)),
             poll_seconds=float(args.entry_fill_poll_seconds),
             cancel_unfilled_entries=not bool(args.leave_unfilled_entries_open),
         )
@@ -968,11 +990,12 @@ def main(argv: list[str] | None = None) -> int:
         return run_once(args)
 
     if not bool(args.run_on_start):
-        time.sleep(max(1.0, float(args.cycle_minutes) * 60.0))
+        time.sleep(_cycle_seconds(args))
     while True:
+        cycle_started = time.monotonic()
         try:
             run_once(args)
-            sleep_seconds = max(1.0, float(args.cycle_minutes) * 60.0)
+            sleep_seconds = _successful_cycle_sleep_seconds(args, cycle_started)
         except Exception as exc:
             print(
                 f"[{datetime.now(UTC).isoformat()}] xgb-hourly-pack cycle failed: {type(exc).__name__}: {exc}",

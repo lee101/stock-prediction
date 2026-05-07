@@ -310,3 +310,19 @@ def test_post_execute_coverage_waits_for_margin_settlement(monkeypatch: pytest.M
 
     assert rows == ["covered"]
     assert sleeps == [7.5]
+
+
+def test_default_entry_fill_wait_uses_config_ttl() -> None:
+    assert trader._entry_fill_wait_seconds(SimpleNamespace(entry_fill_wait_seconds=None)) == pytest.approx(3600.0)
+    assert trader._entry_fill_wait_seconds(SimpleNamespace(entry_fill_wait_seconds=42.0)) == pytest.approx(42.0)
+
+
+def test_successful_daemon_cycle_sleep_keeps_wall_clock_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(trader.time, "monotonic", lambda: 125.0)
+
+    sleep_seconds = trader._successful_cycle_sleep_seconds(
+        SimpleNamespace(cycle_minutes=1.0),
+        cycle_started_monotonic=100.0,
+    )
+
+    assert sleep_seconds == pytest.approx(35.0)
