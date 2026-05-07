@@ -3982,6 +3982,8 @@ def run_backtest(
     exit_offset_bps: float = 0.0,
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
+    ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
@@ -4082,7 +4084,14 @@ def run_backtest(
                     min_prob_ratio=multi_position_min_prob_ratio,
                 )
             else:
-                signal = _ensemble_softmax_signal(trader, extra_policies, features, prices)
+                signal = _ensemble_softmax_signal(
+                    trader,
+                    extra_policies,
+                    features,
+                    prices,
+                    ensemble_mode=ensemble_mode,
+                    min_agree_count=min_agree_count,
+                )
         else:
             signal = _trader_signal_from_features(
                 trader,
@@ -6004,6 +6013,8 @@ def run_backtest_via_trading_server(
     bot_id: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
     extra_checkpoints: Optional[list[str]] = None,
     allow_unsafe_checkpoint_loading: bool = False,
+    ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
@@ -6032,6 +6043,8 @@ def run_backtest_via_trading_server(
         checkpoint=checkpoint,
         extra_checkpoints=extra_checkpoints,
         allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        ensemble_mode=ensemble_mode,
+        min_agree_count=min_agree_count,
     )
 
 
@@ -6051,6 +6064,8 @@ def _run_backtest_via_trading_server_with_prepared_data(
     checkpoint: str = "",
     extra_checkpoints: Optional[list[str]] = None,
     allow_unsafe_checkpoint_loading: bool = False,
+    ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
@@ -6173,7 +6188,14 @@ def _run_backtest_via_trading_server_with_prepared_data(
             )
             _apply_portfolio_context_to_trader(trader, portfolio=portfolio)
             if extra_policies:
-                signal = _ensemble_softmax_signal(trader, extra_policies, features, prices)
+                signal = _ensemble_softmax_signal(
+                    trader,
+                    extra_policies,
+                    features,
+                    prices,
+                    ensemble_mode=ensemble_mode,
+                    min_agree_count=min_agree_count,
+                )
             elif callable(getattr(trader, "get_signal", None)):
                 signal = cast(TradingSignal, trader.get_signal(features, prices))
             else:
@@ -6367,6 +6389,8 @@ def compare_backtest_to_trading_server(
     extra_checkpoints: Optional[list[str]] = None,
     buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
     allow_unsafe_checkpoint_loading: bool = False,
+    ensemble_mode: str = "softmax_avg",
+    min_agree_count: int = 0,
 ) -> dict[str, object]:
     legacy = run_backtest(
         checkpoint=checkpoint,
@@ -6381,6 +6405,8 @@ def compare_backtest_to_trading_server(
         extra_checkpoints=extra_checkpoints,
         buying_power_multiplier=buying_power_multiplier,
         allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        ensemble_mode=ensemble_mode,
+        min_agree_count=min_agree_count,
     )
     server = run_backtest_via_trading_server(
         checkpoint=checkpoint,
@@ -6395,6 +6421,8 @@ def compare_backtest_to_trading_server(
         extra_checkpoints=extra_checkpoints,
         buying_power_multiplier=buying_power_multiplier,
         allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        ensemble_mode=ensemble_mode,
+        min_agree_count=min_agree_count,
     )
     deltas = {
         key: float(server.get(key, 0.0) - legacy.get(key, 0.0))
@@ -6450,6 +6478,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                 extra_checkpoints=config.extra_checkpoints,
                 buying_power_multiplier=config.backtest_buying_power_multiplier,
                 allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
+                ensemble_mode=config.ensemble_mode,
+                min_agree_count=config.min_agree_count,
             )
             return
         run_backtest(
@@ -6469,6 +6499,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             min_open_confidence=config.min_open_confidence,
             min_open_value_estimate=config.min_open_value_estimate,
             allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
+            ensemble_mode=config.ensemble_mode,
+            min_agree_count=config.min_agree_count,
         )
         return
 

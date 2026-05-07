@@ -4951,6 +4951,10 @@ def test_main_passes_backtest_offsets_to_run_backtest(monkeypatch, tmp_path: Pat
             "-5",
             "--backtest-exit-offset-bps",
             "25",
+            "--ensemble-mode",
+            "logit_avg",
+            "--min-agree-count",
+            "2",
             "--data-source",
             "local",
             "--symbols",
@@ -4963,6 +4967,8 @@ def test_main_passes_backtest_offsets_to_run_backtest(monkeypatch, tmp_path: Pat
 
     assert captured["entry_offset_bps"] == -5.0
     assert captured["exit_offset_bps"] == 25.0
+    assert captured["ensemble_mode"] == "logit_avg"
+    assert captured["min_agree_count"] == 2
 
 
 def test_compare_backtest_to_trading_server_passes_allocation_pct(monkeypatch) -> None:
@@ -5000,6 +5006,8 @@ def test_compare_backtest_to_trading_server_passes_allocation_pct(monkeypatch) -
         allocation_sizing_mode="confidence_scaled",
         starting_cash=25_000.0,
         buying_power_multiplier=2.0,
+        ensemble_mode="logit_avg",
+        min_agree_count=2,
     )
 
     assert captured["legacy"]["allocation_pct"] == 12.5
@@ -5010,6 +5018,10 @@ def test_compare_backtest_to_trading_server_passes_allocation_pct(monkeypatch) -
     assert captured["server"]["starting_cash"] == 25_000.0
     assert captured["legacy"]["buying_power_multiplier"] == 2.0
     assert captured["server"]["buying_power_multiplier"] == 2.0
+    assert captured["legacy"]["ensemble_mode"] == "logit_avg"
+    assert captured["server"]["ensemble_mode"] == "logit_avg"
+    assert captured["legacy"]["min_agree_count"] == 2
+    assert captured["server"]["min_agree_count"] == 2
 
 
 def test_compare_backtest_to_trading_server_passes_extra_checkpoints(monkeypatch) -> None:

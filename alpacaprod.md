@@ -2,6 +2,57 @@
 
 ## Active Deployments
 
+### 2026-05-07 -- local 120d marketsim/replay audit, no promotion
+
+**Scope**: local-only audit of the currently launched daily RL production path;
+no Alpaca live process, supervisor unit, model checkpoint, or allocation setting
+was changed.
+
+**Accuracy fix prepared**:
+- `trade_daily_stock_prod.py --backtest` and
+  `--compare-server-parity` now pass `ensemble_mode` and `min_agree_count`
+  into ensemble inference. This makes `--min-agree-count 2` backtests match the
+  deployed `deployments/daily-rl-trader/launch.sh` signal gate instead of
+  silently evaluating the ungated ensemble.
+
+**120d results**:
+- Pufferlib binary-fill gate, primary `C_s7.pt`, `decision_lag=2`,
+  `fee=10bps`, `short_borrow_apr=6.25%`, slippage `0/5/10/20bps`,
+  30 windows x 120 days: **FAIL**. Worst slippage median monthly return
+  `-3.04%`; worst window drawdown `28.44%`; negative windows `30/30`.
+  Artifact: `analysis/prod_rl_120d_20260507/C_s7_eval100d.md`.
+- Corrected live-like trading-server replay, 120 trading days, current
+  12-policy ensemble, `allocation_pct=12.5`, `min_agree_count=2`,
+  single-position mode: `total_return=+0.86%`, monthly `+0.15%`,
+  `annualized=+1.82%`, `sortino=0.33`, `max_drawdown=-3.05%`,
+  `orders=23`, `trades=11`.
+- Local daily data is stale/incomplete for this replay: configured
+  `trainingdata` exposed only `12/32` usable symbols and reported 20 stale
+  symbols behind freshest local date `2026-04-09`. Treat the replay as an
+  execution-path sanity check, not a full fresh 32-symbol market audit.
+
+**Sizing grid with the corrected gate**:
+
+| variant | total | monthly | sortino | max_dd |
+|---|---:|---:|---:|---:|
+| 12.5% cash | +0.86% | +0.15% | 0.33 | -3.05% |
+| 25% cash | +1.69% | +0.29% | 0.33 | -6.10% |
+| 50% cash | +3.20% | +0.55% | 0.35 | -12.20% |
+| 95% cash | +5.46% | +0.93% | 0.38 | -23.17% |
+| 125% / 2x BP | +6.58% | +1.12% | 0.41 | -30.49% |
+| 190% / 2x BP | +7.80% | +1.32% | 0.50 | -46.35% |
+
+**Decision**: no production promotion. Sizing increases return but fails the
+monthly target by an order of magnitude and breaches drawdown limits before
+reaching meaningful PnL. Next useful work is refreshing/backfilling daily and
+hourly stock data for all 32 symbols, then rerunning the corrected parity check
+and the hourly-intrabar promotion gate.
+
+**Validation**:
+- `.venv313/bin/python -m py_compile trade_daily_stock_prod.py tests/test_trade_daily_stock_prod.py`
+- `.venv313/bin/pytest -q tests/test_trade_daily_stock_prod.py::test_main_passes_backtest_offsets_to_run_backtest tests/test_trade_daily_stock_prod.py::test_compare_backtest_to_trading_server_passes_allocation_pct tests/test_trade_daily_stock_prod.py::test_min_agree_count_zero_is_no_op tests/test_trade_daily_stock_prod.py::test_min_agree_count_passes_when_enough_members_agree tests/test_trade_daily_stock_prod.py::test_min_agree_count_forces_flat_when_insufficient_agreement`
+  (`5 passed`)
+
 ### 2026-05-05 -- Alpaca wrapper non-force close guard hardening
 
 **Code change prepared, not a strategy promotion**:
