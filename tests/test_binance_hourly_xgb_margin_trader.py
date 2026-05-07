@@ -365,6 +365,23 @@ def test_default_entry_fill_wait_uses_config_ttl() -> None:
     assert trader._entry_fill_wait_seconds(SimpleNamespace(entry_fill_wait_seconds=42.0)) == pytest.approx(42.0)
 
 
+def test_top48_pack_profile_config_and_defaults() -> None:
+    cfg = trader.best_pack_config("top48_near_risk_20260507")
+
+    assert trader.pack_label("top48_near_risk_20260507") == "h12_short_top48_nearrisk_2271_dd2080_20260507"
+    assert cfg.max_positions == 3
+    assert cfg.max_pending_entries == 4
+    assert cfg.max_leverage == pytest.approx(1.2)
+    assert cfg.entry_ttl_hours == 2
+
+    args = trader.build_parser().parse_args(["--pack-profile", "top48_near_risk_20260507"])
+    trader._apply_pack_profile_defaults(args)
+
+    assert args.max_symbols_by_dollar_volume == 48
+    assert args.rounds == 160
+    assert args.top_candidates_per_hour == 30
+
+
 def test_successful_daemon_cycle_sleep_keeps_wall_clock_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(trader.time, "monotonic", lambda: 125.0)
 

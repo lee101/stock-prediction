@@ -55,7 +55,18 @@ from src.binance_live_process_audit import audit_running_binance_live_processes
 from src.hourly_trader_utils import EntryAllocationCandidate, allocate_concentrated_entry_budget
 
 
-BEST_LABEL = "h12_short_corr168_08_aggr2777_dd1998_20260504"
+DEFAULT_PACK_PROFILE = "may04_aggr2777"
+PACK_LABELS = {
+    DEFAULT_PACK_PROFILE: "h12_short_corr168_08_aggr2777_dd1998_20260504",
+    "top48_near_risk_20260507": "h12_short_top48_nearrisk_2271_dd2080_20260507",
+}
+PACK_PROFILE_DEFAULTS = {
+    "top48_near_risk_20260507": {
+        "max_symbols_by_dollar_volume": 48,
+        "rounds": 160,
+        "top_candidates_per_hour": 30,
+    },
+}
 MIN_TRADE_USDT = 12.0
 STABLE_BASE_ASSETS = frozenset({"USDT", "FDUSD", "BUSD", "USDC", "USDP", "TUSD", "DAI", "AEUR"})
 TERMINAL_ORDER_STATUSES = frozenset({"FILLED", "CANCELED", "REJECTED", "EXPIRED"})
@@ -129,7 +140,48 @@ class XGBOrderPayload:
     kind: str
 
 
-def best_pack_config() -> PackConfig:
+def _normalize_pack_profile(profile: str | None) -> str:
+    normalized = str(profile or DEFAULT_PACK_PROFILE).strip()
+    if normalized not in PACK_LABELS:
+        raise ValueError(f"unknown pack profile {profile!r}; expected one of {sorted(PACK_LABELS)}")
+    return normalized
+
+
+def pack_label(profile: str | None = None) -> str:
+    return PACK_LABELS[_normalize_pack_profile(profile)]
+
+
+def best_pack_config(profile: str | None = None) -> PackConfig:
+    profile = _normalize_pack_profile(profile)
+    if profile == "top48_near_risk_20260507":
+        return PackConfig(
+            risk_penalty=0.2,
+            cvar_weight=0.75,
+            entry_gap_bps=20.0,
+            entry_alpha=0.1,
+            exit_alpha=1.1,
+            edge_threshold=0.0015,
+            edge_to_full_size=0.015,
+            min_close_ret=0.0005,
+            close_edge_weight=0.35,
+            min_upside_downside_ratio=0.0,
+            min_recent_ret_24h=-1.0,
+            min_recent_ret_72h=-1.0,
+            max_recent_vol_72h=0.025,
+            regime_cs_skew_min=-0.15,
+            vol_target_ann=0.75,
+            inv_vol_target_ann=2.0,
+            inv_vol_floor=0.05,
+            inv_vol_cap=3.0,
+            max_positions=3,
+            max_pending_entries=4,
+            entry_ttl_hours=2,
+            max_hold_hours=16,
+            max_leverage=1.2,
+            entry_selection_mode="first_trigger",
+            entry_allocator_mode="concentrated",
+            entry_allocator_edge_power=1.8,
+        )
     return PackConfig(
         risk_penalty=0.35,
         cvar_weight=0.5,
@@ -158,6 +210,15 @@ def best_pack_config() -> PackConfig:
         entry_allocator_mode="concentrated",
         entry_allocator_edge_power=1.5,
     )
+
+
+def _apply_pack_profile_defaults(args: argparse.Namespace) -> None:
+    profile = _normalize_pack_profile(getattr(args, "pack_profile", None))
+    for name, value in PACK_PROFILE_DEFAULTS.get(profile, {}).items():
+        current = getattr(args, name)
+        parser_default = build_parser().get_default(name)
+        if current == parser_default:
+            setattr(args, name, value)
 
 
 def _json_safe(value: Any) -> Any:
@@ -272,7 +333,7 @@ def _load_and_score_latest(args: argparse.Namespace) -> tuple[pd.Timestamp, pd.T
         eval_start=decision_ts,
         eval_end=decision_ts,
     )
-    cfg = best_pack_config()
+    cfg = best_pack_config(getattr(args, "pack_profile", None))
     bars, actions = build_actions_and_bars(
         scored,
         cfg=cfg,
@@ -467,8 +528,9 @@ def select_live_candidates(
     use_live_prices: bool,
     active_symbols: set[str],
     max_total_entry_notional_usdt: float,
+    pack_profile: str | None = None,
 ) -> list[XGBLiveCandidate]:
-    cfg = best_pack_config()
+    cfg = best_pack_config(pack_profile)
     active = actions[
         (actions["sell_amount"].astype(float) > 0.0)
         & (actions["sell_price"].astype(float) > 0.0)
@@ -844,7 +906,7 @@ def _entry_fill_wait_seconds(args: argparse.Namespace) -> float:
     explicit = getattr(args, "entry_fill_wait_seconds", None)
     if explicit is not None:
         return max(0.0, float(explicit))
-    return max(0.0, float(best_pack_config().entry_ttl_hours) * 3600.0)
+    return max(0.0, float(best_pack_config(getattr(args, "pack_profile", None)).entry_ttl_hours) * 3600.0)
 
 
 def _cycle_seconds(args: argparse.Namespace) -> float:
@@ -894,6 +956,7 @@ def _refresh_hourly_data(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one Binance hourly XGB margin-pack cycle.")
+    parser.add_argument("--pack-profile", choices=sorted(PACK_LABELS), default=DEFAULT_PACK_PROFILE)
     parser.add_argument("--hourly-root", type=Path, default=Path("binance_spot_hourly"))
     parser.add_argument("--symbols", default="")
     parser.add_argument("--min-bars", type=int, default=5000)
@@ -942,6 +1005,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_once(args: argparse.Namespace) -> int:
+    _apply_pack_profile_defaults(args)
+    cfg = best_pack_config(args.pack_profile)
+    label = pack_label(args.pack_profile)
     if bool(getattr(args, "refresh_data_before_cycle", False)):
         _refresh_hourly_data(args)
     end, decision_ts, _bars, actions, frames, selected_symbols = _load_and_score_latest(args)
@@ -954,7 +1020,7 @@ def run_once(args: argparse.Namespace) -> int:
     coverage_rows = load_coverage(min_value_usdt=MIN_TRADE_USDT) if bool(args.use_live_prices) else []
     existing_gross = _existing_margin_gross_usdt(coverage_rows)
     configured_entry_cap = max(0.0, float(args.max_total_entry_notional_usdt))
-    live_gross_cap = max(0.0, float(equity)) * float(best_pack_config().max_leverage) * max(0.0, float(risk_scale))
+    live_gross_cap = max(0.0, float(equity)) * float(cfg.max_leverage) * max(0.0, float(risk_scale))
     remaining_entry_cap = max(0.0, live_gross_cap - existing_gross) if bool(args.use_live_prices) else configured_entry_cap
     if configured_entry_cap > 0.0:
         remaining_entry_cap = min(remaining_entry_cap, configured_entry_cap)
@@ -970,17 +1036,19 @@ def run_once(args: argparse.Namespace) -> int:
             use_live_prices=bool(args.use_live_prices),
             active_symbols=active_symbols,
             max_total_entry_notional_usdt=remaining_entry_cap,
+            pack_profile=args.pack_profile,
         )
     payloads = [build_order_payloads(candidate) for candidate in candidates]
     payload: dict[str, Any] = {
-        "label": BEST_LABEL,
+        "label": label,
+        "pack_profile": args.pack_profile,
         "mode": "live" if args.execute else "dry_run",
         "generated_at": datetime.now(UTC),
         "data_end": end,
         "decision_timestamp": decision_ts,
         "data_age_hours": (pd.Timestamp.now(tz="UTC") - end).total_seconds() / 3600.0,
         "selected_symbols": selected_symbols,
-        "config": asdict(best_pack_config()),
+        "config": asdict(cfg),
         "equity_usdt": float(equity),
         "drawdown_state": state,
         "existing_margin_gross_usdt": float(existing_gross),
@@ -1019,7 +1087,7 @@ def run_once(args: argparse.Namespace) -> int:
 
     _write_json(Path(args.json_out), payload)
     print(
-        f"xgb-hourly-pack {payload['mode']} label={BEST_LABEL} "
+        f"xgb-hourly-pack {payload['mode']} label={label} profile={args.pack_profile} "
         f"data_end={end.isoformat()} decision_ts={decision_ts.isoformat()} "
         f"equity={equity:.2f} risk_scale={risk_scale:.3f} candidates={len(candidates)} "
         f"json={args.json_out}"

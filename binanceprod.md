@@ -67,6 +67,31 @@ Decision remains: hold paused. Current-code research still has not found a
 fresh Binance XGB candidate that clears `>=27%/mo` with acceptable drawdown
 under binary fills and `decision_lag=2`.
 
+Follow-up after considering a live top-48 near-risk switch:
+
+- The live runner now has an explicit dry-runable pack profile,
+  `top48_near_risk_20260507`, matching the top-48 near-risk row. The default
+  profile remains the older paused May 4 profile, so this does not silently
+  change production behavior.
+- Dry-run artifact:
+  `analysis/binance_hourly_xgb_margin_plan_20260507_top48_nearrisk_dryrun.json`.
+- Dry-run on the live account selected three short entries, all with post-fill
+  `BUY` exits planned: `ENAUSDT`, `ONDOUSDT`, and `RENDERUSDT`, about `$585`
+  notional each. No orders were placed.
+- Data in that dry-run was stale by about `26.8h` (`data_end=2026-05-06T08:00Z`),
+  so even an otherwise deployable candidate would need a fresh data refresh
+  before execution.
+- Rolling validation artifact:
+  `analysis/binance_pack_rolling_validation_top48_nearrisk_20260507_summary.csv`.
+- The top-48 near-risk row failed rolling validation badly: `+3.22%` median
+  monthly, `-24.61%` worst monthly, `123.46%` worst DD, and `2/9` negative
+  cells across `5/10/20bps`.
+- The higher-score top-48 row was worse: `+11.58%` median monthly, `-45.79%`
+  worst monthly, `133.96%` worst DD, and `3/9` negative cells.
+
+Decision remains: do not execute the top-48 profile live. It is runnable for
+dry-runs and diagnostics, but it is not production under the promotion gate.
+
 ## Hourly XGB Margin-Pack Still Paused After 2026-05-06 Refresh (2026-05-06 UTC)
 
 No new Binance XGB entries should be running.
