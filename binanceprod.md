@@ -1,5 +1,72 @@
 # Binance Production Systems
 
+## Hourly XGB Margin-Pack Audit And Top-48 Research (2026-05-07 UTC)
+
+No new Binance XGB entries should be running. `git pull --ff-only` was already
+up to date before the audit.
+
+Operational state checked at `2026-05-07 03:55 UTC`:
+
+- Binance live process audit found no live writer processes.
+- Supervisor status had no active Binance/XGB/margin trader process matching
+  the production writer names.
+- Cross-margin net account value was about `$2.97k`, with about `$1.16k`
+  idle/free `USDT`.
+- Actionable positions were `5/5` covered by open exits: `ETH`, `AAVE`,
+  `DOGE`, `BTC`, and `SOL` all had matching open `SELL` orders.
+- The apparent larger position count is mostly dust/liability dust below the
+  `$12` minimum trade threshold, not uncovered actionable exposure.
+- Recent margin fills over the prior seven days were sparse: BTC/SOL/DOGE buys
+  on `2026-05-04`, one LINK sell on `2026-05-05`, and no ongoing compounding
+  from the paused pack.
+
+Production diagnosis:
+
+- The account is not on track to hit the simulated strategy PnL while the
+  writer remains paused; it is carrying old covered long positions plus idle
+  USDT.
+- The current all-`SELL` open-order view is expected for covered long exits and
+  for the short-only runner design. The bug fixed in the current code was dust
+  incorrectly blocking new short candidates, not missing exit coverage for the
+  five actionable positions.
+- Because the refreshed strategy still fails promotion gates, do not restart it
+  just to reduce idle USDT. Idle cash is an opportunity cost, but forcing
+  under-validated risk is worse.
+
+Fresh top-48 symbol sweep:
+
+- Artifact:
+  `analysis/binance_hourly_refresh_short_top48_risk_constrained_sweep_20260507.csv`.
+- Universe: top `48/74` USDT symbols by dollar volume, eval
+  `2026-01-06T08:00:00Z` through `2026-05-06T08:00:00Z`, binary fills with
+  `decision_lag=2`.
+- Best raw return row: `+26.73%/mo`, `+157.92%` total, but `36.76%` max DD.
+  This still fails the drawdown side of the production gate.
+- Best near-risk row: `+22.71%/mo`, `+126.75%` total, `20.80%` max DD,
+  Sortino `3.65`, `313` sells. This misses both the `>=27%/mo` target and the
+  drawdown cap by a small amount.
+- Cleaner conservative rows reached about `+21.24%/mo` with `10.29%` DD and
+  `+21.08%/mo` with `17.62%` DD, but still leave the monthly target well short.
+- Conclusion: adding more pairs did not improve the controlled frontier versus
+  the prior top-36 near-gate row.
+
+Daily walk-forward retrain check:
+
+- Artifact:
+  `analysis/binance_daily_retrain_xgb_top36_top48_14d_20260507.csv`.
+- Shape: train each day, infer the next day, then retrain; top candidates from
+  the 2026-05-06 top-36 sweep and the 2026-05-07 top-48 sweep; fill cells
+  `5/10/20bps`.
+- Best 14-day result was only `+12.25%/mo`, `+5.54%` total, `4.94%` max DD,
+  Sortino `4.98`, with `13` sells.
+- Several daily-retrain cells were negative, so this is not a production rescue
+  path yet. It may be useful later as a stability tool, but it needs a better
+  signal family before deployment.
+
+Decision remains: hold paused. Current-code research still has not found a
+fresh Binance XGB candidate that clears `>=27%/mo` with acceptable drawdown
+under binary fills and `decision_lag=2`.
+
 ## Hourly XGB Margin-Pack Still Paused After 2026-05-06 Refresh (2026-05-06 UTC)
 
 No new Binance XGB entries should be running.
