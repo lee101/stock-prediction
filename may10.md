@@ -105,3 +105,50 @@ All Binance production trading writers are stopped at the process level. The
 account is not actively compounding; it is holding five actionable covered long
 positions, idle USDT, and dust. No production Binance strategy should be
 restarted until a candidate clears the documented promotion gates.
+
+## Follow-Up Stop Pass After Sudo Access
+
+Follow-up time:
+
+- Local: `2026-05-10T21:47:15+12:00`
+- UTC: `2026-05-10T09:47:15+00:00`
+
+Supervisor status was checked with sudo. Binance trading services were already
+stopped:
+
+- `binance-hourly-xgb-margin-pack`: stopped since `2026-05-04 19:48`
+- `binance-hybrid-spot`: stopped
+- `binance-meta-margin`: stopped
+- `binance-sui`: stopped
+- `binance-sui-margin`: stopped
+- `binance-worksteal-daily`: stopped
+- `binanceexp1-btcusd`: stopped
+- `binanceexp1-ethusd`: stopped
+- `binanceexp1-selector`: stopped
+- `binanceexp1-solusd`: stopped
+- `crypto30-daily`: stopped
+
+Additional prod trading-like services were stopped for safety:
+
+- `alpaca-stocks13-ppo`: stopped at `2026-05-10 21:47`
+- `stock-deleverage-bot`: stopped at `2026-05-10 21:47`
+- `bitbank-combined`: stopped at `2026-05-10 21:47`
+
+Services still running that are not Binance trading writers:
+
+- `binance-5min-collector`
+- `binance-doge-cache-refresh`
+- `binance-rl-cache-refresh`
+- `binance-sui-cache-refresh`
+- `binanceexp1-cache-refresh`
+- local `binancego dashboard`
+- `bitbank-market-sync`, `bitbank-monitor`, and the `bitbankprod` tunnel
+
+Post-stop process verification:
+
+- Binance live-process audit still returned `ok=True` with
+  `reason=no Binance live writer processes found`.
+- Process scan showed only Binance cache/dashboard processes, not trading
+  writers.
+
+No live exchange orders were placed or canceled during the stop pass.
