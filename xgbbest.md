@@ -6,6 +6,50 @@ and nothing here is deployable unless it clears the current project target:
 median monthly return >= 27% on the worst realistic slippage/fee cell, with
 acceptable drawdown, binary fills, and decision lag >= 2.
 
+## 2026-06-19 - actual contiguous k-fold validator and first smoke batch
+
+Changed the daily XGB k-fold path so `xgbnew.eval_kfold` now defaults to real
+leave-one-contiguous-fold-out CV (`--cv-mode k_contiguous`) instead of the
+older expanding-window default. The evaluator now also records train-date
+bounds, feature columns, Chronos cache coverage, `--hold-through`, `--min-score`,
+optional `--embargo-days`, and can test the XGB ranker family.
+
+Code artifacts:
+
+- `xgbnew/eval_kfold.py`
+- `xgbnew/kfold_cv.py` compatibility wrapper for existing runbooks
+- `xgbnew/dataset.py` opt-in `attach_chronos_to_train=True`, preserving legacy
+  train-on-technical behavior for other callers
+
+Smoke k-fold artifacts:
+
+- `analysis/xgbnew_kfold_codex_20260619/README.md`
+- `analysis/xgbnew_kfold_codex_20260619/kfold_20260619_142335.json`
+- `analysis/xgbnew_kfold_codex_20260619/kfold_20260619_142339.json`
+- `analysis/xgbnew_kfold_codex_20260619/kfold_20260619_142527.json`
+- `analysis/xgbnew_kfold_codex_20260619/kfold_20260619_142528.json`
+- `analysis/xgbnew_kfold_codex_20260619/kfold_20260619_142611.json`
+
+Local constraints: `/vfast/data/stock/trainingdata` has stock CSVs, but the
+default daily JSON Chronos cache path `analysis/top2_backtest/forecast_cache`
+is absent. The smoke runs therefore have `chronos_coverage.available_rows=0`
+and are technical-feature-only, despite the evaluator now supporting direct
+Chronos feature learning.
+
+Best smoke row was still a failure:
+
+- XGB classifier, 64-symbol list, `2024-01-02` to `2025-11-13`, 4 folds
+- `top_n=5`, `hold_through=True`, 10 bps fee, 5 bps fill buffer
+- fold median monthly mean `-5.58%`
+- worst fold median monthly `-7.32%`
+- p10 monthly mean `-9.46%`
+- worst negative-window fraction `1.00`
+
+Decision: no promotion and no production change. This does not beat the
+`prediction2` stock frontier. The next valid comparison needs a compatible
+daily Chronos JSON cache and the wide 846-symbol universe, then a 5-fold run
+with `--learn-chronos-features` and realistic costs.
+
 ## 2026-05-02 - long/short packing and prod inactivity replay
 
 ### Best non-production research candidate so far

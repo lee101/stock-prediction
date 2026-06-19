@@ -1,0 +1,314 @@
+{
+  "cv_mode": "k_contiguous",
+  "n_folds": 4,
+  "summary": {
+    "median_monthly_pct_min": -8.521417459702697,
+    "median_monthly_pct_mean": -7.364361201400948,
+    "median_monthly_pct_max": -4.873955195425939,
+    "p10_monthly_pct_min": -12.123569143103722,
+    "p10_monthly_pct_mean": -10.493484475429131,
+    "neg_window_frac_max": 1.0
+  },
+  "config": {
+    "model_family": "xgb",
+    "n_estimators": 80,
+    "max_depth": 3,
+    "learning_rate": 0.06,
+    "top_n": 5,
+    "leverage": 1.0,
+    "fee_rate": 0.001,
+    "fill_buffer_bps": 5.0,
+    "min_dollar_vol": 5000000.0,
+    "train_start": "2021-01-01",
+    "cv_start": "2024-01-02",
+    "cv_end": "2025-11-13",
+    "cv_mode": "k_contiguous",
+    "embargo_days": 0,
+    "device": "cpu",
+    "random_state": 42,
+    "learn_chronos_features": true,
+    "include_ranks": false,
+    "include_dispersion": false,
+    "feature_cols": [
+      "ret_1d",
+      "ret_2d",
+      "ret_5d",
+      "ret_10d",
+      "ret_20d",
+      "rsi_14",
+      "vol_5d",
+      "vol_20d",
+      "atr_14",
+      "cs_spread_bps",
+      "dolvol_20d_log",
+      "price_vs_52w_high",
+      "price_vs_52w_range",
+      "day_of_week",
+      "last_close_log"
+    ],
+    "chronos_cache": "analysis/top2_backtest/forecast_cache",
+    "chronos_coverage": {
+      "rows": 6257,
+      "available_rows": 0,
+      "available_frac": 0.0
+    }
+  },
+  "folds": [
+    {
+      "fold_idx": 1,
+      "fold_start": "2024-01-02",
+      "fold_end": "2024-06-20",
+      "train_date_min": "2022-01-04",
+      "train_date_max": "2025-11-13",
+      "train_rows": 5461,
+      "fold_rows": 796,
+      "n_windows": 5,
+      "median_monthly_pct": -4.873955195425939,
+      "p10_monthly_pct": -10.009438935071968,
+      "mean_monthly_pct": -6.44943333842472,
+      "median_sortino": -4.702667662422053,
+      "median_dd_pct": 7.62183783011028,
+      "worst_dd_pct": 14.476069990486613,
+      "n_neg_monthly": 5,
+      "windows": [
+        {
+          "w_start": "2024-01-02",
+          "w_end": "2024-02-13",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -4.390098332615167,
+          "sortino": -4.702667662422053,
+          "max_dd_pct": 6.761362351606404
+        },
+        {
+          "w_start": "2024-02-01",
+          "w_end": "2024-03-14",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -4.873955195425939,
+          "sortino": -4.129085533434727,
+          "max_dd_pct": 7.62183783011028
+        },
+        {
+          "w_start": "2024-03-04",
+          "w_end": "2024-04-15",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -10.36835757062794,
+          "sortino": -6.869333460911249,
+          "max_dd_pct": 14.476069990486613
+        },
+        {
+          "w_start": "2024-04-03",
+          "w_end": "2024-05-14",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -9.471060981738011,
+          "sortino": -6.866522074188763,
+          "max_dd_pct": 14.37257491479888
+        },
+        {
+          "w_start": "2024-05-02",
+          "w_end": "2024-06-13",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -3.143694611716541,
+          "sortino": -2.937535047338941,
+          "max_dd_pct": 6.61984556957628
+        }
+      ]
+    },
+    {
+      "fold_idx": 2,
+      "fold_start": "2024-06-21",
+      "fold_end": "2024-12-08",
+      "train_date_min": "2022-01-04",
+      "train_date_max": "2025-11-13",
+      "train_rows": 5431,
+      "fold_rows": 826,
+      "n_windows": 5,
+      "median_monthly_pct": -7.682557328533535,
+      "p10_monthly_pct": -9.465859439198379,
+      "mean_monthly_pct": -6.5502106628602235,
+      "median_sortino": -6.528252718234647,
+      "median_dd_pct": 10.903887610630838,
+      "worst_dd_pct": 14.367365906036426,
+      "n_neg_monthly": 4,
+      "windows": [
+        {
+          "w_start": "2024-06-21",
+          "w_end": "2024-08-02",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -8.468839599911115,
+          "sortino": -6.994715310789484,
+          "max_dd_pct": 14.367365906036426
+        },
+        {
+          "w_start": "2024-07-23",
+          "w_end": "2024-09-03",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -10.130539332056554,
+          "sortino": -7.424466168007928,
+          "max_dd_pct": 14.151715331043633
+        },
+        {
+          "w_start": "2024-08-21",
+          "w_end": "2024-10-02",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -7.682557328533535,
+          "sortino": -6.341579937514777,
+          "max_dd_pct": 10.903887610630838
+        },
+        {
+          "w_start": "2024-09-20",
+          "w_end": "2024-10-31",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -6.615949777154717,
+          "sortino": -6.528252718234647,
+          "max_dd_pct": 9.545618257557088
+        },
+        {
+          "w_start": "2024-10-21",
+          "w_end": "2024-12-02",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": 0.14683272335480613,
+          "sortino": 0.2509981377285166,
+          "max_dd_pct": 3.852582179991717
+        }
+      ]
+    },
+    {
+      "fold_idx": 3,
+      "fold_start": "2024-12-09",
+      "fold_end": "2025-05-27",
+      "train_date_min": "2022-01-04",
+      "train_date_max": "2025-11-13",
+      "train_rows": 5452,
+      "fold_rows": 805,
+      "n_windows": 5,
+      "median_monthly_pct": -8.379514821941624,
+      "p10_monthly_pct": -10.375070384342457,
+      "mean_monthly_pct": -5.915166318157472,
+      "median_sortino": -4.874029886630947,
+      "median_dd_pct": 12.314986626436603,
+      "worst_dd_pct": 17.22309019569412,
+      "n_neg_monthly": 4,
+      "windows": [
+        {
+          "w_start": "2024-12-09",
+          "w_end": "2025-01-23",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -11.432526753278726,
+          "sortino": -7.659186748141137,
+          "max_dd_pct": 17.22309019569412
+        },
+        {
+          "w_start": "2025-01-10",
+          "w_end": "2025-02-24",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -8.788885830938053,
+          "sortino": -6.66741014415904,
+          "max_dd_pct": 12.314986626436603
+        },
+        {
+          "w_start": "2025-02-11",
+          "w_end": "2025-03-25",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -8.379514821941624,
+          "sortino": -4.874029886630947,
+          "max_dd_pct": 15.223460073832767
+        },
+        {
+          "w_start": "2025-03-13",
+          "w_end": "2025-04-24",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": 0.03961528601232889,
+          "sortino": 0.3650224865366028,
+          "max_dd_pct": 7.3011500612030655
+        },
+        {
+          "w_start": "2025-04-11",
+          "w_end": "2025-05-23",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -1.0145194706412841,
+          "sortino": -0.8912429240263009,
+          "max_dd_pct": 6.411992323938147
+        }
+      ]
+    },
+    {
+      "fold_idx": 4,
+      "fold_start": "2025-05-28",
+      "fold_end": "2025-11-13",
+      "train_date_min": "2022-01-04",
+      "train_date_max": "2025-05-27",
+      "train_rows": 5424,
+      "fold_rows": 833,
+      "n_windows": 5,
+      "median_monthly_pct": -8.521417459702697,
+      "p10_monthly_pct": -12.123569143103722,
+      "mean_monthly_pct": -9.062344956512167,
+      "median_sortino": -6.873101545825842,
+      "median_dd_pct": 12.948029721079637,
+      "worst_dd_pct": 17.228265953696628,
+      "n_neg_monthly": 5,
+      "windows": [
+        {
+          "w_start": "2025-05-28",
+          "w_end": "2025-07-10",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -5.271068876022089,
+          "sortino": -5.170140303682545,
+          "max_dd_pct": 7.444172694220633
+        },
+        {
+          "w_start": "2025-06-27",
+          "w_end": "2025-08-08",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -11.71295645997381,
+          "sortino": -8.404886274570844,
+          "max_dd_pct": 16.38829323063718
+        },
+        {
+          "w_start": "2025-07-29",
+          "w_end": "2025-09-09",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -8.521417459702697,
+          "sortino": -6.873101545825842,
+          "max_dd_pct": 12.948029721079637
+        },
+        {
+          "w_start": "2025-08-27",
+          "w_end": "2025-10-08",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -7.408971055005242,
+          "sortino": -6.1314073440633035,
+          "max_dd_pct": 11.76692653273762
+        },
+        {
+          "w_start": "2025-09-26",
+          "w_end": "2025-11-06",
+          "n_trading_days": 30,
+          "n_active_days": 30,
+          "monthly_return_pct": -12.397310931856998,
+          "sortino": -9.801603796944114,
+          "max_dd_pct": 17.228265953696628
+        }
+      ]
+    }
+  ]
+}

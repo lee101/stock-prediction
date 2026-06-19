@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""XGB daily champion k-fold CV (time-series).
+"""XGB daily champion k-fold CV.
 
 Splits the OOS period into K contiguous folds. For each fold, trains on
 *everything outside that fold* (both pre-fold and post-fold data from the
@@ -9,10 +9,9 @@ all folds.
 
 Note on time-series leakage: features use past-lagged info only (verified
 in xgbnew/features.py); including post-fold data in training is a
-contamination concern for the strict "no look-ahead" principle, so by
-default we use **expanding-window time-series CV** (anchored back at
-train_start, train up to fold_start, test fold, move forward). Flip
-``--cv-mode k_contiguous`` to use the leave-one-fold-out variant.
+contamination concern for the strict "no look-ahead" principle. The default
+``k_contiguous`` mode is actual leave-one-contiguous-fold-out validation.
+Flip ``--cv-mode expanding`` to use anchored time-series validation.
 
 Usage::
 
@@ -21,7 +20,7 @@ Usage::
         --data-root trainingdata \\
         --train-start 2020-01-01 \\
         --cv-start 2024-01-01 --cv-end 2026-04-10 \\
-        --n-folds 5 --window-days 30 --stride-days 14 \\
+        --n-folds 5 --cv-mode k_contiguous --window-days 30 --stride-days 14 \\
         --top-n 1 --leverage 1.0 \\
         --n-estimators 400 --max-depth 5 --learning-rate 0.03 \\
         --device cpu
@@ -48,8 +47,14 @@ from xgbnew.artifacts import write_json_atomic  # noqa: E402
 from xgbnew.backtest import PRODUCTION_STOCK_FEE_RATE, BacktestConfig, simulate  # noqa: E402
 from xgbnew.cli_realism import validate_nonnegative_realism_args  # noqa: E402
 from xgbnew.dataset import build_daily_dataset, load_chronos_cache  # noqa: E402
-from xgbnew.features import DAILY_FEATURE_COLS  # noqa: E402
+from xgbnew.features import (  # noqa: E402
+    CHRONOS_FEATURE_COLS,
+    DAILY_DISPERSION_FEATURE_COLS,
+    DAILY_FEATURE_COLS,
+    DAILY_RANK_FEATURE_COLS,
+)
 from xgbnew.model import XGBStockModel  # noqa: E402
+from xgbnew.model_xgb_ranker import XGBRankerStockModel  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -97,10 +102,16 @@ def parse_args(argv=None):
                    help="End of the CV block.")
     p.add_argument("--n-folds", type=int, default=5)
     p.add_argument(
-        "--cv-mode", default="expanding",
+        "--cv-mode", default="k_contiguous",
         choices=["expanding", "k_contiguous"],
         help="expanding = anchor back at --train-start, grow train set fold by fold. "
-             "k_contiguous = hold out each fold, train on everything else (may leak).",
+             "k_contiguous = true leave-one-contiguous-fold-out CV.",
+    )
+    p.add_argument(
+        "--embargo-days",
+        type=int,
+        default=0,
+        help="Calendar-day gap to drop around each held-out fold before fitting.",
     )
 
     p.add_argument("--window-days", type=int, default=30)
@@ -109,6 +120,8 @@ def parse_args(argv=None):
     p.add_argument("--top-n", type=int, default=1)
     p.add_argument("--leverage", type=float, default=1.0)
     p.add_argument("--xgb-weight", type=float, default=1.0)
+    p.add_argument("--min-score", type=float, default=0.0)
+    p.add_argument("--hold-through", action="store_true")
     p.add_argument("--commission-bps", type=float, default=0.0)
     p.add_argument("--fill-buffer-bps", type=float, default=5.0)
     p.add_argument(
@@ -123,6 +136,22 @@ def parse_args(argv=None):
     p.add_argument("--max-depth", type=int, default=5)
     p.add_argument("--learning-rate", type=float, default=0.03)
     p.add_argument("--random-state", type=int, default=42)
+    p.add_argument("--model-family", choices=["xgb", "xgb_rank"], default="xgb")
+    p.add_argument("--ranker-deciles", type=int, default=10)
+    p.add_argument(
+        "--ranker-sample-weight-mode",
+        choices=["none", "abs_target", "abs_target_sqrt"],
+        default="none",
+    )
+    p.add_argument("--ranker-sample-weight-clip", type=float, default=0.05)
+    p.add_argument("--include-ranks", action="store_true")
+    p.add_argument("--include-dispersion", action="store_true")
+    p.add_argument(
+        "--learn-chronos-features",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fit XGBoost directly on cached Chronos2 features when the cache exists.",
+    )
 
     p.add_argument("--allocation-mode", default="equal",
                    choices=["equal", "softmax", "score_norm"])
@@ -141,16 +170,87 @@ def _validate_realism_args(args: argparse.Namespace) -> list[str]:
 
 
 def _split_folds(cv_start: date, cv_end: date, n_folds: int) -> list[tuple[date, date]]:
-    span_days = (cv_end - cv_start).days
-    if span_days < n_folds * 14:
-        raise ValueError(f"CV span ({span_days}d) too short for {n_folds} folds")
-    fold_len = span_days // n_folds
-    folds = []
+    if n_folds <= 0:
+        raise ValueError("n_folds must be positive")
+    if cv_end < cv_start:
+        raise ValueError("cv_end must be >= cv_start")
+    total_days = (cv_end - cv_start).days + 1
+    if total_days < n_folds:
+        raise ValueError(f"CV span ({total_days}d) too short for {n_folds} folds")
+    base = total_days // n_folds
+    remainder = total_days % n_folds
+    folds: list[tuple[date, date]] = []
+    cursor = cv_start
     for i in range(n_folds):
-        fs = cv_start + timedelta(days=i * fold_len)
-        fe = cv_end if i == n_folds - 1 else cv_start + timedelta(days=(i + 1) * fold_len - 1)
+        fold_days = base + (1 if i < remainder else 0)
+        fs = cursor
+        fe = fs + timedelta(days=fold_days - 1)
         folds.append((fs, fe))
+        cursor = fe + timedelta(days=1)
     return folds
+
+
+def _train_mask_for_fold(
+    dates: pd.Series,
+    *,
+    fold_start: date,
+    fold_end: date,
+    cv_mode: str,
+    embargo_days: int,
+) -> pd.Series:
+    if embargo_days < 0:
+        raise ValueError("embargo_days must be nonnegative")
+    left_cut = fold_start - timedelta(days=embargo_days)
+    right_cut = fold_end + timedelta(days=embargo_days)
+    if cv_mode == "expanding":
+        return dates < left_cut
+    if cv_mode == "k_contiguous":
+        return (dates < left_cut) | (dates > right_cut)
+    raise ValueError(f"unknown cv_mode: {cv_mode}")
+
+
+def _feature_columns(args: argparse.Namespace, chronos_cache_loaded: bool) -> list[str]:
+    feature_cols = list(DAILY_FEATURE_COLS)
+    if args.include_ranks:
+        feature_cols += list(DAILY_RANK_FEATURE_COLS)
+    if args.include_dispersion:
+        feature_cols += list(DAILY_DISPERSION_FEATURE_COLS)
+    if bool(args.learn_chronos_features) and chronos_cache_loaded:
+        feature_cols += list(CHRONOS_FEATURE_COLS)
+    return feature_cols
+
+
+def _build_model(args: argparse.Namespace):
+    if args.model_family == "xgb_rank":
+        return XGBRankerStockModel(
+            device=args.device,
+            n_estimators=int(args.n_estimators),
+            max_depth=int(args.max_depth),
+            learning_rate=float(args.learning_rate),
+            random_state=int(args.random_state),
+            n_deciles=int(args.ranker_deciles),
+            sample_weight_mode=str(args.ranker_sample_weight_mode),
+            sample_weight_clip=float(args.ranker_sample_weight_clip),
+        )
+    return XGBStockModel(
+        device=args.device,
+        n_estimators=int(args.n_estimators),
+        max_depth=int(args.max_depth),
+        learning_rate=float(args.learning_rate),
+        random_state=int(args.random_state),
+    )
+
+
+def _chronos_coverage(df: pd.DataFrame) -> dict[str, float | int]:
+    if df.empty or "chronos_available" not in df.columns:
+        return {"rows": int(len(df)), "available_rows": 0, "available_frac": 0.0}
+    available = int((df["chronos_available"].astype(float) > 0.0).sum())
+    rows = int(len(df))
+    return {
+        "rows": rows,
+        "available_rows": available,
+        "available_frac": float(available / rows) if rows else 0.0,
+    }
 
 
 def main(argv=None) -> int:
@@ -162,6 +262,9 @@ def main(argv=None) -> int:
     if validation_failures:
         for failure in validation_failures:
             print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
+    if int(args.embargo_days) < 0:
+        print("ERROR: --embargo-days must be nonnegative", file=sys.stderr)
         return 2
 
     symbols = _load_symbols(args.symbols_file)
@@ -175,7 +278,8 @@ def main(argv=None) -> int:
 
     folds = _split_folds(cv_start, cv_end, int(args.n_folds))
     print(f"[xgb-kfold] {len(symbols)} symbols | train_start={train_start} cv_start={cv_start} cv_end={cv_end} "
-          f"| n_folds={len(folds)} mode={args.cv_mode} device={args.device}", flush=True)
+          f"| n_folds={len(folds)} mode={args.cv_mode} embargo_days={args.embargo_days} "
+          f"family={args.model_family} device={args.device}", flush=True)
     for i, (fs, fe) in enumerate(folds):
         print(f"  fold {i+1}: {fs} → {fe}", flush=True)
 
@@ -192,6 +296,9 @@ def main(argv=None) -> int:
         chronos_cache=chronos_cache if chronos_cache else None,
         min_dollar_vol=args.min_dollar_vol,
         fast_features=False,
+        include_cross_sectional_ranks=bool(args.include_ranks),
+        include_cross_sectional_dispersion=bool(args.include_dispersion),
+        attach_chronos_to_train=bool(args.learn_chronos_features),
     )
     print(f"[xgb-kfold] master dataset in {time.perf_counter()-t0:.1f}s | rows={len(train_df_full):,}",
           flush=True)
@@ -201,16 +308,32 @@ def main(argv=None) -> int:
     if "date" not in master.columns:
         print("ERROR: dataset missing 'date' column", file=sys.stderr)
         return 1
+    feature_cols = _feature_columns(args, bool(chronos_cache))
+    missing_features = sorted(set(feature_cols) - set(master.columns))
+    if missing_features:
+        print(f"ERROR: dataset missing feature columns: {missing_features}", file=sys.stderr)
+        return 1
+    coverage = _chronos_coverage(master)
+    print(
+        f"[xgb-kfold] feature_cols={len(feature_cols)} "
+        f"chronos_learn={bool(args.learn_chronos_features and chronos_cache)} "
+        f"chronos_available={coverage['available_rows']}/{coverage['rows']} "
+        f"({coverage['available_frac']:.3f})",
+        flush=True,
+    )
 
     fold_results = []
     for f_idx, (fs, fe) in enumerate(folds, start=1):
         print(f"\n[xgb-kfold] === Fold {f_idx}/{len(folds)}  hold-out {fs} → {fe} ===", flush=True)
         fold_mask = (master["date"] >= fs) & (master["date"] <= fe)
         fold_df = master[fold_mask]
-        if args.cv_mode == "expanding":
-            train_mask = master["date"] < fs
-        else:
-            train_mask = ~fold_mask
+        train_mask = _train_mask_for_fold(
+            master["date"],
+            fold_start=fs,
+            fold_end=fe,
+            cv_mode=str(args.cv_mode),
+            embargo_days=int(args.embargo_days),
+        )
         train_df = master[train_mask]
 
         if len(train_df) < 1000:
@@ -223,14 +346,8 @@ def main(argv=None) -> int:
         print(f"  train_rows={len(train_df):,}  fold_rows={len(fold_df):,}", flush=True)
 
         t_fit = time.perf_counter()
-        model = XGBStockModel(
-            device=args.device,
-            n_estimators=int(args.n_estimators),
-            max_depth=int(args.max_depth),
-            learning_rate=float(args.learning_rate),
-            random_state=int(args.random_state),
-        )
-        model.fit(train_df, DAILY_FEATURE_COLS, verbose=args.verbose)
+        model = _build_model(args)
+        model.fit(train_df, feature_cols, verbose=args.verbose)
         print(f"  fit in {time.perf_counter()-t_fit:.1f}s", flush=True)
 
         oos_prob = model.predict_scores(fold_df)
@@ -245,6 +362,8 @@ def main(argv=None) -> int:
             min_dollar_vol=float(args.min_dollar_vol),
             allocation_mode=str(args.allocation_mode),
             allocation_temp=float(args.allocation_temp),
+            min_score=float(args.min_score),
+            hold_through=bool(args.hold_through),
         )
 
         all_days = sorted(fold_df["date"].unique())
@@ -281,6 +400,10 @@ def main(argv=None) -> int:
         fold_rec = {
             "fold_idx": f_idx,
             "fold_start": str(fs), "fold_end": str(fe),
+            "train_date_min": str(train_df["date"].min()),
+            "train_date_max": str(train_df["date"].max()),
+            "train_rows": int(len(train_df)),
+            "fold_rows": int(len(fold_df)),
             "n_windows": len(w_rows),
             "median_monthly_pct": float(np.median(m)),
             "p10_monthly_pct": float(np.percentile(m, 10)),
@@ -330,19 +453,30 @@ def main(argv=None) -> int:
             "neg_window_frac_max": float(neg.max()),
         },
         "config": {
+            "model_family": str(args.model_family),
             "n_estimators": int(args.n_estimators),
             "max_depth": int(args.max_depth),
             "learning_rate": float(args.learning_rate),
             "top_n": int(args.top_n),
             "leverage": float(args.leverage),
+            "min_score": float(args.min_score),
+            "hold_through": bool(args.hold_through),
             "fee_rate": float(args.fee_rate),
             "fill_buffer_bps": float(args.fill_buffer_bps),
             "min_dollar_vol": float(args.min_dollar_vol),
             "train_start": str(train_start),
             "cv_start": str(cv_start),
             "cv_end": str(cv_end),
+            "cv_mode": str(args.cv_mode),
+            "embargo_days": int(args.embargo_days),
             "device": args.device,
             "random_state": int(args.random_state),
+            "learn_chronos_features": bool(args.learn_chronos_features),
+            "include_ranks": bool(args.include_ranks),
+            "include_dispersion": bool(args.include_dispersion),
+            "feature_cols": feature_cols,
+            "chronos_cache": str(args.chronos_cache),
+            "chronos_coverage": coverage,
         },
         "folds": fold_results,
     }

@@ -357,6 +357,7 @@ def build_daily_dataset(
     include_cross_sectional_dispersion: bool = False,
     fm_latents: pd.DataFrame | None = None,
     fm_n_latents: int | None = None,
+    attach_chronos_to_train: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build train / val / test DataFrames for daily XGBoost model.
 
@@ -367,6 +368,9 @@ def build_daily_dataset(
         val_start / val_end: Validation period.
         test_start / test_end: Test period (receives Chronos2 features if cache given).
         chronos_cache: Optional cached Chronos2 forecasts (from load_chronos_cache).
+        attach_chronos_to_train: If True, attach Chronos2 features to train and
+            validation splits as well as test. The default preserves the legacy
+            train-on-technical, score-with-Chronos-blend behavior.
         min_dollar_vol: Minimum average daily dollar volume for a row to be included.
         fast_features: If True, use polars-native builder (~3× faster). RSI and
             rolling-std columns have small numerical divergence (corr > 0.98) from
@@ -385,6 +389,7 @@ def build_daily_dataset(
             include_cross_sectional_dispersion=include_cross_sectional_dispersion,
             fm_latents=fm_latents,
             fm_n_latents=fm_n_latents,
+            attach_chronos_to_train=attach_chronos_to_train,
         )
 
     train_parts, val_parts, test_parts = [], [], []
@@ -451,9 +456,17 @@ def build_daily_dataset(
         if len(test_df) > 0:
             test_df = add_cross_sectional_dispersion(test_df)
 
-    # Attach Chronos2 features to test set (and optionally val)
-    if chronos_cache and len(test_df) > 0:
-        test_df = _attach_chronos_features_fast(test_df, chronos_cache)
+    # Attach Chronos2 features. Legacy callers trained with zero-filled
+    # Chronos columns and used Chronos only at score/blend time; k-fold
+    # validation can opt into fitting directly on cached Chronos features.
+    if chronos_cache:
+        if attach_chronos_to_train:
+            if len(train_df) > 0:
+                train_df = _attach_chronos_features_fast(train_df, chronos_cache)
+            if len(val_df) > 0:
+                val_df = _attach_chronos_features_fast(val_df, chronos_cache)
+        if len(test_df) > 0:
+            test_df = _attach_chronos_features_fast(test_df, chronos_cache)
 
     # Attach foundation-model latents to ALL splits (train AND val/test) so
     # the XGB model sees them at training time. The latents parquet covers
@@ -499,6 +512,7 @@ def _build_daily_dataset_fast(
     include_cross_sectional_dispersion: bool = False,
     fm_latents: pd.DataFrame | None = None,
     fm_n_latents: int | None = None,
+    attach_chronos_to_train: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Polars-native dataset builder. Same splits and columns as the pandas
     path, but features come from ``xgbnew.features_fast.build_daily_features_fast``
@@ -548,8 +562,14 @@ def _build_daily_dataset_fast(
         if len(te) > 0:
             te = add_cross_sectional_dispersion(te)
 
-    if chronos_cache and len(te) > 0:
-        te = _attach_chronos_features_fast(te, chronos_cache)
+    if chronos_cache:
+        if attach_chronos_to_train:
+            if len(tr) > 0:
+                tr = _attach_chronos_features_fast(tr, chronos_cache)
+            if len(va) > 0:
+                va = _attach_chronos_features_fast(va, chronos_cache)
+        if len(te) > 0:
+            te = _attach_chronos_features_fast(te, chronos_cache)
 
     if fm_latents is not None:
         if len(tr) > 0:
