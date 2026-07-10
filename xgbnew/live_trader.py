@@ -126,17 +126,10 @@ def _is_crypto_position_symbol(sym: str) -> bool:
 
 
 def _submit_market_order(client, *, symbol: str, qty: float, side: str):
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest
-
-    side_val = OrderSide.BUY if side == "buy" else OrderSide.SELL
-    req = MarketOrderRequest(
-        symbol=_to_alpaca_symbol(symbol),
-        qty=round(float(qty), 4),
-        side=side_val,
-        time_in_force=TimeInForce.DAY,
+    raise RuntimeError(
+        f"Refusing Alpaca market order for {side} {qty} {symbol}; "
+        "use _submit_limit_order with a fixed or ramped near-market limit"
     )
-    return client.submit_order(req)
 
 
 def _submit_limit_order(client, *, symbol: str, qty: float, side: str, limit_price: float):

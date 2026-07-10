@@ -1833,14 +1833,12 @@ def execute_trades(
 
         try:
             if candidate["order_type"] == "market":
-                from alpaca.trading.requests import MarketOrderRequest
-
-                order = MarketOrderRequest(
+                log_event(
+                    "entry_skipped",
                     symbol=symbol,
-                    qty=int(candidate["target_qty"]),
-                    side=candidate["entry_side"],
-                    time_in_force=TimeInForce.DAY,
+                    reason="market_orders_disabled",
                 )
+                continue
             else:
                 order = LimitOrderRequest(
                     symbol=symbol,

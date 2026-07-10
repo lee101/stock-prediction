@@ -234,7 +234,7 @@ def test_close_position_near_market_long_uses_bid(monkeypatch):
     assert captured['price'] == '98.0'
 
 
-def test_backout_near_market_switches_to_market(monkeypatch):
+def test_backout_near_market_holds_final_limit_after_market_after(monkeypatch):
     start = datetime.now() - timedelta(minutes=16)
     position = SimpleNamespace(symbol='META', side='short', qty=1)
 
@@ -242,18 +242,22 @@ def test_backout_near_market_switches_to_market(monkeypatch):
     monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'get_open_orders', lambda: [])
     monkeypatch.setattr(alpaca_cli, '_minutes_until_market_close', lambda *a, **k: 120.0)
 
-    called = {}
+    captured = {}
 
-    def fake_market(pos):
-        called['called'] = True
+    def fake_close(pos, *, pct_above_market):
+        captured['pct'] = pct_above_market
         return True
 
     monkeypatch.setattr(
         alpaca_cli.alpaca_wrapper,
         'close_position_near_market',
-        lambda *a, **k: pytest.fail('limit order used'),
+        fake_close,
     )
-    monkeypatch.setattr(alpaca_cli.alpaca_wrapper, 'close_position_violently', fake_market)
+    monkeypatch.setattr(
+        alpaca_cli.alpaca_wrapper,
+        'close_position_violently',
+        lambda *a, **k: pytest.fail('market close used'),
+    )
 
     # Sequence: first call returns position, second returns empty list to exit loop
     call_count = {'n': 0}
@@ -266,7 +270,7 @@ def test_backout_near_market_switches_to_market(monkeypatch):
 
     alpaca_cli.backout_near_market('META', start_time=start, ramp_minutes=10, market_after=15, sleep_interval=0)
 
-    assert called.get('called')
+    assert captured['pct'] == pytest.approx(0.004)
 
 
 def test_backout_near_market_ramp_progress(monkeypatch):

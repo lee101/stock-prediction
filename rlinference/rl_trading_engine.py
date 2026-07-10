@@ -194,7 +194,8 @@ class RLTradingEngine:
                             symbol=symbol,
                             qty=qty,
                             side=side,
-                            order_type='market'
+                            order_type='limit',
+                            limit_price=rec['last_price'],
                         )
                         
                         if order:

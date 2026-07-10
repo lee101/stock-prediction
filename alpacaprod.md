@@ -2,6 +2,71 @@
 
 ## Active Deployments
 
+### 2026-05-12 -- BTC/USD live market-order incident, live writers disabled
+
+**Incident**: live Alpaca account received two BTC/USD market buys today:
+- `2026-05-12T13:42:38.208807Z`: buy market, notional `$200`,
+  filled qty `0.002429203`, avg fill `80717.173`, client order id
+  `d139e203-7d2e-47aa-b018-028028ab453c`.
+- `2026-05-12T14:19:05.153353Z`: buy market, notional `$1745`,
+  filled qty `0.02118761`, avg fill `80744.56`, client order id
+  `54411c67-181c-425b-a75e-2c162d130107`.
+
+**Source assessment**:
+- The two BTC/USD market buys used random UUID client IDs, not the managed
+  `p2-*` client IDs used by Prediction2.
+- Local log searches across `stock-prediction`, `prediction2`,
+  `/var/log/syslog`, `/var/log/auth.log`, and supervisor logs found no matching
+  local application log for those two client IDs.
+- Prediction2 did submit managed limit orders today, including stock entry
+  `BLZE` and later crypto close limits, but the exact market-buy submitter is
+  still unproven. Treat this as an external/manual/API-path incident until the
+  Alpaca audit trail identifies the actor.
+
+**Production actions taken**:
+- Stopped and disabled `prediction2-alpaca-trade.service` plus monitor,
+  deleverage, and market-data refresh timers/services.
+- The Prediction2 systemd unit files were moved out of `/etc/systemd/system`
+  into `/etc/systemd/system/disabled-20260512-prediction2/`, followed by
+  `systemctl daemon-reload`, so systemd reports those units as `not-found`.
+- The cron fallback was moved out of `/etc/cron.d` to
+  `/etc/cron.disabled/prediction2-alpaca-monitor.disabled-20260512`.
+- Rechecked systemd timers, systemd services, cron, supervisor, and process
+  list. No Alpaca live writer process remains. Non-Alpaca supervisor services
+  are still running.
+
+**Market-order hardening prepared in this repo**:
+- `alpaca_wrapper.py` now wraps shared Alpaca clients and refuses
+  `submit_order` requests with `OrderType.MARKET`, and refuses Alpaca
+  `close_position` / `close_all_positions` convenience endpoints because they
+  produce market exits.
+- Legacy `open_market_order_violently`, `submit_market_order`,
+  `xgbnew._submit_market_order`, RL broker market orders, unified hourly market
+  exits, and the live smoke test BTC buy path now refuse market orders or use
+  fixed-price limit orders.
+- `backout_near_market` now remains limit-order-only for equities and crypto;
+  the time fallback holds the final near-market limit instead of submitting a
+  market order.
+
+**Read-only account snapshot after shutdown**:
+- Open positions: `BLZE` long `4654`, `BTCUSD` long `0.001557769`, `SOLUSD`
+  long `27.549150188`.
+- Open orders: `BTC/USD` sell limit `81188.11` qty `0.001557769`
+  (`p2-close-btcusd-1778615805233323033`), `SOL/USD` sell limit `95.89`
+  qty `29.925` partially filled (`p2-close-solusd-1778578373111464986`).
+- `BLZE` had a rejected protective close attempt due Alpaca PDT equity limits
+  (`no day trades permitted based on previous day account equity under
+  $25,000`). Manual broker review is still required for desired position
+  handling; no discretionary close/cancel was submitted during this audit.
+
+**Validation**:
+- `.venv313/bin/python -m py_compile alpaca_wrapper.py trade_chronos_full.py trade_optimized_v2.py trade_daily_stock_prod.py trade_unified_hourly.py xgbnew/live_trader.py unified_hourly_experiment/trade_unified_hourly.py rlinference/brokers/alpaca_broker.py rlinference/rl_trading_engine.py scripts/alpaca_live_e2e_smoketest.py scripts/alpaca_cli.py alpaca_cli.py`
+- `.venv313/bin/pytest -q tests/test_trade_daily_stock_prod.py::test_main_passes_backtest_offsets_to_run_backtest tests/test_trade_daily_stock_prod.py::test_compare_backtest_to_trading_server_passes_allocation_pct tests/test_trade_daily_stock_prod.py::test_min_agree_count_zero_is_no_op tests/test_trade_daily_stock_prod.py::test_min_agree_count_passes_when_enough_members_agree tests/test_trade_daily_stock_prod.py::test_min_agree_count_forces_flat_when_insufficient_agreement`
+  (`5 passed`)
+- `.venv313/bin/pytest -q tests/prod/brokers/test_alpaca_wrapper.py tests/prod/backtesting/test_backout_logic.py`
+  plus the five daily-prod focused tests listed above
+  (`30 passed, 2 skipped`)
+
 ### 2026-05-07 -- local 120d marketsim/replay audit, no promotion
 
 **Scope**: local-only audit of the currently launched daily RL production path;

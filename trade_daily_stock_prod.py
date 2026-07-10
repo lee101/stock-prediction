@@ -2361,21 +2361,10 @@ def _market_order_side_for_qty(qty: float) -> str:
 
 
 def submit_market_order(client, *, symbol: str, qty: float, side: str):
-    if os.getenv("ALP_PAPER", "1") == "0":
-        import alpaca_wrapper  # noqa: F401
-    from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest
-
-    if qty <= 0:
-        raise ValueError("qty must be positive")
-    side_value = OrderSide.BUY if side == "buy" else OrderSide.SELL
-    request = MarketOrderRequest(
-        symbol=symbol,
-        qty=round(float(qty), 4),
-        side=side_value,
-        time_in_force=TimeInForce.DAY,
+    raise RuntimeError(
+        f"Refusing Alpaca market order for {side} {qty} {symbol}; "
+        "use submit_limit_order with a fixed or ramped near-market limit"
     )
-    return client.submit_order(request)
 
 
 def submit_limit_order(

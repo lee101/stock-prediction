@@ -396,26 +396,30 @@ def test_passivize_limit_sell_uses_ask():
         assert limit_price_used == str(round(101.5, 2))
 
 
-def test_market_order_allowed_when_market_open():
-    """Market orders should work when market is open."""
-    # Create a mock clock that says market is open
+def test_market_order_request_uses_limit_fallback_even_when_market_open():
+    """Legacy market helper must never submit a market request."""
     mock_clock = MagicMock()
     mock_clock.is_open = True
 
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 101.0
+    mock_quote.bid_price = 100.0
+
     with patch("alpaca_wrapper._IS_PAPER", False), \
          patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
-         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
         result = open_market_order_violently("AAPL", 10, "buy")
 
-        # Should succeed
-        assert result == "order_ok"
-        assert submit.call_count == 1
+    assert result == "order_ok"
+    assert submit.call_count == 1
+    assert "limit_price" in submit.call_args.kwargs["order_data"]
 
 
-def test_market_order_qty_bumped_to_min_notional():
-    """Market orders below $1 should scale qty up to satisfy broker min notional."""
+def test_legacy_market_helper_limit_fallback_qty_bumped_to_min_notional():
+    """Legacy market helper below $1 should scale fallback limit qty to satisfy broker min notional."""
     mock_clock = MagicMock()
     mock_clock.is_open = True
 
@@ -426,7 +430,7 @@ def test_market_order_qty_bumped_to_min_notional():
     with patch("alpaca_wrapper._IS_PAPER", False), \
          patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
-         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
         result = open_market_order_violently("AAPL", 1, "buy")
@@ -470,8 +474,8 @@ def test_market_order_blocked_when_spread_too_high():
         assert order_data["limit_price"] == "101.0"  # midpoint of 100 and 102
 
 
-def test_market_order_allowed_when_spread_acceptable():
-    """Market orders should work when spread <= 1% and closing position."""
+def test_close_position_uses_limit_even_when_spread_acceptable():
+    """Closing helper must use a midpoint limit, not market, even when spread is acceptable."""
     # Create a mock position
     mock_position = MagicMock()
     mock_position.symbol = "AAPL"
@@ -490,14 +494,16 @@ def test_market_order_allowed_when_spread_acceptable():
     with patch("alpaca_wrapper._IS_PAPER", False), \
          patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
-         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
         result = close_position_violently(mock_position)
 
-        # Should succeed
-        assert result == "order_ok"
-        assert submit.call_count == 1
+    assert result == "order_ok"
+    assert submit.call_count == 1
+    order_data = submit.call_args.kwargs["order_data"]
+    assert "limit_price" in order_data
+    assert order_data["limit_price"] == "100.25"
 
 
 def test_paper_stock_market_order_falls_back_to_limit():
