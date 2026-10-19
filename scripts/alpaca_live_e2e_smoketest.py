@@ -36,7 +36,7 @@ os.environ.setdefault("ALPACA_SINGLETON_OVERRIDE", "1")
 os.environ.setdefault("ALPACA_SERVICE_NAME", f"alpaca_live_e2e_smoketest_{os.getpid()}")
 
 import alpaca_wrapper  # noqa: E402 — triggers singleton override + loads live keys
-from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest  # noqa: E402
+from alpaca.trading.requests import LimitOrderRequest  # noqa: E402
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType  # noqa: E402
 from src.alpaca_singleton import (  # noqa: E402
     guard_sell_against_death_spiral,
@@ -97,11 +97,12 @@ def test_crypto_round_trip(out: dict) -> None:
     log("crypto_rt", f"ask={ask} bid={bid} qty={qty}")
 
     buy = alpaca_wrapper.alpaca_api.submit_order(
-        order_data=MarketOrderRequest(
+        order_data=LimitOrderRequest(
             symbol=CRYPTO_SYMBOL_ORDER,
             qty=qty,
             side=OrderSide.BUY,
-            type=OrderType.MARKET,
+            type=OrderType.LIMIT,
+            limit_price=str(round(ask * 1.0005, 2)),
             time_in_force=TimeInForce.GTC,
         )
     )

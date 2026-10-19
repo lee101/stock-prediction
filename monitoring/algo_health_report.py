@@ -785,6 +785,63 @@ def render_text(report: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+def _manual_daily_stock_mode_active() -> bool:
+    try:
+        from monitoring import health_check
+        return bool(health_check._manual_daily_stock_mode_active())
+    except Exception:
+        return False
+
+
+def _manual_daily_stock_report() -> dict:
+    from monitoring import health_check
+
+    wanted = {
+        "xgb-daily-trader-live",
+        "daily-rl-trader",
+        "trading-server",
+        "writer-locks",
+        "alpaca-api",
+        "alpaca-stock-flow",
+        "trading-server-live-sync",
+        "recent-activity",
+        "scheduled-audits",
+        "disk",
+    }
+    sections: list[Section] = []
+    for result in health_check.run_all_checks():
+        if result.name not in wanted:
+            continue
+        sections.append(
+            Section(
+                result.name,
+                result.status
+                if result.status in {"ok", "warn", "fail", "info"}
+                else "warn",
+                result.message,
+                result.details,
+            )
+        )
+
+    overall = "ok"
+    for s in sections:
+        if s.status == "fail":
+            overall = "fail"
+            break
+        if s.status == "warn" and overall != "fail":
+            overall = "warn"
+
+    last_run = health_check._last_daily_rl_run_event() or {}
+    return {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "overall_status": overall,
+        "mode": "manual_daily_stock_trading_server",
+        "last_session_log": None,
+        "last_session_ts": last_run.get("timestamp"),
+        "sections": [asdict(s) for s in sections],
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--no-fetch", action="store_true",
@@ -797,6 +854,20 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING)
+
+    if _manual_daily_stock_mode_active():
+        report = _manual_daily_stock_report()
+        jsonl = LOG_DIR / "algo_health.jsonl"
+        with jsonl.open("a") as f:
+            f.write(json.dumps(report, default=str) + "\n")
+        text = render_text(report)
+        (LOG_DIR / "algo_health_current.txt").write_text(text)
+        if args.json:
+            print(json.dumps(report, default=str, indent=2))
+        else:
+            print(text)
+        overall = report["overall_status"]
+        return 0 if overall == "ok" else (2 if overall == "fail" else 1)
 
     launch_args = _live_launch_args()
     min_score = float(launch_args.get("min-score", "0.85") or 0.85)

@@ -215,6 +215,50 @@ def test_run_sweep_includes_opportunistic_grid_in_cell_identity(monkeypatch, tmp
     assert rows[-1]["opportunistic_entry_discount_bps"] == 30.0
 
 
+def test_run_sweep_includes_min_top_score_gap_grid_in_rows(monkeypatch, tmp_path):
+    _install_fakes(monkeypatch)
+    paths = _fake_paths(tmp_path, 2)
+    calls: list[float] = []
+
+    def _fake_run_cell(**kwargs):
+        calls.append(float(kwargs["min_top_score_gap"]))
+        return sweep.CellResult(
+            leverage=float(kwargs["leverage"]),
+            min_score=float(kwargs["min_score"]),
+            hold_through=bool(kwargs["hold_through"]),
+            top_n=int(kwargs["top_n"]),
+            min_picks=int(kwargs["min_picks"]),
+            min_top_score_gap=float(kwargs["min_top_score_gap"]),
+            fee_regime=str(kwargs["fee_regime"]),
+            n_windows=5,
+            median_monthly_pct=1.0,
+            p10_monthly_pct=1.0,
+            median_sortino=1.0,
+            worst_dd_pct=1.0,
+            n_neg=0,
+        )
+
+    monkeypatch.setattr(sweep, "_run_cell", _fake_run_cell)
+    cells = sweep.run_sweep(
+        symbols=[f"SYM{k}" for k in range(6)],
+        data_root=Path("/tmp"),
+        model_paths=paths,
+        train_start=date(2020, 1, 1), train_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 2), oos_end=date(2025, 12, 31),
+        window_days=10, stride_days=5,
+        leverage_grid=[1.0],
+        min_score_grid=[0.0],
+        hold_through_grid=[False],
+        top_n_grid=[1],
+        fee_regimes=["deploy"],
+        min_top_score_gap_grid=[0.0, 0.01],
+    )
+
+    assert calls == [0.0, 0.01]
+    rows = sweep._cells_to_rows(cells)
+    assert [r["min_top_score_gap"] for r in rows] == [0.0, 0.01]
+
+
 def test_run_sweep_includes_max_spread_grid_in_cell_identity(monkeypatch, tmp_path):
     _install_fakes(monkeypatch)
     paths = _fake_paths(tmp_path, 2)
@@ -568,14 +612,22 @@ def test_min_score_gate_changes_outcome(monkeypatch, tmp_path):
 
 
 def test_fee_regimes_in_registry():
-    assert set(sweep.FEE_REGIMES) >= {"deploy", "prod10bps", "stress36x"}
+    assert set(sweep.FEE_REGIMES) >= {
+        "deploy",
+        "prod10bps",
+        "legacy_alpaca_0278bps",
+        "stress36x",
+    }
     d = sweep.FEE_REGIMES["deploy"]
     p = sweep.FEE_REGIMES["prod10bps"]
+    legacy = sweep.FEE_REGIMES["legacy_alpaca_0278bps"]
     s = sweep.FEE_REGIMES["stress36x"]
-    assert p["fee_rate"] == pytest.approx(0.001)
+    assert d["fee_rate"] == pytest.approx(0.001)
+    assert p == d
     assert p["fill_buffer_bps"] == d["fill_buffer_bps"]
     assert p["commission_bps"] == d["commission_bps"]
-    assert p["fee_rate"] > d["fee_rate"]
+    assert legacy["fee_rate"] < d["fee_rate"]
+    assert legacy["fill_buffer_bps"] == d["fill_buffer_bps"]
     # stress must be meaningfully more pessimistic on every axis
     assert s["fee_rate"] >= p["fee_rate"]
     assert s["fill_buffer_bps"] > p["fill_buffer_bps"]
@@ -1190,6 +1242,16 @@ def test_require_production_target_flag_parses():
     ])
 
     assert args.require_production_target is True
+
+
+def test_sweep_default_fee_regime_is_production_realistic():
+    args = sweep.parse_args([
+        "--symbols-file", "symbols.txt",
+        "--model-paths", "model.pkl",
+    ])
+
+    assert args.fee_regimes == "deploy"
+    assert sweep.FEE_REGIMES[args.fee_regimes]["fee_rate"] == pytest.approx(0.001)
 
 
 def test_friction_robust_strategy_rows_take_worst_fee_cell():

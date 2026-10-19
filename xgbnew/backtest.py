@@ -58,6 +58,11 @@ class BacktestConfig:
     leverage: float = 1.0               # 1.0 = no leverage, max 2.0
     xgb_weight: float = 0.5             # blend weight for XGB vs Chronos2
     min_score: float = 0.0              # min combined score to trade
+    # Cross-sectional conviction gap. When positive, the long/top-ranked
+    # pack is only allowed when the marginal selected score beats the next
+    # unselected score by at least this many score points. This uses same-day
+    # model scores only, so it is live-realizable at the open. 0 disables.
+    min_top_score_gap: float = 0.0
     min_dollar_vol: float = 5e6         # skip illiquid stocks (min avg daily $ vol)
     min_vol_20d: float = 0.0            # 0 disables; else require annualised
                                         # 20-day realised vol ≥ this (so we
@@ -131,6 +136,13 @@ class BacktestConfig:
     # sweep iqr alone, both, or skew alone. NaN days keep the pre-filter
     # behaviour (no gate).
     regime_cs_skew_min: float = -1e9    # effectively disabled default
+    # Experimental regime-failure side for top-ranked candidates. Default 0
+    # preserves the established behavior: days failing the cross-sectional
+    # regime gate are skipped. -1 keeps those days and shorts the top-ranked
+    # candidates instead; +1 keeps them long. This is live-realizable because
+    # the ret_5d IQR/skew gate is known at the open, but it is not production
+    # material unless swept through the same stress gates as normal.
+    regime_failed_top_side: int = 0
     # Pairwise correlation-aware packing. When corr_window_days > 0 and
     # corr_max_signed < 1.0, candidate selection skips any symbol whose trailing
     # signed correlation to an already selected same-day pick is above the
@@ -197,6 +209,27 @@ class BacktestConfig:
     # this percentage. This catches high-leverage cells that recover by close
     # but would have been unacceptable live risk while the position was open.
     stop_on_intraday_drawdown_pct: float = 0.0
+    # Optional realized-loss cooldown. When loss_cooldown_days > 0, a traded
+    # day whose realized portfolio return is <= -loss_cooldown_trigger_pct
+    # pauses NEW entries for the next N sessions and clears hold-through state.
+    # This is leak-free and live-realizable because it only depends on our own
+    # completed day PnL. 0 days disables and preserves legacy behavior.
+    loss_cooldown_days: int = 0
+    loss_cooldown_trigger_pct: float = 0.0
+    # Symbol-specific loss cooldown. Unlike portfolio cooldown, this keeps
+    # the strategy active but removes a symbol from the pick pool for N
+    # sessions after that symbol's own realized leveraged net return breaches
+    # the trigger. This targets repeated high-beta loser loops without
+    # globally suppressing other candidates. 0 days disables.
+    symbol_loss_cooldown_days: int = 0
+    symbol_loss_cooldown_trigger_pct: float = 0.0
+    # Online realized-PnL rank overlay. This is softer than a cooldown:
+    # after a symbol loses money, future ranks for that same symbol are
+    # penalized by a decayed score offset. Only completed trade PnL is used,
+    # so the adjustment is live-realizable at the next open. Defaults disable.
+    symbol_pnl_half_life_days: float = 0.0
+    symbol_loss_score_penalty: float = 0.0  # score points per 1% recent loss
+    symbol_pnl_score_cap: float = 0.5
     # Optional Reg-T overnight gross-leverage cap. ``None`` (default)
     # preserves legacy behaviour. When set (e.g. 2.0), the per-pick effective
     # leverage used to compute returns is clipped to
@@ -764,6 +797,46 @@ def _candidate_passes_corr_gate(
     return True
 
 
+def _decayed_symbol_pnl_state(
+    state: dict[str, tuple[float, int]],
+    symbol: str,
+    day_idx: int,
+    half_life_days: float,
+) -> float:
+    """Return symbol PnL memory decayed to ``day_idx``.
+
+    The state stores realized percent returns and never sees today's trade
+    before ranking. Positive values represent recently profitable trades;
+    negative values represent recent pain.
+    """
+    if half_life_days <= 0.0 or symbol not in state:
+        return 0.0
+    value, last_idx = state[symbol]
+    elapsed = max(int(day_idx) - int(last_idx), 0)
+    if elapsed <= 0:
+        return float(value)
+    decay = 0.5 ** (float(elapsed) / float(half_life_days))
+    decayed = float(value) * decay
+    state[symbol] = (decayed, int(day_idx))
+    return decayed
+
+
+def _symbol_pnl_adjusted_score(
+    raw_score: float,
+    pnl_memory_pct: float,
+    *,
+    loss_penalty: float,
+    cap: float,
+) -> float:
+    if not np.isfinite(raw_score):
+        return raw_score
+    penalty = min(
+        max(float(cap), 0.0),
+        max(float(loss_penalty), 0.0) * max(-float(pnl_memory_pct), 0.0),
+    )
+    return float(raw_score) - penalty
+
+
 def simulate(
     test_df: pd.DataFrame,
     model: XGBStockModel,
@@ -887,14 +960,25 @@ def simulate(
     # dispersion/skew gate evaluates the same keep/drop decision at deploy.
     iqr_active  = float(config.regime_cs_iqr_max) > 0.0
     skew_active = float(config.regime_cs_skew_min) > -1e8
+    regime_failed_top_side = int(config.regime_failed_top_side)
+    if regime_failed_top_side not in (-1, 0, 1):
+        raise ValueError("regime_failed_top_side must be one of -1, 0, 1")
+    failed_top_side_by_date: dict[object, int] = {}
     if (iqr_active or skew_active) and "ret_5d" in test_df.columns:
         day_keep = cross_sectional_regime_keep_by_date(
             test_df,
             regime_cs_iqr_max=float(config.regime_cs_iqr_max),
             regime_cs_skew_min=float(config.regime_cs_skew_min),
         )
-        keep_dates = set(day_keep[day_keep].index)
-        test_df = test_df[test_df["date"].isin(keep_dates)]
+        if regime_failed_top_side == 0:
+            keep_dates = set(day_keep[day_keep].index)
+            test_df = test_df[test_df["date"].isin(keep_dates)]
+        else:
+            failed_top_side_by_date = {
+                day: regime_failed_top_side
+                for day, keep in day_keep.items()
+                if not bool(keep)
+            }
 
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])
@@ -940,6 +1024,22 @@ def simulate(
     # close-to-close with zero fees/buffer (no trade happens).
     prev_pick_set: frozenset[tuple[str, int]] | None = None
     prev_close_by_sym: dict[str, float] = {}
+    loss_cooldown_days = max(int(config.loss_cooldown_days), 0)
+    loss_cooldown_trigger_pct = max(float(config.loss_cooldown_trigger_pct), 0.0)
+    loss_cooldown_remaining = 0
+    symbol_loss_cooldown_days = max(int(config.symbol_loss_cooldown_days), 0)
+    symbol_loss_cooldown_trigger_pct = max(
+        float(config.symbol_loss_cooldown_trigger_pct), 0.0
+    )
+    symbol_cooldown_until_idx: dict[str, int] = {}
+    symbol_pnl_half_life_days = max(float(config.symbol_pnl_half_life_days), 0.0)
+    symbol_loss_score_penalty = max(float(config.symbol_loss_score_penalty), 0.0)
+    symbol_pnl_score_cap = max(float(config.symbol_pnl_score_cap), 0.0)
+    symbol_pnl_memory: dict[str, tuple[float, int]] = {}
+    adaptive_score_active = (
+        symbol_pnl_half_life_days > 0.0
+        and symbol_loss_score_penalty > 0.0
+    )
 
     # Missed-order RNG — seeded once at entry so the whole sim is
     # reproducible under the same (skip_prob, skip_seed). Pre-building it
@@ -953,8 +1053,15 @@ def simulate(
     grouped_by_day = {day: day_df for day, day_df in test_df.groupby("date", sort=True)}
     empty_day_df = test_df.iloc[0:0]
 
-    for day in unique_dates:
+    for day_idx, day in enumerate(unique_dates):
         day_df = grouped_by_day.get(day, empty_day_df)
+        if loss_cooldown_remaining > 0:
+            # Model a production de-risk pause: do not claim a hold-through
+            # continuation across a deliberately flat/cash day.
+            prev_pick_set = None
+            prev_close_by_sym = {}
+            loss_cooldown_remaining -= 1
+            continue
         # Regime gate — if SPY under MA for the day, skip (stay in cash).
         if bool(regime_closed.get(day, False)):
             # Flatten hold state on gated days so a re-entry can't claim a
@@ -963,13 +1070,48 @@ def simulate(
             prev_close_by_sym = {}
             continue
         day_scale = float(vol_scale.get(day, 1.0))
+        top_side = int(failed_top_side_by_date.get(day, 1))
+        score_col = "_score"
+        if adaptive_score_active and not day_df.empty:
+            day_df = day_df.copy()
+            adjusted_scores: list[float] = []
+            for _, row in day_df.iterrows():
+                symbol = str(row["symbol"])
+                raw_score = float(row.get("_score", 0.0) or 0.0)
+                pnl_memory = _decayed_symbol_pnl_state(
+                    symbol_pnl_memory,
+                    symbol,
+                    day_idx,
+                    symbol_pnl_half_life_days,
+                )
+                adjusted_scores.append(
+                    _symbol_pnl_adjusted_score(
+                        raw_score,
+                        pnl_memory,
+                        loss_penalty=symbol_loss_score_penalty,
+                        cap=symbol_pnl_score_cap,
+                    )
+                )
+            day_df["_adaptive_score"] = adjusted_scores
+            score_col = "_adaptive_score"
         # Rank by combined score; among ties prefer stronger Chronos signal.
-        sort_cols = ["_score"]
+        sort_cols = [score_col]
         ascending = [False]
         if config.chronos_col in day_df.columns:
             sort_cols.append(config.chronos_col)
             ascending.append(False)
         day_df = day_df.sort_values(sort_cols, ascending=ascending, kind="mergesort")
+        min_top_score_gap = max(float(config.min_top_score_gap), 0.0)
+        if min_top_score_gap > 0.0 and top_side > 0 and len(day_df) > int(config.top_n):
+            marginal_idx = max(int(config.top_n) - 1, 0)
+            selected_score = float(day_df.iloc[marginal_idx].get(score_col, np.nan))
+            next_score = float(day_df.iloc[marginal_idx + 1].get(score_col, np.nan))
+            if (
+                np.isfinite(selected_score)
+                and np.isfinite(next_score)
+                and selected_score - next_score < min_top_score_gap
+            ):
+                day_df = day_df.iloc[0:0]
 
         # Materialize today's pick rows up to top_n (skipping invalid prices).
         pick_rows: list[pd.Series] = []
@@ -988,7 +1130,10 @@ def simulate(
             for _, row in day_df.iterrows():
                 if len(watch_rows) >= opportunistic_watch_n:
                     break
-                score = float(row.get("_score", 0.0) or 0.0)
+                symbol = str(row["symbol"])
+                if symbol_cooldown_until_idx.get(symbol, -1) >= day_idx:
+                    continue
+                score = float(row.get(score_col, 0.0) or 0.0)
                 if score < config.min_score and len(watch_rows) >= min_pick_floor:
                     continue
                 o = float(row["actual_open"])
@@ -1004,42 +1149,44 @@ def simulate(
                     row,
                     discount_bps=opportunistic_discount_bps,
                     fill_buffer_bps=config.fill_buffer_bps,
-                    side=1,
+                    side=top_side,
                 )
                 if entry_limit is None:
                     continue
                 symbol = str(row["symbol"])
                 if not _candidate_passes_corr_gate(
-                    symbol, 1, selected_for_corr, day_corr, corr_max_signed,
+                    symbol, top_side, selected_for_corr, day_corr, corr_max_signed,
                 ):
                     continue
                 pick_rows.append(row)
-                side_by_symbol[symbol] = 1
-                selected_for_corr.append((symbol, 1))
-                opportunistic_entries[(symbol, 1)] = entry_limit
+                side_by_symbol[symbol] = top_side
+                selected_for_corr.append((symbol, top_side))
+                opportunistic_entries[(symbol, top_side)] = entry_limit
         else:
             for _, row in day_df.iterrows():
                 if len(pick_rows) >= config.top_n:
                     break
-                score = float(row.get("_score", 0.0) or 0.0)
+                symbol = str(row["symbol"])
+                if symbol_cooldown_until_idx.get(symbol, -1) >= day_idx:
+                    continue
+                score = float(row.get(score_col, 0.0) or 0.0)
                 if score < config.min_score and len(pick_rows) >= min_pick_floor:
                     continue
                 o = float(row["actual_open"])
                 c = float(row["actual_close"])
                 if o <= 0 or c <= 0:
                     continue
-                symbol = str(row["symbol"])
                 if not _candidate_passes_corr_gate(
-                    symbol, 1, selected_for_corr, day_corr, corr_max_signed,
+                    symbol, top_side, selected_for_corr, day_corr, corr_max_signed,
                 ):
                     continue
                 pick_rows.append(row)
-                side_by_symbol[symbol] = 1
-                selected_for_corr.append((symbol, 1))
+                side_by_symbol[symbol] = top_side
+                selected_for_corr.append((symbol, top_side))
 
         short_n = max(int(config.short_n), 0)
         if short_n > 0:
-            short_sort_cols = ["_score"]
+            short_sort_cols = [score_col]
             short_ascending = [True]
             if config.chronos_col in day_df.columns:
                 short_sort_cols.append(config.chronos_col)
@@ -1052,9 +1199,11 @@ def simulate(
             max_short_score = float(config.max_short_score)
             for _, row in short_df.iterrows():
                 symbol = str(row["symbol"])
+                if symbol_cooldown_until_idx.get(symbol, -1) >= day_idx:
+                    continue
                 if symbol in side_by_symbol:
                     continue
-                raw_score = row.get("_score", 1.0)
+                raw_score = row.get(score_col, 1.0)
                 score = 1.0 if pd.isna(raw_score) else float(raw_score)
                 if score > max_short_score and max_short_score < 1.0:
                     continue
@@ -1130,8 +1279,8 @@ def simulate(
         conviction_scale = 1.0
         if config.conviction_scaled_alloc:
             top_score = (
-                float(pick_rows[0]["_score"]) if pick_rows
-                else float(day_df["_score"].max()) if len(day_df) > 0
+                float(pick_rows[0][score_col]) if pick_rows
+                else float(day_df[score_col].max()) if len(day_df) > 0
                 else 0.0
             )
             lo = float(config.conviction_alloc_low)
@@ -1158,6 +1307,9 @@ def simulate(
             missing_held = False
             held_side_by_symbol: dict[str, int] = {}
             for sym, side in sorted(prev_pick_set):
+                if symbol_cooldown_until_idx.get(sym, -1) >= day_idx:
+                    missing_held = True
+                    break
                 row = hold_lookup.get((day, sym))
                 if row is None:
                     missing_held = True
@@ -1361,6 +1513,27 @@ def simulate(
                         ))
                         fell_back = True
 
+        cooled_symbols: set[str] = set()
+        if adaptive_score_active:
+            for t in trades:
+                prior = _decayed_symbol_pnl_state(
+                    symbol_pnl_memory,
+                    t.symbol,
+                    day_idx,
+                    symbol_pnl_half_life_days,
+                )
+                symbol_pnl_memory[t.symbol] = (
+                    prior + float(t.net_return_pct),
+                    day_idx,
+                )
+        if symbol_loss_cooldown_days > 0:
+            for t in trades:
+                if t.net_return_pct <= -symbol_loss_cooldown_trigger_pct:
+                    cooled_symbols.add(t.symbol)
+                    symbol_cooldown_until_idx[t.symbol] = (
+                        day_idx + symbol_loss_cooldown_days
+                    )
+
         # Update hold-through state for next day. Fallback days always
         # flatten the hold state — the fallback symbol isn't "held
         # through" tomorrow.
@@ -1368,8 +1541,14 @@ def simulate(
             # Carry the positions actually represented in today's result, not
             # the pre-trade pick candidates. Selection state can be trimmed by
             # fill/missed-order/price validity paths before a trade exists.
-            prev_pick_set = frozenset((t.symbol, int(t.side)) for t in trades)
-            prev_close_by_sym = {t.symbol: float(t.actual_close) for t in trades}
+            carry_trades = [t for t in trades if t.symbol not in cooled_symbols]
+            prev_pick_set = (
+                frozenset((t.symbol, int(t.side)) for t in carry_trades)
+                if carry_trades else None
+            )
+            prev_close_by_sym = {
+                t.symbol: float(t.actual_close) for t in carry_trades
+            }
         else:
             prev_pick_set = None
             prev_close_by_sym = {}
@@ -1413,6 +1592,11 @@ def simulate(
         ))
         equity = equity_end
         peak_equity = max(peak_equity, equity_end)
+        if (
+            loss_cooldown_days > 0
+            and daily_ret_pct <= -loss_cooldown_trigger_pct
+        ):
+            loss_cooldown_remaining = loss_cooldown_days
         if (
             float(config.stop_on_intraday_drawdown_pct) > 0.0
             and day_intraday_dd >= float(config.stop_on_intraday_drawdown_pct)

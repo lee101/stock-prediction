@@ -3,7 +3,7 @@ from datetime import datetime
 import pytz
 from loguru import logger
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopOrderRequest
+from alpaca.trading.requests import LimitOrderRequest, StopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data import StockHistoricalDataClient
 
@@ -55,12 +55,9 @@ class AlpacaBroker:
             return None
     
     def close_position(self, symbol: str):
-        """Close position for symbol."""
-        try:
-            return self.trading_client.close_position(symbol)
-        except Exception as e:
-            logger.error(f"Error closing position for {symbol}: {e}")
-            return None
+        """Refuse convenience closes because Alpaca implements them as market exits."""
+        logger.error(f"Market close_position is disabled for {symbol}; submit a limit exit instead")
+        return None
     
     def place_order(
         self,
@@ -95,17 +92,8 @@ class AlpacaBroker:
             
             # Create appropriate order request
             if order_type == 'market':
-                if self.paper:
-                    logger.error(
-                        f"Paper market orders are disabled for {symbol}; submit a limit order instead"
-                    )
-                    return None
-                order_request = MarketOrderRequest(
-                    symbol=symbol,
-                    qty=qty,
-                    side=order_side,
-                    time_in_force=tif
-                )
+                logger.error(f"Market orders are disabled for {symbol}; submit a limit order instead")
+                return None
             elif order_type == 'limit':
                 if limit_price is None:
                     raise ValueError("Limit price required for limit order")

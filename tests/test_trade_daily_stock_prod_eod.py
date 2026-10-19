@@ -187,6 +187,50 @@ def test_eod_tick_force_market_window_max_aggressive(monkeypatch):
     assert submitted[0]["limit_price"] == pytest.approx(expected_limit, rel=1e-9)
 
 
+def test_eod_tick_guard_exception_blocks_submit(monkeypatch):
+    """Death-spiral guard must run before the EOD sell order is submitted."""
+    from src import alpaca_singleton
+
+    monkeypatch.setattr(mod, "_eod_minutes_to_market_close", lambda _c: 3.0)
+    monkeypatch.setattr(mod, "_eod_latest_stock_bid_ask", lambda _sym: (149.0, 151.0))
+    submitted: list[dict] = []
+    guard_calls: list[tuple[str, str, float]] = []
+
+    def _guard(symbol, side, price, **_kwargs):
+        guard_calls.append((symbol, side, price))
+        raise RuntimeError("death spiral")
+
+    def _submit_limit(client, **_kw):
+        submitted.append(_kw)
+        return SimpleNamespace(id="order-should-not-submit")
+
+    monkeypatch.setattr(alpaca_singleton, "guard_sell_against_death_spiral", _guard)
+    monkeypatch.setattr(mod, "submit_limit_order", _submit_limit)
+
+    client = MagicMock()
+    client.get_account.return_value = SimpleNamespace(equity="1000")
+    client.get_all_positions.return_value = [
+        SimpleNamespace(
+            symbol="AAPL", qty="20", market_value="3000", current_price="150",
+            side="long",
+        ),
+    ]
+
+    out = mod.eod_deleverage_tick(
+        client,
+        enabled=True,
+        target_leverage=2.0,
+        window_minutes=60.0,
+        force_market_minutes=5.0,
+    )
+
+    assert out["action"] == "order_error"
+    assert out["submitted"] == 0
+    assert "AAPL: death spiral" in out["errors"]
+    assert guard_calls
+    assert submitted == []
+
+
 def test_eod_tick_skips_zero_qty_positions(monkeypatch):
     """Zero-qty / zero-value positions must not be selected for selling."""
     monkeypatch.setattr(mod, "_eod_minutes_to_market_close", lambda _c: 30.0)

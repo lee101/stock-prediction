@@ -4,15 +4,15 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterator
-from contextlib import contextmanager
-from datetime import UTC, date, datetime
 import fcntl
 import hashlib
 import json
 import math
-from pathlib import Path
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
+from pathlib import Path
 
 
 COMPLETION_SCHEMA_VERSION = 1
@@ -22,7 +22,7 @@ PRODUCTION_TARGET_MAX_NEG_WINDOWS = 0
 PRODUCTION_TARGET_MIN_WINDOWS = 1
 REQUIRED_FEE_REGIMES = {"deploy", "prod10bps", "stress36x"}
 EXPECTED_FEE_REGIME_CONFIG = {
-    "deploy": {"commission_bps": 0.0, "fee_rate": 0.0000278, "fill_buffer_bps": 5.0},
+    "deploy": {"commission_bps": 0.0, "fee_rate": 0.001, "fill_buffer_bps": 5.0},
     "prod10bps": {"commission_bps": 0.0, "fee_rate": 0.001, "fill_buffer_bps": 5.0},
     "stress36x": {"commission_bps": 10.0, "fee_rate": 0.001, "fill_buffer_bps": 15.0},
 }

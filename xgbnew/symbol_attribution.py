@@ -489,6 +489,7 @@ def _build_config(args: argparse.Namespace) -> BacktestConfig:
         min_ret_5d_rank_pct=float(args.min_ret_5d_rank_pct),
         regime_cs_iqr_max=float(args.regime_cs_iqr_max),
         regime_cs_skew_min=float(args.regime_cs_skew_min),
+        regime_failed_top_side=int(args.regime_failed_top_side),
         no_picks_fallback_symbol=str(args.no_picks_fallback_symbol or ""),
         no_picks_fallback_alloc_scale=float(args.no_picks_fallback_alloc_scale),
         conviction_scaled_alloc=bool(args.conviction_scaled_alloc),
@@ -621,6 +622,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-ret-5d-rank-pct", type=float, default=0.0)
     parser.add_argument("--regime-cs-iqr-max", type=float, default=0.0)
     parser.add_argument("--regime-cs-skew-min", type=float, default=-1e9)
+    parser.add_argument(
+        "--regime-failed-top-side",
+        type=int,
+        choices=[-1, 0, 1],
+        default=0,
+        help=(
+            "Top-candidate side on days failing the cross-sectional regime "
+            "gate. 0 skips those days, -1 shorts the top-ranked names, "
+            "1 keeps them long."
+        ),
+    )
     parser.add_argument("--no-picks-fallback-symbol", default="")
     parser.add_argument("--no-picks-fallback-alloc-scale", type=float, default=0.0)
     parser.add_argument("--conviction-scaled-alloc", action="store_true")

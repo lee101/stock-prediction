@@ -15,7 +15,7 @@ LAST_MSG="${LOG%.log}.last.txt"
 CURRENT_LOG="$LOG_DIR/codex_current.log"
 PROMPT_FILE="$REPO/monitoring/codex_prod_check_prompt.md"
 LOCK="$LOG_DIR/.codex_prod_check.lock"
-CODEX_BIN="${CODEX_BIN:-/home/administrator/.bun/bin/codex}"
+CODEX_BIN="${CODEX_BIN:-${CODEX_LOCAL:-/home/administrator/.bun/bin/codex}}"
 
 file_sha256() {
   if [ -s "$1" ]; then
@@ -59,6 +59,13 @@ echo "=== Codex prod audit $(date -u -Iseconds) ===" | tee -a "$LOG"
 echo "prompt: $PROMPT_FILE ($(wc -c < "$PROMPT_FILE") bytes)" | tee -a "$LOG"
 echo "codex: $CODEX_BIN" | tee -a "$LOG"
 
+if [ -f "$HOME/.secretbashrc" ]; then
+  # shellcheck disable=SC1091
+  set +e
+  source "$HOME/.secretbashrc" >/dev/null 2>&1
+  set -e
+fi
+
 if [ "${CODEX_PROD_CHECK_DRY_RUN:-0}" = "1" ]; then
   echo "dry run: would execute codex prod check" | tee -a "$LOG"
   write_current_status DRY_RUN 0
@@ -71,6 +78,8 @@ set +e
 timeout 2400 "$CODEX_BIN" exec \
   --cd "$REPO" \
   --dangerously-bypass-approvals-and-sandbox \
+  -m gpt-5.5 \
+  --config model_reasoning_effort=high \
   --json \
   --output-last-message "$LAST_MSG" \
   "$PROMPT" \

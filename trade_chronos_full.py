@@ -214,8 +214,7 @@ class ChronosFullTrader:
     def close_position(self, symbol: str) -> bool:
         """Close position for a symbol.
 
-        For crypto: uses GTC limit order at bid/ask (persists until filled)
-        For stocks: uses market order (only works during market hours)
+        Uses a fixed-price limit order at current bid/ask for both stocks and crypto.
         """
         try:
             import alpaca_wrapper
@@ -232,43 +231,28 @@ class ChronosFullTrader:
                 logger.info("[DRY RUN] Would close %s: %s %.4f", symbol, side, qty)
                 return True
 
-            is_crypto = symbol.endswith("USD")
+            quote = alpaca_wrapper.latest_data(symbol)
+            if not quote:
+                logger.error("No quote data for %s", symbol)
+                return False
 
-            if is_crypto:
-                # For crypto, use GTC limit order at bid/ask price
-                # This persists until filled (unlike IOC which cancels immediately)
-                quote = alpaca_wrapper.latest_data(symbol)
-                if quote:
-                    if side == "sell":
-                        price = float(getattr(quote, "bid_price", 0) or 0)
-                    else:
-                        price = float(getattr(quote, "ask_price", 0) or 0)
-
-                    if price > 0:
-                        result = alpaca_wrapper.open_order_at_price(
-                            symbol=symbol,
-                            qty=qty,
-                            side=side,
-                            price=price,
-                        )
-                        logger.info("Close order for %s: %s @ $%.4f - %s", symbol, side, price, result)
-                        return result is not None
-                    else:
-                        logger.error("No valid price for %s", symbol)
-                        return False
-                else:
-                    logger.error("No quote data for %s", symbol)
-                    return False
+            if side == "sell":
+                price = float(getattr(quote, "bid_price", 0) or 0)
             else:
-                # For stocks, use market order (only works during market hours)
-                result = alpaca_wrapper.open_market_order_violently(
-                    symbol=symbol,
-                    qty=qty,
-                    side=side,
-                    retries=3,
-                )
-                logger.info("Close order for %s: %s", symbol, result)
-                return result is not None
+                price = float(getattr(quote, "ask_price", 0) or 0)
+
+            if price <= 0:
+                logger.error("No valid price for %s", symbol)
+                return False
+
+            result = alpaca_wrapper.open_order_at_price(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                price=price,
+            )
+            logger.info("Close limit for %s: %s @ $%.4f - %s", symbol, side, price, result)
+            return result is not None
 
         except Exception as e:
             logger.error("Failed to close position %s: %s", symbol, e)

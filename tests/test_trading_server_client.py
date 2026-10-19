@@ -169,6 +169,32 @@ def test_inmemory_client_heartbeat_and_get_orders_delegate_to_engine() -> None:
     assert captured["orders_args"] == ("paper_test", True)
 
 
+def test_inmemory_client_cancel_order_delegates_to_engine() -> None:
+    captured: dict[str, object] = {}
+
+    class _Engine:
+        def cancel_order(self, request):
+            captured["cancel_request"] = request
+            return {"order": {"id": request.order_id, "status": "canceled"}, "canceled": True}
+
+    client = InMemoryTradingServerClient(
+        engine=_Engine(),
+        account="paper_test",
+        bot_id="paper_test_v1",
+        session_id="session-a",
+    )
+
+    result = client.cancel_order(order_id="order-1", live_ack="LIVE")
+
+    assert result == {"order": {"id": "order-1", "status": "canceled"}, "canceled": True}
+    request = captured["cancel_request"]
+    assert request.account == "paper_test"  # type: ignore[attr-defined]
+    assert request.bot_id == "paper_test_v1"  # type: ignore[attr-defined]
+    assert request.session_id == "session-a"  # type: ignore[attr-defined]
+    assert request.order_id == "order-1"  # type: ignore[attr-defined]
+    assert request.live_ack == "LIVE"  # type: ignore[attr-defined]
+
+
 def test_live_trading_server_client_rejects_insecure_remote_http_url() -> None:
     with pytest.raises(ValueError, match="requires an https URL unless the server targets loopback"):
         TradingServerClient(
@@ -618,6 +644,57 @@ def test_trading_server_client_submit_limit_order_posts_expected_payload() -> No
                 "force_exit_reason": "risk_off",
                 "live_ack": "ack-1",
                 "metadata": nested_metadata,
+            },
+        )
+    ]
+
+
+def test_trading_server_client_cancel_order_posts_expected_payload() -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class _FakeSession:
+        def get(self, url, params, timeout):  # pragma: no cover - defensive
+            raise AssertionError("unexpected GET")
+
+        def post(self, url, json, timeout):
+            calls.append(("POST", url, json))
+            return _JsonResponse({"order": {"id": "order-1", "status": "canceled"}, "canceled": True})
+
+    class _JsonResponse:
+        status_code = 200
+        text = "{}"
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    client = TradingServerClient(
+        base_url="http://127.0.0.1:8050",
+        account="paper_test",
+        bot_id="paper_test_v1",
+        session_id="session-a",
+        session=_FakeSession(),  # type: ignore[arg-type]
+    )
+
+    assert client.cancel_order(order_id="order-1", live_ack="LIVE") == {
+        "order": {"id": "order-1", "status": "canceled"},
+        "canceled": True,
+    }
+    assert calls == [
+        (
+            "POST",
+            "http://127.0.0.1:8050/api/v1/orders/cancel",
+            {
+                "account": "paper_test",
+                "bot_id": "paper_test_v1",
+                "session_id": "session-a",
+                "order_id": "order-1",
+                "live_ack": "LIVE",
             },
         )
     ]

@@ -416,6 +416,76 @@ Working conclusion:
   chronological intraday worksteal sim, so the algorithm can reduce gross
   exposure when the first filled leg is already showing regime stress.
 
+## 2026-05-04 - Hourly 48-bar test-time level optimizer
+
+Motivation:
+
+- The likely missing edge is combining daily selection with hourly execution:
+  fit explicit limit entry/take-profit levels on a very short recent window,
+  then deploy them for only the next one or two days before retraining.
+- This mirrors the older `trade_stock_e2e_gemini_hourly.py` SciPy maxdiff
+  idea, but makes the level replay vectorized over a torch grid so it can be
+  run inside a larger market simulation loop.
+
+Implemented:
+
+- Added `src/tradinglib/hourly_level_optimizer.py`.
+- It optimizes long-only entry bps and take-profit bps on the trailing
+  `lookback_bars` window, then walk-forward replays the selected levels on the
+  next `forward_bars` window.
+- Fill realism: explicit limit entries require low penetration through the
+  entry by `fill_buffer_bps`; take-profit exits require high penetration
+  through the exit by the same buffer; fees apply on both sides.
+- Added optional deployment gates using train-window return, train-window
+  win-rate, and minimum trades so the test-time learner can choose not to
+  deploy for the next 48 bars.
+- Added optional fixed stop-loss bps. A stop exit prevents same-bar re-entry.
+- Added `scripts/eval_hourly_level_optimizer.py` for reproducible hourly CSV
+  sweeps with date filters.
+- Tests: `tests/test_hourly_level_optimizer.py`.
+
+Artifacts:
+
+- Ungated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_015443.json`
+- Gated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_015737.json`
+  and `..._015843.json`
+- Strict gated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_015943.json`
+- Stop-loss gated equities:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_021236.json`
+- Recent validation slice:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_021336.json`
+- NVDA recent threshold probes:
+  `analysis/hourly_level_optimizer_20260504/hourly_level_optimizer_20260504_021408.json`,
+  `..._021431.json`, `..._021453.json`
+
+Results:
+
+- Ungated 48-bar level fitting overtraded and lost after realistic 10 bps fees
+  and 5 bps fills: AAPL/MSFT/SPY/QQQ were negative; NVDA had positive median
+  active windows but still poor total compounding.
+- Train-window deployment gates reduced losses but mostly made the strategy
+  flat, which means the recent fitted maxdiff profile alone is not a stable
+  enough edge.
+- Adding a 100 bps stop-loss helped materially. Full-history stopped/gated
+  NVDA reached `+122.82%` total over the hourly file, but broad symbols stayed
+  weak or negative.
+- On the recent 2025-07-01 through 2026-04-30 validation slice, the same
+  stopped/gated family was not strong enough: NVDA was only `+10%` to `+13%`
+  total across the 10-month slice depending on gate, and the five-symbol
+  aggregate stayed roughly flat/slightly negative.
+
+Working conclusion:
+
+- The torch 48-bar retrain/replay primitive is useful and should be kept.
+- As a standalone level learner it is not a deployable edge for stocks.
+- The more promising next step is to use this as an execution layer under a
+  stronger daily selector: only run the hourly level retrainer for names/days
+  already passing XGB/Chronos/correlation filters, then let the hourly learner
+  choose the actual explicit order levels and whether to skip.
+
 ## 2026-05-03 - Minimum secondary allocation floor
 
 Motivation:
@@ -535,3 +605,144 @@ Conclusion:
   one comparable scale.
 - The current worksteal XGB family is still rejected; the metric now makes
   that rejection automatic and visible in the sweep table.
+
+## 2026-05-04 - Alpaca stock production check
+
+Problem found:
+
+- The live XGB process was still launched with `--crypto-weekend`, which
+  explains the BTC exposure in an otherwise stock-named deployment.
+- It also held the single Alpaca live writer lock while carrying no stock
+  positions, so `trading-server` could not start and `daily-rl-trader` failed
+  at `claim_trading_server_writer`.
+- Recent XGB live logs showed stock `no_picks`: top live scores were only about
+  `0.53` to `0.70` under `--min-score 0.85`.
+
+Rejected production experiments:
+
+- Forced XGB stock packing with `--min-picks 1` did make the dry-run pick one
+  stock on 2026-05-04 (`LCID`, score `0.5993`) instead of sitting out.
+- The same setting failed the 120-day stock stress sweep:
+  `analysis/xgbnew_stock_prod_forced_minpicks_20260504/sweep_20260504_094613.json`
+  reported `-2.94%/mo` median and `79.22%` worst drawdown.
+- SPY no-picks fallback was also rejected:
+  `analysis/xgbnew_stock_prod_fallback_20260504/sweep_20260504_095402.json`
+  was negative across `0.25x`, `0.5x`, and `1.0x` fallback allocation scales.
+
+Production action:
+
+- Removed the crypto weekend path from `deployments/xgb-daily-trader-live/launch.sh`.
+- Left forced low-confidence XGB packing disabled; it is now measurable through
+  `xgbnew.eval_pretrained --min-picks`, but not deployed.
+- Made the XGB Supervisor launch inert by default unless
+  `XGB_DAILY_TRADER_ENABLE=1` is explicitly set, so it does not hold the live
+  writer lock while rejected.
+- Restored the stock production path manually for this session:
+  `trading-server` owns the Alpaca live writer on `127.0.0.1:8050`, and
+  `daily-rl-trader` is running live against 32 Alpaca stock symbols, waiting
+  for the next market window.
+
+## 2026-05-04 - Aggressive top-1 stock replay
+
+Question:
+
+- Revisit the promising aggressive top-1 long-only XGB stock result:
+  `2.25x`, top-1, min-score `0`, target-ish `+27.78%/mo`, but failed the
+  30% drawdown gate.
+- Keep this Alpaca-stock-only; no Binance/crypto deployment path.
+
+Alltrain reproduction:
+
+- `analysis/xgbnew_daily/top1_alpaca_stock_stage1_20260504/sweep_20260504_102104.json`
+- `analysis/xgbnew_daily/top1_alpaca_stock_stage2_20260504/sweep_20260504_103518.json`
+- Reproduced the attractive 5 bps cells on the 2025-07-01 -> 2026-04-17
+  window:
+  - `max_vol_20d=1.25`, `score_uncertainty_penalty=0.5`, top-1, min-score `0`
+    gave about `+28.61%/mo`, p10 `+23.03%`, active `100%`.
+  - Worst drawdown still hit `31.20%`, just beyond the 30% gate.
+  - Above `2.0x` allocation, results were mostly identical because
+    `overnight_max_gross_leverage=2.0` clips gross exposure.
+
+Friction/stress result:
+
+- The same family degraded sharply under stress costs and 10 bps fill buffer.
+- Worst grouped stress cell for the attractive configs was only about
+  `+15%` to `+20%/mo` median and `34%` to `35%` drawdown.
+- This is not a production candidate even though the light-friction median is
+  close to the target.
+
+Honest heldout check:
+
+- `analysis/xgbnew_daily/top1_alpaca_stock_heldout2025h2_xgb_20260504/sweep_20260504_104543.json`
+- Models trained only through `2025-06-30`, evaluated on
+  `2025-07-01 -> 2026-04-17`.
+- `min_score=0.55` looked strong on median:
+  - `1.5x` stress cell: `+29.38%/mo` median.
+  - `2.0x` stress cell: `+39.37%/mo` median.
+- Both failed badly on tail risk: p10 was negative (`-18%` to `-27%` range),
+  one losing window appeared before fail-fast, and drawdown was `35%` to
+  `44%`.
+- CatBoost heldout could not be rerun in `.venv313` because `catboost` is not
+  installed.
+
+Risk overlay check:
+
+- `analysis/xgbnew_daily/top1_alpaca_stock_heldout_spyrisk_narrow_20260504/sweep_20260504_110749.json`
+- SPY regime/vol-target overlays did not change the narrow top-1 result in
+  this setup; the heldout stress cell remained `+29.38%/mo` median,
+  p10 `-20.86%`, drawdown `35.22%`.
+
+Decision:
+
+- Do not redeploy this XGB top-1 family yet.
+- The real signal is not the median; the blocker is broad-market/tail regime
+  risk. The next useful work is either a deployable regime selector or a
+  different model family that improves p10 and interval loss, not more leverage
+  above the overnight cap.
+
+### Buying-power graceful fallback + heldout stress refine
+
+Live-code improvement:
+
+- `xgbnew/live_trader.py` now clips requested BUY notional to Alpaca
+  `buying_power`/`cash` before order quantities are computed.
+- This makes aggressive allocation settings degrade to the actually available
+  broker capacity instead of submitting an over-sized order and relying on
+  broker rejection.
+- BUY quantities are sized from the actual limit price and floored to four
+  decimals so rounding/min-size logic cannot push the submitted value above
+  budget.
+- Inverse-vol per-pick scaling preserves relative exposure but is renormalized
+  if it would exceed the clipped total buy budget.
+- Hold-through rotations allocate the clipped buy budget only across newly
+  added symbols; sell-only rotations no longer compute a buy budget.
+- Embedded EOD deleverage long sells pass through the same death-spiral guard
+  before order submission; all-guard-blocked ticks report `order_error`.
+- The change does not introduce market orders; stock entries still submit
+  explicit-priced limit orders.
+
+Validation:
+
+- `.venv313/bin/python -m py_compile xgbnew/live_trader.py`
+- `.venv313/bin/pytest -q tests/test_xgbnew_live_trader_helpers.py`
+  (`71 passed`)
+
+Narrow heldout stress sweep:
+
+- Artifact:
+  `analysis/xgbnew_daily/top1_buyingpower_clip_refine_narrow_20260504/sweep_20260504_112910.json`
+- Models: `heldout2025h2_xgb`, trained only through `2025-06-30`.
+- OOS: `2025-07-01 -> 2026-04-17`.
+- Grid: top-1 hold-through, stress36x, 10 bps fill buffer,
+  `min_score in {0.55,0.60}`, `leverage in {1.5,1.75,2.0}`,
+  `inference_max_vol in {0,1.25,1.5}`, CS IQR/skew overlays.
+- Result: `0/108` cells survived fail-fast.
+- Best median cell: `2.0x`, `min_score=0.60`, `max_vol_20d=1.5`,
+  `regime_cs_skew_min=0.5`, median `+17.99%/mo`, p10 `-6.73%`,
+  drawdown `19.39%`, failed after `1/4` negative windows.
+- Best p10 cells only reached about `+0.20%` p10 and had median near
+  `+6.20%/mo`, also fail-fast.
+
+Decision: no deploy. The buying-power fallback is a production-safety
+improvement, but the strategy candidate still misses the 27% monthly target
+and fails the no-negative/tail-risk gate on honest heldout stress.

@@ -124,7 +124,7 @@ def main(
         None,
         "--market-after-minutes",
         min=1,
-        help="Minutes before forcing a market order during backout (before start offset).",
+        help="Minutes before holding the most aggressive near-market limit during backout.",
     ),
     sleep_seconds: Optional[int] = typer.Option(
         None,
@@ -142,7 +142,7 @@ def main(
         None,
         "--market-close-force-minutes",
         min=0,
-        help="Force market order when this close to market close even if ramp not completed.",
+        help="Hold the most aggressive near-market limit when this close to market close.",
     ),
     watch_pct_above: float = typer.Option(
         0.005,
@@ -191,7 +191,7 @@ def main(
         30,
         "--watch-force-backout-market-after-minutes",
         min=1,
-        help="Market fallback minutes for the force-exit backout_near_market.",
+        help="Near-market limit fallback minutes for the force-exit backout_near_market.",
     ),
     watch_force_backout_close_force_minutes: int = typer.Option(
         10,
@@ -237,10 +237,9 @@ def main(
 
     close_all_positions - close all positions at near market price
 
-    close_position_violently - close position with market order (only during market hours)
+    close_position_violently - close position with a guarded near-market limit
 
-    backout_near_market BTCUSD - gradually backout of position, uses market orders only
-                                  during market hours and when spread <= 1%
+    backout_near_market BTCUSD - gradually backout of position with limit orders only
 
     backout_whole_account_near_market - iterate all open positions and run
                                         backout_near_market for each to flatten
@@ -261,7 +260,7 @@ def main(
 
     Environment Variables:
     ----------------------
-    MARKET_ORDER_MAX_SPREAD_PCT - Maximum spread (default: 0.01 = 1%) for market orders
+    MARKET_ORDER_MAX_SPREAD_PCT - Legacy setting; market orders are disabled
                                    when closing positions
     BACKOUT_MARKET_MAX_SPREAD_PCT - Same as above, for backout operations
 
@@ -540,18 +539,15 @@ def backout_near_market(
     to give more time before crossing. If the position is still open after
     ``market_after`` minutes (default 50, configurable via
     ``BACKOUT_MARKET_AFTER_MINUTES``) plus any start offset, or the market
-    close is imminent, a market order is sent to guarantee the exit. During
-    regular trading hours the limit offsets remain tight until within
-    ``market_close_buffer_minutes`` of the close to minimise taker fees.
-
-    **NOTE**: For crypto (24/7 trading), market orders are NEVER used due to
-    wide spreads. Crypto positions are closed using limit orders only.
+    close is imminent, the ramp holds its most aggressive near-market limit.
+    Market orders are never submitted; crypto and equities both use limit
+    orders only.
 
     Args:
         pair: The trading pair symbol, e.g. ``"META"``.
         start_time: ``datetime`` the ramp started. ``None`` means now.
         ramp_minutes: Minutes to complete the limit order ramp.
-        market_after: Minutes before switching to a market order.
+        market_after: Minutes before holding the final near-market limit.
         sleep_interval: Seconds to wait between iterations.
     """
     if start_time is None:
@@ -641,30 +637,15 @@ def backout_near_market(
                             pct_above_market = pct_final_offset
                         else:
                             if spread_pct is None:
-                                logger.warning(
-                                    "Spread unavailable for %s; proceeding with market order fallback",
-                                    pair,
-                                )
+                                logger.warning("Spread unavailable for %s; holding final near-market limit", pair)
                             else:
                                 logger.info(
-                                    "Spread %.2f%% within %.2f%% cap; switching to market order for %s",
+                                    "Spread %.2f%% within %.2f%% cap; holding final near-market limit for %s",
                                     spread_pct * 100.0,
                                     BACKOUT_MARKET_MAX_SPREAD_PCT * 100.0,
                                     pair,
                                 )
-                            succeeded = alpaca_wrapper.close_position_violently(position)
-                            found_position = True
-                            if succeeded:
-                                logger.info("Market order fallback succeeded for %s", pair)
-                            if not succeeded:
-                                logger.info("Market order failed, will retry after delay")
-                                retries += 1
-                                if retries >= max_retries:
-                                    logger.error("Max retries reached, exiting")
-                                    return False
-                                sleep(60)
-                                continue
-                            break
+                            pct_above_market = pct_final_offset
                     elif minutes_since_start >= effective_ramp_minutes:
                         # After ramp period, set price well beyond market to guarantee fill
                         pct_above_market = pct_final_offset

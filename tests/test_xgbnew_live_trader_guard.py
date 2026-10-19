@@ -23,6 +23,7 @@ from xgbnew.live_trader import (
     _get_position_details,
     _is_today_trading_day,
     _poll_filled_avg_price,
+    _score_and_pick,
 )
 
 
@@ -181,6 +182,41 @@ def test_min_score_flag_defaults_to_zero_and_parses():
         "--min-score", "0.55",
     ])
     assert a.min_score == pytest.approx(0.55)
+    assert a.min_picks == 0
+
+
+def test_score_and_pick_min_picks_forces_best_low_confidence_candidate(monkeypatch):
+    """min_picks keeps the stock trader invested even when min_score is high."""
+    from xgbnew import live_trader
+
+    scores = __import__("pandas").DataFrame(
+        [
+            {"symbol": "MSFT", "score": 0.62, "last_close": 100.0},
+            {"symbol": "AAPL", "score": 0.58, "last_close": 90.0},
+        ]
+    )
+    monkeypatch.setattr(live_trader, "_get_latest_bars", lambda symbols, n_days=10: {})
+    monkeypatch.setattr(live_trader, "score_all_symbols", lambda *args, **kwargs: scores.copy())
+
+    args = SimpleNamespace(
+        min_dollar_vol=50_000_000.0,
+        max_spread_bps=30.0,
+        min_vol_20d=0.12,
+        max_vol_20d=0.0,
+        max_ret_20d_rank_pct=1.0,
+        min_ret_5d_rank_pct=0.0,
+        score_uncertainty_penalty=0.0,
+        regime_cs_iqr_max=0.0,
+        regime_cs_skew_min=-1e9,
+        min_score=0.85,
+        min_picks=1,
+        top_n=1,
+    )
+
+    picks, all_scores = _score_and_pick(["MSFT", "AAPL"], Path("."), object(), args)
+
+    assert all_scores["symbol"].tolist() == ["MSFT", "AAPL"]
+    assert picks["symbol"].tolist() == ["MSFT"]
 
 
 @pytest.mark.parametrize(

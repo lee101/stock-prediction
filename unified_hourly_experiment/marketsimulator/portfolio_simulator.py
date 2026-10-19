@@ -474,6 +474,47 @@ def _get_numeric_column(frame: pd.DataFrame, name: str, *, default: float) -> np
     return np.full(len(frame), default, dtype=np.float64)
 
 
+def _enforce_min_second_share(values: list[float], min_fraction: float) -> list[float]:
+    if len(values) < 2:
+        return values
+    total = sum(max(0.0, float(v)) for v in values)
+    if total <= 0.0:
+        return values
+    floor = min(max(float(min_fraction), 0.0), 0.5) * total
+    ordered = sorted(range(len(values)), key=lambda idx: values[idx], reverse=True)
+    first, second = ordered[0], ordered[1]
+    if values[second] >= floor:
+        return values
+    needed = floor - values[second]
+    take = min(needed, max(0.0, values[first] - floor))
+    if take <= 0.0:
+        return values
+    adjusted = list(values)
+    adjusted[first] -= take
+    adjusted[second] += take
+    return adjusted
+
+
+def _drawdown_entry_scale(
+    *,
+    equity: float,
+    peak_equity: float,
+    start: float,
+    full: float,
+    floor: float,
+) -> float:
+    if start <= 0.0 or full <= start or peak_equity <= 0.0:
+        return 1.0
+    drawdown = max(0.0, 1.0 - float(equity) / float(peak_equity))
+    if drawdown <= start:
+        return 1.0
+    bounded_floor = min(max(float(floor), 0.0), 1.0)
+    if drawdown >= full:
+        return bounded_floor
+    progress = (drawdown - start) / max(full - start, 1e-12)
+    return 1.0 - progress * (1.0 - bounded_floor)
+
+
 def _first_drawdown_profit_early_exit_index(
     equity_values: np.ndarray,
     *,
@@ -1266,6 +1307,11 @@ def run_portfolio_simulation(
                     / max(int(cfg.max_positions), 1)
                 ),
                 "fee_rate": fee,
+                "diversify_bucket": (
+                    getattr(row, str(cfg.entry_diversify_bucket_column))
+                    if str(cfg.entry_diversify_bucket_column) and hasattr(row, str(cfg.entry_diversify_bucket_column))
+                    else None
+                ),
             })
 
         selection_mode = str(cfg.entry_selection_mode or "edge_rank").strip().lower()

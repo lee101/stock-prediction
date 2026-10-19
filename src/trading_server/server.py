@@ -69,7 +69,7 @@ _SAFE_IDENTIFIER_RE = re.compile(
 
 TradingMode = Literal["paper", "live"]
 OrderSide = Literal["buy", "sell"]
-OrderStatus = Literal["open", "filled", "submitted"]
+OrderStatus = Literal["open", "filled", "submitted", "canceled"]
 ExecutionMode = Literal["paper", "live"]
 BrokerResponse = JsonObject
 logger = logging.getLogger(__name__)
@@ -111,9 +111,27 @@ class PositionState(TypedDict, total=False):
     symbol: str
     qty: float
     avg_entry_price: float
+    current_price: float
     opened_at: str | None
     last_buy_at: str | None
     realized_pnl: float
+
+
+class LiveBrokerPositionSnapshot(TypedDict, total=False):
+    symbol: str
+    qty: float
+    avg_entry_price: float
+    current_price: float
+    opened_at: str | None
+    last_buy_at: str | None
+    realized_pnl: float
+
+
+class LiveBrokerAccountSnapshot(TypedDict, total=False):
+    cash: float
+    equity: float
+    buying_power: float
+    positions: dict[str, LiveBrokerPositionSnapshot]
 
 
 class OrderRecord(TypedDict):
@@ -158,6 +176,9 @@ class AccountState(TypedDict):
     open_orders: list[OrderRecord]
     order_history: list[OrderRecord]
     price_cache: dict[str, QuotePayload]
+    broker_equity: NotRequired[float]
+    broker_buying_power: NotRequired[float]
+    broker_synced_at: NotRequired[str | None]
     writer_claim: WriterClaim | None
     created_at: str | None
     updated_at: str | None
@@ -167,6 +188,11 @@ class SubmitOrderResult(TypedDict):
     order: OrderRecord
     quote: QuotePayload | None
     filled: bool
+
+
+class CancelOrderResult(TypedDict):
+    order: OrderRecord
+    canceled: bool
 
 
 class ConfiguredAccountSummary(TypedDict):
@@ -371,6 +397,29 @@ class RefreshPricesRequest(BaseModel):
     symbols: list[str] = Field(default_factory=list)
 
 
+class CancelOrderRequest(BaseModel):
+    account: str
+    bot_id: str
+    session_id: str
+    order_id: str
+    live_ack: str | None = None
+
+    @field_validator("bot_id")
+    @classmethod
+    def _validate_bot_id(cls, value: str) -> str:
+        return _normalize_bot_id(value)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value: str) -> str:
+        return _normalize_session_id(value)
+
+    @field_validator("order_id")
+    @classmethod
+    def _validate_order_id(cls, value: str) -> str:
+        return _normalize_identifier(value, field_name="order_id")
+
+
 class TradingServerEngine:
     def __init__(
         self,
@@ -379,6 +428,8 @@ class TradingServerEngine:
         state_dir: str | Path | None = None,
         quote_provider: Callable[[str], QuotePayload | None] | None = None,
         live_executor: Callable[[OrderRecord], BrokerResponse | None] | None = None,
+        live_cancel_executor: Callable[[OrderRecord], BrokerResponse | None] | None = None,
+        live_account_provider: Callable[[], LiveBrokerAccountSnapshot | None] | None = None,
         now_fn: Callable[[], datetime] | None = None,
         quote_stale_seconds: int | None = None,
         quote_fetch_workers: int | None = None,
@@ -408,8 +459,16 @@ class TradingServerEngine:
         self.locks_root.mkdir(parents=True, exist_ok=True)
         self._uses_default_quote_provider = quote_provider is None
         self._uses_default_live_executor = live_executor is None
+        self._uses_default_live_cancel_executor = live_cancel_executor is None
+        self._uses_default_live_account_provider = live_account_provider is None
         self.quote_provider = quote_provider or self._default_quote_provider
         self.live_executor = live_executor or self._default_live_executor
+        self.live_cancel_executor = live_cancel_executor or self._default_live_cancel_executor
+        self.live_account_provider = (
+            live_account_provider
+            if live_account_provider is not None
+            else (self._default_live_account_provider if live_executor is None else None)
+        )
         self.now_fn = now_fn or _utc_now
         self.quote_stale_seconds = self.settings.quote_stale_seconds
         self.quote_fetch_workers = self.settings.quote_fetch_workers
@@ -445,7 +504,12 @@ class TradingServerEngine:
             return False
         if not _live_trading_enabled():
             return False
-        if not (self._uses_default_quote_provider or self._uses_default_live_executor):
+        if not (
+            self._uses_default_quote_provider
+            or self._uses_default_live_executor
+            or self._uses_default_live_cancel_executor
+            or self._uses_default_live_account_provider
+        ):
             return False
         importlib.import_module("alpaca_wrapper")
         self._live_broker_guard_primed = True
@@ -656,6 +720,11 @@ class TradingServerEngine:
         payload.setdefault("open_orders", [])
         payload.setdefault("order_history", [])
         payload.setdefault("price_cache", {})
+        if "broker_equity" in payload:
+            payload["broker_equity"] = _coerce_float(payload.get("broker_equity"))
+        if "broker_buying_power" in payload:
+            payload["broker_buying_power"] = _coerce_float(payload.get("broker_buying_power"))
+        payload.setdefault("broker_synced_at", None)
         payload.setdefault("writer_claim", None)
         state = cast(AccountState, payload)
         self._prune_order_history_unlocked(state)
@@ -729,6 +798,7 @@ class TradingServerEngine:
         with self._account_state_guard(account):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
+                self._sync_live_account_state_unlocked(state, config)
                 existing = state.get("writer_claim")
                 if self._claim_is_active(existing, now=now):
                     if str(existing.get("session_id")) != session_id:
@@ -814,6 +884,7 @@ class TradingServerEngine:
         with self._account_state_guard(account):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
+                self._sync_live_account_state_unlocked(state, config)
                 claim = state.get("writer_claim")
                 if not self._claim_is_active(claim, now=now):
                     detail = f"writer lease is not active for account {account}"
@@ -1019,6 +1090,114 @@ class TradingServerEngine:
             "as_of": _isoformat(self.now_fn()),
         }
 
+    def _default_live_account_provider(self) -> LiveBrokerAccountSnapshot | None:
+        try:
+            import alpaca_wrapper
+
+            alpaca_wrapper.refresh_account_cache(force=True)
+            account = alpaca_wrapper.get_account(use_cache=False)
+            raw_positions = alpaca_wrapper.get_all_positions()
+        except Exception as exc:
+            logger.warning("live broker account snapshot unavailable: %s", exc)
+            return None
+
+        positions: dict[str, LiveBrokerPositionSnapshot] = {}
+        for raw in raw_positions or []:
+            symbol = str(getattr(raw, "symbol", "") or "").strip().upper()
+            if not symbol:
+                continue
+            try:
+                normalized_symbol = _normalize_symbol(symbol)
+            except ValueError:
+                continue
+            qty = _coerce_float(getattr(raw, "qty", 0.0))
+            if abs(qty) <= 1e-12:
+                continue
+            avg_entry = _coerce_float(getattr(raw, "avg_entry_price", 0.0))
+            current_price = _coerce_float(getattr(raw, "current_price", 0.0))
+            positions[normalized_symbol] = {
+                "symbol": normalized_symbol,
+                "qty": qty,
+                "avg_entry_price": avg_entry,
+                "current_price": current_price,
+                "opened_at": None,
+                "last_buy_at": None,
+                "realized_pnl": 0.0,
+            }
+
+        return {
+            "cash": _coerce_float(getattr(account, "cash", 0.0)),
+            "equity": _coerce_float(getattr(account, "equity", 0.0)),
+            "buying_power": _coerce_float(getattr(account, "buying_power", 0.0)),
+            "positions": positions,
+        }
+
+    def _normalize_live_broker_snapshot(
+        self,
+        snapshot: LiveBrokerAccountSnapshot,
+        *,
+        config: AccountConfig,
+    ) -> LiveBrokerAccountSnapshot:
+        positions: dict[str, LiveBrokerPositionSnapshot] = {}
+        configured_symbols = set(config.get("symbols", []))
+        for raw_symbol, raw_position in (snapshot.get("positions") or {}).items():
+            try:
+                symbol = _normalize_symbol(str(raw_position.get("symbol") or raw_symbol))
+            except ValueError:
+                continue
+            if configured_symbols and symbol not in configured_symbols:
+                continue
+            qty = _coerce_float(raw_position.get("qty"))
+            if abs(qty) <= 1e-12:
+                continue
+            positions[symbol] = {
+                "symbol": symbol,
+                "qty": qty,
+                "avg_entry_price": _coerce_float(raw_position.get("avg_entry_price")),
+                "current_price": _coerce_float(raw_position.get("current_price")),
+                "opened_at": raw_position.get("opened_at"),
+                "last_buy_at": raw_position.get("last_buy_at"),
+                "realized_pnl": _coerce_float(raw_position.get("realized_pnl")),
+            }
+        return {
+            "cash": _coerce_float(snapshot.get("cash")),
+            "equity": _coerce_float(snapshot.get("equity")),
+            "buying_power": _coerce_float(snapshot.get("buying_power")),
+            "positions": positions,
+        }
+
+    def _sync_live_account_state_unlocked(
+        self,
+        state: AccountState,
+        config: AccountConfig,
+        *,
+        force: bool = False,
+    ) -> bool:
+        if config["mode"] != "live" or self.live_account_provider is None:
+            return False
+        if not force:
+            synced_at = _parse_ts(state.get("broker_synced_at"))
+            if synced_at is not None and (self.now_fn() - synced_at).total_seconds() < 15:
+                return False
+        raw_snapshot = self.live_account_provider()
+        if raw_snapshot is None:
+            return False
+        snapshot = self._normalize_live_broker_snapshot(raw_snapshot, config=config)
+        state["cash"] = float(snapshot["cash"])
+        state["broker_equity"] = float(snapshot["equity"])
+        state["broker_buying_power"] = float(snapshot["buying_power"])
+        state["broker_synced_at"] = _isoformat(self.now_fn())
+        state["positions"] = cast(dict[str, PositionState], snapshot.get("positions", {}))
+        self._append_audit_event(
+            state["account"],
+            "live_account_synced",
+            cash=state["cash"],
+            broker_equity=state["broker_equity"],
+            broker_buying_power=state["broker_buying_power"],
+            position_symbols=sorted(state["positions"].keys()),
+        )
+        return True
+
     def _normalize_quote_payload(self, quote: dict[str, Any] | QuotePayload, symbol: str) -> QuotePayload:
         normalized = {
             "symbol": _normalize_symbol(quote.get("symbol", symbol)),
@@ -1187,6 +1366,9 @@ class TradingServerEngine:
         return avg_entry
 
     def _mark_price_for_symbol_unlocked(self, state: AccountState, symbol: str, position: PositionState) -> float:
+        current_price = _coerce_float(position.get("current_price"))
+        if current_price > 0.0:
+            return current_price
         quote = self._quote_from_cache_unlocked(state, symbol)
         if quote is not None:
             for key in ("last_price", "bid_price", "ask_price"):
@@ -1208,6 +1390,9 @@ class TradingServerEngine:
         return gross
 
     def _account_equity_unlocked(self, state: AccountState) -> float:
+        broker_equity = _coerce_float(state.get("broker_equity"), default=-1.0)
+        if state.get("mode") == "live" and broker_equity >= 0.0:
+            return broker_equity
         equity = _coerce_float(state.get("cash"))
         for symbol, position in state.get("positions", {}).items():
             if not isinstance(position, dict):
@@ -1219,6 +1404,9 @@ class TradingServerEngine:
         return equity
 
     def _available_buying_power_unlocked(self, state: AccountState, config: AccountConfig) -> float:
+        broker_buying_power = _coerce_float(state.get("broker_buying_power"), default=-1.0)
+        if config["mode"] == "live" and broker_buying_power >= 0.0:
+            return broker_buying_power
         multiplier = 1.0
         if config["mode"] == "paper":
             multiplier = max(1.0, float(config.get("paper_buying_power_multiplier", 1.0)))
@@ -1453,6 +1641,21 @@ class TradingServerEngine:
             "status": str(getattr(result, "status", "accepted")),
         }
 
+    def _default_live_cancel_executor(self, order: OrderRecord) -> BrokerResponse | None:
+        import alpaca_wrapper
+
+        broker_response = order.get("broker_response")
+        broker_order_id = ""
+        if isinstance(broker_response, dict):
+            broker_order_id = str(broker_response.get("broker_order_id") or "")
+        if not broker_order_id:
+            broker_order_id = str(order.get("id", ""))
+        alpaca_wrapper.cancel_order(broker_order_id)
+        return {
+            "broker_order_id": broker_order_id,
+            "status": "canceled",
+        }
+
     def _submit_live_order_unlocked(
         self,
         *,
@@ -1515,6 +1718,7 @@ class TradingServerEngine:
         with self._account_state_guard(account):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
+                self._sync_live_account_state_unlocked(state, config, force=True)
                 try:
                     self._require_writer_claim(
                         state=state,
@@ -1607,6 +1811,95 @@ class TradingServerEngine:
                     broker_status=broker_response.get("status"),
                 )
                 return result
+
+    def cancel_order(self, request: CancelOrderRequest) -> CancelOrderResult:
+        config = self._config_for_account(request.account)
+        account = config["name"]
+        with self._account_state_guard(account):
+            with self._lock:
+                state = self._load_state_unlocked(account, config)
+                self._sync_live_account_state_unlocked(state, config, force=True)
+                self._require_writer_claim(
+                    state=state,
+                    config=config,
+                    bot_id=request.bot_id,
+                    session_id=request.session_id,
+                )
+                if config["mode"] == "live":
+                    if str(request.live_ack).strip().upper() != "LIVE":
+                        raise HTTPException(
+                            status_code=400,
+                            detail="live cancel rejected: live_ack must equal LIVE",
+                        )
+                    if not _live_trading_enabled():
+                        raise HTTPException(
+                            status_code=403,
+                            detail="live cancel rejected: ALLOW_ALPACA_LIVE_TRADING=1 is required",
+                        )
+
+                open_orders = state.setdefault("open_orders", [])
+                order_index = None
+                order: OrderRecord | None = None
+                for idx, candidate in enumerate(open_orders):
+                    broker_response = candidate.get("broker_response")
+                    broker_order_id = ""
+                    if isinstance(broker_response, dict):
+                        broker_order_id = str(broker_response.get("broker_order_id") or "")
+                    if candidate.get("id") == request.order_id or broker_order_id == request.order_id:
+                        order_index = idx
+                        order = candidate
+                        break
+                if order is None or order_index is None:
+                    raise HTTPException(status_code=404, detail=f"open order not found: {request.order_id}")
+
+                cancel_response: BrokerResponse | None = None
+                if config["mode"] == "live":
+                    try:
+                        cancel_response = self.live_cancel_executor(order)
+                    except HTTPException:
+                        raise
+                    except Exception as exc:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"live broker cancel error for {order['symbol']}: {type(exc).__name__}: {exc}",
+                        ) from exc
+                    if cancel_response is None:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"live broker rejected cancel for {order['symbol']}",
+                        )
+
+                canceled_order = cast(OrderRecord, dict(order))
+                canceled_order["status"] = "canceled"
+                if cancel_response is not None:
+                    existing_response = canceled_order.get("broker_response")
+                    if isinstance(existing_response, dict):
+                        merged_response = dict(existing_response)
+                        merged_response["cancel_status"] = cancel_response.get("status")
+                        canceled_order["broker_response"] = merged_response
+                    else:
+                        canceled_order["broker_response"] = cancel_response
+                del open_orders[order_index]
+                state.setdefault("order_history", []).append(canceled_order)
+                self._save_state_unlocked(state)
+                broker_response = canceled_order.get("broker_response")
+                broker_order_id = ""
+                if isinstance(broker_response, dict):
+                    broker_order_id = str(broker_response.get("broker_order_id") or "")
+                self._append_audit_event(
+                    account,
+                    "order_canceled",
+                    bot_id=request.bot_id,
+                    session_id=request.session_id,
+                    order_id=canceled_order.get("id"),
+                    broker_order_id=broker_order_id,
+                    symbol=canceled_order.get("symbol"),
+                    side=canceled_order.get("side"),
+                    execution_mode=canceled_order.get("execution_mode"),
+                    qty=canceled_order.get("qty"),
+                    limit_price=canceled_order.get("limit_price"),
+                )
+                return {"order": canceled_order, "canceled": True}
 
     def _attempt_open_order_fills_unlocked(
         self,
@@ -1742,9 +2035,12 @@ class TradingServerEngine:
 
     def get_account_snapshot(self, account: str) -> dict[str, Any]:
         config = self._config_for_account(account)
-        with self._account_state_guard(account, write=False):
+        with self._account_state_guard(account, write=config["mode"] == "live"):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
+                synced = self._sync_live_account_state_unlocked(state, config)
+                if synced:
+                    self._save_state_unlocked(state)
                 equity = self._account_equity_unlocked(state)
                 buying_power = self._available_buying_power_unlocked(state, config)
                 return {
@@ -1906,6 +2202,10 @@ def create_app(engine: TradingServerEngine | None = None) -> FastAPI:
     @app.post("/api/v1/orders", dependencies=[Depends(require_auth)])
     def submit_order(request: OrderRequest):
         return engine.submit_order(request)
+
+    @app.post("/api/v1/orders/cancel", dependencies=[Depends(require_auth)])
+    def cancel_order(request: CancelOrderRequest):
+        return engine.cancel_order(request)
 
     @app.post("/api/v1/prices/refresh", dependencies=[Depends(require_auth)])
     def refresh_prices(request: RefreshPricesRequest):

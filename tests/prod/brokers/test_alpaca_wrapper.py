@@ -1,8 +1,10 @@
 import math
 import sys
 import types
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 
 # Create dummy modules so alpaca_wrapper can be imported without the real
 # dependencies installed in the test environment.
@@ -104,13 +106,15 @@ env_real.BINANCE_SECRET = "test-binance-secret"
 sys.modules.setdefault("env_real", env_real)
 
 from alpaca_wrapper import (
-    latest_data,
-    has_current_open_position,
+    close_position_at_almost_current_price,
+    close_position_at_current_price,
+    close_position_violently,
     execute_portfolio_orders,
+    has_current_open_position,
+    latest_data,
+    open_market_order_violently,
     open_order_at_price,
     open_order_at_price_or_all,
-    open_market_order_violently,
-    close_position_violently,
 )
 
 
@@ -171,6 +175,138 @@ def test_open_order_at_price_or_all_adjusts_on_insufficient_balance():
     second_qty = submit.call_args_list[1].kwargs["order_data"]["qty"]
     assert first_qty == 10
     assert second_qty == 4
+
+
+def test_open_order_at_price_or_all_guards_sells_before_submit():
+    with patch("alpaca_wrapper.guard_sell_against_death_spiral", side_effect=RuntimeError("death spiral")) as guard, \
+         patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        with pytest.raises(RuntimeError, match="death spiral"):
+            open_order_at_price_or_all("AAPL", 10, "sell", 100.0)
+
+    guard.assert_called_once()
+    submit.assert_not_called()
+
+
+def test_open_order_at_price_or_all_records_buy_after_submit():
+    with patch("alpaca_wrapper.guard_sell_against_death_spiral") as guard, \
+         patch("alpaca_wrapper.record_buy_price") as record, \
+         patch("alpaca_wrapper.latest_data", side_effect=RuntimeError("no quote")), \
+         patch("alpaca_wrapper.get_orders", return_value=[]), \
+         patch("alpaca_wrapper.get_all_positions", return_value=[]), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="ok"):
+
+        result = open_order_at_price_or_all("AAPL", 10, "buy", 100.0)
+
+    assert result == "ok"
+    guard.assert_called_once()
+    record.assert_called_once_with("AAPL", 100.0)
+
+
+def test_close_position_at_current_price_guards_long_sell_before_submit():
+    mock_position = MagicMock()
+    mock_position.symbol = "AAPL"
+    mock_position.side = "long"
+    mock_position.qty = 2.5
+    events: list[str] = []
+
+    def guard_side_effect(**_kwargs):
+        events.append("guard")
+
+    with patch("alpaca_wrapper.guard_sell_against_death_spiral", side_effect=guard_side_effect) as guard, \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch(
+             "alpaca_wrapper.alpaca_api.submit_order",
+             side_effect=lambda **_kwargs: events.append("submit") or "ok",
+         ) as submit:
+
+        result = close_position_at_current_price(
+            mock_position,
+            {"close_last_price_minute": 100.2},
+        )
+
+    assert result == "ok"
+    guard.assert_called_once_with(symbol="AAPL", side="sell", price=101.0)
+    assert submit.call_count == 1
+    assert submit.call_args.kwargs["order_data"]["limit_price"] == "101"
+    assert events == ["guard", "submit"]
+
+
+def test_close_position_at_current_price_guard_blocks_submit():
+    mock_position = MagicMock()
+    mock_position.symbol = "AAPL"
+    mock_position.side = "long"
+    mock_position.qty = 2.5
+
+    with patch(
+        "alpaca_wrapper.guard_sell_against_death_spiral",
+        side_effect=RuntimeError("death spiral"),
+    ) as guard, \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        result = close_position_at_current_price(
+            mock_position,
+            {"close_last_price_minute": 99.4},
+        )
+
+    assert result is None
+    guard.assert_called_once_with(symbol="AAPL", side="sell", price=100.0)
+    submit.assert_not_called()
+
+
+def test_close_position_at_almost_current_price_guards_long_sell_before_submit():
+    mock_position = MagicMock()
+    mock_position.symbol = "AAPL"
+    mock_position.side = "long"
+    mock_position.qty = 2.5
+    events: list[str] = []
+
+    def guard_side_effect(**_kwargs):
+        events.append("guard")
+
+    with patch("alpaca_wrapper.guard_sell_against_death_spiral", side_effect=guard_side_effect) as guard, \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch(
+             "alpaca_wrapper.alpaca_api.submit_order",
+             side_effect=lambda **_kwargs: events.append("submit") or "ok",
+         ) as submit:
+
+        result = close_position_at_almost_current_price(
+            mock_position,
+            {"close_last_price_minute": 100.0},
+        )
+
+    assert result == "ok"
+    guard.assert_called_once_with(symbol="AAPL", side="sell", price=100.0)
+    assert submit.call_count == 1
+    assert submit.call_args.kwargs["order_data"]["limit_price"] == "100.0"
+    assert events == ["guard", "submit"]
+
+
+def test_close_position_at_almost_current_price_guard_blocks_submit():
+    mock_position = MagicMock()
+    mock_position.symbol = "AAPL"
+    mock_position.side = "long"
+    mock_position.qty = 2.5
+
+    with patch(
+        "alpaca_wrapper.guard_sell_against_death_spiral",
+        side_effect=RuntimeError("death spiral"),
+    ) as guard, \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+
+        result = close_position_at_almost_current_price(
+            mock_position,
+            {"close_last_price_minute": 99.4},
+        )
+
+    assert result is None
+    guard.assert_called_once_with(symbol="AAPL", side="sell", price=99.4)
+    submit.assert_not_called()
 
 
 def test_market_order_blocked_when_market_closed():
@@ -260,26 +396,30 @@ def test_passivize_limit_sell_uses_ask():
         assert limit_price_used == str(round(101.5, 2))
 
 
-def test_market_order_allowed_when_market_open():
-    """Market orders should work when market is open."""
-    # Create a mock clock that says market is open
+def test_market_order_request_uses_limit_fallback_even_when_market_open():
+    """Legacy market helper must never submit a market request."""
     mock_clock = MagicMock()
     mock_clock.is_open = True
 
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 101.0
+    mock_quote.bid_price = 100.0
+
     with patch("alpaca_wrapper._IS_PAPER", False), \
          patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
-         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
         result = open_market_order_violently("AAPL", 10, "buy")
 
-        # Should succeed
-        assert result == "order_ok"
-        assert submit.call_count == 1
+    assert result == "order_ok"
+    assert submit.call_count == 1
+    assert "limit_price" in submit.call_args.kwargs["order_data"]
 
 
-def test_market_order_qty_bumped_to_min_notional():
-    """Market orders below $1 should scale qty up to satisfy broker min notional."""
+def test_legacy_market_helper_limit_fallback_qty_bumped_to_min_notional():
+    """Legacy market helper below $1 should scale fallback limit qty to satisfy broker min notional."""
     mock_clock = MagicMock()
     mock_clock.is_open = True
 
@@ -290,7 +430,7 @@ def test_market_order_qty_bumped_to_min_notional():
     with patch("alpaca_wrapper._IS_PAPER", False), \
          patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
-         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
         result = open_market_order_violently("AAPL", 1, "buy")
@@ -334,8 +474,8 @@ def test_market_order_blocked_when_spread_too_high():
         assert order_data["limit_price"] == "101.0"  # midpoint of 100 and 102
 
 
-def test_market_order_allowed_when_spread_acceptable():
-    """Market orders should work when spread <= 1% and closing position."""
+def test_close_position_uses_limit_even_when_spread_acceptable():
+    """Closing helper must use a midpoint limit, not market, even when spread is acceptable."""
     # Create a mock position
     mock_position = MagicMock()
     mock_position.symbol = "AAPL"
@@ -354,14 +494,16 @@ def test_market_order_allowed_when_spread_acceptable():
     with patch("alpaca_wrapper._IS_PAPER", False), \
          patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
-         patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
         result = close_position_violently(mock_position)
 
-        # Should succeed
-        assert result == "order_ok"
-        assert submit.call_count == 1
+    assert result == "order_ok"
+    assert submit.call_count == 1
+    order_data = submit.call_args.kwargs["order_data"]
+    assert "limit_price" in order_data
+    assert order_data["limit_price"] == "100.25"
 
 
 def test_paper_stock_market_order_falls_back_to_limit():

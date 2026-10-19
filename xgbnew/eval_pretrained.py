@@ -190,6 +190,15 @@ def parse_args(argv=None):
     p.add_argument("--stride-days", type=int, default=14)
 
     p.add_argument("--top-n", type=int, default=1)
+    p.add_argument(
+        "--min-picks",
+        type=int,
+        default=0,
+        help=(
+            "Aggressive packing floor. When >0, each window fills at least this "
+            "many valid top-N slots even if scores are below --min-score."
+        ),
+    )
     p.add_argument("--leverage", type=float, default=1.0)
     p.add_argument("--xgb-weight", type=float, default=1.0)
     p.add_argument(
@@ -232,6 +241,15 @@ def main(argv=None) -> int:  # noqa: PLR0911
     if validation_failures:
         for failure in validation_failures:
             print(f"ERROR: {failure}", file=sys.stderr)
+        return 2
+    if int(args.top_n) < 1:
+        print("ERROR: --top-n must be >= 1", file=sys.stderr)
+        return 2
+    if int(args.min_picks) < 0:
+        print("ERROR: --min-picks must be >= 0", file=sys.stderr)
+        return 2
+    if int(args.min_picks) > int(args.top_n):
+        print("ERROR: --min-picks must be <= --top-n", file=sys.stderr)
         return 2
 
     if args.model_path is not None:
@@ -339,6 +357,7 @@ def main(argv=None) -> int:  # noqa: PLR0911
 
     backtest_cfg = BacktestConfig(
         top_n=int(args.top_n),
+        min_picks=int(args.min_picks),
         leverage=float(args.leverage),
         xgb_weight=float(args.xgb_weight),
         commission_bps=float(args.commission_bps),
@@ -413,6 +432,7 @@ def main(argv=None) -> int:  # noqa: PLR0911
         "window_days": int(args.window_days),
         "stride_days": int(args.stride_days),
         "top_n": int(args.top_n),
+        "min_picks": int(args.min_picks),
         "leverage": float(args.leverage),
         "fee_rate": float(args.fee_rate),
         "fill_buffer_bps": float(args.fill_buffer_bps),

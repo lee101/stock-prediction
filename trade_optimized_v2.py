@@ -186,7 +186,7 @@ class OptimizedTrader:
         return None
 
     def execute_stop_loss(self, symbol: str) -> bool:
-        """Execute stop loss by closing position at market.
+        """Execute stop loss by submitting a near-market sell limit.
 
         Returns:
             True if successful
@@ -200,9 +200,24 @@ class OptimizedTrader:
             self.cancel_all_orders(symbol)
             time.sleep(0.5)
 
-            # Close at market
-            result = alpaca_wrapper.close_position(symbol)
-            logger.warning("STOP LOSS EXECUTED: %s", symbol)
+            positions = self.get_current_positions()
+            pos = positions.get(symbol)
+            if not pos:
+                logger.info("No open position for stop loss: %s", symbol)
+                return True
+
+            quote = alpaca_wrapper.latest_data(symbol)
+            bid = float(getattr(quote, "bid_price", 0) or 0) if quote else 0.0
+            price = bid if bid > 0 else float(pos["current_price"]) * 0.995
+            qty = max(1, int(abs(pos["qty"])))
+
+            result = alpaca_wrapper.open_order_at_price(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                price=price,
+            )
+            logger.warning("STOP LOSS LIMIT SUBMITTED: %s qty=%s price=%.4f", symbol, qty, price)
             return result is not None
         except Exception as e:
             logger.error("Failed to execute stop loss for %s: %s", symbol, e)

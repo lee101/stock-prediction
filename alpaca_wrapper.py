@@ -1,46 +1,45 @@
 import json
+import math
 import os
 import re
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from time import sleep, monotonic
 from threading import Lock
+from time import monotonic, sleep
+from types import SimpleNamespace
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import cachetools
 import diskcache
-import math
 import pandas as pd
 import requests.exceptions
 from alpaca.data import (
-    StockBarsRequest,
-    StockHistoricalDataClient,
     CryptoBarsRequest,
     CryptoHistoricalDataClient,
     CryptoLatestQuoteRequest,
+    StockBarsRequest,
+    StockHistoricalDataClient,
     StockLatestQuoteRequest,
     TimeFrame,
     TimeFrameUnit,
 )
 from alpaca.data.enums import DataFeed
-from alpaca.trading import OrderType, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading import GetOrdersRequest, LimitOrderRequest, OrderType
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide
-from alpaca.trading.requests import MarketOrderRequest
 from alpaca_trade_api.rest import APIError
-from loguru import logger
+from env_real import ALP_KEY_ID, ALP_KEY_ID_PROD, ALP_SECRET_KEY, ALP_SECRET_KEY_PROD, PAPER
 from retry import retry
 
-from env_real import ALP_KEY_ID, ALP_SECRET_KEY, ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, ALP_ENDPOINT, PAPER
-from typing import Iterable, Dict, Any, List, Optional, Tuple
-from types import SimpleNamespace
 from src.comparisons import is_buy_side, is_sell_side
 from src.crypto_loop import crypto_alpaca_looper_api
-from src.fixtures import crypto_symbols, all_crypto_symbols
-from src.logging_utils import setup_logging, get_log_filename
+from src.fixtures import crypto_symbols
+from src.logging_utils import get_log_filename, setup_logging
 from src.stock_utils import pairs_equal, remap_symbols
 from src.symbol_utils import is_crypto_symbol
 from src.trading_obj_utils import filter_to_realistic_positions
+
 
 _is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
 logger = setup_logging(get_log_filename("alpaca_cli.log", is_hourly=_is_hourly))
@@ -61,6 +60,7 @@ from src.alpaca_singleton import (  # noqa: E402
     guard_sell_against_death_spiral,
     record_buy_price,
 )
+
 
 # Run the singleton lock acquisition exactly once per process import.
 _ALPACA_SINGLETON_LOCK = enforce_live_singleton(
@@ -115,7 +115,7 @@ def _get_min_order_notional(symbol: str) -> float:
     try:
         return max(float(raw_value), 0.0)
     except Exception:
-        logger.warning(f"Invalid min notional override for %s=%r; defaulting to $1.00", symbol, raw_value)
+        logger.warning("Invalid min notional override for %s=%r; defaulting to $1.00", symbol, raw_value)
         return 1.0
 
 
@@ -215,6 +215,62 @@ alpaca_api = TradingClient(
     paper=_IS_PAPER,
 )
 logger.info(f"Initialized Alpaca Trading Client: {'PAPER' if _IS_PAPER else 'LIVE'} account")
+
+
+def _is_market_order_request(order_data: Any) -> bool:
+    order_type = getattr(order_data, "type", None)
+    if order_type == OrderType.MARKET:
+        return True
+    return str(order_type or "").strip().lower() == "market"
+
+
+def _install_market_order_block(client: Any, client_name: str) -> None:
+    """Fail closed if any caller tries to submit an Alpaca market order."""
+    if client is None or getattr(client, "_stock_prediction_no_market_guard", False):
+        return
+
+    original_submit_order = client.submit_order
+    original_close_position = getattr(client, "close_position", None)
+    original_close_all_positions = getattr(client, "close_all_positions", None)
+
+    def submit_order_without_market(*args: Any, **kwargs: Any) -> Any:
+        order_data = kwargs.get("order_data")
+        if order_data is None and args:
+            order_data = args[0]
+        if _is_market_order_request(order_data):
+            symbol = getattr(order_data, "symbol", "UNKNOWN")
+            side = getattr(order_data, "side", "UNKNOWN")
+            raise RuntimeError(
+                f"Refusing Alpaca market order via {client_name}: {side} {symbol}. "
+                "Use a fixed-price limit order or a ramped near-market limit."
+            )
+        return original_submit_order(*args, **kwargs)
+
+    client.submit_order = submit_order_without_market
+
+    if callable(original_close_position):
+        def close_position_without_market(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError(
+                f"Refusing Alpaca close_position via {client_name}; this endpoint submits a market exit. "
+                "Use backout_near_market or a fixed-price limit order."
+            )
+
+        client.close_position = close_position_without_market
+
+    if callable(original_close_all_positions):
+        def close_all_positions_without_market(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError(
+                f"Refusing Alpaca close_all_positions via {client_name}; this endpoint submits market exits. "
+                "Use backout_near_market or fixed-price limit orders."
+            )
+
+        client.close_all_positions = close_all_positions_without_market
+
+    client._stock_prediction_no_market_guard = True
+
+
+_install_market_order_block(alpaca_api, "alpaca_api")
+_install_market_order_block(crypto_alpaca_looper_api, "crypto_alpaca_looper_api")
 
 data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
 
@@ -342,47 +398,13 @@ def _calculate_spread_pct(symbol: str) -> Optional[float]:
 def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tuple[bool, str]:
     """Check if a market order can be used for this symbol.
 
-    Market orders are only allowed when:
-    1. NOT crypto (Alpaca executes crypto market orders at bid/ask midpoint, not market price)
-    2. NOT paper equity trading (paper fills can be very unfavorable on the spread)
-    3. Market is open (not during pre-market, after-hours, or overnight)
-    4. If closing a position, spread must be <= MARKET_ORDER_MAX_SPREAD_PCT
-
-    Args:
-        symbol: The trading symbol
-        is_closing_position: Whether this is closing an existing position
-
-    Returns:
-        Tuple of (allowed, reason) where reason explains why if not allowed
+    Production policy is limit-only. Callers that need urgency should use a
+    bounded near-market limit/ramp instead of uncapped market execution.
     """
-    # NEVER use market orders for crypto - Alpaca executes them at the bid/ask midpoint
-    # instead of actual market price, making the execution price unpredictable
-    # Use is_crypto_symbol for comprehensive coverage (handles both BTC/USD and BTCUSD formats)
-    if is_crypto_symbol(symbol):
-        return False, f"Crypto {symbol} - market orders execute at bid/ask midpoint, not market price (use limit orders for predictable fills)"
-
-    if _IS_PAPER:
-        return False, (
-            f"Paper trading disables stock market orders for {symbol} to avoid spread-sensitive fills "
-            "(use limit orders)"
-        )
-
-    # Check if market is open (regular hours only, not pre-market/after-hours/overnight)
-    clock = get_clock()
-    if not clock.is_open:
-        return False, "Market is closed - market orders not allowed during pre-market, after-hours, or overnight (use limit orders)"
-
-    # If closing a position, also check spread
-    if is_closing_position:
-        spread_pct = _calculate_spread_pct(symbol)
-        if spread_pct is not None and spread_pct > MARKET_ORDER_MAX_SPREAD_PCT:
-            return False, (
-                f"Spread {spread_pct*100:.2f}% exceeds maximum {MARKET_ORDER_MAX_SPREAD_PCT*100:.2f}% "
-                f"for market orders when closing positions (use limit orders)"
-            )
-
-    return True, ""
-
+    return False, (
+        f"Market orders are disabled for {symbol}; use a fixed-price limit order "
+        "or a ramped near-market limit"
+    )
 
 def _reference_price_for_notional(symbol: str, fallback_price: float = 0.0) -> float:
     """Get a defensible price estimate for sizing notional checks."""
@@ -501,11 +523,10 @@ def cancel_all_orders(retries=3):
 
 
 def open_market_order_violently(symbol, qty, side, retries=3):
-    """Submit a market order, with midpoint limit fallback when market orders are blocked.
+    """Legacy urgent-entry helper that now submits only midpoint limit orders.
 
-    Market orders are only allowed when policy says they are safe. When they are
-    blocked, we fall back to a latest-quote midpoint limit order instead of
-    crossing the spread with a market order.
+    The function name is kept for old callers, but production policy is
+    limit-only. No Alpaca market request is constructed here.
 
     Args:
         symbol: Trading symbol
@@ -514,7 +535,7 @@ def open_market_order_violently(symbol, qty, side, retries=3):
         retries: Number of retry attempts
 
     Returns:
-        Order result or None if market order not allowed or failed
+        Order result or None if a midpoint limit cannot be submitted.
     """
     # Check if market orders are allowed
     can_use, reason = _can_use_market_order(symbol, is_closing_position=False)
@@ -558,43 +579,8 @@ def open_market_order_violently(symbol, qty, side, retries=3):
                 return open_market_order_violently(symbol, qty, side, retries - 1)
             return None
 
-    # Enforce broker min notional (~$1) using latest quote as reference
-    reference_price = _reference_price_for_notional(symbol)
-    qty = _enforce_min_notional(symbol, qty, reference_price)
-
-    result = None
-    # Fractional equity market orders require time_in_force="day"; whole-share
-    # equity and crypto use "gtc". Hardcoding "gtc" causes Alpaca to silently
-    # reject fractional equity market orders.
-    market_tif = _get_time_in_force_for_qty(qty, symbol)
-    try:
-        result = alpaca_api.submit_order(
-            order_data=MarketOrderRequest(
-                symbol=remap_symbols(symbol),
-                qty=qty,
-                side=side,
-                type=OrderType.MARKET,
-                time_in_force=market_tif,
-            )
-        )
-    except Exception as e:
-        error_str = str(e)
-        logger.error(f"Market order attempt failed for {symbol}: {error_str}")
-        logger.error(f"Full exception object: {repr(e)}")
-        logger.error(f"Exception type: {type(e)}")
-        if hasattr(e, 'response'):
-            logger.error(f"API response object: {e.response}")
-        if hasattr(e, 'status_code'):
-            logger.error(f"HTTP status code: {e.status_code}")
-        if hasattr(e, '__dict__'):
-            logger.error(f"Exception attributes: {e.__dict__}")
-        if retries > 0:
-            logger.info(f"Retrying market order for {symbol}, {retries} attempts left")
-            return open_market_order_violently(symbol, qty, side, retries - 1)
-        logger.error(f"RETURNING None - Market order failed after all retries for {symbol} {side} {qty}")
-        return None
-    print(result)
-    return result
+    logger.error("Market order path reached for %s despite limit-only policy; refusing", symbol)
+    return None
 
 
 def _parse_available_balance(error_str: str) -> float:
@@ -737,6 +723,7 @@ def open_order_at_price_or_all(symbol, qty, side, price):
     result = None
     qty = _enforce_min_notional(symbol, qty, price)
     price = _passivize_limit_price(symbol, side, price)
+    guard_sell_against_death_spiral(symbol=symbol, side=side, price=float(price))
 
     # Check for existing orders - skip if essentially the same to prevent flapping
     current_open_orders = get_orders()
@@ -838,6 +825,11 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                 )
             )
             invalidate_orders_cache()  # Invalidate cache after successful order
+            if is_buy_side(side):
+                try:
+                    record_buy_price(symbol, float(price))
+                except Exception as _rec_exc:
+                    logger.warning(f"record_buy_price failed: {_rec_exc}")
             return result
 
         except Exception as e:
@@ -1064,21 +1056,16 @@ def execute_portfolio_orders(orders: Iterable[Dict[str, Any]]) -> Dict[str, Any]
 
 
 def close_position_violently(position):
-    """Close a position using a market order, with fallback to limit order at midpoint.
+    """Legacy urgent-exit helper that now submits only midpoint limit orders.
 
-    Market orders for closing positions are only allowed when:
-    1. NOT crypto (Alpaca executes crypto market orders at bid/ask midpoint, not market price)
-    2. Market is open (not during pre-market, after-hours, or overnight)
-    3. Spread is <= MARKET_ORDER_MAX_SPREAD_PCT (default 1%)
-
-    If market orders are blocked, automatically falls back to a limit order at the
-    midpoint price, which works during overnight/extended hours and for crypto.
+    The function name is kept for old callers, but production policy is
+    limit-only. No Alpaca market request is constructed here.
 
     Args:
         position: Position object with symbol, side, and qty
 
     Returns:
-        Order result or None if both market and limit order attempts failed
+        Order result or None if a midpoint limit cannot be submitted.
     """
     # Check if market orders are allowed (includes spread check for closing)
     can_use_market, reason = _can_use_market_order(position.symbol, is_closing_position=True)
@@ -1127,40 +1114,8 @@ def close_position_violently(position):
             traceback.print_exc()
             return None
 
-    # Market orders are allowed - proceed with market order
-    result = None
-    close_qty = abs(float(position.qty))
-    # Fractional equity market orders require time_in_force="day"; whole-share
-    # equity and crypto use "gtc". Hardcoding "gtc" silently rejects fractional
-    # equity close orders on Alpaca.
-    close_tif = _get_time_in_force_for_qty(close_qty, position.symbol)
-    try:
-        if is_buy_side(getattr(position, "side", "")):
-            result = alpaca_api.submit_order(
-                order_data=MarketOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=close_qty,
-                    side=OrderSide.SELL,
-                    type=OrderType.MARKET,
-                    time_in_force=close_tif,
-                )
-            )
-        else:
-            result = alpaca_api.submit_order(
-                order_data=MarketOrderRequest(
-                    symbol=remap_symbols(position.symbol),
-                    qty=close_qty,
-                    side=OrderSide.BUY,
-                    type=OrderType.MARKET,
-                    time_in_force=close_tif,
-                )
-            )
-    except Exception as e:
-        traceback.print_exc()
-        logger.error(e)
-        return None
-    print(result)
-    return result
+    logger.error("Market close path reached for %s despite limit-only policy; refusing", position.symbol)
+    return None
 
 
 def close_position_at_current_price(position, row):
@@ -1171,6 +1126,12 @@ def close_position_at_current_price(position, row):
     try:
         if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
+                limit_price = round(float(row["close_last_price_minute"]), 2)
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1178,10 +1139,16 @@ def close_position_at_current_price(position, row):
                         side=OrderSide.SELL,
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(round(float(row["close_last_price_minute"]), 2)),
+                        limit_price=str(limit_price),
                     )
                 )
             else:
+                limit_price = math.ceil(float(row["close_last_price_minute"]))
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1189,7 +1156,7 @@ def close_position_at_current_price(position, row):
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(math.ceil(float(row["close_last_price_minute"]))),
+                        limit_price=str(limit_price),
                     )
                 )
         else:
@@ -1272,6 +1239,12 @@ def close_position_at_almost_current_price(position, row):
     try:
         if is_buy_side(getattr(position, "side", "")):
             if position.symbol in crypto_symbols:
+                limit_price = round(row["close_last_price_minute"] * 1.0003, 1)
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = crypto_alpaca_looper_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1279,10 +1252,16 @@ def close_position_at_almost_current_price(position, row):
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+                        limit_price=str(limit_price),
                     )
                 )
             else:
+                limit_price = round(row["close_last_price_minute"] * 1.0003, 1)
+                guard_sell_against_death_spiral(
+                    symbol=position.symbol,
+                    side="sell",
+                    price=float(limit_price),
+                )
                 result = alpaca_api.submit_order(
                     order_data=LimitOrderRequest(
                         symbol=remap_symbols(position.symbol),
@@ -1290,7 +1269,7 @@ def close_position_at_almost_current_price(position, row):
                         side="sell",
                         type=OrderType.LIMIT,
                         time_in_force="gtc",
-                        limit_price=str(round(row["close_last_price_minute"] * 1.0003, 1)),
+                        limit_price=str(limit_price),
                     )
                 )
         else:
