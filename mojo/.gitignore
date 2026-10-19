@@ -1,0 +1,5 @@
+.venv/
+data/
+modular-src/
+build/
+src/tsfm16.mojo
