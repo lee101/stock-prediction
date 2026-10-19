@@ -6,5 +6,6 @@ source mojo/.venv/bin/activate
 export MODULAR_NVPTX_COMPILER_PATH=${MODULAR_NVPTX_COMPILER_PATH:-/usr/local/cuda-12.9/bin/ptxas}
 mkdir -p mojo/build
 sed 's/^comptime DT = DType.bfloat16/comptime DT = DType.float16/' mojo/src/tsfm.mojo > mojo/src/tsfm16.mojo
-mojo build -O3 -I mojo/src mojo/src/tsfm.mojo -o mojo/build/tsfm "$@"
-mojo build -O3 -I mojo/src mojo/src/tsfm16.mojo -o mojo/build/tsfm16 "$@"
+LPATCH=${LPATCH:-16}
+mojo build -O3 -D L=$LPATCH -I mojo/src mojo/src/tsfm.mojo -o mojo/build/tsfm_L$LPATCH "$@"
+mojo build -O3 -D L=$LPATCH -I mojo/src mojo/src/tsfm16.mojo -o mojo/build/tsfm16_L$LPATCH "$@"

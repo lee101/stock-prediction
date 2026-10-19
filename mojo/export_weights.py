@@ -33,17 +33,21 @@ for i, ly in enumerate(W["layers"]):
 json.dump(dict(shapes=man, variate=[l["variate"] for l in W["layers"]]), open(f"{out}/manifest.json", "w"))
 print("tensors", len(man))
 
-# test batch + fp32 oracle outputs
+# test batches + fp32 oracle outputs for each supported context length
 sys.path.insert(0, "experiments/timesfm3_vs_chronos2")
 from common2 import *
 closes = load_closes(); _, test = split_symbols(closes)
-idx = window_index(closes, test, 0, 100)[:1024]
-X, act, _ = build(closes, idx, 512)
-Z = np.diff(np.log(np.concatenate([X[:, :1], X], 1)), axis=1).astype(np.float32)
-Z.tofile(f"{out}/test_in.f32")
-Wc = tf.prep_weights(fc.model, torch.float32, device="cuda"); Zt = torch.tensor(Z, device="cuda")
-with torch.no_grad():
-    for sa in (0, 1):
-        q = torch.cat([tf.forecast(Wc, Zt[i:i+256], bool(sa)) for i in range(0, len(Zt), 256)]).cpu().numpy()
-        q.astype(np.float32).tofile(f"{out}/test_ref_sa{sa}.f32")
-print("test batch", Z.shape)
+idx = window_index(closes, sorted(closes), 0, 100)
+Wc = tf.prep_weights(fc.model, torch.float32, device="cuda")
+for ctx in (256, 512, 768, 1024):
+    X, act, _ = build(closes, idx, ctx)
+    X = X[~np.isnan(X).any(1)]; X = X[np.random.default_rng(0).permutation(len(X))]                       # the fast path needs full contexts
+    X = np.tile(X, (int(np.ceil(1024 / len(X))), 1))[:1024]
+    Z = np.diff(np.log(np.concatenate([X[:, :1], X], 1)), axis=1).astype(np.float32)
+    Z.tofile(f"{out}/test_in_{ctx}.f32")
+    Zt = torch.tensor(Z, device="cuda")
+    with torch.no_grad():
+        for sa in (0, 1):
+            q = torch.cat([tf.forecast(Wc, Zt[i:i+128], bool(sa)) for i in range(0, len(Zt), 128)]).cpu().numpy()
+            q.astype(np.float32).tofile(f"{out}/test_ref_{ctx}_sa{sa}.f32")
+    print("test batch", ctx, Z.shape)

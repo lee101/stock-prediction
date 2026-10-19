@@ -27,7 +27,7 @@ def prep_weights(model, wdtype=torch.float32, device="cuda"):
         W["layers"].append(ly)
     inv = torch.zeros(HD // 2, dtype=torch.float32, device=device)
     inv[:16] = 1.0 / (10000.0 ** (torch.arange(0, 32, 2, dtype=torch.float32, device=device) / 32))
-    fr = torch.arange(S, dtype=torch.float32, device=device)[:, None] * inv[None]
+    fr = torch.arange(33, dtype=torch.float32, device=device)[:, None] * inv[None]
     emb = torch.cat([fr, fr], -1)
     W["cos"], W["sin"] = emb.cos(), emb.sin()
     lv = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99]
@@ -54,6 +54,8 @@ def rot(x, cos, sin):
 def forward(W, ctx):
     """ctx (B,512) float32 -> normalized-space quantiles (B,21) denormalized, float32."""
     B = ctx.shape[0]
+    L = ctx.shape[1] // PS
+    S = L + 1
     x64 = ctx.double()
     cw = torch.arange(1, ctx.shape[1] + 1, device=ctx.device, dtype=torch.float64)
     means = x64.cumsum(-1) / cw
@@ -66,7 +68,7 @@ def forward(W, ctx):
     z = z.asinh()
     e = lin(F.silu(lin(z, W["e1"]) + W["e1b"]), W["e2"]) + W["e2b"] + lin(z, W["er"]) + W["erb"]
     x = torch.cat([e, W["fq"].expand(B, 1, D)], 1)                                       # (B,17,768)
-    cos, sin = W["cos"][None, :, None, :], W["sin"][None, :, None, :]
+    cos, sin = W["cos"][None, :S, None, :], W["sin"][None, :S, None, :]
     for ly in W["layers"]:
         h = rms(x, ly["n0"])
         qkv = lin(h, ly["qkv0"]).view(B, S, 3, NH, HD)

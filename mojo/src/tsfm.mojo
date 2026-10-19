@@ -7,13 +7,17 @@ GEMM operands/outputs are DT (bf16 or fp16). Math follows mojo/torch_fast.py, wh
 from std.math import sqrt, exp, asinh, sinh, log, ceildiv
 from std.memory import stack_allocation, unsafe_memcpy
 from std.sys import argv, size_of
+from std.sys import get_defined_int
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu import thread_idx, block_idx, block_dim, barrier
 from max.gpu.memory import AddressSpace
 from max.gpu.primitives.block import sum as block_sum
 from layout import TileTensor, row_major, Idx
-from linalg.matmul.gpu import _matmul_gpu
+from linalg.matmul.gpu import _matmul_gpu, multistage_gemm
+from linalg.utils_gpu import MatmulConfig
+from std.utils.index import Index
+import linalg.matmul.vendor.blas as vendor_blas
 
 comptime DT = DType.bfloat16
 comptime EXT = "bf16" if DT == DType.bfloat16 else "f16"
@@ -22,9 +26,11 @@ comptime D = 768
 comptime NH = 12
 comptime HD = 64
 comptime FF = 2048
-comptime S = 17
-comptime L = 16
+comptime L = get_defined_int["L", 16]()
+comptime S = L + 1
+comptime CTX = L * 32
 comptime NL = 24
+comptime USE_BLAS = False
 comptime DATA = "mojo/data/"
 
 comptime BufD = DeviceBuffer[DT]
@@ -55,12 +61,27 @@ def load[dt: DType](ctx: DeviceContext, path: String, n: Int) raises -> DeviceBu
     return db^
 
 
+comptime PD = Pointer[Scalar[DT], MutAnyOrigin]
+
+
+def mmp[N: Int, K: Int](ctx: DeviceContext, c: PD, a: PD, w: PD, m: Int) raises:
+    """c[m, N] = a[m, K] @ w[N, K]^T on raw pointers."""
+    var tc = TileTensor(c, row_major(m, Idx[N]))
+    var ta = TileTensor(a, row_major(m, Idx[K]))
+    var tw = TileTensor(w, row_major(Idx[N], Idx[K]))
+    comptime if USE_BLAS:
+        vendor_blas.matmul(ctx, tc, ta, tw, c_row_major=True, transpose_b=True)
+    else:
+        comptime cfg = MatmulConfig[DT, DT, DT, True](
+            block_tile_shape=Index(128, 128, 32), warp_tile_shape=Index(64, 64, 32), num_pipeline_stages=3)
+        if m >= 2048:
+            multistage_gemm[transpose_b=True, config=cfg](tc, ta, tw, ctx)
+        else:
+            _matmul_gpu[use_tensor_core=True, transpose_b=True](tc, ta, tw, ctx)
+
+
 def mm[N: Int, K: Int](ctx: DeviceContext, c: BufD, a: BufD, w: BufD, m: Int) raises:
-    """c[m, N] = a[m, K] @ w[N, K]^T."""
-    var tc = TileTensor(mpd(c), row_major(m, Idx[N]))
-    var ta = TileTensor(mpd(a), row_major(m, Idx[K]))
-    var tw = TileTensor(mpd(w), row_major(Idx[N], Idx[K]))
-    _matmul_gpu[use_tensor_core=True, transpose_b=True](tc, ta, tw, ctx)
+    mmp[N, K](ctx, mpd(c), mpd(a), mpd(w), m)
 
 
 struct Layer(Movable):
@@ -94,7 +115,7 @@ struct Layer(Movable):
             self.o1 = ctx.enqueue_create_buffer[DT](1)
 
 
-struct Model(Movable):
+struct Weights(Movable):
     var layers: List[Layer]
     var fq: BufF
     var e1b: BufF
@@ -110,8 +131,31 @@ struct Model(Movable):
     var h1: BufD
     var h2: BufD
     var hr: BufD
-    # activations, sized for R rows
+
+    def __init__(out self, ctx: DeviceContext) raises:
+        self.layers = List[Layer]()
+        for i in range(NL):
+            self.layers.append(Layer(ctx, i, i % 4 == 3))
+        self.fq = load[F32](ctx, DATA + "fq.f32", D)
+        self.e1b = load[F32](ctx, DATA + "e1b.f32", 4 * D)
+        self.e2b = load[F32](ctx, DATA + "e2b.f32", D)
+        self.erb = load[F32](ctx, DATA + "erb.f32", D)
+        self.on = load[F32](ctx, DATA + "on.f32", D)
+        self.cosb = load[F32](ctx, DATA + "cos.f32", 33 * HD)
+        self.sinb = load[F32](ctx, DATA + "sin.f32", 33 * HD)
+        self.qw = load[F32](ctx, DATA + "qw.f32", 21)
+        self.e1 = load[DT](ctx, DATA + "e1." + EXT, 4 * D * 32)
+        self.e2 = load[DT](ctx, DATA + "e2." + EXT, D * 4 * D)
+        self.er = load[DT](ctx, DATA + "er." + EXT, D * 32)
+        self.h1 = load[DT](ctx, DATA + "h1." + EXT, 4 * D * D)
+        self.h2 = load[DT](ctx, DATA + "h2." + EXT, 32 * 4 * D)
+        self.hr = load[DT](ctx, DATA + "hr." + EXT, 32 * D)
+
+
+struct Acts(Movable):
+    """Activation buffers for R sequences and M token rows (M = R * 17 for the full stack, R for the pruned last layer)."""
     var R: Int
+    var M: Int
     var xin: BufF
     var z: BufD
     var loc: BufF
@@ -125,53 +169,36 @@ struct Model(Movable):
     var o: BufD
     var t: BufD
     var u: BufD
-    var d: BufD
     var hh: BufD
     var r2: BufD
     var rr: BufD
     var out: BufF
 
-    def __init__(out self, ctx: DeviceContext, R: Int, nout: Int) raises:
-        self.layers = List[Layer]()
-        for i in range(NL):
-            self.layers.append(Layer(ctx, i, i % 4 == 3))
-        self.fq = load[F32](ctx, DATA + "fq.f32", D)
-        self.e1b = load[F32](ctx, DATA + "e1b.f32", 4 * D)
-        self.e2b = load[F32](ctx, DATA + "e2b.f32", D)
-        self.erb = load[F32](ctx, DATA + "erb.f32", D)
-        self.on = load[F32](ctx, DATA + "on.f32", D)
-        self.cosb = load[F32](ctx, DATA + "cos.f32", S * HD)
-        self.sinb = load[F32](ctx, DATA + "sin.f32", S * HD)
-        self.qw = load[F32](ctx, DATA + "qw.f32", 21)
-        self.e1 = load[DT](ctx, DATA + "e1." + EXT, 4 * D * 32)
-        self.e2 = load[DT](ctx, DATA + "e2." + EXT, D * 4 * D)
-        self.er = load[DT](ctx, DATA + "er." + EXT, D * 32)
-        self.h1 = load[DT](ctx, DATA + "h1." + EXT, 4 * D * D)
-        self.h2 = load[DT](ctx, DATA + "h2." + EXT, 32 * 4 * D)
-        self.hr = load[DT](ctx, DATA + "hr." + EXT, 32 * D)
+    def __init__(out self, ctx: DeviceContext, R: Int, M: Int, full: Bool, nout: Int) raises:
         self.R = R
-        var M = R * S
-        self.xin = ctx.enqueue_create_buffer[F32](R * 512)
-        self.z = ctx.enqueue_create_buffer[DT](R * L * 32)
-        self.loc = ctx.enqueue_create_buffer[F32](R * L)
-        self.sc = ctx.enqueue_create_buffer[F32](R * L)
-        self.e1h = ctx.enqueue_create_buffer[DT](R * L * 4 * D)
-        self.e2o = ctx.enqueue_create_buffer[DT](R * L * D)
-        self.ero = ctx.enqueue_create_buffer[DT](R * L * D)
+        self.M = M
+        var rr_ = R if full else 1
+        self.xin = ctx.enqueue_create_buffer[F32](rr_ * CTX)
+        self.z = ctx.enqueue_create_buffer[DT](rr_ * L * 32)
+        self.loc = ctx.enqueue_create_buffer[F32](rr_ * L)
+        self.sc = ctx.enqueue_create_buffer[F32](rr_ * L)
+        self.e1h = ctx.enqueue_create_buffer[DT](rr_ * L * 4 * D)
+        self.e2o = ctx.enqueue_create_buffer[DT](rr_ * L * D)
+        self.ero = ctx.enqueue_create_buffer[DT](rr_ * L * D)
         self.x = ctx.enqueue_create_buffer[F32](M * D)
         self.h = ctx.enqueue_create_buffer[DT](M * D)
         self.big = ctx.enqueue_create_buffer[DT](M * 2 * FF)
         self.o = ctx.enqueue_create_buffer[DT](M * D)
         self.t = ctx.enqueue_create_buffer[DT](M * D)
         self.u = ctx.enqueue_create_buffer[DT](M * FF)
-        self.d = ctx.enqueue_create_buffer[DT](R * D)
-        self.hh = ctx.enqueue_create_buffer[DT](R * 4 * D)
-        self.r2 = ctx.enqueue_create_buffer[DT](R * 32)
-        self.rr = ctx.enqueue_create_buffer[DT](R * 32)
-        self.out = ctx.enqueue_create_buffer[F32](nout * 21)
+        var rh = R if full else 1
+        self.hh = ctx.enqueue_create_buffer[DT](rh * 4 * D)
+        self.r2 = ctx.enqueue_create_buffer[DT](rh * 32)
+        self.rr = ctx.enqueue_create_buffer[DT](rh * 32)
+        self.out = ctx.enqueue_create_buffer[F32](nout * 21 if full else 1)
 
 
-def k_prep(ctx: DeviceContext, m: Model, nb: Int) raises:
+def k_prep(ctx: DeviceContext, m: Acts, nb: Int) raises:
     """Causal running mean/std (fp64 Welford, as the reference), per-patch loc/scale and asinh-normalized patches.
     Rows >= nb are the sign-flipped copies of rows - nb (symmetric averaging)."""
     var R = m.R
@@ -193,11 +220,11 @@ def k_prep(ctx: DeviceContext, m: Model, nb: Int) raises:
         if r >= nb_:
             src = r - nb_
             sgn = -1.0
-        var row = px + src * 512
+        var row = px + src * CTX
         var cumx: Float64 = 0
         var mean: Float64 = 0
         var m2: Float64 = 0
-        for t in range(512):
+        for t in range(CTX):
             var x = Float64(sgn * row[t])
             var prev = mean
             cumx += x
@@ -226,9 +253,9 @@ def k_prep(ctx: DeviceContext, m: Model, nb: Int) raises:
     ctx.enqueue_function(k, grid_dim=ceildiv(R, 64), block_dim=64)
 
 
-def k_silu_bias(ctx: DeviceContext, m: Model, rows: Int) raises:
+def k_silu_bias(ctx: DeviceContext, m: Acts, e1b: BufF, rows: Int) raises:
     var p = mpd(m.e1h)
-    var pb = mpf(m.e1b)
+    var pb = mpf(e1b)
     var tot64 = Int64(rows * 4 * D)
 
     def k() {var p, var pb, var tot64}:
@@ -241,15 +268,15 @@ def k_silu_bias(ctx: DeviceContext, m: Model, rows: Int) raises:
     ctx.enqueue_function(k, grid_dim=ceildiv(Int(tot64), 256), block_dim=256)
 
 
-def k_embed(ctx: DeviceContext, m: Model, R: Int, n0: BufF) raises:
+def k_embed(ctx: DeviceContext, m: Acts, w: Weights, R: Int, n0: BufF) raises:
     """x[b, p] = e2 + b2 + er + erb (p < 16), x[b, 16] = forecast query; h = rmsnorm(x) * n0."""
     var px = mpf(m.x)
     var ph = mpd(m.h)
     var pe = mpd(m.e2o)
     var pr = mpd(m.ero)
-    var pb2 = mpf(m.e2b)
-    var pbr = mpf(m.erb)
-    var pfq = mpf(m.fq)
+    var pb2 = mpf(w.e2b)
+    var pbr = mpf(w.erb)
+    var pfq = mpf(w.fq)
     var pw = mpf(n0)
 
     def k() {var px, var ph, var pe, var pr, var pb2, var pbr, var pfq, var pw}:
@@ -286,7 +313,7 @@ def k_embed(ctx: DeviceContext, m: Model, R: Int, n0: BufF) raises:
     ctx.enqueue_function(k, grid_dim=R * S, block_dim=256)
 
 
-def k_add_rms(ctx: DeviceContext, m: Model, M: Int, w: BufF) raises:
+def k_add_rms(ctx: DeviceContext, m: Acts, M: Int, w: BufF) raises:
     """x += t (fp32 residual); h = rmsnorm(x) * w."""
     var px = mpf(m.x)
     var pt = mpd(m.t)
@@ -313,14 +340,14 @@ def k_add_rms(ctx: DeviceContext, m: Model, M: Int, w: BufF) raises:
     ctx.enqueue_function(k, grid_dim=M, block_dim=256)
 
 
-def k_attn(ctx: DeviceContext, m: Model, R: Int) raises:
+def k_attn(ctx: DeviceContext, m: Acts, w: Weights, R: Int) raises:
     """Causal attention over the 17 tokens of each (row, head) with RoPE and the sigmoid gate; reads big = [q|k|v|gate].
-    One block per (row, head): 288 threads; scores one thread per (query, key) pair, softmax per query row, PV per output."""
+    One block per (row, head), 136 threads (17 tokens x 8 sixteen-byte vectors); vectorized global access."""
     var pq = mpd(m.big)
     var po = mpd(m.o)
-    var pc = mpf(m.cosb)
-    var ps = mpf(m.sinb)
-    comptime NT = 288
+    var pc = mpf(w.cosb)
+    var ps = mpf(w.sinb)
+    comptime NT = S * 8
     comptime KS = 65
 
     def k() {var pq, var po, var pc, var ps}:
@@ -331,26 +358,31 @@ def k_attn(ctx: DeviceContext, m: Model, R: Int) raises:
         var ks = stack_allocation[S * KS, Float32, address_space=AddressSpace.SHARED]()
         var vs = stack_allocation[S * KS, Float32, address_space=AddressSpace.SHARED]()
         var sm = stack_allocation[S * S, Float32, address_space=AddressSpace.SHARED]()
-        for idx in range(t, S * HD, NT):
-            var j = idx // HD
-            var d = idx % HD
+        var j8 = t // 8
+        var v8 = t % 8
+        var rowp = pq + (b * S + j8) * (4 * D) + h * HD
+        var vv = (rowp + 2 * D + 8 * v8).unsafe_load[width=8, alignment=16]()
+        comptime for i in range(8):
+            vs[j8 * KS + 8 * v8 + i] = Float32(vv[i])
+        if t < S * 4:
+            var j = t // 4
+            var u = t % 4
             var row = pq + (b * S + j) * (4 * D) + h * HD
-            var pd = d + 32
-            if d >= 32:
-                pd = d - 32
-            var c = pc[j * HD + d]
-            var s = ps[j * HD + d]
-            var qd = Float32(row[d])
-            var qp = Float32(row[pd])
-            var kd = Float32(row[D + d])
-            var kp = Float32(row[D + pd])
-            if d < 32:
-                qs[j * KS + d] = qd * c - qp * s
-                ks[j * KS + d] = kd * c - kp * s
-            else:
-                qs[j * KS + d] = qd * c + qp * s
-                ks[j * KS + d] = kd * c + kp * s
-            vs[j * KS + d] = Float32(row[2 * D + d])
+            var qa = (row + 8 * u).unsafe_load[width=8, alignment=16]()
+            var qb = (row + 32 + 8 * u).unsafe_load[width=8, alignment=16]()
+            var ka = (row + D + 8 * u).unsafe_load[width=8, alignment=16]()
+            var kb = (row + D + 32 + 8 * u).unsafe_load[width=8, alignment=16]()
+            comptime for i in range(8):
+                var c = pc[j * HD + 8 * u + i]
+                var s = ps[j * HD + 8 * u + i]
+                var qai = Float32(qa[i])
+                var qbi = Float32(qb[i])
+                var kai = Float32(ka[i])
+                var kbi = Float32(kb[i])
+                qs[j * KS + 8 * u + i] = qai * c - qbi * s
+                qs[j * KS + 32 + 8 * u + i] = qbi * c + qai * s
+                ks[j * KS + 8 * u + i] = kai * c - kbi * s
+                ks[j * KS + 32 + 8 * u + i] = kbi * c + kai * s
         barrier()
         for idx in range(t, S * S, NT):
             var qi = idx // S
@@ -376,20 +408,23 @@ def k_attn(ctx: DeviceContext, m: Model, R: Int) raises:
             for j in range(t + 1):
                 sm[t * S + j] = sm[t * S + j] * inv
         barrier()
-        for idx in range(t, S * HD, NT):
-            var qi = idx // HD
-            var d = idx % HD
-            var acc: Float32 = 0
-            for j in range(qi + 1):
-                acc += sm[qi * S + j] * vs[j * KS + d]
-            var g = Float32(pq[(b * S + qi) * (4 * D) + 3 * D + h * HD + d])
-            var gs = Float32(1.0) / (Float32(1.0) + exp(-g))
-            po[(b * S + qi) * D + h * HD + d] = Scalar[DT](acc * gs)
+        var qi = t // 8
+        var gv = (pq + (b * S + qi) * (4 * D) + 3 * D + h * HD + 8 * v8).unsafe_load[width=8, alignment=16]()
+        var acc = SIMD[DType.float32, 8](0)
+        for j in range(qi + 1):
+            var p_ = sm[qi * S + j]
+            comptime for i in range(8):
+                acc[i] += p_ * vs[j * KS + 8 * v8 + i]
+        var res = SIMD[DT, 8](0)
+        comptime for i in range(8):
+            var g = Float32(gv[i])
+            res[i] = Scalar[DT](acc[i] / (Float32(1.0) + exp(-g)))
+        (po + (b * S + qi) * D + h * HD + 8 * v8).unsafe_store[width=8, alignment=16](res)
 
     ctx.enqueue_function(k, grid_dim=R * NH, block_dim=NT)
 
 
-def k_vgate(ctx: DeviceContext, m: Model, M: Int) raises:
+def k_vgate(ctx: DeviceContext, m: Acts, M: Int) raises:
     """o = v * sigmoid(gate) from big = [v | gate] (variate attention over a single key is the identity on v)."""
     var pb = mpd(m.big)
     var po = mpd(m.o)
@@ -408,7 +443,7 @@ def k_vgate(ctx: DeviceContext, m: Model, M: Int) raises:
     ctx.enqueue_function(k, grid_dim=ceildiv(Int(tot64), 256), block_dim=256)
 
 
-def k_swiglu(ctx: DeviceContext, m: Model, M: Int) raises:
+def k_swiglu(ctx: DeviceContext, m: Acts, M: Int) raises:
     var pb = mpd(m.big)
     var pu = mpd(m.u)
     var tot64 = Int64(M * FF)
@@ -426,30 +461,7 @@ def k_swiglu(ctx: DeviceContext, m: Model, M: Int) raises:
     ctx.enqueue_function(k, grid_dim=ceildiv(Int(tot64), 256), block_dim=256)
 
 
-def k_final_norm(ctx: DeviceContext, m: Model, R: Int) raises:
-    """d[b] = rmsnorm(x[b, 16]) * out_norm."""
-    var px = mpf(m.x)
-    var pd = mpd(m.d)
-    var pw = mpf(m.on)
-
-    def k() {var px, var pd, var pw}:
-        var b = Int(block_idx.x)
-        var t = Int(thread_idx.x)
-        var row = px + (b * S + (S - 1)) * D
-        var v0 = row[t]
-        var v1 = row[t + 256]
-        var v2 = row[t + 512]
-        var s = v0 * v0 + v1 * v1 + v2 * v2
-        var tot = block_sum[block_size=256](s)
-        var inv = Float32(1.0) / sqrt(tot / Float32(D) + 1e-6)
-        pd[b * D + t] = Scalar[DT](v0 * inv * pw[t])
-        pd[b * D + t + 256] = Scalar[DT](v1 * inv * pw[t + 256])
-        pd[b * D + t + 512] = Scalar[DT](v2 * inv * pw[t + 512])
-
-    ctx.enqueue_function(k, grid_dim=R, block_dim=256)
-
-
-def k_silu(ctx: DeviceContext, m: Model, n_: Int) raises:
+def k_silu(ctx: DeviceContext, m: Acts, n_: Int) raises:
     var p = mpd(m.hh)
     var n64 = Int64(n_)
 
@@ -461,6 +473,96 @@ def k_silu(ctx: DeviceContext, m: Model, n_: Int) raises:
             p[i] = Scalar[DT](v / (Float32(1.0) + exp(-v)))
 
     ctx.enqueue_function(k, grid_dim=ceildiv(n_, 256), block_dim=256)
+
+
+def k_gather_last(ctx: DeviceContext, a: Acts, l: Acts) raises:
+    """Copy the forecast-query token (index 16) of every row into the compact last-layer buffers."""
+    var px = mpf(a.x)
+    var ph = mpd(a.h)
+    var lx = mpf(l.x)
+    var lh = mpd(l.h)
+
+    def k() {var px, var ph, var lx, var lh}:
+        var b = Int(block_idx.x)
+        var t = Int(thread_idx.x)
+        comptime for i in range(3):
+            var idx = t + 256 * i
+            lx[b * D + idx] = px[(b * S + (S - 1)) * D + idx]
+            lh[b * D + idx] = ph[(b * S + (S - 1)) * D + idx]
+
+    ctx.enqueue_function(k, grid_dim=a.R, block_dim=256)
+
+
+def k_attn_last(ctx: DeviceContext, a: Acts, l: Acts, w: Weights, R: Int) raises:
+    """Attention of the forecast-query token only: keys/values of all 17 tokens from a.big = [k|v] (stride 1536),
+    q and gate from l.big (two contiguous (R, 768) blocks); output to l.o."""
+    var pkv = mpd(a.big)
+    var pq = mpd(l.big)
+    var pg = mpd(l.big) + R * D
+    var po = mpd(l.o)
+    var pc = mpf(w.cosb)
+    var ps = mpf(w.sinb)
+    comptime KS = 65
+
+    def k() {var pkv, var pq, var pg, var po, var pc, var ps}:
+        var h = Int(block_idx.x) % NH
+        var b = Int(block_idx.x) // NH
+        var d = Int(thread_idx.x)
+        var ks = stack_allocation[S * KS, Float32, address_space=AddressSpace.SHARED]()
+        var vs = stack_allocation[S * KS, Float32, address_space=AddressSpace.SHARED]()
+        var qr = stack_allocation[HD, Float32, address_space=AddressSpace.SHARED]()
+        var qs = stack_allocation[HD, Float32, address_space=AddressSpace.SHARED]()
+        var sm = stack_allocation[64, Float32, address_space=AddressSpace.SHARED]()
+        var pd = d + 32
+        if d >= 32:
+            pd = d - 32
+        for j in range(S):
+            var row = pkv + (b * S + j) * (2 * D) + h * HD
+            var c = pc[j * HD + d]
+            var s = ps[j * HD + d]
+            var kd = Float32(row[d])
+            var kp = Float32(row[pd])
+            if d < 32:
+                ks[j * KS + d] = kd * c - kp * s
+            else:
+                ks[j * KS + d] = kd * c + kp * s
+            vs[j * KS + d] = Float32(row[D + d])
+        qr[d] = Float32(pq[b * D + h * HD + d])
+        barrier()
+        var c16 = pc[(S - 1) * HD + d]
+        var s16 = ps[(S - 1) * HD + d]
+        if d < 32:
+            qs[d] = qr[d] * c16 - qr[pd] * s16
+        else:
+            qs[d] = qr[d] * c16 + qr[pd] * s16
+        barrier()
+        if d < S:
+            var a_: Float32 = 0
+            for i in range(HD):
+                a_ += qs[i] * ks[d * KS + i]
+            sm[d] = a_ * 0.125
+        barrier()
+        if d == 0:
+            var mx: Float32 = -3.0e38
+            for j in range(S):
+                mx = max(mx, sm[j])
+            var tot: Float32 = 0
+            for j in range(S):
+                var e = exp(sm[j] - mx)
+                sm[j] = e
+                tot += e
+            var inv = Float32(1.0) / tot
+            for j in range(S):
+                sm[j] = sm[j] * inv
+        barrier()
+        var acc: Float32 = 0
+        for j in range(S):
+            acc += sm[j] * vs[j * KS + d]
+        var g = Float32(pg[b * D + h * HD + d])
+        var gs = Float32(1.0) / (Float32(1.0) + exp(-g))
+        po[b * D + h * HD + d] = Scalar[DT](acc * gs)
+
+    ctx.enqueue_function(k, grid_dim=R * NH, block_dim=HD)
 
 
 def quantiles_row(pr2: Pointer[Scalar[DT], MutAnyOrigin], prr: Pointer[Scalar[DT], MutAnyOrigin], pqw: Pointer[Float32, MutAnyOrigin], lf: Float32, sf: Float32, row: Int) -> Array[Float32, 21]:
@@ -489,10 +591,10 @@ def quantiles_row(pr2: Pointer[Scalar[DT], MutAnyOrigin], prr: Pointer[Scalar[DT
     return out^
 
 
-def k_head_post(ctx: DeviceContext, m: Model, nout: Int, sa: Bool) raises:
+def k_head_post(ctx: DeviceContext, m: Acts, w: Weights, nout: Int, sa: Bool) raises:
     var pr2 = mpd(m.r2)
     var prr = mpd(m.rr)
-    var pqw = mpf(m.qw)
+    var pqw = mpf(w.qw)
     var pl = mpf(m.loc)
     var ps = mpf(m.sc)
     var po = mpf(m.out)
@@ -550,58 +652,115 @@ def pname(i: Int) -> String:
     return "head"
 
 
-def forward(ctx: DeviceContext, m: Model, nb: Int, sa: Bool, mut pf: Prof) raises:
-    var R = m.R
+def forward(ctx: DeviceContext, m: Weights, A: Acts, LA: Acts, nb: Int, sa: Bool, mut pf: Prof) raises:
+    var R = A.R
     var M = R * S
     pf.last = Int(perf_counter_ns())
-    k_prep(ctx, m, nb)
-    mm[4 * D, 32](ctx, m.e1h, m.z, m.e1, R * L)
-    k_silu_bias(ctx, m, R * L)
-    mm[D, 4 * D](ctx, m.e2o, m.e1h, m.e2, R * L)
-    mm[D, 32](ctx, m.ero, m.z, m.er, R * L)
-    k_embed(ctx, m, R, m.layers[0].n0)
+    k_prep(ctx, A, nb)
+    mm[4 * D, 32](ctx, A.e1h, A.z, m.e1, R * L)
+    k_silu_bias(ctx, A, m.e1b, R * L)
+    mm[D, 4 * D](ctx, A.e2o, A.e1h, m.e2, R * L)
+    mm[D, 32](ctx, A.ero, A.z, m.er, R * L)
+    k_embed(ctx, A, m, R, m.layers[0].n0)
     pf.lap(ctx, 0)
-    for i in range(NL):
+    for i in range(NL - 1):
         ref ly = m.layers[i]
-        mm[4 * D, D](ctx, m.big, m.h, ly.qkvg, M)
+        mm[4 * D, D](ctx, A.big, A.h, ly.qkvg, M)
         pf.lap(ctx, 1)
-        k_attn(ctx, m, R)
+        k_attn(ctx, A, m, R)
         pf.lap(ctx, 2)
-        mm[D, D](ctx, m.t, m.o, ly.o0, M)
+        mm[D, D](ctx, A.t, A.o, ly.o0, M)
         pf.lap(ctx, 3)
         if ly.variate:
-            k_add_rms(ctx, m, M, ly.n1)
+            k_add_rms(ctx, A, M, ly.n1)
             pf.lap(ctx, 4)
-            mm[2 * D, D](ctx, m.big, m.h, ly.vg, M)
+            mm[2 * D, D](ctx, A.big, A.h, ly.vg, M)
             pf.lap(ctx, 5)
-            k_vgate(ctx, m, M)
+            k_vgate(ctx, A, M)
             pf.lap(ctx, 6)
-            mm[D, D](ctx, m.t, m.o, ly.o1, M)
+            mm[D, D](ctx, A.t, A.o, ly.o1, M)
             pf.lap(ctx, 3)
-        k_add_rms(ctx, m, M, ly.nm)
+        k_add_rms(ctx, A, M, ly.nm)
         pf.lap(ctx, 4)
-        mm[2 * FF, D](ctx, m.big, m.h, ly.w12, M)
+        mm[2 * FF, D](ctx, A.big, A.h, ly.w12, M)
         pf.lap(ctx, 7)
-        k_swiglu(ctx, m, M)
+        k_swiglu(ctx, A, M)
         pf.lap(ctx, 8)
-        mm[D, FF](ctx, m.t, m.u, ly.w3, M)
+        mm[D, FF](ctx, A.t, A.u, ly.w3, M)
         pf.lap(ctx, 9)
-        if i + 1 < NL:
-            k_add_rms(ctx, m, M, m.layers[i + 1].n0)
-        else:
-            k_add_rms(ctx, m, M, m.on)
+        k_add_rms(ctx, A, M, m.layers[i + 1].n0)
         pf.lap(ctx, 4)
-    k_final_norm(ctx, m, R)
-    mm[4 * D, D](ctx, m.hh, m.d, m.h1, R)
-    k_silu(ctx, m, R * 4 * D)
-    mm[32, 4 * D](ctx, m.r2, m.hh, m.h2, R)
-    mm[32, D](ctx, m.rr, m.d, m.hr, R)
-    k_head_post(ctx, m, nb, sa)
+    # last layer: only the forecast-query token's output is used, so everything after K/V runs on R rows
+    ref ly = m.layers[NL - 1]
+    mmp[2 * D, D](ctx, mpd(A.big), mpd(A.h), mpd(ly.qkvg) + D * D, M)
+    k_gather_last(ctx, A, LA)
+    mmp[D, D](ctx, mpd(LA.big), mpd(LA.h), mpd(ly.qkvg), R)
+    mmp[D, D](ctx, mpd(LA.big) + R * D, mpd(LA.h), mpd(ly.qkvg) + 3 * D * D, R)
+    k_attn_last(ctx, A, LA, m, R)
+    mm[D, D](ctx, LA.t, LA.o, ly.o0, R)
+    k_add_rms(ctx, LA, R, ly.n1)
+    mm[2 * D, D](ctx, LA.big, LA.h, ly.vg, R)
+    k_vgate(ctx, LA, R)
+    mm[D, D](ctx, LA.t, LA.o, ly.o1, R)
+    k_add_rms(ctx, LA, R, ly.nm)
+    mm[2 * FF, D](ctx, LA.big, LA.h, ly.w12, R)
+    k_swiglu(ctx, LA, R)
+    mm[D, FF](ctx, LA.t, LA.u, ly.w3, R)
+    k_add_rms(ctx, LA, R, m.on)
+    pf.lap(ctx, 4)
+    mm[4 * D, D](ctx, A.hh, LA.h, m.h1, R)
+    k_silu(ctx, A, R * 4 * D)
+    mm[32, 4 * D](ctx, A.r2, A.hh, m.h2, R)
+    mm[32, D](ctx, A.rr, LA.h, m.hr, R)
+    k_head_post(ctx, A, m, nb, sa)
     pf.lap(ctx, 10)
+
+
+def run_file(sa: Bool, inpath: String, outpath: String, n: Int, ch: Int) raises:
+    """Forecast n windows of CTX log returns from inpath (float32 [n, CTX]) into outpath (float32 [n, 21])."""
+    var R = ch * 2 if sa else ch
+    with DeviceContext() as ctx:
+        var w = Weights(ctx)
+        var A = Acts(ctx, R, R * S, True, ch)
+        var Lt = Acts(ctx, R, R, False, ch)
+        var xin = load[F32](ctx, inpath, n * CTX)
+        var out_h = ctx.enqueue_create_host_buffer[F32](n * 21)
+        var pf0 = Prof(False)
+        var done = 0
+        while done < n:
+            var cnt = min(ch, n - done)
+            var src = mpf(xin) + done * CTX
+            var dst = mpf(A.xin)
+            var total = Int64(cnt * CTX)
+
+            def kc() {var src, var dst, var total}:
+                var i = Int(block_idx.x * block_dim.x + thread_idx.x)
+                if i < Int(total):
+                    dst[i] = src[i]
+
+            ctx.enqueue_function(kc, grid_dim=ceildiv(Int(total), 256), block_dim=256)
+            forward(ctx, w, A, Lt, ch, sa, pf0)
+            ctx.synchronize()
+            var hb = ctx.enqueue_create_host_buffer[F32](ch * 21)
+            ctx.enqueue_copy(hb, A.out)
+            ctx.synchronize()
+            for i in range(cnt * 21):
+                out_h[done * 21 + i] = hb[i]
+            done += cnt
+        var b = List[UInt8](length=n * 21 * 4, fill=0)
+        var pb = b.unsafe_ptr().unsafe_bitcast[Float32]()
+        for i in range(n * 21):
+            pb[i] = out_h[i]
+        var f = open(outpath, "w")
+        f.write_bytes(Span(b))
+        f.close()
 
 
 def main() raises:
     var args = argv()
+    if len(args) > 1 and args[1] == "run":
+        run_file(args[2] == "1", String(args[3]), String(args[4]), Int(args[5]), Int(args[6]))
+        return
     var B = 256
     var sa = False
     var iters = 10
@@ -613,17 +772,19 @@ def main() raises:
         iters = Int(args[3])
     var R = B * 2 if sa else B
     with DeviceContext() as ctx:
-        var m = Model(ctx, R, B)
-        var xin = load[F32](ctx, DATA + "test_in.f32", 1024 * 512)
-        ctx.enqueue_copy(m.xin, xin)   # first R*512 floats; mirrored rows are derived in k_prep
+        var w = Weights(ctx)
+        var A = Acts(ctx, R, R * S, True, B)
+        var Lt = Acts(ctx, R, R, False, B)
+        var xin = load[F32](ctx, DATA + "test_in_" + String(CTX) + ".f32", 1024 * CTX)
+        ctx.enqueue_copy(A.xin, xin)   # first R*512 floats; mirrored rows are derived in k_prep
         ctx.synchronize()
         var pf0 = Prof(False)
-        forward(ctx, m, B, sa, pf0)
+        forward(ctx, w, A, Lt, B, sa, pf0)
         ctx.synchronize()
         var host = ctx.enqueue_create_host_buffer[F32](B * 21)
-        ctx.enqueue_copy(host, m.out)
+        ctx.enqueue_copy(host, A.out)
         ctx.synchronize()
-        var ref_all = load[F32](ctx, DATA + "test_ref_sa" + String(1 if sa else 0) + ".f32", 1024 * 21)
+        var ref_all = load[F32](ctx, DATA + "test_ref_" + String(CTX) + "_sa" + String(1 if sa else 0) + ".f32", 1024 * 21)
         var rh = ctx.enqueue_create_host_buffer[F32](1024 * 21)
         ctx.enqueue_copy(rh, ref_all)
         ctx.synchronize()
@@ -641,13 +802,13 @@ def main() raises:
         print("B", B, "sa", sa, "max|dq|", maxd, "median err rms", sqrt(se / Float64(B)))
         var t0 = perf_counter_ns()
         for _ in range(iters):
-            forward(ctx, m, B, sa, pf0)
+            forward(ctx, w, A, Lt, B, sa, pf0)
         ctx.synchronize()
         var dt = Float64(perf_counter_ns() - t0) / Float64(iters)
         print("us/window", dt / 1e3 / Float64(B), " ms/batch", dt / 1e6)
         var pf = Prof(True)
         for _ in range(iters):
-            forward(ctx, m, B, sa, pf)
+            forward(ctx, w, A, Lt, B, sa, pf)
         var tot: Float64 = 0
         for i in range(11):
             tot += pf.acc[i]
