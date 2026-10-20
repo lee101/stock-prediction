@@ -88,9 +88,14 @@ def gnt[N: Int, K: Int](ctx: DeviceContext, c: PD, a: PD, w: PD, m: Int) raises:
     var tw = TileTensor(w, row_major(Idx[N], Idx[K]))
     comptime if LIB and K >= 256 and N % 128 == 0:
         if m >= 2048:
-            comptime cfg = MatmulConfig[DT, DT, DT, True](
-                block_tile_shape=Index(128, 128, 32), warp_tile_shape=Index(64, 64, 32), num_pipeline_stages=3)
-            multistage_gemm[transpose_b=True, config=cfg](tc, ta, tw, ctx)
+            comptime if N >= 1536:
+                comptime cfg = MatmulConfig[DT, DT, DT, True](
+                    block_tile_shape=Index(128, 128, 32), warp_tile_shape=Index(64, 64, 32), num_pipeline_stages=3)
+                multistage_gemm[transpose_b=True, config=cfg](tc, ta, tw, ctx)
+            else:
+                comptime cfg = MatmulConfig[DT, DT, DT, True](
+                    block_tile_shape=Index(128, 64, 32), warp_tile_shape=Index(64, 32, 32), num_pipeline_stages=4)
+                multistage_gemm[transpose_b=True, config=cfg](tc, ta, tw, ctx)
             return
     vb.matmul(ctx, tc, ta, tw, c_row_major=True, transpose_b=True)
 
@@ -103,7 +108,7 @@ def gnn[N: Int, K: Int](ctx: DeviceContext, c: PD, a: PD, w: PD, m: Int, beta: F
     comptime if LIB and K >= 256 and K % 128 == 0:
         if m >= 2048 and beta == 0.0:
             comptime cfg = MatmulConfig[DT, DT, DT, False](
-                block_tile_shape=Index(128, 128, 32), warp_tile_shape=Index(64, 64, 32), num_pipeline_stages=3)
+                block_tile_shape=Index(128, 64, 32), warp_tile_shape=Index(64, 32, 32), num_pipeline_stages=4)
             multistage_gemm[transpose_b=False, config=cfg](tc, ta, tw, ctx)
             return
     vb.matmul(ctx, tc, ta, tw, c_row_major=True, beta=beta)
@@ -293,6 +298,7 @@ struct LAct(Movable):
     var o1: BufD
     var hm: BufD
     var w12o: BufD
+    var act: BufD      # swiglu output (input of the w3 GEMM)
 
     def __init__(out self, ctx: DeviceContext, M: Int, variate: Bool) raises:
         self.variate = variate
@@ -307,6 +313,7 @@ struct LAct(Movable):
         self.o1 = ctx.enqueue_create_buffer[DT](M * D if variate else 1)
         self.hm = ctx.enqueue_create_buffer[DT](M * D)
         self.w12o = ctx.enqueue_create_buffer[DT](M * 2 * FF)
+        self.act = ctx.enqueue_create_buffer[DT](M * FF)
 
 
 struct Acts(Movable):
@@ -840,8 +847,8 @@ def forward_train(ctx: DeviceContext, net: Net, a: Acts) raises:
         else:
             k_add_rms_out(ctx, a.xs[l], a.t, net.P[b0 + O_NM].w, ac.x1, ac.hm, M, True)
         gnt[2 * FF, D](ctx, pd(ac.w12o), pd(ac.hm), pd(net.P[b0 + O_W12].c), M)
-        k_swiglu(ctx, ac.w12o, a.u, M)
-        gnt[D, FF](ctx, pd(a.t), pd(a.u), pd(net.P[b0 + O_W3].c), M)
+        k_swiglu(ctx, ac.w12o, ac.act, M)
+        gnt[D, FF](ctx, pd(a.t), pd(ac.act), pd(net.P[b0 + O_W3].c), M)
         if l + 1 < NL:
             if ac.variate:
                 k_add_rms_out(ctx, ac.x2, a.t, net.P[lbase(l + 1) + O_N0].w, a.xs[l + 1], a.la[l + 1].h, M, True)
@@ -865,12 +872,13 @@ def k_f2d(ctx: DeviceContext, src: BufF, dst: BufD, n: Int) raises:
     k_cast_f2d(ctx, src, dst, n)
 
 
-def k_rms_bwd(ctx: DeviceContext, x: PF, dh: PD, w: PF, dxres: PF, dxout: PF, part: PF, rows: Int, use_res: Bool) raises:
+def k_rms_bwd(ctx: DeviceContext, x: PF, dh: PD, w: PF, dxres: PF, dxout: PF, dxd: PD, part: PF, rows: Int, use_res: Bool, write_d: Bool) raises:
     """RMSNorm backward. dxout = dxres + r*w*dh - x*r^3/D*sum(dh*w*x); per-block partial dw = sum_rows dh*x*r (NG x D)."""
     var rows64 = Int64(rows)
     var ur = use_res
+    var wdd = write_d
 
-    def k() {var x, var dh, var w, var dxres, var dxout, var part, var rows64, var ur}:
+    def k() {var x, var dh, var w, var dxres, var dxout, var dxd, var part, var rows64, var ur, var wdd}:
         var bk = Int(block_idx.x)
         var t = Int(thread_idx.x)
         var a0: Float32 = 0
@@ -900,6 +908,10 @@ def k_rms_bwd(ctx: DeviceContext, x: PF, dh: PD, w: PF, dxres: PF, dxout: PF, pa
             dxout[r * D + t] = r0
             dxout[r * D + t + 256] = r1
             dxout[r * D + t + 512] = r2
+            if wdd:
+                dxd[r * D + t] = Scalar[DT](r0)
+                dxd[r * D + t + 256] = Scalar[DT](r1)
+                dxd[r * D + t + 512] = Scalar[DT](r2)
             a0 += d0 * x0 * inv
             a1 += d1 * x1 * inv
             a2 += d2 * x2 * inv
@@ -923,7 +935,7 @@ def k_dw_reduce(ctx: DeviceContext, part: PF, g: PF) raises:
 
 
 def rms_bwd(ctx: DeviceContext, a: Acts, x: BufF, dh: BufD, wp: Param, dxres: BufF, dxout: BufF, rows: Int, use_res: Bool) raises:
-    k_rms_bwd(ctx, pf(x), pd(dh), pf(wp.w), pf(dxres), pf(dxout), pf(a.part), rows, use_res)
+    k_rms_bwd(ctx, pf(x), pd(dh), pf(wp.w), pf(dxres), pf(dxout), pd(a.t), pf(a.part), rows, use_res, True)
     k_dw_reduce(ctx, pf(a.part), pf(wp.g))
 
 
@@ -1221,9 +1233,10 @@ def backward_train(ctx: DeviceContext, net: Net, a: Acts, mut tp: TP) raises:
     k_silu_bwd(ctx, a.z1, a.dhh, a.dz1, net.P[P_ON].w, False, R * 4 * D, 4 * D)
     gtn[4 * D, D](ctx, pf(net.P[P_H1].g), pd(a.dz1), pd(a.d), R)
     gnn[4 * D, D](ctx, pd(a.dd), pd(a.dz1), pd(net.P[P_H1].c), R, 1.0)
-    k_rms_bwd(ctx, pf(a.x16), pd(a.dd), pf(net.P[P_ON].w), pf(a.dx16), pf(a.dx16), pf(a.part), R, False)
+    k_rms_bwd(ctx, pf(a.x16), pd(a.dd), pf(net.P[P_ON].w), pf(a.dx16), pf(a.dx16), pd(a.t), pf(a.part), R, False, False)
     k_dw_reduce(ctx, pf(a.part), pf(net.P[P_ON].g))
     k_scatter16(ctx, a.dx16, a.dx, R)
+    k_f2d(ctx, a.dx, a.t, M * D)
     tp.lap(ctx, 3)
     # ---- layers
     for li in range(NL):
@@ -1231,9 +1244,7 @@ def backward_train(ctx: DeviceContext, net: Net, a: Acts, mut tp: TP) raises:
         var b0 = lbase(l)
         ref ac = a.la[l]
         # MLP
-        k_f2d(ctx, a.dx, a.t, M * D)
-        k_swiglu(ctx, ac.w12o, a.u, M)
-        gtn[D, FF](ctx, pf(net.P[b0 + O_W3].g), pd(a.t), pd(a.u), M)
+        gtn[D, FF](ctx, pf(net.P[b0 + O_W3].g), pd(a.t), pd(ac.act), M)
         gnn[D, FF](ctx, pd(a.u), pd(a.t), pd(net.P[b0 + O_W3].c), M)
         k_swiglu_bwd(ctx, ac.w12o, a.u, a.big, M)
         gtn[2 * FF, D](ctx, pf(net.P[b0 + O_W12].g), pd(a.big), pd(ac.hm), M)
@@ -1241,7 +1252,6 @@ def backward_train(ctx: DeviceContext, net: Net, a: Acts, mut tp: TP) raises:
         if ac.variate:
             rms_bwd(ctx, a, ac.x2, a.t2, net.P[b0 + O_NM], a.dx, a.dx, M, True)
             tp.lap(ctx, 4)
-            k_f2d(ctx, a.dx, a.t, M * D)
             gtn[D, D](ctx, pf(net.P[b0 + O_O1].g), pd(a.t), pd(ac.o1), M)
             gnn[D, D](ctx, pd(a.t2), pd(a.t), pd(net.P[b0 + O_O1].c), M)
             k_vgate_bwd(ctx, ac.vg, a.t2, a.big, M)
@@ -1253,7 +1263,6 @@ def backward_train(ctx: DeviceContext, net: Net, a: Acts, mut tp: TP) raises:
             rms_bwd(ctx, a, ac.x1, a.t2, net.P[b0 + O_NM], a.dx, a.dx, M, True)
             tp.lap(ctx, 4)
         # time attention
-        k_f2d(ctx, a.dx, a.t, M * D)
         gtn[D, D](ctx, pf(net.P[b0 + O_O0].g), pd(a.t), pd(ac.o), M)
         gnn[D, D](ctx, pd(a.t2), pd(a.t), pd(net.P[b0 + O_O0].c), M)
         k_attn_bwd(ctx, net, ac, a.t2, a.big, R)
@@ -1268,9 +1277,9 @@ def backward_train(ctx: DeviceContext, net: Net, a: Acts, mut tp: TP) raises:
     gtn[D, 4 * D](ctx, pf(net.P[P_E2].g), pd(a.t), pd(a.e1h), R * L)
     gtn[D, 32](ctx, pf(net.P[P_ER].g), pd(a.t), pd(a.z), R * L)
     gnn[D, 4 * D](ctx, pd(a.big), pd(a.t), pd(net.P[P_E2].c), R * L)
-    k_silu_bwd(ctx, a.pre1, a.big, a.u, net.P[P_E1B].w, True, R * L * 4 * D, 4 * D)
-    k_colsum_d(ctx, a.u, R * L, 4 * D, pf(net.P[P_E1B].g), pf(net.P[P_E1B].g), False)
-    gtn[4 * D, 32](ctx, pf(net.P[P_E1].g), pd(a.u), pd(a.z), R * L)
+    k_silu_bwd(ctx, a.pre1, a.big, a.e1h, net.P[P_E1B].w, True, R * L * 4 * D, 4 * D)
+    k_colsum_d(ctx, a.e1h, R * L, 4 * D, pf(net.P[P_E1B].g), pf(net.P[P_E1B].g), False)
+    gtn[4 * D, 32](ctx, pf(net.P[P_E1].g), pd(a.e1h), pd(a.z), R * L)
     tp.lap(ctx, 7)
 
 
