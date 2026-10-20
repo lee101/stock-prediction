@@ -3,3 +3,6 @@ data/
 modular-src/
 build/
 src/tsfm16.mojo
+src/train_32.mojo
+src/train_16.mojo
+src/train_bf.mojo
