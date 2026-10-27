@@ -495,7 +495,7 @@ def train(
         bf16=False,
         save_only_model=True,
         prediction_loss_only=True,
-        save_total_limit=2,
+        save_total_limit=1,
         save_strategy=eval_kwargs.get("save_strategy", "no"),
         save_steps=eval_kwargs.get("save_steps", 500),
         eval_strategy=eval_kwargs.get("eval_strategy", "no"),

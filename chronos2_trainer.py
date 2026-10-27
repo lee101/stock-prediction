@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import shutil
 import time
 from dataclasses import dataclass, asdict
 from itertools import product
@@ -413,6 +415,10 @@ def _fit_pipeline(
     if resume_path:
         logger.info("Resuming from checkpoint: {}", resume_path)
     trainer.train(resume_from_checkpoint=resume_path)
+
+    if not os.environ.get("CHRONOS_KEEP_CHECKPOINTS"):
+        for ckpt in Path(output_dir).glob("checkpoint-*"):
+            shutil.rmtree(ckpt, ignore_errors=True)
 
     if use_lora:
         adapter_dir = Path(output_dir) / "lora-adapter"
